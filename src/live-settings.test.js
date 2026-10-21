@@ -304,3 +304,81 @@ test('Cancel at a growing history tip pauses playback and cannot restart calcula
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
 });
+
+test('Automatic history plans settle settings without a presentation plan SSE and keep Play available', async () => {
+  const h = harness(); h.schema.defaults.execution.calculation = 'automatic';
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let version = 1;
+  h.setHistoryHandler(async () => ({ ok: true, json: async () => ({ generation: version, next_cursor: 3, complete: true, records: [
+    { ...plan(version, 1), generation: version },
+    ...[0, .1].map(time => ({ type: 'state', generation: version, settings_version: version, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] })),
+  ] }) }));
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
+    await flush(); assert.equal(live.pending, true); assert.equal(h.$('live-play').disabled, false);
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: 3, complete: true });
+    await flush(); await flush();
+    assert.equal(live.pending, false); assert.equal(live.plan.seq, 1); assert.equal(live.history.length, 2);
+    live.frame(performance.now()); assert.doesNotMatch(h.$('live-plan-label').textContent, /settings pending/);
+    h.edit('solver_params.q_cost', 9); await new Promise(resolve => setTimeout(resolve, 380)); await flush();
+    assert.equal(h.commands.at(-1).type, 'set_settings'); assert.equal(h.commands.at(-1).execution.calculation, 'automatic');
+    version = 2;
+    source.emit({ type: 'history', generation: 2, settings_version: 2, history_cursor: 3, complete: true });
+    await flush(); await flush(); assert.equal(live.pending, false); assert.equal(live.plan.settings_version, 2);
+    h.$('replay-mode').emit('click'); await flush();
+  } finally {
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('accepted settings reconcile a completed job whose notices arrived before its HTTP acknowledgement', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let acknowledge;
+  h.setCommandHandler((command, version) => command.type === 'set_settings' ? new Promise(resolve => { acknowledge = () => resolve({ ok: true, json: async () => ({ accepted: true, settings_version: version }) }); }) : { ok: true, json: async () => ({ accepted: true, settings_version: version }) });
+  h.setHistoryHandler(async () => ({ ok: true, json: async () => ({ generation: 1, next_cursor: 2, complete: true, records: [
+    { ...plan(1, 1), generation: 1 },
+    { type: 'state', generation: 1, settings_version: 1, sim_time_s: 0, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [0, 0, 1] },
+  ] }) }));
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 1 });
+    // The initial cached status made the browser provisionally expect v2.
+    // The authoritative acknowledgement is v1; all v1 notices arrive first.
+    source.emit({ type: 'status', state: 'paused', settings_version: 1, generation: 1, job_active: false });
+    source.emit({ type: 'history', settings_version: 1, generation: 1, history_cursor: 2, complete: true });
+    acknowledge(); await flush(); await flush();
+    assert.equal(live.pending, false); assert.equal(live.plan.settings_version, 1); assert.equal(live.history.length, 1); assert.equal(h.$('live-play').disabled, false);
+    h.$('replay-mode').emit('click'); await flush();
+  } finally {
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('Play at an idle recorded end restarts history locally; an active growing tip keeps waiting', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
+    await flush(); source.emit(plan(1, 1));
+    for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+    h.$('live-history-latest').emit('click'); assert.equal(live.history.selectedTime, .2);
+    const before = h.commands.length;
+    h.$('live-play').emit('click'); await flush();
+    assert.equal(live.history.selectedTime, 0); assert.equal(live.playing, true); assert.equal(h.commands.length, before);
+    live.frame(performance.now() + 50); assert(live.displayedState.sim_time_s > 0 && live.displayedState.sim_time_s < .2);
+    h.$('live-play').emit('click'); await flush();
+    source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true });
+    h.$('live-history-latest').emit('click'); h.$('live-play').emit('click'); await flush();
+    live.frame(performance.now() + 50); assert.equal(live.history.selectedTime, .2); assert.equal(live.playing, true);
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 0);
+    h.$('replay-mode').emit('click'); await flush();
+  } finally {
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});

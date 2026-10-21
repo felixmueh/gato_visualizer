@@ -75,6 +75,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   let historyRevision = 0, paintedRevision = -1, job = {}, extensionPending = false, extensionStartTime = null, frozenAnchor;
   let inspectingPreview = false, inspectionPlan = null;
   let defaultTargetWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
+  const latestServerEvents = new Map();
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock(), inputs = [];
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
@@ -94,7 +95,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   }
   function controlsEnabled() {
     const unavailable = !connected();
-    $('live-play').disabled = unavailable || (!clock.playing && pending && history.length < 2);
+    $('live-play').disabled = unavailable;
     $('live-preview').disabled = unavailable;
     $('live-reset').disabled = unavailable;
     $('live-precalculate').disabled = unavailable;
@@ -136,7 +137,8 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     if (mode !== 'live' || !liveReady) return false;
     const next = readSettings(true);
     if (!next) return false;
-    settings = next; submittedSettings = cloneSettings(next); pending = true; dirty = false;
+    settings = next; submittedSettings = cloneSettings(next); pending = true; dirty = false; inspectingPreview = false;
+    const previousExpectedVersion = expectedVersion;
     expectedVersion = Math.max(expectedVersion ?? 0, settingsVersion ?? 0) + 1;
     const request = ++submission;
     const anchor = frozenAnchor || displayedAnchor();
@@ -144,11 +146,19 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     message(next.execution.calculation === 'automatic' ? 'Replacing calculation from the displayed starting state…' : 'Updating one-horizon preview…');
     const accepted = await send({ type: 'set_settings', ...next, ...(anchor ? { anchor } : {}) });
     if (request !== submission) return Boolean(accepted);
-    if (!accepted) { pending = false; dirty = true; }
+    if (!accepted) { pending = false; dirty = true; expectedVersion = previousExpectedVersion; }
     else {
-      if (Number.isInteger(accepted.settings_version)) expectedVersion = accepted.settings_version;
+      if (Number.isInteger(accepted.settings_version)) expectedVersion = settingsVersion = accepted.settings_version;
       if (accepted.generation != null) useGeneration(accepted.generation, true);
       pending = !plan || plan.settings_version < expectedVersion;
+      // A short job can finish before the POST response reaches this browser.
+      // Reconcile its cached notices instead of waiting for another SSE event.
+      const matching = ['status', 'history', 'plan', 'state'].map(type => latestServerEvents.get(type))
+        .filter(item => item?.settings_version === expectedVersion);
+      const notice = matching.find(item => item.generation != null);
+      if (notice && generation != null && notice.generation < generation) useGeneration(notice.generation, true);
+      for (const item of matching) receiveItem(item);
+      if (generation != null) fetchHistory();
     }
     controlsEnabled(); refreshPlanLabel(); return Boolean(accepted);
   }
@@ -241,7 +251,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
           if (record.generation !== generation || (expectedVersion != null && record.settings_version < expectedVersion)) continue;
           history.addRecord(record); appliedRecords++;
           if (record.type === 'state') state = record;
-          if (record.type === 'plan') plan = record;
+          if (record.type === 'plan') acceptPlan(record, false);
         }
         const nextCursor = batch.next_cursor;
         more = Number.isInteger(nextCursor) && nextCursor > cursor && records.length >= 256;
@@ -254,8 +264,29 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     } catch (error) { message(`History download failed: ${error.message}`, true); }
     finally { fetching = false; if (fetchAgain) { fetchAgain = false; fetchHistory(); } controlsEnabled(); }
   }
+  function acceptPlan(item, presentation = true) {
+    if (!validPoints(item.ee_xyz) || !validPoints(item.reference_xyz)) return false;
+    plan = item;
+    if (presentation && inspectingPreview && item.origin === 'preview') inspectionPlan = item;
+    if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
+    // Authoritative history can contain plans whose presentation SSE was
+    // coalesced. Those plans settle settings just as an SSE prediction does.
+    // A historical plan must not settle an explicit inspection still solving.
+    if (pending && item.settings_version >= expectedVersion && (presentation || !inspectingPreview)) {
+      pending = false;
+      if (!dirty) frozenAnchor = undefined;
+    }
+    if (!defaultTargetWorld && (item.task_kind || submittedSettings?.task.kind) === 'reach' && submittedSettings?.task.kind === 'reach') {
+      defaultTargetWorld = item.reference_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
+    }
+    return true;
+  }
   function receive(event) {
     let item; try { item = JSON.parse(event.data); } catch { message('Invalid live event.', true); return; }
+    if (['status', 'history', 'plan', 'state'].includes(item.type)) latestServerEvents.set(item.type, item);
+    receiveItem(item);
+  }
+  function receiveItem(item) {
     if (!needsInitialPreview && generation != null && item.generation != null && item.generation < generation) return;
     if (!needsInitialPreview && item.type === 'status' && expectedVersion != null && item.settings_version < expectedVersion) return;
     if (item.type === 'status') {
@@ -283,13 +314,8 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       if (!Number.isInteger(item.history_cursor) || item.history_cursor > cursor || !history.length) fetchHistory();
     } else if (item.type === 'plan') {
       if (needsInitialPreview || (expectedVersion != null && item.settings_version < expectedVersion)) return;
-      if (!validPoints(item.ee_xyz) || !validPoints(item.reference_xyz)) return;
-      plan = item;
-      if (inspectingPreview && item.origin === 'preview') inspectionPlan = item;
+      if (!acceptPlan(item)) return;
       if (generation == null) history.addPlan(item);
-      if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
-      if (pending && item.settings_version >= expectedVersion) { pending = false; if (!dirty) frozenAnchor = undefined; }
-      if (!defaultTargetWorld && (item.task_kind || submittedSettings?.task.kind) === 'reach' && submittedSettings) defaultTargetWorld = item.reference_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
       renderDirty = true; controlsEnabled(); if (!clock.playing) renderView();
     } else if (item.type === 'state') {
       if (needsInitialPreview || (expectedVersion != null && item.settings_version < expectedVersion)) return;
@@ -409,7 +435,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       needsInitialPreview = true;
       const connection = new EventSource('/api/live/events'); source = connection; controlsEnabled(); refreshPlanLabel();
       connection.onmessage = event => { if (source === connection && mode === 'live') receive(event); };
-      connection.onopen = () => { controlsEnabled(); message('Connected · waiting for solver status…'); };
+      connection.onopen = () => { latestServerEvents.clear(); controlsEnabled(); message('Connected · waiting for solver status…'); };
       connection.onerror = () => { controlsEnabled(); message('Live stream disconnected · reconnecting. Playback remains local.', true); };
       renderView();
     } else if (source) { const connection = source; source = null; connection.close(); pending = false; needsInitialPreview = false; await send({ type: 'pause' }); }
@@ -450,6 +476,9 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     if (dirty && !await submitSettings()) return;
     const noMotion = history.length < 2;
     if (clock.time == null) clock.seek(history.bounds[0]);
+    // An idle recording at its end should replay when Play is pressed. A
+    // growing tip must keep waiting there, and Continue extends from that tip.
+    if (!noMotion && !job.job_active && !extensionPending && !settings.execution.continue_at_end && clock.time >= history.bounds[1] - 1e-7) clock.seek(history.bounds[0]);
     if (noMotion || (clock.time >= history.bounds[1] - 1e-7 && settings.execution.continue_at_end)) { if (!await extendHistory()) return; }
     clock.play(performance.now()); controlsEnabled(); renderView();
   });

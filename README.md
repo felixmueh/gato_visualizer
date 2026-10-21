@@ -76,6 +76,8 @@ Playback and calculation are independent. Play with no recorded motion starts
 calculation. **Continue simulation at end**, off by default, decides whether
 playing through existing history extends it or stops at its end. Changing this
 toggle preserves the recording. **Go latest** only moves the displayed time.
+Pressing Play at a completed recording's end with Continue off replays it from
+the beginning. At a growing recording's end, playback waits for new samples.
 
 Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz**. Simulation Hz controls
 RK4 integration, Control Hz samples the active plan's torque, and TO Hz requests
