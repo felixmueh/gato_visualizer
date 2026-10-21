@@ -116,7 +116,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   let schema, settings, defaultSettings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
   let settingsVersion, expectedVersion, needsInitialPreview = false, settingsTimer, submission = 0;
-  let historyEpoch = 0, initialResetPending = true;
+  let historyEpoch = 0, playbackIntent = 0, initialResetPending = true;
   let generation = null, cursor = 0, historyComplete = false, fetching = false, fetchAgain = false;
   let historyRevision = 0, paintedRevision = -1, job = {}, extensionPending = false, extensionStartTime = null, frozenAnchor;
   let inspectingPreview = false, inspectionPlan = null;
@@ -132,6 +132,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
   const connected = () => liveReady && !profileSwitching && !profileUnavailable && !profileNError && source?.readyState === EventSource.OPEN && !needsInitialPreview;
   const continueAtEnd = () => settings.execution.calculation === 'on_play' || settings.execution.continue_at_end;
+  function pausePlayback() { ++playbackIntent; clock.pause(); extensionPending = false; renderDirty = true; }
   const acceptTaskAnchors = item => {
     if (validPoints([item?.task_anchors?.reach])) defaultTargetWorld = [...item.task_anchors.reach];
     if (validPoints([item?.task_anchors?.figure8])) figure8BaseWorld = [...item.task_anchors.figure8];
@@ -218,7 +219,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     const request = ++submission;
     const resetting = initialResetPending;
     const anchor = resetting ? undefined : frozenAnchor || displayedAnchor();
-    clock.pause(); controlsEnabled(); refreshPlanLabel();
+    pausePlayback(); controlsEnabled(); refreshPlanLabel();
     message(next.execution.calculation === 'automatic' ? 'Replacing calculation from the displayed starting state…' : 'Updating one-horizon preview…');
     const accepted = await send({ type: 'set_settings', ...next, ...(resetting ? { reset: true } : anchor ? { anchor } : {}) });
     if (request !== submission) return Boolean(accepted);
@@ -245,7 +246,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); profileNError = false; }
     calculationControls();
     resetIndicators.update();
-    dirty = true; renderDirty = true; clock.pause(); refreshPlanLabel();
+    dirty = true; renderDirty = true; pausePlayback(); refreshPlanLabel();
     controlsEnabled();
     message(profileSwitching ? 'Solver switching · settings draft retained.' : profileUnavailable ? 'No solver is active · settings draft retained.' : 'Settings changed · replacing obsolete calculation…');
     clearTimeout(settingsTimer); if (!profileSwitching && !profileUnavailable) settingsTimer = setTimeout(submitSettings, 350);
@@ -497,7 +498,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       $('live-status').classList.toggle('is-playing', Boolean(item.job_active)); $('live-status').classList.toggle('error', status === 'error' || status === 'gpu_busy');
       if (item.generation != null && !needsInitialPreview && (expectedVersion == null || item.settings_version >= expectedVersion)) useGeneration(item.generation);
       if (item.message) message(item.message, status === 'error');
-      if (status === 'error' || status === 'gpu_busy') { pending = false; extensionPending = false; clock.pause(); }
+      if (status === 'error' || status === 'gpu_busy') { pending = false; extensionPending = false; pausePlayback(); }
       // A queued Play can receive the preceding preview's paused status first.
       // Keep its intent until generation actually starts (or fails).
       if (item.job_active) extensionPending = false;
@@ -524,7 +525,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       if (generation == null) { state = item; history.addState(item); historyRevision++; }
       renderDirty = true; if (!clock.playing) renderView();
     } else if (item.type === 'error') {
-      pending = false; extensionPending = false; job = { ...job, job_active: false }; clock.pause();
+      pending = false; extensionPending = false; job = { ...job, job_active: false }; pausePlayback();
       message(item.message || item.detail || 'Live solver error.', true); controlsEnabled(); renderDirty = true;
     }
   }
@@ -624,16 +625,17 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     }
     renderDirty = false;
   }
-  async function extendHistory() {
+  async function extendHistory(intent = playbackIntent) {
     if (extensionPending || job.job_active) return true;
     if (!connected()) return false;
     const previousJob = job, previousComplete = historyComplete;
     extensionPending = true; extensionStartTime = history.bounds[1];
     job = { ...job, job_active: true }; historyComplete = false;
     const result = await send({ type: 'play' });
+    if (intent !== playbackIntent) return false;
     if (!result) {
       extensionPending = false; job = previousJob; historyComplete = previousComplete;
-      clock.pause(); controlsEnabled();
+      pausePlayback(); controlsEnabled();
     }
     else {
       if (result.generation != null) useGeneration(result.generation);
@@ -646,7 +648,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       const tick = clock.tick(timestamp, history.bounds, { followAtEnd: continueAtEnd() });
       if (tick.atEnd && !job.job_active && !fetching) {
         if (continueAtEnd()) extendHistory();
-        else if (!extensionPending) { clock.pause(); controlsEnabled(); }
+        else if (!extensionPending) { pausePlayback(); controlsEnabled(); }
       }
       renderDirty = true;
     }
@@ -655,7 +657,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   function showLatest() { inspectingPreview = false; clock.seek(history.bounds[1]); if (clock.playing && continueAtEnd()) clock.follow(); renderView(); }
   async function switchMode(next) {
     if (next === mode || (next === 'live' && !liveReady)) return;
-    clearTimeout(settingsTimer); submission++; mode = next; clock.pause();
+    clearTimeout(settingsTimer); submission++; mode = next; pausePlayback();
     document.body.classList.toggle('live-mode', mode === 'live');
     for (const id of ['live-panel', 'live-controls']) $(id).hidden = mode !== 'live';
     for (const id of ['replay-section', 'replay-controls']) $(id).hidden = mode === 'live';
@@ -673,7 +675,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   $('replay-mode').addEventListener('click', () => switchMode('replay'));
   $('live-mode').addEventListener('click', () => switchMode('live'));
   $('live-preview').addEventListener('click', async () => {
-    clock.pause();
+    pausePlayback();
     const anchor = displayedAnchor();
     if (dirty && !await submitSettings()) return;
     inspectingPreview = true; inspectionPlan = null; pending = true; refreshPlanLabel();
@@ -682,14 +684,14 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     controlsEnabled(); renderView();
   });
   $('live-precalculate').addEventListener('click', async () => {
-    clock.pause(); if (dirty && !await submitSettings()) return;
+    pausePlayback(); if (dirty && !await submitSettings()) return;
     const anchor = frozenAnchor || displayedAnchor();
     const result = await send({ type: 'precalculate', ...(anchor ? { anchor } : {}) });
     if (result?.generation != null) useGeneration(result.generation);
   });
   $('live-cancel').addEventListener('click', async () => {
     if (await send({ type: 'cancel' })) {
-      pending = false; extensionPending = false; job = { ...job, job_active: false }; clock.pause();
+      pending = false; extensionPending = false; job = { ...job, job_active: false }; pausePlayback();
       message('Cancellation requested · stopping after the current numerical operation.');
       controlsEnabled(); renderView();
     }
@@ -698,27 +700,39 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     inspectingPreview = false;
     clearTimeout(settingsTimer);
     if (clock.playing) {
-      clock.pause(); extensionPending = false;
+      pausePlayback(); extensionPending = false;
+      const intent = playbackIntent;
+      controlsEnabled(); renderView();
       await send({ type: 'pause' });
+      if (intent !== playbackIntent) return;
       if (settings.execution.calculation === 'on_play') { pending = false; job = { ...job, job_active: false }; }
       controlsEnabled(); renderView(); return;
     }
-    if (dirty && !await submitSettings()) return;
+    // Settings submission pauses synchronously; capture this Play intent after
+    // that pause, but before its HTTP acknowledgement can interleave user input.
+    const settingsRequest = dirty ? submitSettings() : null;
+    const intent = ++playbackIntent;
+    if (settingsRequest && !await settingsRequest) return;
+    if (intent !== playbackIntent) return;
     const noMotion = history.length < 2;
     if (clock.time == null) clock.seek(history.bounds[0]);
     // Finite precalculations replay from the start when Stop is selected.
     // On Play resumes continuous computation from the existing recording tip.
     if (!noMotion && !job.job_active && !extensionPending && !continueAtEnd() && clock.time >= history.bounds[1] - 1e-7) clock.seek(history.bounds[0]);
-    if (noMotion || (clock.time >= history.bounds[1] - 1e-7 && continueAtEnd())) { if (!await extendHistory()) return; }
-    clock.play(performance.now(), { follow: continueAtEnd() && (noMotion || clock.time >= history.bounds[1] - 1e-7) }); controlsEnabled(); renderView();
+    const shouldExtend = noMotion || (clock.time >= history.bounds[1] - 1e-7 && continueAtEnd());
+    const follow = continueAtEnd() && (noMotion || clock.time >= history.bounds[1] - 1e-7);
+    // Publish local intent immediately. Arriving history may grow the recorded
+    // end while Play is acknowledged; it must not change the chosen follow mode.
+    clock.play(performance.now(), { follow }); controlsEnabled(); renderView();
+    if (shouldExtend && !await extendHistory(intent) && intent === playbackIntent) { pausePlayback(); controlsEnabled(); renderView(); }
   });
   $('live-reset').addEventListener('click', async () => {
-    clearTimeout(settingsTimer); clock.pause(); frozenAnchor = undefined;
+    clearTimeout(settingsTimer); pausePlayback(); frozenAnchor = undefined;
     if (dirty && !await submitSettings()) return;
     history.clear(); historyRevision++; plan = null; state = undefined; presentedState = undefined; clock.seek(null); onReset();
     const result = await send({ type: 'reset' }); if (result?.generation != null) useGeneration(result.generation); renderView();
   });
-  $('live-history').addEventListener('input', event => { if (!event.target.disabled) { inspectingPreview = false; clock.pause(); clock.seek(Number(event.target.value)); controlsEnabled(); renderView(); } });
+  $('live-history').addEventListener('input', event => { if (!event.target.disabled) { inspectingPreview = false; pausePlayback(); clock.seek(Number(event.target.value)); controlsEnabled(); renderView(); } });
   $('live-history').addEventListener('pointermove', event => {
     const bounds = event.target.getBoundingClientRect(), [start, end] = clock.presentationBounds(history.bounds);
     const time = start + Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * (end - start);
@@ -729,7 +743,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   function beginSolverProfileSwitch() {
     const anchor = displayedAnchor();
     clearTimeout(settingsTimer); ++submission; ++schemaReload;
-    clock.pause(); profileSwitching = true; pending = false; extensionPending = false; needsInitialPreview = false;
+    pausePlayback(); profileSwitching = true; pending = false; extensionPending = false; needsInitialPreview = false;
     expectedVersion = settingsVersion;
     job = { ...job, job_active: false };
     $('live-status').textContent = 'SWITCHING SOLVER';
@@ -738,7 +752,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   }
   async function finishSolverProfileSwitch(item) {
     const reload = ++schemaReload;
-    clearTimeout(settingsTimer); clock.pause();
+    clearTimeout(settingsTimer); pausePlayback();
     profileSwitching = true; controlsEnabled();
     try {
       const response = await fetch('/api/live/schema'), nextSchema = await response.json();
@@ -826,7 +840,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       // The inspection endpoint owns cooperative numerical pausing. This only
       // holds the browser's clock and queued edits, preserving its displayed
       // native pose/cursor and the private Live controller state.
-      clearTimeout(settingsTimer); ++submission; clock.pause(); extensionPending = false;
+      clearTimeout(settingsTimer); ++submission; pausePlayback(); extensionPending = false;
       controlsEnabled(); renderDirty = true;
     },
     beginSolverProfileSwitch, finishSolverProfileSwitch,

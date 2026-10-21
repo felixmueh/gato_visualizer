@@ -857,3 +857,110 @@ test('Live batches keep a right-edge cursor with smooth recorded motion, and scr
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
 });
+
+test('Play captures live-follow intent before delayed acknowledgement and incoming history pages', async () => {
+  const h = harness();
+  h.schema.task_anchors = { reach: [.5, -.2, 1] };
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const records = [];
+  const append = time => records.push({ type: 'state', generation: 1, settings_version: 1, sim_time_s: time,
+    q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+  h.setHistoryHandler(url => ({ ok: true, json: async () => ({ generation: 1,
+    records: records.slice(Number(new URL(url, 'http://local').searchParams.get('after'))), next_cursor: records.length, complete: false }) }));
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    append(0); append(.2);
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length }); await flush();
+    h.$('live-history-latest').emit('click');
+    let acknowledge;
+    h.setCommandHandler(command => command.type === 'play' ? new Promise(resolve => { acknowledge = resolve; }) : { ok: true, json: async () => ({ accepted: true }) });
+    assert.equal(live.settings.execution.continue_at_end, false); // Default on_play still follows.
+    assert.equal(live.targetInteraction.available, true);
+    h.$('live-play').emit('click');
+    assert.equal(live.playing, true);
+    assert.equal(h.$('live-play').textContent, 'Pause');
+    assert.equal(live.targetInteraction.available, false);
+    assert.equal(live.history.following, true);
+    live.frame(0);
+    append(.3); append(.4);
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length }); await flush();
+    acknowledge({ ok: true, json: async () => ({ accepted: true, generation: 1 }) }); await flush();
+    live.frame(10);
+    assert.equal(live.history.following, true);
+    assert(Math.abs(live.history.selectedTime - .21) < 1e-12);
+    assert.deepEqual(live.history.bounds, [0, .4]);
+    assert.equal(h.$('live-history').value, String(h.$('live-history').max));
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('late Play responses cannot override Pause, scrub, settings edits, or mode changes', async () => {
+  for (const action of ['pause', 'scrub', 'settings', 'mode']) {
+    const h = harness();
+    const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+    Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+    h.setHistoryHandler(url => ({ ok: true, json: async () => ({ generation: Number(new URL(url, 'http://local').searchParams.get('generation')), records: [], next_cursor: 0, complete: true }) }));
+    try {
+      const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+      await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+      source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+      for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
+        q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+      h.$('live-history-latest').emit('click');
+      let acknowledgePlay, acknowledgePause;
+      h.setCommandHandler(command => {
+        if (command.type === 'play') return new Promise(resolve => { acknowledgePlay = resolve; });
+        if (command.type === 'pause' && action === 'pause') return new Promise(resolve => { acknowledgePause = resolve; });
+        return { ok: true, json: async () => ({ accepted: true }) };
+      });
+      h.$('live-play').emit('click');
+      if (action === 'pause') h.$('live-play').emit('click');
+      else if (action === 'scrub') { h.$('live-history').value = '.1'; h.$('live-history').emit('input'); }
+      else if (action === 'settings') h.edit('solver_params.q_cost', 5);
+      else h.$('replay-mode').emit('click');
+      const selected = action === 'scrub' ? .1 : .2;
+      assert.equal(live.playing, false, action);
+      assert.equal(live.history.following, false, action);
+      if (action === 'pause') assert.equal(h.$('live-play').textContent, 'Play'); // Before acknowledgement.
+      acknowledgePlay({ ok: true, json: async () => ({ accepted: true, generation: 999 }) }); await flush();
+      assert.equal(live.playing, false, action);
+      assert.equal(live.history.generation, null, action); // Obsolete acknowledgement cannot replace history.
+      assert.equal(live.history.selectedTime, selected, action);
+      if (acknowledgePause) { acknowledgePause({ ok: true, json: async () => ({ accepted: true }) }); await flush(); }
+      h.setCommandHandler(() => ({ ok: true, json: async () => ({ accepted: true }) }));
+    } finally {
+      h.$('replay-mode').emit('click'); await flush();
+      for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+    }
+  }
+});
+
+test('first default Live Play follows even before any motion or command acknowledgement', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    source.emit({ type: 'state', settings_version: 1, sim_time_s: 0, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [0, 0, 1] });
+    let acknowledge;
+    h.setCommandHandler(command => command.type === 'play' ? new Promise(resolve => { acknowledge = resolve; }) : { ok: true, json: async () => ({ accepted: true }) });
+    h.$('live-play').emit('click'); live.frame(0);
+    assert.equal(live.history.following, true);
+    source.emit({ type: 'state', settings_version: 1, sim_time_s: .1, q: Array(7).fill(.1), qd: Array(7).fill(0), ee_xyz: [.1, 0, 1] });
+    live.frame(10);
+    assert.equal(live.history.selectedTime, .01);
+    assert.equal(h.$('live-history').value, String(h.$('live-history').max));
+    acknowledge({ ok: true, json: async () => ({ accepted: true }) }); await flush();
+    assert.equal(live.history.following, true);
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
