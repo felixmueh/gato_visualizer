@@ -1,6 +1,9 @@
 import { intervalDescription, intervalSeverity } from './live-execution.js';
 
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+export function timelineTypingTarget(target) {
+  return Boolean(target?.isContentEditable || ['INPUT', 'SELECT', 'TEXTAREA'].includes(target?.tagName));
+}
 export function timelineBounds(bounds) {
   const start = Number.isFinite(bounds?.[0]) ? bounds[0] : 0;
   return [start, Math.max(start, Number.isFinite(bounds?.[1]) ? bounds[1] : start)];
@@ -168,6 +171,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) element.addEventListener(type, endDrag);
   element.addEventListener('pointerleave', hideTooltip);
   element.addEventListener('keydown', event => {
+    if (timelineTypingTarget(event.target)) return;
     const span = window[1] - window[0], step = event.shiftKey ? .001 : span / 100;
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End', '+', '=', '-', '_', '0'].includes(event.key)) {
       event.preventDefault(); event.stopPropagation(); hideTooltip();

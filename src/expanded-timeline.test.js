@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { timelineBounds, clampTimelineWindow, zoomTimeline, timelineTicks, indexTimelineIntervals, visibleTimelineIntervals } from './expanded-timeline.js';
+import { timelineTypingTarget, timelineBounds, clampTimelineWindow, zoomTimeline, timelineTicks, indexTimelineIntervals, visibleTimelineIntervals } from './expanded-timeline.js';
 
 test('timeline windows clamp pan, empty recordings and fine zoom to retained time', () => {
   assert.deepEqual(timelineBounds([NaN, Infinity]), [0, 0]);
@@ -42,4 +42,12 @@ test('a narrow viewport only returns intersecting entries from a 12000 interval 
   const visible = visibleTimelineIntervals(index, [52.002, 52.008]);
   assert.equal(visible.length, 1);
   assert.equal(visible[0].start, 52);
+});
+
+
+test('metric form controls and inherited editable descendants keep their keyboard input', () => {
+  for (const tagName of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(timelineTypingTarget({ tagName }), true);
+  assert.equal(timelineTypingTarget({ tagName: 'SPAN', isContentEditable: true }), true);
+  assert.equal(timelineTypingTarget({ tagName: 'DIV', isContentEditable: false }), false);
+  assert.equal(timelineTypingTarget({ tagName: 'CANVAS' }), false);
 });
