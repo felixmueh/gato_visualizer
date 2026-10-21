@@ -67,29 +67,38 @@ Explicit manipulation should pin the selected solve so incoming Live solves
 do not replace it mid-inspection; this automatic pinning detail remains a
 proposal rather than an implemented rule.
 
-## Continue SQP
+## Run again — accepted 2026-10-21, implementation in progress
 
-Continue SQP requests an additional per-solve iteration budget beyond the
-original cap. It preserves the selected solve's initial robot state, exact
-reference, model, bounds and problem settings. It does not change global Live
-defaults, advance the plant or episode clock, or retroactively replace an
-episode's historically applied plan. Preserve the original solve and result;
-retain a linked inspection continuation containing the additional work.
+Replace the proposed exact Continue SQP action with Run again. It creates a
+separate inspection result linked to the selected solve, using its captured
+initial state, exact reference, bounds and problem settings. Keep the original
+episode plan immutable; never advance the plant or episode clock, or change
+global Live defaults through this action. Record the implementation/model
+identity actually used, including any difference from the original solve.
 
-Record requested additional iterations separately from actual completed
-iterations and stop reason. Preserve the solver's existing stopping behavior;
-an additional budget is an upper bound, not a demand to disable stopping.
+Offer an editable finite SQP cap and optional wall budget. Record actual
+completed iterations and stop reason separately from the requested cap.
+Preserve existing practical zero-PCG stopping: a cap is an upper bound, not a
+demand to execute every iteration. Do not promise immediate graceful Stop
+without an iteration-boundary cancellation mechanism.
 
-The proposed default is to continue from the latest available checkpoint of
-the selected solve. Continuing from an earlier scrubbed iteration would require
-an explicit From iteration k action and a checkpoint at that iteration; this
-choice remains open. A trajectory snapshot alone is not a complete optimizer
-checkpoint. A fresh warm-seeded solve must be named as such rather than offered
-as an exact continuation.
+Current recordings lack the incoming warm trajectory and private optimizer
+state. Initially use an explicitly labelled cold start from the captured robot
+state. This is a fresh solve, not a reproduction of its original initialization
+or exact resumption. Original-seed selection requires real seed capture first;
+even a trajectory seed alone is not a complete optimizer checkpoint.
+
+Record authentic per-SQP q/v/u snapshots only for these requested inspection
+runs, in binary arrays with shared metadata stored once. Continue retaining
+final plans and available lightweight scalar diagnostics for ordinary episode
+solves. A thousand float32 trajectory snapshots costs about 2.54 MiB at N32 or
+10.23 MiB at N128, before metadata; retaining them for every solve multiplies
+that cost by the episode's solve count. Full linear-algebra workspace capture
+is outside this initial feature.
 
 ## Current diagnostic capability boundary
 
-At GATO 37a6768d575c4a09e2ec90e51a7c4029568e3fec, the public API exposes the
+At the integrated GATO f7be8b75dae562400f84816883e7bb848b9874fa, the public API exposes the
 final predicted trajectory, initial/final merit, and some per-SQP merit,
 line-search and PCG statistics when enabled. The visualizer retains each
 published solve's final q/v/u, initial state, exact reference, effective
@@ -104,8 +113,8 @@ telemetry allocation, so changing a Python parameter does not extend an
 existing solver instance. Repeating solve with a saved trajectory is a new
 warm-seeded invocation with different initialization/finalization semantics.
 
-Full iteration scrubbing and exact continuation therefore require separately
-implemented recording/session support. UI availability and plot requirements
+Full trajectory iteration scrubbing requires a native diagnostic recorder and
+inspection-session support, now being implemented separately. UI availability and plot requirements
 must describe recorded capabilities accurately, including imported data with
 only a final result. This document authorizes no solver algorithm change or
 silent substitution for missing diagnostic data.
@@ -123,6 +132,6 @@ The authoring, directory and verification design is in [plotting.md](plotting.md
   the selected iteration's prediction change their data when it changes.
 - Episode-time plots can share the episode timeline. An SQP-index plot cannot
   be placed on that timeline as though its index were elapsed seconds.
-- Plot computations are read-only; Continue SQP is a Solve-inspector action,
+- Plot computations are read-only; Run again is a Solve-inspector action,
   not an effect of evaluating a plot.
 - Standard and custom plots use the same contract and availability rules.
