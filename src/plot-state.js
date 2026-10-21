@@ -1,0 +1,46 @@
+/** Inspection state is presentation only; it never mutates execution settings. */
+export function createPlotState(saved = {}, persist = () => {}) {
+  let sequence = 0;
+  const instances = (saved.instances || []).filter(item => item.id && item.plot_id && ['episode', 'solve'].includes(item.context)).map(item => ({ ...item, parameters: { ...item.parameters } }));
+  let rangeMode = ['entire', 'through_cursor', 'visible'].includes(saved.rangeMode) ? saved.rangeMode : 'entire';
+  let sourceKey, pinned = null, selected = null, iteration = null;
+  const save = () => persist({ instances, rangeMode });
+  const find = id => instances.find(item => item.id === id);
+  return {
+    instances,
+    add(definition, context) {
+      const item = { id: `plot-${Date.now().toString(36)}-${++sequence}`, plot_id: definition.id, context, parameters: Object.fromEntries(Object.entries(definition.controls || {}).map(([key, value]) => [key, value.default])), timeline: false };
+      instances.push(item); save(); return item;
+    },
+    duplicate(id) { const original = find(id); if (!original) return; const item = { ...original, id: `plot-${Date.now().toString(36)}-${++sequence}`, parameters: structuredClone(original.parameters), timeline: false }; instances.splice(instances.indexOf(original) + 1, 0, item); save(); return item; },
+    remove(id) { const index = instances.findIndex(item => item.id === id); if (index >= 0) instances.splice(index, 1); save(); },
+    configure(id, parameters) { const item = find(id); if (item) item.parameters = structuredClone(parameters); save(); },
+    reorder(id, before) { const item = find(id), target = find(before); if (!item || item === target) return; instances.splice(instances.indexOf(item), 1); instances.splice(target ? instances.indexOf(target) : instances.length, 0, item); save(); },
+    place(id, value, eligible = true) { const item = find(id); if (item && item.context === 'episode' && eligible) item.timeline = value; save(); },
+    setSource(key) { if (key !== sourceKey) { sourceKey = key; pinned = selected = null; iteration = null; } },
+    follow(solve) { if (!pinned) { if (selected?.id !== solve?.id) iteration = solve?.selected_iteration ?? solve?.iterations?.at(-1)?.index ?? null; selected = solve || null; } },
+    pin(value = true) { pinned = value && selected ? { ...selected } : null; },
+    selectIteration(index) { if (selected?.iterations?.some(item => item.index === index)) iteration = index; },
+    set rangeMode(value) { if (['entire', 'through_cursor', 'visible'].includes(value)) { rangeMode = value; save(); } },
+    get rangeMode() { return rangeMode; }, get selected() { return pinned || selected; }, get pinned() { return Boolean(pinned); }, get iteration() { return iteration; },
+    range(view) { return { mode: rangeMode, cursor_s: view.cursor, ...(rangeMode === 'visible' ? { start_s: view.window[0], end_s: view.window[1] } : {}) }; },
+  };
+}
+
+export function timelineEligible(definition, spec) {
+  return (definition?.scope || definition?.context) === 'episode' && (spec ? ['lines', 'bars', 'spans'].includes(spec.kind) && spec.x?.identity === 'episode_time' : definition.timeline_eligible === true);
+}
+
+/** Backend jobs are CPU only. Stale responses never replace newer inspection. */
+export async function awaitPlotJob(request, path, payload, { alive = () => true, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  let job = await request(path, payload);
+  while (['pending', 'running'].includes(job.state)) {
+    if (!alive()) return null;
+    await wait(80);
+    if (!alive()) return null;
+    job = await request(`/api/plots/jobs/${encodeURIComponent(job.id)}`);
+  }
+  if (!alive() || job.state === 'superseded') return null;
+  if (job.state === 'error') throw new Error(typeof job.error === 'string' ? job.error : JSON.stringify(job.error));
+  return job.result ?? job;
+}
