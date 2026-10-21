@@ -29,27 +29,40 @@ export function intervalDescription(interval) {
 
 // One simulated-time clock for recorded and growing histories. Catching up to
 // new data never speeds up playback; a stalled tip holds until data arrives.
-export function createHistoryClock() {
-  let time = null, playing = false, following = false, previousMs = null;
+export function createHistoryClock({ bufferMs = 0 } = {}) {
+  let time = null, playing = false, following = false, buffering = false, previousMs = null;
+  let bufferSeconds = bufferMs / 1000;
   return {
-    play(nowMs, { follow = false } = {}) { playing = true; following = follow; previousMs = nowMs; },
-    pause() { playing = false; following = false; previousMs = null; },
-    seek(value) { time = value; following = false; previousMs = null; },
+    play(nowMs, { follow = false, growing = false } = {}) { playing = true; following = follow; buffering = growing && bufferSeconds > 0; previousMs = nowMs; },
+    pause() { playing = false; following = false; buffering = false; previousMs = null; },
+    seek(value) { time = value; following = false; buffering = false; previousMs = null; },
+    setBuffer(ms) {
+      if (ms / 1000 === bufferSeconds) return;
+      bufferSeconds = ms / 1000; buffering = playing && bufferSeconds > 0; previousMs = null;
+    },
     follow() { following = playing; },
     // Following changes the visible timeline end, never the playback speed or
-    // recorded data. Arriving batches are still interpolated at 1×.
+    // recorded data. Arriving batches are still played at 1×.
     presentationBounds([start, end]) { return [start, following && time != null ? Math.max(start, Math.min(end, time)) : end]; },
-    tick(nowMs, [start, end], { followAtEnd = false } = {}) {
+    tick(nowMs, [start, end], { followAtEnd = false, growing = false } = {}) {
       if (time == null) time = start;
       time = Math.max(start, Math.min(end, time));
-      const delta = playing && previousMs != null ? Math.max(0, (nowMs - previousMs) / 1000) : 0;
+      let delta = playing && previousMs != null ? Math.max(0, (nowMs - previousMs) / 1000) : 0;
       if (playing) previousMs = nowMs;
+      if (playing && buffering) {
+        // A paused/completed producer drains its available tail even when it is
+        // shorter than the requested lead. Never repay time spent buffering.
+        if (!growing || end - time >= bufferSeconds - 1e-9 || bufferSeconds === 0) buffering = false;
+        delta = 0;
+      }
       time = Math.min(end, time + delta);
+      if (playing && growing && bufferSeconds > 0 && time >= end - 1e-8) buffering = true;
       if (playing && followAtEnd && time >= end - 1e-8) following = true;
-      return { time, atEnd: time >= end - 1e-8, limited: playing && delta > 0 && time >= end - 1e-8 };
+      return { time, atEnd: time >= end - 1e-8, limited: playing && delta > 0 && time >= end - 1e-8, buffering };
     },
     get time() { return time; },
     get playing() { return playing; },
     get following() { return following; },
+    get buffering() { return buffering; },
   };
 }

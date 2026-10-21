@@ -1,11 +1,14 @@
 import { createSettingResets, canonicalOrientation, settingValuesEqual } from './setting-resets.js';
 import { targetWorldPosition, targetWorldOffset, normalizeQuaternion } from './target-gizmo.js';
 import { taskReference, taskReferencePoint } from './task-reference.js';
+import { DEFAULT_PRESENTATION, validatePresentation } from './presentation-settings.js';
 
 // The API uses native joint values and full robot-root coordinates. No sign or
 // frame conversions belong in the browser.
 import { createLiveHistory } from './live-history.js';
 import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
+const HISTORY_PAGE_SIZE = 1024;
+
 export function cloneSettings(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -111,7 +114,7 @@ export function validPoints(points) {
     Array.isArray(point) && point.length === 3 && point.every(Number.isFinite));
 }
 
-export function setupLive({ onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {} }) {
+export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {} }) {
   const $ = id => document.getElementById(id);
   let schema, settings, defaultSettings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
@@ -127,11 +130,15 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   const latestServerEvents = new Map();
   const taskDrafts = new Map();
   const resetIndicators = createSettingResets();
-  const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock(), inputs = [];
+  let presentation = validatePresentation(presentationSettings);
+  const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock({ bufferMs: presentation.buffer_ms }), inputs = [];
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
   const connected = () => liveReady && !profileSwitching && !profileUnavailable && !profileNError && source?.readyState === EventSource.OPEN && !needsInitialPreview;
   const continueAtEnd = () => settings.execution.calculation === 'on_play' || settings.execution.continue_at_end;
+  // Completion metadata can precede later history pages. Do not drain a short
+  // final tail until the local download is caught up.
+  const growingHistory = () => Boolean(job.job_active || extensionPending || fetching || fetchAgain);
   function pausePlayback() { ++playbackIntent; clock.pause(); extensionPending = false; renderDirty = true; }
   const acceptTaskAnchors = item => {
     if (validPoints([item?.task_anchors?.reach])) defaultTargetWorld = [...item.task_anchors.reach];
@@ -419,8 +426,9 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     if (!force && next === generation) return true;
     historyEpoch++;
     generation = next; cursor = 0; historyComplete = false; history.clear(); historyRevision++; paintedRevision = -1;
-    const following = clock.following;
-    state = undefined; clock.seek(null); if (following) clock.follow();
+    const following = clock.following, wasPlaying = clock.playing;
+    state = undefined; clock.seek(null);
+    if (wasPlaying) clock.play(performance.now(), { follow: following, growing: true });
     extensionPending = false; renderedPlan = undefined; renderDirty = true;
     fetchHistory();
     return true;
@@ -433,7 +441,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       let more = true;
       while (more && mode === 'live') {
         const requestedGeneration = generation, requestedCursor = cursor, requestedEpoch = historyEpoch;
-        const response = await fetch(`/api/live/history?generation=${encodeURIComponent(generation)}&after=${cursor}&limit=256`);
+        const response = await fetch(`/api/live/history?generation=${encodeURIComponent(generation)}&after=${cursor}&limit=${HISTORY_PAGE_SIZE}`);
         const batch = await response.json();
         if (requestedGeneration !== generation || requestedEpoch !== historyEpoch) continue;
         if (response.status === 409) { if (batch.generation != null) useGeneration(batch.generation); break; }
@@ -449,7 +457,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
           if (record.type === 'plan') acceptPlan(record, false);
         }
         const nextCursor = batch.next_cursor;
-        more = Number.isInteger(nextCursor) && nextCursor > cursor && records.length >= 256;
+        more = Number.isInteger(nextCursor) && nextCursor > cursor && records.length >= HISTORY_PAGE_SIZE;
         if (Number.isInteger(nextCursor)) cursor = nextCursor;
         historyComplete = Boolean(batch.complete);
         if (extensionPending && historyComplete && history.bounds[1] > extensionStartTime + 1e-8) extensionPending = false;
@@ -560,12 +568,12 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     timeline.min = start; timeline.max = end; timeline.value = Math.max(start, Math.min(end, time)); timeline.disabled = history.length < 2;
     timeline.style.setProperty('--progress', `${end > start ? 100 * (time - start) / (end - start) : 0}%`);
     $('live-history-latest').disabled = !history.length || Math.abs(time - recordedEnd) < 1e-8;
-    $('live-history-position').textContent = history.length ? clock.following ? `${number(time, 2)} s · Live` : `${number(time, 2)} / ${number(end, 2)} s` : 'No state history yet';
+    $('live-history-position').textContent = history.length ? clock.buffering ? `${number(time, 2)} s · Buffering` : clock.following ? `${number(time, 2)} s · Live` : `${number(time, 2)} / ${number(end, 2)} s` : 'No state history yet';
     const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time) || history.intervals.at(-1);
     if (!timeline.matches?.(':hover')) timeline.title = interval ? intervalDescription(interval) : 'Recorded simulation time';
     timeline.setAttribute('aria-valuetext', `${number(time, 3)} seconds${interval ? ` · ${intervalDescription(interval)}` : ''}`);
     $('live-history-window').textContent = `Recorded ${number(start, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
-    $('live-history-note').textContent = clock.following ? `Following Live at 1× · recorded through ${number(recordedEnd, 2)} s. Calculation may limit progress. Pause or scrub to inspect the full recording.` : clock.playing ? 'History playback at 1×. At the recorded end, calculation may limit progress.' : 'Scrub or Play recorded history. Go latest only moves the view; Continue controls new motion at the end.';
+    $('live-history-note').textContent = clock.buffering ? `Buffering ${number(Math.max(0, recordedEnd - time) * 1000)} / ${number(presentation.buffer_ms)} ms of recorded simulation time. Pause or scrub to inspect history.` : clock.following ? `Following Live at 1× · recorded through ${number(recordedEnd, 2)} s. Calculation may limit progress. Pause or scrub to inspect the full recording.` : clock.playing ? 'History playback at 1×. At the recorded end, calculation may limit progress.' : 'Scrub or Play recorded history. Go latest only moves the view; Continue controls new motion at the end.';
     paintIntervals();
     // Paint only on recorded changes, then rescale its full-history coordinates
     // to the presented end without rebuilding interval DOM on animation frames.
@@ -575,7 +583,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     intervals.style.clipPath = `inset(0 ${100 * (1 - visibleFraction)}% 0 0)`;
   }
   function renderView() {
-    const selected = history.interpolateAt(clock.time, { trace: false });
+    const selected = presentation.interpolate ? history.interpolateAt(clock.time, { trace: false }) : history.at(clock.time, { trace: false });
     if (traceRevision !== historyRevision) { displayPath = history.displayPath(); traceRevision = historyRevision; }
     const shownState = selected?.state || state, shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || plan;
     const historical = clock.time != null && clock.time < history.bounds[1] - 1e-7;
@@ -602,7 +610,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     $('live-restarted').hidden = !stats.controller_restarted;
     $('live-sim-time').textContent = number(shownState?.sim_time_s, 2);
     $('live-rtf').textContent = Number.isFinite(job.calculation_rtf) ? `${number(job.calculation_rtf, 2)}×` : '—';
-    $('live-playback-rate').textContent = clock.playing ? (clock.time >= history.bounds[1] - 1e-7 && (job.job_active || extensionPending) ? 'Waiting' : '1×') : 'Paused';
+    $('live-playback-rate').textContent = clock.buffering ? 'Buffering' : clock.playing ? (clock.time >= history.bounds[1] - 1e-7 && (job.job_active || extensionPending) ? 'Waiting' : '1×') : 'Paused';
     $('live-distance').textContent = Number.isFinite(shownState?.distance_m) ? `${number(shownState.distance_m * 1000, 1)} mm` : '—';
     $('live-arrival').textContent = shownState?.arrived ? 'Arrival flag reached · holding target' : 'Following task reference';
     const execution = settings?.execution || DEFAULT_EXECUTION;
@@ -645,7 +653,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   function frame(timestamp) {
     if (mode !== 'live') return;
     if (clock.playing) {
-      const tick = clock.tick(timestamp, history.bounds, { followAtEnd: continueAtEnd() });
+      const tick = clock.tick(timestamp, history.bounds, { followAtEnd: continueAtEnd(), growing: growingHistory() });
       if (tick.atEnd && !job.job_active && !fetching) {
         if (continueAtEnd()) extendHistory();
         else if (!extensionPending) { pausePlayback(); controlsEnabled(); }
@@ -723,7 +731,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     const follow = continueAtEnd() && (noMotion || clock.time >= history.bounds[1] - 1e-7);
     // Publish local intent immediately. Arriving history may grow the recorded
     // end while Play is acknowledged; it must not change the chosen follow mode.
-    clock.play(performance.now(), { follow }); controlsEnabled(); renderView();
+    clock.play(performance.now(), { follow, growing: shouldExtend || growingHistory() }); controlsEnabled(); renderView();
     if (shouldExtend && !await extendHistory(intent) && intent === playbackIntent) { pausePlayback(); controlsEnabled(); renderView(); }
   });
   $('live-reset').addEventListener('click', async () => {
@@ -828,10 +836,15 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       });
       change(); return this.targetInteraction;
     },
+    setPresentationSettings(value) {
+      presentation = validatePresentation(value); clock.setBuffer(presentation.buffer_ms);
+      renderDirty = true;
+    },
+    get presentationSettings() { return { ...presentation }; },
     get reference() { return desiredReference; },
     get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
     get metricHistory() { return history.metricSnapshot; },
-    get history() { return { length: history.length, bounds: history.bounds, presentationBounds: clock.presentationBounds(history.bounds), following: clock.following, selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
+    get history() { return { length: history.length, bounds: history.bounds, presentationBounds: clock.presentationBounds(history.bounds), following: clock.following, buffering: clock.buffering, selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || plan?.task_path_xyz?.length); },
     get precomputedPath() { return !dirty && !pending && historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
     get settings() { return settings ? cloneSettings(settings) : null; }, get status() { return status; },

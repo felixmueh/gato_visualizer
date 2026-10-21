@@ -4,6 +4,7 @@ import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
 import { livePredictionForView } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
+import { setupPresentationSettings } from "./presentation-settings.js";
 import { setupSolverProfiles } from "./solver-profiles.js";
 import "./solver-profiles.css";
 import "./floating-dialog.css";
@@ -78,6 +79,7 @@ let solverProfiles;
 const sourceSettings = setupSourceSettings({ button: $('source-settings-open'), onOpen: () => solverProfiles?.refresh().catch(() => {}), onPlottersReload: () => plotInspection.refresh(), beforeApply: () => {
   try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
 } });
+const presentationSettings = setupPresentationSettings({ container: sourceSettings.dialog.body, onChange: settings => live?.setPresentationSettings(settings) });
 solverProfiles = setupSolverProfiles({ liveContainer: $('live-panel'), editorContainer: sourceSettings.dialog.body,
   beforeActivate: () => live?.beginSolverProfileSwitch(),
   onSettled: async item => { await live?.finishSolverProfileSwitch(item); plotInspection.refresh(); },
@@ -530,7 +532,8 @@ async function start() {
     robotBounds = new THREE.Box3().setFromObject(robot);
     setCamera("home");
     ready = true;
-    live = setupLive({ onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item) });
+    await presentationSettings.ready;
+    live = setupLive({ presentationSettings: presentationSettings.settings, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item) });
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
       moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: isStartingScene(data) ? 'Starting pose' : 'Default recording' });

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { setupLive } from './live.js';
+import { setupLive as createLive } from './live.js';
+// Existing controller tests exercise the unbuffered interpolated mode; buffered
+// presentation is covered explicitly below without changing their clocks.
+const setupLive = options => createLive({ presentationSettings: { report_hz: 20, buffer_ms: 0, interpolate: true }, ...options });
 import { DEFAULT_EXECUTION } from './live-execution.js';
 
 // Exercise the real settings/mode/SSE controller without a GPU or renderer.
@@ -906,7 +909,7 @@ test('late Play responses cannot override Pause, scrub, settings edits, or mode 
     Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
     h.setHistoryHandler(url => ({ ok: true, json: async () => ({ generation: Number(new URL(url, 'http://local').searchParams.get('generation')), records: [], next_cursor: 0, complete: true }) }));
     try {
-      const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+      const live = createLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
       await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
       source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
       for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
@@ -926,6 +929,7 @@ test('late Play responses cannot override Pause, scrub, settings edits, or mode 
       const selected = action === 'scrub' ? .1 : .2;
       assert.equal(live.playing, false, action);
       assert.equal(live.history.following, false, action);
+      assert.equal(live.history.buffering, false, action);
       if (action === 'pause') assert.equal(h.$('live-play').textContent, 'Play'); // Before acknowledgement.
       acknowledgePlay({ ok: true, json: async () => ({ accepted: true, generation: 999 }) }); await flush();
       assert.equal(live.playing, false, action);
@@ -963,4 +967,72 @@ test('first default Live Play follows even before any motion or command acknowle
     h.$('replay-mode').emit('click'); await flush();
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
+});
+
+test('default Live playback waits for received lead, holds native samples, and presentation edits preserve the episode', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = createLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    const sample = time => source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
+      q: Array(7).fill(time), qd: Array(7).fill(1), torque_nm: [time], ee_xyz: [time, 0, 1] });
+    sample(0); h.$('live-play').emit('click'); await flush(); live.frame(0);
+    assert.equal(live.playing, true); assert.equal(live.history.buffering, true);
+    assert.equal(h.$('live-play').textContent, 'Pause'); assert.equal(live.targetInteraction.available, false);
+    sample(.1); live.frame(100); assert.equal(live.history.selectedTime, 0);
+    assert.match(h.$('live-history-position').textContent, /Buffering/);
+    sample(.2); live.frame(200); assert.equal(live.history.selectedTime, 0);
+    live.frame(250); assert.equal(live.history.selectedTime, .05);
+    assert.equal(live.displayedState.q[0], 0); // Recorded sample, no invented joint pose.
+    assert.equal(h.$('live-history').value, String(h.$('live-history').max));
+    const commands = h.commands.length, before = live.history, settings = live.settings;
+    live.setPresentationSettings({ report_hz: 10, buffer_ms: 200, interpolate: true }); live.frame(250);
+    assert.equal(live.displayedState.q[0], .05);
+    assert.deepEqual(live.displayedState.torque_nm, [0]);
+    assert.equal(live.history.selectedTime, before.selectedTime); assert.equal(live.history.generation, before.generation);
+    assert.deepEqual(live.history.bounds, before.bounds); assert.deepEqual(live.settings, settings); assert.equal(h.commands.length, commands);
+    live.setPresentationSettings({ report_hz: 10, buffer_ms: 500, interpolate: false }); live.frame(260);
+    assert.equal(live.history.buffering, true); assert.equal(live.history.selectedTime, .05);
+    h.$('live-play').emit('click'); // Pause immediately cancels a buffer wait.
+    assert.equal(live.history.buffering, false); assert.equal(live.playing, false); assert.equal(h.$('live-play').textContent, 'Play');
+    sample(.8); live.frame(5000); assert.equal(live.history.selectedTime, .05);
+    await flush();
+    h.$('live-history').value = '.1'; h.$('live-history').emit('input');
+    assert.equal(live.history.selectedTime, .1); assert.equal(live.displayedState.q[0], .1);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+test('complete metadata cannot release a short buffer before remaining history pages arrive', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const records = Array.from({ length: 1100 }, (_, index) => ({ type: 'state', generation: 1, settings_version: 1,
+    sim_time_s: index / 1000, q: Array(7).fill(index / 1000), qd: Array(7).fill(1), ee_xyz: [index / 1000, 0, 1] }));
+  let finishPage;
+  h.setHistoryHandler(url => {
+    const params = new URL(url, 'http://local').searchParams;
+    assert.equal(params.get('limit'), '1024');
+    const after = Number(params.get('after'));
+    if (after === 1024) return new Promise(resolve => { finishPage = () => resolve({ ok: true, json: async () => ({ generation: 1, records: records.slice(1024), next_cursor: 1100, complete: true }) }); });
+    return { ok: true, json: async () => ({ generation: 1, records: records.slice(after, after + 1024), next_cursor: Math.min(1100, after + 1024), complete: true }) };
+  });
+  try {
+    h.schema.defaults.execution.calculation = 'manual';
+    const live = createLive({ presentationSettings: { report_hz: 10, buffer_ms: 2000, interpolate: false }, onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: 1100, complete: true }); await flush();
+    assert.equal(live.history.complete, true); assert.equal(live.history.cursor, 1024);
+    h.$('live-play').emit('click'); live.frame(0); live.frame(1000);
+    assert.equal(live.history.buffering, true); assert.equal(live.history.selectedTime, 0);
+    finishPage(); await flush(); live.frame(2000);
+    assert.equal(live.history.cursor, 1100); assert.equal(live.history.buffering, false); assert.equal(live.history.selectedTime, 0);
+    live.frame(2100); assert.equal(live.history.selectedTime, .1);
+    live.frame(3500); assert.equal(live.history.selectedTime, 1.099); assert.equal(live.playing, false);
+    const commands = h.commands.length;
+    h.$('live-play').emit('click'); live.frame(0); live.frame(10);
+    assert.equal(live.history.buffering, false); assert.equal(live.history.selectedTime, .01);
+    assert.equal(h.commands.length, commands); // Completed manual recording never starts calculation.
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });

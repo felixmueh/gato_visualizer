@@ -66,3 +66,62 @@ test('historical playback follows only when it reaches the end and continuation 
     assert.deepEqual(clock.presentationBounds([0, .5]), [0, .5]);
   }
 });
+
+test('200 ms startup buffer plays 1000 Hz samples delivered in 10 Hz batches at 1×', () => {
+  const clock = createHistoryClock({ bufferMs: 200 });
+  const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity });
+  let lastSample = -1;
+  function batch(endMs) {
+    for (let ms = lastSample + 1; ms <= endMs; ms++) history.addRecord({ type: 'state', sim_time_s: ms / 1000, q: [ms], qd: [1], ee_xyz: [ms, 0, 0] });
+    lastSample = endMs;
+  }
+  batch(0); clock.play(0, { growing: true, follow: true });
+  batch(100); assert.equal(clock.tick(100, history.bounds, { growing: true }).time, 0);
+  assert.equal(clock.buffering, true);
+  batch(200); assert.equal(clock.tick(200, history.bounds, { growing: true }).time, 0);
+  assert.equal(clock.buffering, false);
+  for (let wallMs = 210; wallMs <= 1000; wallMs += 10) {
+    if (wallMs % 100 === 0) batch(wallMs);
+    clock.tick(wallMs, history.bounds, { growing: true });
+    assert(Math.abs(clock.time - (wallMs - 200) / 1000) < 1e-12);
+    assert.equal(clock.buffering, false);
+    assert.deepEqual(clock.presentationBounds(history.bounds), [0, clock.time]);
+    const selected = history.at(clock.time).state;
+    assert(selected.sim_time_s <= clock.time);
+    assert(clock.time - selected.sim_time_s < .001 + 1e-12);
+    assert.equal(selected.q[0], Math.round(selected.sim_time_s * 1000));
+  }
+});
+
+test('starvation re-buffers without wall-time debt and completed short tails drain', () => {
+  const clock = createHistoryClock({ bufferMs: 200 });
+  clock.seek(0); clock.play(0, { growing: true });
+  clock.tick(1000, [0, .3], { growing: true }); // release, no startup debt
+  assert.equal(clock.time, 0);
+  clock.tick(1300, [0, .3], { growing: true });
+  assert.equal(clock.buffering, true);
+  clock.tick(5000, [0, .4], { growing: true });
+  assert.equal(clock.time, .3);
+  clock.tick(9000, [0, .5], { growing: true });
+  assert.equal(clock.time, .3); assert.equal(clock.buffering, false);
+  assert(Math.abs(clock.tick(9010, [0, .5], { growing: true }).time - .31) < 1e-12);
+  clock.tick(9500, [0, .5], { growing: true });
+  assert.equal(clock.buffering, true);
+  clock.tick(9600, [0, .55], { growing: false });
+  assert.equal(clock.buffering, false); assert.equal(clock.time, .5);
+  assert.equal(clock.tick(9700, [0, .55], { growing: false }).time, .55);
+});
+
+test('pause and seek cancel buffer waits; finite recordings and zero buffer play immediately', () => {
+  const clock = createHistoryClock({ bufferMs: 200 });
+  clock.seek(0); clock.play(0, { growing: true }); clock.tick(100, [0, .1], { growing: true });
+  clock.pause(); assert.equal(clock.buffering, false);
+  clock.tick(10000, [0, 1], { growing: true }); assert.equal(clock.time, 0);
+  clock.seek(.8); clock.play(10000, { growing: true });
+  clock.tick(10010, [0, .9], { growing: true }); assert.equal(clock.time, .8);
+  clock.seek(.2); assert.equal(clock.buffering, false);
+  clock.pause(); clock.play(20000); // fully downloaded precomputation
+  assert(Math.abs(clock.tick(20010, [0, .9]).time - .21) < 1e-12);
+  clock.setBuffer(0); clock.play(30000, { growing: true });
+  assert(Math.abs(clock.tick(30010, [0, .9], { growing: true }).time - .22) < 1e-12);
+});
