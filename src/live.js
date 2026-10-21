@@ -506,7 +506,11 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     const shownState = selected?.state || state, shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || plan;
     const historical = clock.time != null && clock.time < history.bounds[1] - 1e-7;
     const editing = dirty || pending;
-    const draft = (!historical || editing) && settings?.task;
+    // A growing recording can alternate between its tip and an interpolated
+    // historical sample every time another batch arrives. Its task is fixed
+    // for this settings generation; keep the independent reference geometry
+    // stable throughout playback instead of rebuilding it at each transition.
+    const draft = (!historical || editing || clock.playing) && settings?.task;
     const base = draft?.kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
     const nextReferenceKey = draft ? JSON.stringify([draft, base]) : shownPlan;
     if (referenceKey !== nextReferenceKey) {
@@ -654,7 +658,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
       const kind = $('live-task').value, base = kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
-      const available = mode === 'live' && (clock.time == null || clock.time >= history.bounds[1] - 1e-7) && connected() && Boolean(base) && settings.task.kind === kind && Boolean(readSettings()) && status !== 'gpu_busy' && status !== 'error';
+      const available = mode === 'live' && !clock.playing && (clock.time == null || clock.time >= history.bounds[1] - 1e-7) && connected() && Boolean(base) && settings.task.kind === kind && Boolean(readSettings()) && status !== 'gpu_busy' && status !== 'error';
       return { available, kind, position_world: base ? targetWorldPosition(base, offset) : null,
         quaternion_xyzw: settings?.task.orientation_xyzw || [0, 0, 0, 1],
         size_m: kind === 'figure8' ? [settings?.task.width_m, settings?.task.height_m] : null,

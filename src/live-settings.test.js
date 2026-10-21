@@ -430,6 +430,52 @@ test('On Play resumes at the existing history tip and keeps waiting for continuo
   }
 });
 
+test('slow growing playback keeps task handles disabled and reference geometry stable until explicitly paused', async () => {
+  const h = harness();
+  h.schema.task_anchors = { reach: [.5, -.2, 1], figure8: [.4, -.2, 1] };
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const references = [];
+    const live = setupLive({ onMode() {}, onPlan() {}, onReference: value => references.push(value), onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    const appendState = time => source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
+      q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+    appendState(0); appendState(.2); h.$('live-history-latest').emit('click');
+    assert.equal(live.targetInteraction.available, true);
+    h.$('live-play').emit('click'); await flush();
+    source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true, calculation_rtf: .5 });
+    const reference = live.reference, referenceCount = references.length, now = performance.now();
+    const commands = h.commands.length;
+    // Compute stalls at the tip, then supplies another short stretch. No user
+    // Pause occurs, even though playback repeatedly enters/leaves the tip.
+    for (let i = 0; i < 3; i++) {
+      live.frame(now + 1000 + i * 1000);
+      assert.equal(live.playing, true);
+      assert.equal(live.targetInteraction.available, false);
+      assert.equal(live.setTargetWorld([.8, 0, 1]), null);
+      appendState(.3 + i * .1);
+      live.frame(now + 1010 + i * 1000);
+      assert(live.history.selectedTime < live.history.bounds[1]);
+      assert.equal(live.targetInteraction.available, false);
+      assert.equal(live.reference, reference);
+    }
+    assert.equal(references.length, referenceCount); // No line/marker allocation on each tip transition.
+    assert.equal(h.commands.length, commands); // No automatic pause, settings update or new job.
+    live.frame(now + 5000);
+    h.$('live-play').emit('click'); await flush();
+    assert.equal(live.playing, false); assert.equal(h.commands.at(-1).type, 'pause');
+    assert.equal(live.targetInteraction.available, true);
+    h.$('live-history').value = '.1'; h.$('live-history').emit('input');
+    assert.equal(live.targetInteraction.available, false);
+    h.$('live-history-latest').emit('click'); assert.equal(live.targetInteraction.available, true);
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
 test('first Live connection requests atomic comfortable reset and rejects prior server episode snapshots', async () => {
   const h = harness(); h.setVersion(7);
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
