@@ -348,7 +348,17 @@ class MPCAdapter:
         self.reference[:, :3] = np.asarray([
             self.kinematics.world_from_torso.actInv(point) for point in world])
 
-    def solve_snapshot(self, origin, settings_version, reference=None):
+    def plan_context(self):
+        """Configuration-static plan fields; sent once by the isolated solver."""
+        return dict(problem_configuration=getattr(self, "problem_configuration", {}),
+                    model_identity=getattr(self, "model_identity", {}), task=self.task,
+                    end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
+                    N=self.N, dt_s=self.dt, task_kind=self.task["kind"],
+                    task_path_xyz=getattr(self, "task_path_xyz", None),
+                    joint_limits=self.joint_limits,
+                    constraint_bounds_native=getattr(self, "constraint_bounds_native", None))
+
+    def solve_snapshot(self, origin, settings_version, reference=None, *, include_context=True):
         """Solve numerically and copy buffers; trajectory FK/encoding runs elsewhere."""
         if reference is not None:
             self.reference = np.asarray(reference, dtype=np.float32).reshape(self.N, 6).copy()
@@ -365,22 +375,17 @@ class MPCAdapter:
         self.sequence += 1
         event = dict(type="plan", seq=self.sequence, origin=origin, settings_version=settings_version,
                      initial_state=dict(q=self.x[:7].tolist(), qd=self.x[7:].tolist(), time_s=self.t),
-                     problem_configuration=deepcopy(getattr(self, "problem_configuration", {})),
-                     model_identity=deepcopy(getattr(self, "model_identity", {})),
-                     task=deepcopy(self.task),
-                     end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
-                     sim_time_s=self.t, N=self.N, dt_s=self.dt, task_kind=self.task["kind"],
+                     sim_time_s=self.t, N=self.N,
                      target_xyz=self.target_world_at(self.t).tolist(),
-                     task_path_xyz=getattr(self, "task_path_xyz", None),
                      _xu=self.last_xu, _signs=self.signs, _reference=self.reference,
-                     joint_limits=self.joint_limits,
-                     constraint_bounds_native=deepcopy(getattr(self, "constraint_bounds_native", None)),
                      stats=dict(sqp_iters=int(np.sum(stats.sqp_iters)), pcg_iters=int(np.sum(stats.pcg_iters)),
                                 admm_iters=int(np.sum(stats.admm_iters)),
                                 admm_linsys_iters=int(np.sum(stats.admm_linsys_iters)),
                                 solve_time_ms=float(step.solve.solve_time_us)/1000,
                                 row_violation=np.asarray(step.row_viol).tolist(),
                                 controller_restarted=self.restarted))
+        if include_context:
+            event.update(self.plan_context())
         # Copy already-returned public telemetry only. No native solver handle,
         # invented SQP prediction or optimizer checkpoint enters history.
         def retained(value):

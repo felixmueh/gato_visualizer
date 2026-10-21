@@ -49,7 +49,7 @@ def serve(channel, root):
                     constraint_bounds_native=adapter.constraint_bounds_native,
                     configuration=adapter.problem_configuration, model_identity=adapter.model_identity,
                     prediction_joint_dynamics=adapter.problem_configuration.get("prediction_joint_dynamics"),
-                    gpu_joint_coordinate_signs=adapter.signs.tolist())
+                    gpu_joint_coordinate_signs=adapter.signs.tolist(), plan_context=adapter.plan_context())
             elif operation == "reset":
                 adapter.x = np.asarray(payload["state"], dtype=float)
                 adapter.controller.reset(adapter.x * adapter.state_signs)
@@ -59,7 +59,7 @@ def serve(channel, root):
                 adapter.x = np.asarray(payload["state"], dtype=float)
                 adapter.t = float(payload["time_s"])
                 event = adapter.solve_snapshot(payload["origin"], payload["settings_version"],
-                                              reference=payload["reference"])
+                                              reference=payload["reference"], include_context=False)
                 result = dict(plan=native_plan(event), torque_nm=adapter.u.tolist())
             elif operation == "inspect":
                 if adapter is None or adapter.solver is None:

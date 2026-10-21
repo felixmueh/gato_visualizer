@@ -59,7 +59,18 @@ def wire_value(value):
 
 
 def send_message(channel, message):
-    payload = json.dumps(wire_value(message), allow_nan=False, separators=(",", ":")).encode()
+    # Let the JSON encoder traverse ordinary containers and numeric buffers in
+    # C. Recursively normalizing every float in Python doubled this work for
+    # each solve (native_plan previously walked the same tree first).
+    def encode(value):
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, Mapping):
+            return dict(value)
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+    payload = json.dumps(message, default=encode, allow_nan=False, separators=(",", ":")).encode()
     if len(payload) > MAX_MESSAGE_BYTES:
         raise ValueError("Solver RPC message exceeds the transport limit")
     channel.sendall(struct.pack("!Q", len(payload)) + payload)
@@ -199,7 +210,7 @@ def validate_contract(simulator, predictor):
 
 def native_plan(event):
     """Convert all packed solver coordinates at the implementation boundary."""
-    event = wire_value(event)
+    event = dict(event)
     xu, signs = np.asarray(event["_xu"]), np.asarray(event["_signs"])
     count = event["N"] - 1
     xu = xu.reshape(-1).copy()

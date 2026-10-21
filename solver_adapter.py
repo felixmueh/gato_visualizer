@@ -2,10 +2,12 @@
 from copy import deepcopy
 import importlib
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 
 from live_mpc import MPCAdapter
+from live_presentation import snapshot
 from solver_process import SolverProcess, model_contract, validate_contract
 
 RESET_TIMEOUT_SECONDS = 30
@@ -34,6 +36,7 @@ class SimulatorAdapter(MPCAdapter):
         self.remote = None
         self.profile = None
         self.profile_identity = None
+        self._plan_context = None
         self.profile_schema = None
         # Every interface to the coordinator now uses native coordinates.
         self.signs, self.state_signs = np.ones(7), np.ones(14)
@@ -72,6 +75,7 @@ class SimulatorAdapter(MPCAdapter):
         if effective["N"] not in self.profile_schema["available_N"]:
             raise ValueError(f"Solver profile has no compatible prebuilt N={effective['N']} module")
         predictor = self.remote.request("configure", timeout=120, config_path=str(Path(config_path).resolve()), task=task)
+        context = predictor.pop("plan_context")
         self.problem_configuration = deepcopy(effective)
         self.configure_task(effective, task)
         self.joint_limits = predictor["joint_limits"]
@@ -80,6 +84,12 @@ class SimulatorAdapter(MPCAdapter):
             simulator_joint_dynamics=None, coordinate_contract=self.contract,
             physical_model_differs=any(predictor["model_identity"].get(key) != self.simulator_identity.get(key)
                 for key in ("full_urdf_sha256", "gpu_urdf_sha256")))
+        # Freeze once per configuration. The session/presenter detaches this
+        # shared context when producing public records; old plans keep their
+        # original context across settings/profile changes.
+        context.update(task_anchors=self.task_anchors, task_path_xyz=self.task_path_xyz,
+                       solver_profile=self.profile_identity, simulator_identity=self.simulator_identity)
+        self._plan_context = snapshot(context)
         self.controller.reset(self.x)
         self.restarted = True
 
@@ -94,11 +104,9 @@ class SimulatorAdapter(MPCAdapter):
         self.sequence += 1
         # Target/anchors are simulator-owned; the child's model never moves them.
         event.update(seq=self.sequence, _xu=self.last_xu, _signs=self.signs,
-            _reference=self.reference.copy(), task_anchors=self.task_anchors,
-            target_xyz=self.target_world_at(self.t).tolist(), task_path_xyz=self.task_path_xyz,
-            solver_profile=deepcopy(self.profile_identity), simulator_identity=self.simulator_identity)
+            _reference=self.reference, target_xyz=self.target_world_at(self.t).tolist())
         self.restarted = False
-        return event
+        return MappingProxyType(dict(self._plan_context, **snapshot(event)))
 
     def state_snapshot(self, rtf=0, settings_version=0):
         from live_presentation import mutable
@@ -114,3 +122,4 @@ class SimulatorAdapter(MPCAdapter):
         finally:
             self.remote = None
             self.profile = self.profile_identity = None
+            self._plan_context = None
