@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+import gzip
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -394,14 +395,42 @@ def replay_scene(replay, path, mpc_root, base_scene):
     return result
 
 
+def accepts_gzip(value):
+    """Honor explicit gzip exclusion before an Accept-Encoding wildcard."""
+    codings = {}
+    for item in value.lower().split(","):
+        name, *parameters = item.strip().split(";")
+        name = name.strip()
+        quality = 1.
+        for parameter in parameters:
+            key, _, raw = parameter.strip().partition("=")
+            if key == "q":
+                try:
+                    quality = float(raw)
+                except ValueError:
+                    quality = 0.
+        codings[name] = quality
+    return codings.get("gzip", codings.get("*", 0.)) > 0.
+
+
 def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist=None, live=None,
                 replays=None):
     dist = Path(dist or ROOT / "dist").resolve()
     scene_json = json.dumps(scene, allow_nan=False, separators=(",", ":")).encode()
 
     class Handler(BaseHTTPRequestHandler):
-        def send_payload(self, payload, content_type, status=200):
+        def send_payload(self, payload, content_type, status=200, *, compress=False):
+            # Browser fetch decompresses transparently. Compress history in its
+            # HTTP thread, outside numerical work and history-store locks.
+            compressed = (compress and len(payload) >= 1024
+                          and accepts_gzip(self.headers.get("Accept-Encoding", "")))
+            if compressed:
+                payload = gzip.compress(payload, compresslevel=1, mtime=0)
             self.send_response(status)
+            if compress:
+                self.send_header("Vary", "Accept-Encoding")
+            if compressed:
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
             self.send_header("Cache-Control", "no-cache")
@@ -539,8 +568,8 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 except (ValueError, TypeError) as exc:
                     status = 409 if isinstance(exc, HistoryGenerationError) else 400
                     payload = dict(error=str(exc), generation=live.generation)
-                self.send_payload(json.dumps(payload, allow_nan=False).encode(),
-                                  "application/json; charset=utf-8", status)
+                self.send_payload(json.dumps(payload, allow_nan=False, separators=(",", ":")).encode(),
+                                  "application/json; charset=utf-8", status, compress=True)
             elif path == "/api/live/events" and live is not None:
                 self.live_events()
             elif path == "/assets/robot.urdf":
