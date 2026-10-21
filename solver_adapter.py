@@ -108,9 +108,8 @@ class SimulatorAdapter(MPCAdapter):
         self.restarted = False
         return MappingProxyType(dict(self._plan_context, **snapshot(event)))
 
-    def state_snapshot(self, rtf=0, settings_version=0):
-        from live_presentation import mutable
-        event = mutable(super().state_snapshot(rtf, settings_version))
+    def _state_fields(self, rtf=0, settings_version=0):
+        event = super()._state_fields(rtf, settings_version)
         event.update(simulator_identity=self.simulator_identity,
                      solver_profile=dict(id=self.profile["id"], process_epoch=self.remote.epoch))
         return event

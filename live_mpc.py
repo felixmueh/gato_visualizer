@@ -6,6 +6,7 @@ modules. The synchronous fixed-loop adapter remains a conformance reference.
 from __future__ import annotations
 
 from copy import deepcopy
+from collections.abc import Mapping
 import fcntl
 import hashlib
 import importlib
@@ -430,15 +431,40 @@ class MPCAdapter:
             samples.append((self.t, self.x.copy(), self.u.copy()))
         return samples
 
-    def state_snapshot(self, rtf=0, settings_version=0):
-        return snapshot(dict(type="state", sim_time_s=self.t, _x=self.x,
+    def _state_fields(self, rtf=0, settings_version=0):
+        """Borrowed state fields, consumed immediately by one detachment API."""
+        return dict(type="state", sim_time_s=self.t, _x=self.x,
                     end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
                     settings_version=settings_version,
                     torque_nm=None if self.applied_torque is None else self.applied_torque.tolist(),
                     torque_kind="applied", joint_limits=self.joint_limits,
                     task_kind=self.task["kind"], target_xyz=self.target_world_at(self.t).tolist(),
                     _position_tol=self.reach.POSITION_TOL_M, _speed_tol=self.reach.SPEED_L1_TOL_RAD_S,
-                    rtf=float(rtf)))
+                    rtf=float(rtf))
+
+    def state_snapshot(self, rtf=0, settings_version=0):
+        return snapshot(self._state_fields(rtf, settings_version))
+
+    def state_record(self, rtf=0, settings_version=0):
+        """Detach once into IPC-ready containers; never expose plant buffers.
+
+        This is the numerical session's state-only path. The presentation API
+        above still returns immutable mappings; arbitrary snapshots elsewhere
+        retain their existing conversion behavior.
+        """
+        def detach(value):
+            if value is None or type(value) in (str, int, float, bool):
+                return value
+            if isinstance(value, np.ndarray):
+                copied = value.copy()
+                copied.flags.writeable = False
+                return copied
+            if isinstance(value, Mapping):
+                return {key: detach(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [detach(item) for item in value]
+            return value
+        return detach(self._state_fields(rtf, settings_version))
 
     def state_event(self, rtf=0):
         return render_state(self.state_snapshot(rtf), self.kinematics)

@@ -86,11 +86,14 @@ class MultirateSession:
         return self.origin+tick/self.execution[rate]
 
     def _state(self):
-        state = self.adapter.state_snapshot(0, self.version)
-        # Public history is detached and serializable before IPC. Avoid the
-        # immutable presentation MappingProxy (which cannot cross processes).
-        from live_presentation import mutable
-        state = mutable(state)
+        # Native adapters detach directly into IPC-ready state records. Keep
+        # the immutable-snapshot conversion for adapters without that contract.
+        record = getattr(self.adapter, "state_record", None)
+        if record is not None:
+            state = record(0, self.version)
+        else:
+            from live_presentation import mutable
+            state = mutable(self.adapter.state_snapshot(0, self.version))
         state["horizon_exhausted"] = self.horizon_exhausted
         state["plan_exhausted"] = self.horizon_exhausted
         state["control_updates"] = self.control_updates
