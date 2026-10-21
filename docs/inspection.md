@@ -106,6 +106,8 @@ silent substitution for missing diagnostic data.
 
 ## Consequences for the plotting contract
 
+The authoring, directory and verification design is in [plotting.md](plotting.md).
+
 - A plot declares Episode and/or Solve input context and required/optional data.
 - Episode time, SQP iteration, prediction-horizon time and measured wall time
   remain explicit axis identities.
