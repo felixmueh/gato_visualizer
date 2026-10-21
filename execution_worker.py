@@ -9,10 +9,10 @@ import traceback
 import numpy as np
 
 from execution_session import DEFAULT_EXECUTION, MultirateSession
+from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 
 MAX_STATES = 250000
-PROGRESS_INTERVAL_S = .05
-RECORD_INTERVAL_S = 1 / 60
+RECORD_INTERVAL_S = 1 / DEFAULT_PRESENTATION["report_hz"]
 MAX_PACKET_RECORDS = 256
 
 
@@ -20,23 +20,30 @@ class CompletedRecords:
     """Batch detached, committed records outside numerical timing boundaries.
 
     The wall deadline is opportunistic; commands and terminal statuses flush
-    immediately. The record cap bounds memory even for faster simulation grids.
+    immediately. Reports are split into bounded IPC packets without changing the cadence.
     Publication deliberately ignores revision changes, like committed intervals
     did before batching; the receiver owns generation rejection.
     """
-    def __init__(self, emit, clock=time.monotonic):
+    def __init__(self, emit, clock=time.monotonic, report_hz=DEFAULT_PRESENTATION["report_hz"]):
         self.emit, self.clock = emit, clock
         self.records = []
         self.identity = None
         self.last_flush = clock()
+        self.set_report_hz(report_hz)
+
+    def set_report_hz(self, report_hz):
+        self.interval = 1 / validate_presentation(dict(DEFAULT_PRESENTATION, report_hz=report_hz))["report_hz"]
 
     def flush(self, complete=False):
         if not self.records:
             return
         generation, token = self.identity
         records, self.records = self.records, []
-        self.emit(dict(kind="records", generation=generation, token=token,
-                       records=records, complete=complete))
+        for offset in range(0, len(records), MAX_PACKET_RECORDS):
+            last = offset + MAX_PACKET_RECORDS >= len(records)
+            self.emit(dict(kind="records", generation=generation, token=token,
+                           records=records[offset:offset+MAX_PACKET_RECORDS],
+                           report_end=last, complete=complete and last))
         self.last_flush = self.clock()
 
     def append(self, records, generation, token, complete=False):
@@ -44,14 +51,8 @@ class CompletedRecords:
         if self.identity != identity:
             self.flush()
             self.identity = identity
-        offset = 0
-        while offset < len(records):
-            end = min(len(records), offset + MAX_PACKET_RECORDS-len(self.records))
-            self.records.extend(records[offset:end])
-            offset = end
-            if len(self.records) == MAX_PACKET_RECORDS:
-                self.flush(complete=complete and offset == len(records))
-        if complete or self.clock()-self.last_flush >= RECORD_INTERVAL_S:
+        self.records.extend(records)
+        if complete or self.clock()-self.last_flush >= self.interval:
             self.flush(complete=complete)
 
 
@@ -62,7 +63,7 @@ def estimated_states(execution, duration=None):
     return 1+int(np.ceil(span*(execution["simulation_hz"]+execution["control_hz"]+execution["to_hz"])))
 
 
-def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory=None, schema_factory=None, solver_profile=None):
+def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory=None, schema_factory=None, solver_profile=None, report_hz=DEFAULT_PRESENTATION["report_hz"]):
     from live_mpc import build_schema, GPULocks, ROOT
     from live_presentation import mutable
     from solver_adapter import SimulatorAdapter
@@ -94,8 +95,9 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                 pass
         return False
 
-    def status(state, message, **extra):
-        completed.flush()
+    def status(state, message, *, flush_records=True, **extra):
+        if flush_records:
+            completed.flush()
         if config is None:
             return
         elapsed = max(0., (adapter.t if adapter else 0.)-initial_time)
@@ -116,9 +118,10 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                      progress=(min(1., job_elapsed/max(job["end"]-job["sim"], 1e-12))
                                if job and job["end"] is not None else None),
                      compute_rtf=elapsed/cost if cost else 0., **last_metrics, **extra)
-        emit(dict(kind="events", generation=generation, token=token, events=[event]), token)
+        emit(dict(kind="events", generation=generation, token=token, events=[event],
+                  progress=not flush_records), token)
 
-    completed = CompletedRecords(emit, clock=time.monotonic)
+    completed = CompletedRecords(emit, clock=time.monotonic, report_hz=report_hz)
 
     def apply_anchor(anchor):
         nonlocal session
@@ -188,6 +191,12 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             try:
                 if command is not None:
                     kind = command["type"]
+                    if kind == "set_report_hz":
+                        completed.set_report_hz(command["report_hz"])
+                        next_progress = time.monotonic() + completed.interval
+                        # Presentation preferences never touch revision, jobs,
+                        # GPU locks, controller configuration or history epochs.
+                        continue
                     incoming_token = command.get("token", revision.value)
                     if incoming_token != revision.value:
                         continue
@@ -416,10 +425,10 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     # is latest-value UI telemetry, not another 100+ Hz stream
                     # that can back up the same bounded results queue.
                     now = time.monotonic()
-                    if now >= next_progress:
+                    if now >= next_progress and not completed.records:
                         status("playing" if job["paced"] else "calculating", "Computing closed-loop MPC motion",
-                               complete=False, severity=severity)
-                        next_progress = now + PROGRESS_INTERVAL_S
+                               complete=False, severity=severity, flush_records=False)
+                        next_progress = now + completed.interval
             except Exception as exc:
                 completed.flush()
                 if committed is not None:

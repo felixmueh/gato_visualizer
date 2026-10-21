@@ -1,3 +1,8 @@
 {
-  "ingest_directory": "../_expr_data/ingest"
+  "ingest_directory": "../_expr_data/ingest",
+  "presentation": {
+    "report_hz": 20,
+    "buffer_ms": 200,
+    "interpolate": false
+  }
 }

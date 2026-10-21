@@ -11,6 +11,7 @@ import time
 import traceback
 
 from execution_session import DEFAULT_EXECUTION, validate_anchor, validate_execution
+from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
 SHUTDOWN_GRACE_SECONDS = 10
@@ -185,7 +186,9 @@ class ProcessLiveService:
     boundaries. Old-generation results cannot replace the current trajectory.
     """
     def __init__(self, mpc_root, adapter_factory=None, schema_factory=None,
-                 worker_target=worker_main, render_factory=None, solver_profile=None):
+                 worker_target=worker_main, render_factory=None, solver_profile=None,
+                 report_hz=DEFAULT_PRESENTATION["report_hz"]):
+        self.report_hz = validate_presentation(dict(DEFAULT_PRESENTATION, report_hz=report_hz))["report_hz"]
         self.mpc_root = Path(mpc_root).expanduser().resolve()
         if solver_profile is None:
             if adapter_factory is None:
@@ -215,7 +218,7 @@ class ProcessLiveService:
         self.shutdown = self.context.Event()
         self._process = self.context.Process(target=worker_target,
             args=(self.mpc_root, self.commands, self.results, self.revision, self.shutdown,
-                  adapter_factory, schema_factory, solver_profile), name="live-mpc-compute", daemon=True)
+                  adapter_factory, schema_factory, solver_profile, self.report_hz), name="live-mpc-compute", daemon=True)
         self._process.start()
         try:
             ready = self.results.get(timeout=60)
@@ -290,6 +293,17 @@ class ProcessLiveService:
 
     def history_json(self, generation, after=0, limit=256):
         return self.history_store.page_json(generation, after, limit)
+
+    def set_report_hz(self, report_hz):
+        report_hz = validate_presentation(dict(DEFAULT_PRESENTATION, report_hz=report_hz))["report_hz"]
+        with self.condition:
+            # Preferences remain saveable if the numerical worker is absent.
+            if not self.closed and self._process.is_alive():
+                try:
+                    self.commands.put_nowait(dict(type="set_report_hz", report_hz=report_hz))
+                except queue.Full:
+                    raise ValueError("Command queue full; wait for the current solve to return") from None
+            self.report_hz = report_hz
 
     def switch_solver_profile(self, profile, anchor=None):
         anchor = validate_anchor(anchor)
@@ -400,7 +414,6 @@ class ProcessLiveService:
             return self.next_version
 
     def _receive(self):
-        next_presentation = 0.
         while not (self.closed and not self._process.is_alive()):
             try:
                 packet = self.results.get(timeout=.1)
@@ -474,19 +487,16 @@ class ProcessLiveService:
                         self.history_store.complete = packet.get("complete", False)
                         # History is independent of the latest-value SSE display.
                         # Every record remains queryable even when SSE coalesces.
-                        events = [self._history_metadata()]
-                        if time.monotonic() >= next_presentation or packet.get("complete"):
-                            if latest_plan:
-                                events.append(latest_plan)
-                            if latest_state:
-                                events.append(latest_state)
-                            next_presentation = time.monotonic()+1/60
-                        else:
-                            if latest_plan:
-                                self.latest["plan"] = latest_plan
-                            if latest_state:
-                                self.latest["state"] = latest_state
-                        self.publish_events(events)
+                        if latest_plan:
+                            self.latest["plan"] = latest_plan
+                        if latest_state:
+                            self.latest["state"] = latest_state
+                        # A report may span several bounded IPC messages. Commit
+                        # every record, announce the newest tip only at its end.
+                        if packet.get("report_end", True):
+                            events = [self._history_metadata()]
+                            events.extend(self.latest[key] for key in ("plan", "state") if key in self.latest)
+                            self.publish_events(events)
                 elif kind == "events":
                     if packet.get("token") != self.revision.value:
                         continue
@@ -506,7 +516,10 @@ class ProcessLiveService:
                                 self.history_store.complete = bool(event["complete"])
                         if inspection_records:
                             self.inspection_store.append(inspection_records)
-                        self.publish_events([*rendered_events, self._history_metadata()])
+                        # Routine progress follows the report already announced
+                        # above; avoid requesting the same history prefix twice.
+                        self.publish_events(rendered_events if packet.get("progress") else
+                                            [*rendered_events, self._history_metadata()])
                 elif kind == "complete":
                     with self.condition:
                         if packet.get("generation") != self.generation or packet.get("token") != self.revision.value:

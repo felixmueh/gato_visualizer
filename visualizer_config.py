@@ -1,10 +1,12 @@
 """Small, local server configuration, separate from the live MPC settings."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+
+from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "visualizer.json"
@@ -18,6 +20,7 @@ class VisualizerConfig:
     source: dict | None = None
     plotters_directory: Path | None = None
     solver_profiles: tuple = ()
+    presentation: dict = field(default_factory=lambda: dict(DEFAULT_PRESENTATION))
 
 
 def load_visualizer_config(path=DEFAULT_CONFIG):
@@ -34,7 +37,7 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
         raise ValueError(f"Cannot read visualizer config {selected}: {exc}") from exc
     if not isinstance(settings, dict):
         raise ValueError("Visualizer config must be a JSON object")
-    unknown = set(settings) - {"ingest_directory", "source", "plotters_directory", "solver_profiles"}
+    unknown = set(settings) - {"ingest_directory", "source", "plotters_directory", "solver_profiles", "presentation"}
     if unknown:
         raise ValueError(f"Unknown visualizer config fields: {sorted(unknown)}")
     value = settings.get("ingest_directory", str(DEFAULT_INGEST_DIRECTORY))
@@ -79,7 +82,8 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
                 location = Path(value).expanduser()
                 profile[key] = str(location if location.is_absolute() else selected.parent / location)
     return VisualizerConfig(path=selected, ingest_directory=directory.resolve(), source=source,
-                            plotters_directory=plotters, solver_profiles=tuple(profiles))
+                            plotters_directory=plotters, solver_profiles=tuple(profiles),
+                            presentation=validate_presentation(settings.get("presentation", DEFAULT_PRESENTATION)))
 
 
 def save_source_selection(path, source):

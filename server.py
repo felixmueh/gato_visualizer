@@ -417,7 +417,7 @@ def accepts_gzip(value):
 
 
 def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist=None, live=None,
-                replays=None, sources=None, live_error=None, plots=None, solver_profiles=None, inspections=None):
+                replays=None, sources=None, live_error=None, plots=None, solver_profiles=None, inspections=None, presentation=None):
     dist = Path(dist or ROOT / "dist").resolve()
     scene_json = json.dumps(scene, allow_nan=False, separators=(",", ":")).encode()
     backend_id = uuid.uuid4().hex
@@ -447,6 +447,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             self.do_GET()
 
         def do_POST(self):
+            if urlsplit(self.path).path == "/api/presentation/settings" and presentation is not None:
+                self.presentation_command()
+                return
             if urlsplit(self.path).path.startswith("/api/solve-inspections") and inspections is not None:
                 self.inspection_command()
                 return
@@ -483,6 +486,21 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 result, status = dict(accepted=False, error=str(exc)), 400
             self.send_payload(json.dumps(result, allow_nan=False).encode(),
                               "application/json; charset=utf-8", status)
+
+        def presentation_command(self):
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
+                self.send_error(403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 65536 or self.headers.get_content_type() != "application/json":
+                    raise ValueError("Expected JSON presentation settings under 64 KiB")
+                result = presentation.update(json.loads(self.rfile.read(length)))
+                status = 200
+            except (ValueError, TypeError, OSError, RuntimeError) as exc:
+                result, status = dict(error=str(exc)), 400
+            self.send_payload(json.dumps(result, allow_nan=False).encode(), "application/json; charset=utf-8", status)
 
         def inspection_command(self):
             origin = self.headers.get("Origin")
@@ -645,7 +663,10 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             if "\\" in path or "\x00" in path or ".." in path.split("/"):
                 self.send_error(404)
                 return
-            if path == "/api/scene":
+            if path == "/api/presentation/settings" and presentation is not None:
+                self.send_payload(json.dumps(presentation.settings(), allow_nan=False).encode(),
+                                  "application/json; charset=utf-8")
+            elif path == "/api/scene":
                 self.send_payload(scene_json, "application/json; charset=utf-8")
             elif path.startswith("/api/solve-inspections/jobs/") and inspections is not None:
                 try:
@@ -781,7 +802,8 @@ def main(argv=None):
     if not args.replay_only:
         from live_mpc import LiveService
         try:
-            live = LiveService(args.mpc_root, solver_profile=dict(id="simulator", name="Simulator checkout", **selection))
+            live = LiveService(args.mpc_root, solver_profile=dict(id="simulator", name="Simulator checkout", **selection),
+                               report_hz=visualizer_config.presentation["report_hz"])
         except (ValueError, OSError, RuntimeError, queue.Empty) as exc:
             live_error = str(exc) or "Numerical worker did not become ready within 60 seconds"
             print(f"Live setup error: {exc}; use Source / Build to check this selection", file=sys.stderr)
@@ -804,8 +826,10 @@ def main(argv=None):
     from solve_inspections import InspectionService
     inspections = InspectionService(plots, profiles, live=live) if profiles is not None else None
     plots.inspections = inspections
+    from presentation_settings import PresentationSettings
+    presentation = PresentationSettings(visualizer_config.path, live=live, initial=visualizer_config.presentation)
     server = make_server(scene, robot_xml, meshes, args.host, args.port, live=live, replays=library,
-                         sources=sources, live_error=live_error, plots=plots, solver_profiles=profiles, inspections=inspections)
+                         sources=sources, live_error=live_error, plots=plots, solver_profiles=profiles, inspections=inspections, presentation=presentation)
     server.replay_library = library
     server.visualizer_config = visualizer_config
     print(f"TIAGo visualizer: http://{args.host}:{server.server_port}", flush=True)
