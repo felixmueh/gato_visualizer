@@ -12,6 +12,47 @@ from execution_session import DEFAULT_EXECUTION, MultirateSession
 
 MAX_STATES = 250000
 PROGRESS_INTERVAL_S = .05
+RECORD_INTERVAL_S = 1 / 60
+MAX_PACKET_RECORDS = 256
+
+
+class CompletedRecords:
+    """Batch detached, committed records outside numerical timing boundaries.
+
+    The wall deadline is opportunistic; commands and terminal statuses flush
+    immediately. The record cap bounds memory even for faster simulation grids.
+    Publication deliberately ignores revision changes, like committed intervals
+    did before batching; the receiver owns generation rejection.
+    """
+    def __init__(self, emit, clock=time.monotonic):
+        self.emit, self.clock = emit, clock
+        self.records = []
+        self.identity = None
+        self.last_flush = clock()
+
+    def flush(self, complete=False):
+        if not self.records:
+            return
+        generation, token = self.identity
+        records, self.records = self.records, []
+        self.emit(dict(kind="records", generation=generation, token=token,
+                       records=records, complete=complete))
+        self.last_flush = self.clock()
+
+    def append(self, records, generation, token, complete=False):
+        identity = (generation, token)
+        if self.identity != identity:
+            self.flush()
+            self.identity = identity
+        offset = 0
+        while offset < len(records):
+            end = min(len(records), offset + MAX_PACKET_RECORDS-len(self.records))
+            self.records.extend(records[offset:end])
+            offset = end
+            if len(self.records) == MAX_PACKET_RECORDS:
+                self.flush(complete=complete and offset == len(records))
+        if complete or self.clock()-self.last_flush >= RECORD_INTERVAL_S:
+            self.flush(complete=complete)
 
 
 def estimated_states(execution, duration=None):
@@ -54,6 +95,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
         return False
 
     def status(state, message, **extra):
+        completed.flush()
         if config is None:
             return
         elapsed = max(0., (adapter.t if adapter else 0.)-initial_time)
@@ -75,6 +117,8 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                                if job and job["end"] is not None else None),
                      compute_rtf=elapsed/cost if cost else 0., **last_metrics, **extra)
         emit(dict(kind="events", generation=generation, token=token, events=[event]), token)
+
+    completed = CompletedRecords(emit, clock=time.monotonic)
 
     def apply_anchor(anchor):
         nonlocal session
@@ -144,9 +188,11 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             try:
                 if command is not None:
                     kind = command["type"]
-                    token = command.get("token", revision.value)
-                    if token != revision.value:
+                    incoming_token = command.get("token", revision.value)
+                    if incoming_token != revision.value:
                         continue
+                    completed.flush()
+                    token = incoming_token
                     if kind == "shutdown":
                         break
                     generation = command.get("generation", generation)
@@ -339,6 +385,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                 batch = session.advance_interval(batch_end, cancelled=lambda: not current(token),
                             emit_partial=job["end"] is not None and batch_end >= job["end"]-1e-12)
                 if not current(token):
+                    completed.flush()
                     adapter.x, adapter.t, adapter.sequence, adapter.applied_torque = committed
                     interval = session.flush_interval()
                     if interval is not None:
@@ -356,10 +403,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                 # all bounded chunks even if Pause arrives during IPC; a newer
                 # generation discards them at the receiver. This prevents a
                 # partially published interval from moving the native tip back.
-                for offset in range(0, len(batch), 256):
-                    last_chunk = offset+256 >= len(batch)
-                    emit(dict(kind="records", generation=generation, token=token,
-                              records=batch[offset:offset+256], complete=complete and last_chunk))
+                completed.append(batch, generation, token, complete=complete)
                 severity = next((r["severity"] for r in reversed(batch) if r["type"] == "interval"), "none")
                 if complete or capacity:
                     history_complete = complete
@@ -368,7 +412,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     job = None
                     locks.release()
                 else:
-                    # Every interval is already in lossless history. Progress
+                    # Every interval is retained for lossless history. Progress
                     # is latest-value UI telemetry, not another 100+ Hz stream
                     # that can back up the same bounded results queue.
                     now = time.monotonic()
@@ -377,6 +421,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                                complete=False, severity=severity)
                         next_progress = now + PROGRESS_INTERVAL_S
             except Exception as exc:
+                completed.flush()
                 if committed is not None:
                     adapter.x, adapter.t, adapter.sequence, adapter.applied_torque = committed
                 history_complete = False
@@ -388,9 +433,11 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                           message=str(exc), detail=traceback.format_exc()), token)
                 status("error", str(exc), complete=False)
     except BaseException as exc:
+        completed.flush()
         emit(dict(kind="failure", generation=generation, token=token,
                   message=str(exc), detail=traceback.format_exc()))
     finally:
+        completed.flush()
         if adapter is not None:
             # Destruction may release CUDA allocations, so it shares the same
             # experiment window as creation/solving.
