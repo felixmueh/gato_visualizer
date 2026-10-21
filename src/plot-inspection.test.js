@@ -247,3 +247,32 @@ test('fresh inspection pins only Solve, hydrates true snapshots safely, and leav
     ui.destroy();
   } finally { Object.assign(globalThis, original); }
 });
+
+test('changing between real SQP snapshots keeps the same solve final context visible while the next snapshot loads', async () => {
+  const { document, find } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section'), picked = [];
+  let source = { source: { kind: 'live', generation: 1 } }, releaseSecond;
+  const final = { ee_xyz: [[3, 0, 1], [3, 1, 1]] };
+  const request = async (path, body) => {
+    const iteration = body.selection.iteration, missingSourceFinal = body.source.generation === 2;
+    const summary = { id: 'recorded-trace', iterations: [0, 1, 2, 3].map(index => ({ index, has_prediction: true })), selected_iteration: iteration, selected_prediction: missingSourceFinal ? null : { ee_xyz: [[iteration ?? 3, 0, 1], [iteration ?? 3, 1, 1]] }, final_prediction: iteration == null && !missingSourceFinal ? structuredClone(final) : {} };
+    const response = { state: 'complete', catalog: [], context: { episode_available: true, selected_solve: summary }, results: [] };
+    if (body.context === 'solve' && path === '/api/plots/catalog' && iteration === 2 && !missingSourceFinal) return new Promise(resolve => { releaseSecond = () => resolve(response); });
+    return response;
+  };
+  try {
+    const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => ({ window: [0, 5], cursor: 1 }), request, onPrediction: item => picked.push(item), storage: null });
+    ui.update(); await flush(); await find(solve, 'button', 'Pin solve').emit('click');
+    const slider = solve.querySelector('input'); slider.value = '1'; await slider.emit('input'); await ui.refresh();
+    assert.equal(ui.snapshot.selectedSolve.selected_iteration, 1); assert.deepEqual(ui.snapshot.selectedSolve.final_prediction, {}); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[1, 0, 1], [1, 1, 1]]);
+    slider.value = '2'; await slider.emit('input'); const pending = ui.refresh(); await flush();
+    assert.deepEqual(picked.at(-1).prediction, final); assert.equal(picked.at(-1).predictionSource, 'final-context'); assert.equal(solve.querySelector('.plot-message').textContent, 'Final prediction shown; selected iteration trajectory loading.');
+    assert.deepEqual(ui.snapshot.selectedSolve.final_prediction, {}); assert.equal(ui.snapshot.selectedSolve.selected_iteration, 1);
+    releaseSecond(); await pending;
+    assert.equal(picked.at(-1).predictionSource, 'iteration'); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[2, 0, 1], [2, 1, 1]]); assert.equal(ui.snapshot.iteration, 2); assert.equal(ui.snapshot.pinned, true);
+    source = { source: { kind: 'live', generation: 2 } }; ui.update(); await ui.refresh();
+    const newSlider = solve.querySelector('input'); newSlider.value = '2'; await newSlider.emit('input');
+    assert.equal(picked.at(-1).prediction, null); assert.equal(picked.at(-1).predictionSource, null); assert.equal(solve.querySelector('.plot-message').textContent, 'Loading recorded iteration trajectory…');
+    ui.destroy();
+  } finally { globalThis.document = original; }
+});

@@ -16,6 +16,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   let catalogs = { episode: [], solve: [] }, metadata = {}, specs = new Map(), handles = [], revision = 0, busy = false, pending = false, lastRequest = '', lastPoll = -Infinity, lastRender = '', lastPrediction = '', pinnedSource, drag, destroyed = false;
   const presentations = new Map();
   let solveOverride = null, lastSolveSourceKey;
+  let finalContextKey, finalContextPrediction;
   const sourceKey = source => source ? JSON.stringify([source.kind, source.generation, source.id, source.trajectory_index, source.revision]) : '';
   const solveSource = () => solveOverride || (state.pinned && pinnedSource ? { source: pinnedSource, solveSeq: state.selected?.seq ?? state.selected?.id } : getSource());
   const heading = el('div', null, 'plot-inspector-heading'), rangeLabel = el('label', 'Analyze '), range = el('select');
@@ -123,6 +124,11 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   }
   function renderSolve() {
     const selected = state.selected, records = selected?.iterations || [], index = records.findIndex(item => item.index === state.iteration);
+    const finalKey = selected ? JSON.stringify([lastSolveSourceKey, selected.id]) : null;
+    if (finalKey !== finalContextKey) { finalContextKey = finalKey; finalContextPrediction = null; }
+    // Concrete-iteration responses intentionally omit the final trajectory.
+    // Retain only this solve's real final snapshot as labelled display context.
+    if (selected?.final_prediction?.ee_xyz?.length) finalContextPrediction = structuredClone(selected.final_prediction);
     solveContainer.classList.toggle('solve-pinned', state.pinned); pin.textContent = solveOverride ? 'Follow episode' : state.pinned ? 'Follow cursor' : 'Pin solve'; pin.setAttribute('aria-pressed', String(state.pinned)); pin.disabled = !selected && !solveOverride;
     identity.textContent = selected ? `${state.pinned ? 'Pinned · ' : ''}${selected.origin === 'preview' ? 'Preview' : 'Solve'} ${selected.seq ?? selected.id}${Number.isFinite(selected.sim_time_s ?? selected.time_s) ? ` · ${(selected.sim_time_s ?? selected.time_s).toFixed(3)} s` : ''}${metadata.solve?.context?.association ? ` · ${metadata.solve.context.association}` : ''}` : 'No recorded solve associated with the episode cursor.';
     if (selected) { const source = solveSource()?.source; identity.textContent += ` · ${source?.kind}:${source?.id ?? source?.generation ?? 'current'}${source?.trajectory_index != null ? `/${source.trajectory_index}` : ''}`; }
@@ -141,8 +147,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     const iterationPrediction = current?.prediction || snapshot;
     const iterationMissing = state.iteration != null && !iterationPrediction;
     const loading = iterationMissing && current?.has_prediction === true;
-    const finalContext = iterationMissing && Boolean(selected?.final_prediction?.ee_xyz?.length);
-    const prediction = state.iteration == null ? snapshot || selected?.final_prediction : finalContext ? selected.final_prediction : iterationPrediction;
+    const finalContext = iterationMissing && Boolean(finalContextPrediction?.ee_xyz?.length);
+    const prediction = state.iteration == null ? snapshot || selected?.final_prediction : finalContext ? finalContextPrediction : iterationPrediction;
     const predictionSource = finalContext ? 'final-context' : prediction ? state.iteration == null ? 'final' : 'iteration' : null;
     capability.textContent = finalContext ? loading ? 'Final prediction shown; selected iteration trajectory loading.' : 'Final prediction shown; iteration trajectory not recorded.' : loading ? 'Loading recorded iteration trajectory…' : !records.length ? 'Only the final result is retained; no intermediate SQP records are available.' : iterationMissing ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : 'Recorded SQP inspection leaves the episode clock unchanged.';
     const active = Boolean(selected) && (getView().inspectSolve !== false || state.pinned);
