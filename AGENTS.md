@@ -89,9 +89,9 @@ samples. Prediction playback is distinct from recorded simulated MPC motion.
 Label what each element shows: a prediction is not executed motion, and
 simulated time is not solver time. Show the solver's work and status for each
 displayed plan (SQP, PCG and ADMM iterations, constraint violation); a finite
-plan does not show that the solver converged. Play mode uses the fixed pacing
-of `tiago_mpc` unless a mode states otherwise. Visualizer runs are diagnostics,
-not experiment or timing evidence.
+plan does not show that the solver converged. The visualizer's independent
+simulation/control/TO clocks govern generation; recorded playback uses simulation
+timestamps at 1x. Visualizer runs are diagnostics, not experiment or timing evidence.
 
 ## Host environment and GPU
 

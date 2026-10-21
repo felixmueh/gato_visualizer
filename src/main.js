@@ -49,10 +49,14 @@ document.querySelector("#app").innerHTML = `
         <p id="live-task-note" class="settings-note">Offset from the default reaching target. Each change updates the prediction.</p>
         <div class="target-offsets">${['X', 'Y', 'Z'].map((axis, i) => `<label>${axis}<input id="target-offset-${i}" aria-label="Target ${axis} offset in metres" type="number" step="0.01" value="0" /></label>`).join('')}</div>
         <div id="live-task-parameters"></div>
-        <p class="settings-note">Only prebuilt knot counts are available. Changes during Play restart the controller at its current state.</p>
+        <p class="settings-note">Only prebuilt knot counts are available. Calculation settings are independent of replay recordings. Prediction knot spacing is independent of execution rates.</p>
         <button id="target-move" class="secondary-action" disabled>Move target in 3D</button>
         <p id="target-move-note" class="settings-note">Target handles become available after the live preview is ready.</p>
-        <div id="live-settings"></div>
+        <details class="settings-group" open><summary>Execution timing</summary><div class="settings-fields">
+        <label class="parameter-row"><span>Simulation Hz</span><input id="live-simulation-hz" type="number" min=".01" step="any" value="1000" required></label>
+        <label class="parameter-row"><span>Control Hz</span><input id="live-control-hz" type="number" min=".01" step="any" value="100" required></label>
+        <label class="parameter-row"><span>TO / replanning Hz</span><input id="live-to-hz" type="number" min=".01" step="any" value="100" required></label>
+        </div><p class="settings-note">Simulation ≥ control ≥ TO. Rates follow simulation time.</p></details><div id="live-settings"></div>
         <p id="live-source" class="settings-note source-live"></p>
       </section>
       <section id="replay-section" class="sidebar-section">
@@ -98,15 +102,20 @@ document.querySelector("#app").innerHTML = `
       </section>
       <section id="live-controls" class="playback live-controls" aria-label="Live MPC controls" hidden>
         <div class="playback-heading"><div><span class="eyebrow">SIMULATED CLOSED-LOOP MPC</span><h2 id="live-plan-label">Waiting for a prediction</h2></div><div class="playback-state" id="live-status">IDLE</div></div>
-        <div class="live-actions"><button id="live-play" class="primary-action" disabled>Play</button><button id="live-preview" class="secondary-action" disabled>Preview</button><button id="live-reset" class="secondary-action" disabled>Reset state</button><div class="live-clock"><strong id="live-sim-time">0.00</strong><span>s simulated</span><strong id="live-rtf">—</strong><span>real-time factor</span></div></div>
-        <div class="live-history-row"><label for="live-history">STATE HISTORY</label><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Scrub paused live state history"/><span id="live-history-position">No state history yet</span><button id="live-history-latest" class="secondary-action" disabled>Newest state</button></div>
-        <p id="live-history-note" class="settings-note">Pause to scrub. Play always resumes the newest backend state.</p>
-        <p id="live-history-window" class="settings-note"></p>
-        <p class="settings-note">Motion display uses a brief buffer between received states. Pause shows the exact saved state; simulation time and real-time factor remain measured.</p>
+        <div class="live-actions"><button id="live-play" class="primary-action" disabled>Play</button><button id="live-preview" class="secondary-action" disabled>Preview</button><button id="live-reset" class="secondary-action" disabled>Reset state</button>
+        <label class="calculation-setting">Calculation <select id="live-calculation" aria-label="Calculation mode"><option value="on_play">On Play</option><option value="manual">Manual</option><option value="automatic">Automatic</option></select></label>
+        <label class="calculation-setting">Calculation duration (s) <input id="live-duration" type="number" min=".01" step="any" value="10" aria-label="Precalculation duration seconds"></label>
+        <button id="live-precalculate" class="secondary-action" disabled>Precalculate</button><button id="live-cancel" class="secondary-action" disabled>Cancel calculation</button>
+        </div>
+        <div class="live-history-row"><label for="live-history">STATE HISTORY</label><div class="live-history-track"><div id="live-history-intervals" aria-hidden="true"></div><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Scrub live state history"/></div><span id="live-history-position">No state history yet</span><button id="live-history-latest" class="secondary-action" disabled>Go latest</button></div>
+        <div class="live-history-options"><label><input id="live-continue" type="checkbox"> Continue simulation at end</label><span><i class="interval-key red"></i>MPC over budget</span><span><i class="interval-key yellow"></i>Simulation / combined over budget</span></div>
+        <div class="live-clock"><strong id="live-sim-time">0.00</strong><span>s simulated</span><strong id="live-playback-rate">Paused</strong><span>playback</span><strong id="live-rtf">—</strong><span>calculation RTF</span></div>
+        <p id="live-history-note" class="settings-note">History plays at 1× simulation time. Go latest only moves the view.</p>
+        <p id="live-history-window" class="settings-note"></p><p id="live-rates" class="settings-note"></p>
         <p id="live-message" class="live-message" role="status" aria-live="polite">Loading live settings…</p>
         <div class="solver-stats"><div><span>Native solve wall</span><strong><b id="live-solve">—</b> ms</strong></div><div><span>SQP / PCG</span><strong><b id="live-sqp">—</b> / <b id="live-pcg">—</b></strong></div><div><span>ADMM / linear solve</span><strong><b id="live-admm">—</b> / <b id="live-linsys">—</b></strong></div><div><span>Max row violation</span><strong id="live-violation">—</strong></div><div><span>Current target distance</span><strong id="live-distance">—</strong></div></div>
         <div class="live-detail"><span id="live-horizon">—</span><span id="live-arrival">Waiting for state</span><span id="live-restarted" hidden>Controller restarted for this plan</span></div>
-        <div class="playback-foot"><span>Preview resets the controller and solves once from the current state. Play executes simulated motion with fixed knot pacing; solve latency slows playback.</span><span>Diagnostic view · finite plans do not certify convergence.</span></div>
+        <div class="playback-foot"><span>Preview solves one horizon. Precalculation runs full closed-loop MPC. Recorded history always plays at 1×; computation may limit progress at its end.</span><span>Diagnostic view · finite plans do not certify convergence.</span></div>
       </section>
       <section class="playback" id="replay-controls" aria-label="Trajectory playback">
         <div class="playback-heading"><div><span id="playback-kind" class="eyebrow">RECORDED MOTION</span><h2 id="playback-title">Motion timeline</h2></div><div class="playback-state" id="playback-state">READY TO LOAD</div></div>
@@ -264,12 +273,13 @@ function fitTaskPoints(options = {}) {
     plan: displayedLivePlan,
     state: live?.displayedState || live?.state,
     taskStart: liveTaskStart,
+    precomputedPath: live?.mode === 'live' ? live.precomputedPath : undefined,
     ...options,
   });
 }
 
 function refreshFitAvailability() {
-  $('camera-arm').disabled = !fitTaskPoints().points.length;
+  $('camera-arm').disabled = live?.mode === 'live' ? !live.fitAvailable : !fitTaskPoints().points.length;
 }
 
 function setCamera(mode = "robot", options = {}) {
@@ -667,8 +677,11 @@ function showLiveState(state, context = {}) {
   updateJointTelemetry(state.q, state.qd, state.torque_nm, state.joint_limits || defaultData.joint_limits);
   if (Array.isArray(state.target_xyz) && state.target_xyz.length === 3 && state.target_xyz.every(Number.isFinite) && liveGroup.userData.target) liveGroup.userData.target.position.fromArray(state.target_xyz);
   if (context.tracePoints) {
-    tracePoints = context.tracePoints;
-    setPathPoints(liveTrace, tracePoints);
+    if (tracePoints !== context.tracePoints) {
+      tracePoints = context.tracePoints;
+      setPathPoints(liveTrace, tracePoints);
+    }
+    setPathPointCount(liveTrace, context.traceCount ?? tracePoints.length);
   } else if (lastLiveTime === undefined || state.sim_time_s !== lastLiveTime) {
     if (lastLiveTime !== undefined && state.sim_time_s < lastLiveTime) resetLiveTrace();
     tracePoints.push(state.ee_xyz);

@@ -1,4 +1,4 @@
-export const LIVE_HISTORY_LIMITS = { maxSeconds: 60, maxSamples: 2000, maxPlans: 256 };
+export const LIVE_HISTORY_LIMITS = { maxSeconds: 300, maxSamples: 100000, maxPlans: 1024 };
 
 // Samples keep references to immutable SSE plans, so plant samples between two
 // solves share one saved prediction. No history operation issues solver commands.
@@ -6,11 +6,13 @@ export function createLiveHistory(options = {}) {
   const limits = { ...LIVE_HISTORY_LIMITS, ...options };
   let samples = [];
   let currentPlan = null;
+  let intervals = [];
   let planAfterState = false;
-  const clear = () => { samples = []; currentPlan = null; planAfterState = false; };
+  const clear = () => { samples = []; intervals = []; currentPlan = null; planAfterState = false; };
   const trim = () => {
     const newest = samples.at(-1)?.state.sim_time_s;
     while (samples.length > 1 && (samples.length > limits.maxSamples || newest - samples[0].state.sim_time_s > limits.maxSeconds)) samples.shift();
+    if (!Number.isFinite(limits.maxPlans)) return;
     const plans = new Map();
     for (const sample of samples) if (sample.plan) plans.set(sample.plan, (plans.get(sample.plan) || 0) + 1);
     while (samples.length > 1 && plans.size > limits.maxPlans) {
@@ -47,7 +49,7 @@ export function createLiveHistory(options = {}) {
     planAfterState = false;
     trim();
   };
-  const at = (time = null) => {
+  const at = (time = null, { trace = true } = {}) => {
     if (!samples.length) return null;
     let index = samples.length - 1;
     if (time != null) {
@@ -59,10 +61,41 @@ export function createLiveHistory(options = {}) {
       }
       index = Math.max(0, low - 1);
     }
-    return { ...samples[index], index, tracePoints: samples.slice(0, index + 1).map((sample) => sample.state.ee_xyz) };
+    if (!trace) return { ...samples[index], index };
+    const stride = Math.max(1, Math.ceil((index + 1) / 5000));
+    const tracePoints = [];
+    for (let i = 0; i <= index; i += stride) tracePoints.push(samples[i].state.ee_xyz);
+    if (index % stride) tracePoints.push(samples[index].state.ee_xyz);
+    return { ...samples[index], index, tracePoints };
+  };
+  const interpolateAt = (time, options) => {
+    const selected = at(time, options);
+    if (!selected) return null;
+    const right = samples[selected.index + 1]?.state, left = selected.state;
+    if (!right || time <= left.sim_time_s || right.sim_time_s <= left.sim_time_s || left.settings_version !== right.settings_version) return selected;
+    const fraction = Math.min(1, (time - left.sim_time_s) / (right.sim_time_s - left.sim_time_s));
+    const state = { ...left, sim_time_s: time, render_interpolated: true };
+    for (const key of ['q', 'qd', 'ee_xyz', 'target_xyz']) {
+      if (Array.isArray(left[key]) && Array.isArray(right[key]) && left[key].length === right[key].length) state[key] = left[key].map((value, i) => value + (right[key][i] - value) * fraction);
+    }
+    return { ...selected, state };
+  };
+  const addRecord = (record) => {
+    if (record.type === 'plan') addPlan(record);
+    else if (record.type === 'state') addState(record);
+    else if (record.type === 'interval') intervals.push(record);
   };
   return {
-    clear, addPlan, addState, at,
+    clear, addPlan, addState, at, interpolateAt, addRecord,
+    get intervals() { return intervals; },
+    displayPath(maxPoints = 5000) {
+      const stride = Math.max(1, Math.ceil(samples.length / maxPoints));
+      const points = [];
+      for (let i = 0; i < samples.length; i += stride) points.push(samples[i].state.ee_xyz);
+      if ((samples.length - 1) % stride && samples.length) points.push(samples.at(-1).state.ee_xyz);
+      return { points, stride };
+    },
+    get pathPoints() { return samples.map(sample => sample.state.ee_xyz); },
     get length() { return samples.length; },
     get bounds() { return samples.length ? [samples[0].state.sim_time_s, samples.at(-1).state.sim_time_s] : [0, 0]; },
     get limits() { return { ...limits }; },

@@ -55,13 +55,33 @@ see the [format and export cookbook](docs/replay-format.md).
 
 ## Live MPC
 
-Select Live, adjust the target offset and settings, and inspect the preview.
-The prediction recomputes when settings change. Preview resets the controller
-at the current plant state and computes one plan; Play starts from that same
-reset policy and advances the simulated plant with continuous MPC replanning.
-Pause holds the current state; Reset returns to the comfortable starting pose.
-Changing settings during Play restarts the controller at the current state.
-Reset also restarts the episode's plan count.
+Select Live, adjust the target offset and settings, and inspect the prediction.
+**Preview** computes one optimized horizon from the displayed state. It does
+not advance the simulated plant. **Reset state** returns to the comfortable
+starting pose, clears recorded motion, and restarts the episode's plan count.
+Live settings stay intact when switching to Replay and back; replay metadata
+never replaces the Live configuration.
+
+The **Calculation** menu selects how full closed-loop motion is generated:
+
+- **On Play:** calculate as playback needs new motion, paced at at most 1×.
+- **Manual:** press **Precalculate** to prepare the requested duration.
+- **Automatic:** settings edits replace obsolete work and calculate the requested
+  duration from the displayed state captured when the edit began.
+
+Every calculation repeats optimization, control application and physics
+integration for the chosen **Calculation duration**. **Cancel calculation**
+stops after the current numerical operation; it cannot interrupt a native solve.
+Playback and calculation are independent. Play with no recorded motion starts
+calculation. **Continue simulation at end**, off by default, decides whether
+playing through existing history extends it or stops at its end. Changing this
+toggle preserves the recording. **Go latest** only moves the displayed time.
+
+Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz**. Simulation Hz controls
+RK4 integration, Control Hz samples the active plan's torque, and TO Hz requests
+new plans. The prediction knot interval is separate. The existing upstream
+warm-start behavior is preserved and has no UI setting. Large SQP/PCG budgets
+are available within backend limits; they may make calculation slower than 1×.
 
 Choose Reach or Figure eight in the task selector. Figure eight follows a
 horizontal world-XY path, starting at the comfortable-pose tool position. Its
@@ -69,28 +89,33 @@ default full spans are 24 × 16 cm with a 24 s period; dimensions, period and
 world offsets are editable. Preview at a paused state uses that simulation
 time's reference phase; Reset returns the phase to zero.
 
-Pause enables the Live history slider. Scrubbing shows the saved robot state,
-prediction and joint telemetry. Play always returns to the newest backend state
-and continues there. History is retained in the browser with a bounded window;
-the actual retained interval appears beside the controls. Reset clears history.
+The Live timeline uses authoritative saved physics timestamps. Scrub to inspect
+recorded position, velocity, actuator torque and matching predictions. History
+plays smoothly at 1× simulation time, independently of how slowly it was
+calculated. At a growing history's unavailable end, playback holds until more
+motion is ready. It never extrapolates or jumps to the newest sample. The full
+accepted recording is retained; only the displayed path is reduced to at most
+5000 points, with cached geometry so rendering stays responsive.
+
+Timeline intervals are **red** when MPC exceeds its nominal TO budget, otherwise
+**yellow** when physics or combined execution exceeds the simulated interval.
+Red takes priority even when physics is slower. Hover for separate MPC, physics,
+total and budget times. The Play button turns red only while waiting at a
+computation-limited end, not while replaying previously slow intervals.
+**Calculation RTF** reports generated simulation time per calculation wall time (including deliberate pacing);
+it does not alter recorded playback speed. Nominal simulated rates and achieved
+rates per calculation-wall second are labeled separately.
 
 The settings include horizon N and knot interval, costs, SQP/PCG budgets and
-tolerance, ADMM and warm-start choices, and bound margins/fractions. Only
-modules prepared for the current MPC/toolchain are offered; changing a setting
-never launches a compilation. Restart the server and rerun setup after changing
-`tiago_mpc` code. The live API and event fields are in [docs/live-api.md](docs/live-api.md).
+tolerance, ADMM choices, and bound margins/fractions. Only modules prepared for
+the current MPC/toolchain are offered; changing a setting never compiles one.
+Restart the server and rerun setup after changing `tiago_mpc` code. See the
+[execution API](docs/execution-api.md) and [prediction fields](docs/live-api.md).
 
-Predicted tool path, reference, and simulated motion have separate labels.
-The display shows solver work, constraint violation and solve time for each
-plan. A finite plan does not establish convergence. Simulated time is separate
-from computation time; Play advances one knot interval after each solve using
-the unchanged reaching RK4 plant. Solve latency does not advance the plant.
-The real-time factor shows when playback falls behind wall time.
-
-The native CUDA binding holds Python's interpreter lock during a solve.
-Pause/settings requests can therefore wait for that solve to finish, especially
-with large solver budgets. Browser camera controls continue to work. Closing
-the last live view pauses solving and releases the experiment locks.
+Predicted tool path, task reference, and recorded simulated motion have separate
+labels. The display shows solver work, constraint violation and solve time for
+each plan. A finite plan does not establish convergence. A separate persistent
+compute process keeps native solver calls independent of HTTP and rendering.
 
 This MVP is a simulation diagnostic. It does not command a physical robot,
 check collisions, or provide experiment/timing evidence. Live convergence plots
@@ -113,8 +138,8 @@ Top places the robot's forward direction toward screen right. Cube corners
 select the eight equal-angle diagonal views.
 
 **Fit robot** frames the full robot in its current pose. **Fit trajectory**
-frames the selected Replay motion and reference. In Live, it frames the full
-tracking reference, or the available task start and reaching target. Both
+frames the selected Replay motion and reference. In Live, it frames a completed precalculated closed-loop path when available;
+otherwise it uses the full tracking reference, or the task start and reaching target. Both
 commands retain the viewing direction and adjust the center and distance with
 margin for the viewport's current shape. They do not run the solver.
 
