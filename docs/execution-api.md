@@ -60,6 +60,21 @@ starts, including during playback, and keeps it frozen through debouncing and
 the resulting calculation. It does not replace the anchor with arriving
 background states. Figure-eight phase follows `sim_time_s`.
 
+### Continuation from the displayed state — Felix, 2026-10-21
+
+Domain terms are defined in [UBIQUITOUS_LANGUAGE.md](../UBIQUITOUS_LANGUAGE.md).
+Changing execution settings starts a new active episode segment from the
+displayed native positions, velocities and task time. For example, play to
+10 s, scrub to 5 s, change settings, then calculate 10 s: the continuation
+covers task/simulation time 5–15 s. It resets the controller for the changed
+configuration while preserving the selected plant state and figure-eight
+phase. The active UI history contains the new segment; it does not stitch in
+the old 0–5 s prefix. Superseded history files remain on disk.
+
+This accepted simplification does not add episode branching or change ordinary
+Play, which extends the existing history tip without a settings edit. Plot
+configuration, camera changes and inspection do not start a continuation.
+
 Calculation modes are `on_play`, `manual`, and `automatic`. On Play generates
 only as playback needs new history. Manual uses the Precalculate action to
 generate a full bounded recording. Automatic invalidates stale work and
