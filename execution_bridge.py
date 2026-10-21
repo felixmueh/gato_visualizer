@@ -103,9 +103,9 @@ class HistoryStore:
                         cursor=len(self.offsets), byte_end=self.stream.tell(),
                         complete=self.complete)
 
-    def page(self, generation, after, limit):
-        # Snapshot the file and cursor metadata quickly, then parse outside both
-        # transport and store locks. Superseded files remain readable on disk.
+    def _page_encoded(self, generation, after, limit):
+        # Snapshot one bounded committed byte window, then read outside locks.
+        # Superseded files remain readable; later appends cannot enter this page.
         with self.lock:
             if generation != self.generation:
                 raise HistoryGenerationError(f"History changed; current generation={self.generation}")
@@ -114,14 +114,31 @@ class HistoryStore:
             stop = min(after+limit, len(self.offsets))
             path = self.path
             offset = self.offsets[after] if stop > after else None
+            end = self.offsets[stop] if stop < len(self.offsets) else self.stream.tell()
             complete, end_time = self.complete, self.end_time
         records = []
         if offset is not None:
             with path.open("rb") as reader:
                 reader.seek(offset)
-                records = [json.loads(reader.readline()) for _ in range(stop-after)]
+                encoded = reader.read(end-offset)
+            records = encoded.split(b"\n")[:-1]
+            if len(encoded) != end-offset or not encoded.endswith(b"\n") or len(records) != stop-after:
+                raise ValueError("Committed Live history page is incomplete")
         return dict(generation=generation, next_cursor=stop, complete=complete,
                     records=records, history_end_s=end_time)
+
+    def page(self, generation, after, limit):
+        page = self._page_encoded(generation, after, limit)
+        page["records"] = [json.loads(record) for record in page["records"]]
+        return page
+
+    def page_json(self, generation, after, limit):
+        """Reuse validated JSONL records without decoding and re-encoding them."""
+        page = self._page_encoded(generation, after, limit)
+        head = {key: page[key] for key in ("generation", "next_cursor", "complete")}
+        encode = lambda value: json.dumps(value, allow_nan=False, separators=(",", ":")).encode()
+        return (encode(head)[:-1] + b',"records":[' + b",".join(page["records"]) + b'],' +
+                encode(dict(history_end_s=page["history_end_s"]))[1:])
 
     def selected_plan(self, descriptor, identifier):
         """Read one retained plan, never scan/decode unrelated physics states."""
@@ -270,6 +287,9 @@ class ProcessLiveService:
 
     def history(self, generation, after=0, limit=256):
         return self.history_store.page(generation, after, limit)
+
+    def history_json(self, generation, after=0, limit=256):
+        return self.history_store.page_json(generation, after, limit)
 
     def switch_solver_profile(self, profile, anchor=None):
         anchor = validate_anchor(anchor)

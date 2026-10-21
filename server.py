@@ -711,14 +711,15 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                     query = parse_qs(urlsplit(self.path).query)
                     if "generation" not in query or not set(query) <= {"generation", "after", "limit"} or any(len(values) != 1 for values in query.values()):
                         raise ValueError("History requires one generation and optional after/limit")
-                    payload = live.history(int(query["generation"][0]),
-                                           int(query.get("after", ["0"])[0]),
-                                           int(query.get("limit", ["256"])[0]))
+                    read_page = getattr(live, "history_json", live.history)
+                    payload = read_page(int(query["generation"][0]),
+                                        int(query.get("after", ["0"])[0]),
+                                        int(query.get("limit", ["256"])[0]))
                     status = 200
                 except (ValueError, TypeError) as exc:
                     status = 409 if isinstance(exc, HistoryGenerationError) else 400
                     payload = dict(error=str(exc), generation=live.generation)
-                self.send_payload(json.dumps(payload, allow_nan=False, separators=(",", ":")).encode(),
+                self.send_payload(payload if isinstance(payload, bytes) else json.dumps(payload, allow_nan=False, separators=(",", ":")).encode(),
                                   "application/json; charset=utf-8", status, compress=True)
             elif path == "/api/live/events" and live is not None:
                 self.live_events()

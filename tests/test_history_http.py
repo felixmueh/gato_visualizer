@@ -23,8 +23,8 @@ class HistoryHTTPTests(unittest.TestCase):
                 raise HistoryGenerationError("History changed; current generation=7")
             self.assertEqual((after, limit), (0, 256))
             return self.page
-        self.server = make_server(dict(trajectories=[]), b"<robot/>", {}, port=0,
-                                  live=SimpleNamespace(generation=7, history=history))
+        self.live = SimpleNamespace(generation=7, history=history)
+        self.server = make_server(dict(trajectories=[]), b"<robot/>", {}, port=0, live=self.live)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}/api/live/history?generation=7"
@@ -70,6 +70,41 @@ class HistoryHTTPTests(unittest.TestCase):
         self.assertIsNone(response.headers.get("Content-Encoding"))
         self.assertEqual(response.headers["Vary"], "Accept-Encoding")
         self.assertEqual(json.load(response)["generation"], 7)
+
+    def test_encoded_history_fast_path_preserves_plain_gzip_head_and_query_errors(self):
+        from execution_bridge import HistoryGenerationError
+        encoded = json.dumps(self.page, allow_nan=False, separators=(",", ":")).encode()
+        calls = []
+        def history_json(generation, after, limit):
+            calls.append((generation, after, limit))
+            if generation != 7:
+                raise HistoryGenerationError("History changed; current generation=7")
+            if after < 0 or not 1 <= limit <= 256:
+                raise ValueError("Invalid history page")
+            return encoded
+        self.live.history_json = history_json
+        self.live.history = lambda *args: self.fail("Decoded Python history path was called")
+        with self.request() as response:
+            self.assertEqual(response.read(), encoded)
+        with self.request("gzip") as response:
+            compressed = response.read()
+            self.assertEqual(gzip.decompress(compressed), encoded)
+        with self.request("gzip", method="HEAD") as response:
+            self.assertEqual(response.read(), b"")
+            self.assertEqual(int(response.headers["Content-Length"]), len(compressed))
+        self.assertEqual(calls, [(7, 0, 256)]*3)
+        initial = self.url
+        for suffix, status in (("&limit=257", 400), ("&after=-1", 400),
+                               ("&limit=1&limit=2", 400), ("&unknown=1", 400)):
+            self.url = initial + suffix
+            with self.subTest(suffix=suffix), self.assertRaises(HTTPError) as error:
+                self.request()
+            self.assertEqual(error.exception.code, status)
+        self.url = initial.replace("generation=7", "generation=6")
+        with self.assertRaises(HTTPError) as error:
+            self.request()
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(json.load(error.exception)["generation"], 7)
 
 
 if __name__ == "__main__":
