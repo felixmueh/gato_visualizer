@@ -228,6 +228,12 @@ def inspect_source(raw, selection=None, analysis=None):
             p.get("trajectory_index") == selection["trajectory_index"] for p in plans):
         selected = next((p for p in plans if p.get("trajectory_index") == selection["trajectory_index"]), None)
         association = "explicit trajectory"
+    elif (raw.get("source", {}).get("kind") == "inspection" and plans
+          and selection.get("trajectory_index") is None):
+        # A standalone result has its own Solve identity and no episode clock.
+        # The browser retains the original episode cursor while switching only
+        # the Solve inspector source, so that cursor cannot associate this plan.
+        selected, association = plans[0], "standalone solve"
     elif plans:
         cursor = analysis.get("cursor_s")
         states = raw.get("states", [])

@@ -106,6 +106,22 @@ class ArtifactTests(unittest.TestCase):
                 with self.assertRaises(ValueError): handle.xu[0,0,0]=100
                 self.assertEqual(load.call_count,1)
 
+    def test_standalone_inspection_default_ignores_episode_cursor_with_null_selector(self):
+        retained=dict(plan(),id='standalone-result',origin='inspection',sim_time_s=None,
+                      q=[[.25]*7]*3,knot_time_s=[0.,.03,.06])
+        raw=dict(source=dict(kind='inspection',id='standalone-result'),states=[],plans=[retained])
+        for cursor in (0.,999.):
+            selected,context=inspect_source(raw,dict(solve_seq=None,iteration=None),
+                                            dict(mode='entire',cursor_s=cursor))
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected['id'],'standalone-result')
+            self.assertEqual(context['association'],'standalone solve')
+            self.assertFalse(context['episode_available'])
+            self.assertEqual(context['selected_solve']['id'],'standalone-result')
+            self.assertTrue(context['selected_solve']['final_prediction'])
+        with self.assertRaisesRegex(ValueError,'not retained'):
+            inspect_source(raw,dict(solve_id='missing'),dict(cursor_s=0.))
+
     def test_missing_exact_reference_and_bounds_do_not_use_display_geometry(self):
         for key in ('initial_state','reference_native','problem_configuration','constraint_bounds_native'):
             p=plan();p.pop(key)
