@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
+import { livePredictionForView } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
 import { setupSolverProfiles } from "./solver-profiles.js";
 import "./solver-profiles.css";
@@ -644,7 +645,7 @@ function renderInspectedPrediction() {
   if (replayInspectionPrediction) replayInspectionPrediction.visible = false;
   if (!liveGroup) return;
   disposeLiveObject(livePrediction); livePrediction = undefined;
-  const plan = !displayedLivePlan && !inspectedPrediction?.pinned ? null : inspectedPrediction?.active ? inspectedPrediction.prediction : displayedLivePlan;
+  const plan = livePredictionForView(displayedLivePlan, inspectedPrediction);
   if (plan?.ee_xyz?.length) { livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false); liveGroup.add(livePrediction); }
   refreshFitAvailability();
 }
