@@ -79,7 +79,7 @@ class HistoryHTTPTests(unittest.TestCase):
             calls.append((generation, after, limit))
             if generation != 7:
                 raise HistoryGenerationError("History changed; current generation=7")
-            if after < 0 or not 1 <= limit <= 256:
+            if after < 0 or not 1 <= limit <= 2048:
                 raise ValueError("Invalid history page")
             return encoded
         self.live.history_json = history_json
@@ -94,7 +94,11 @@ class HistoryHTTPTests(unittest.TestCase):
             self.assertEqual(int(response.headers["Content-Length"]), len(compressed))
         self.assertEqual(calls, [(7, 0, 256)]*3)
         initial = self.url
-        for suffix, status in (("&limit=257", 400), ("&after=-1", 400),
+        self.url = initial + "&limit=1024"
+        with self.request() as response:
+            self.assertEqual(response.read(), encoded)
+        self.assertEqual(calls[-1], (7, 0, 1024))
+        for suffix, status in (("&limit=2049", 400), ("&after=-1", 400),
                                ("&limit=1&limit=2", 400), ("&unknown=1", 400)):
             self.url = initial + suffix
             with self.subTest(suffix=suffix), self.assertRaises(HTTPError) as error:

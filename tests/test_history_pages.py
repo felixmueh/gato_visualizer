@@ -37,9 +37,23 @@ class EncodedHistoryPageTests(unittest.TestCase):
         for method in (self.store.page, self.store.page_json):
             with self.assertRaises(HistoryGenerationError):
                 method(6, 0, 256)
-            for after, limit in ((-1, 256), (602, 256), (0, 0), (0, 257)):
+            for after, limit in ((-1, 256), (602, 256), (0, 0), (0, 2049), (0, True), (0, 1.5), (False, 256), (1.5, 256)):
                 with self.subTest(method=method.__name__, after=after, limit=limit), self.assertRaises(ValueError):
                     method(7, after, limit)
+
+    def test_larger_pages_preserve_exact_committed_bytes_and_cursors(self):
+        extra = [dict(type='state', generation=7, sim_time_s=i/1000, q=[i/1000]*7)
+                 for i in range(601, 3000)]
+        self.store.append(extra)
+        records = self.records + extra
+        for after, limit in ((0,1024), (1024,1024), (2048,1024), (0,2048)):
+            with self.subTest(after=after, limit=limit):
+                expected = self.store.page(7,after,limit)
+                with patch('execution_bridge.json.loads', side_effect=AssertionError('Decoded history JSON')):
+                    raw = self.store.page_json(7,after,limit)
+                self.assertEqual(raw,json.dumps(expected,allow_nan=False,separators=(',',':')).encode())
+                self.assertEqual(expected['records'],records[after:after+limit])
+                self.assertEqual(expected['next_cursor'],min(after+limit,len(records)))
 
     def test_captured_page_excludes_later_appends_and_survives_generation_reset(self):
         old = self.store.path

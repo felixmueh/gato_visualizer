@@ -243,7 +243,7 @@ class SchedulerTests(unittest.TestCase):
                 with self.assertRaises(HistoryGenerationError):
                     store.page(0,0,256)
                 with self.assertRaises(ValueError):
-                    store.page(1,0,257)
+                    store.page(1,0,2049)
             finally:
                 store.close()
 

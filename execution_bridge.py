@@ -15,6 +15,7 @@ from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
 SHUTDOWN_GRACE_SECONDS = 10
+MAX_HISTORY_PAGE_RECORDS = 2048
 
 class HistoryGenerationError(ValueError):
     pass
@@ -110,8 +111,9 @@ class HistoryStore:
         with self.lock:
             if generation != self.generation:
                 raise HistoryGenerationError(f"History changed; current generation={self.generation}")
-            if not 0 <= after <= len(self.offsets) or not 1 <= limit <= 256:
-                raise ValueError("after must be an existing history cursor; limit must be within [1,256]")
+            if (type(after) is not int or type(limit) is not int or
+                    not 0 <= after <= len(self.offsets) or not 1 <= limit <= MAX_HISTORY_PAGE_RECORDS):
+                raise ValueError(f"after must be an existing history cursor; limit must be within [1,{MAX_HISTORY_PAGE_RECORDS}]")
             stop = min(after+limit, len(self.offsets))
             path = self.path
             offset = self.offsets[after] if stop > after else None
