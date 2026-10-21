@@ -74,6 +74,7 @@ let tracePoints = [];
 let lastLiveTime;
 let livePrediction;
 let liveReference;
+let displayedLiveReference;
 let displayedLivePlan;
 let liveTaskStart;
 let lastCameraFit;
@@ -224,9 +225,10 @@ function fitTaskPoints(options = {}) {
   return trajectoryFitPoints({
     replay: trajectory,
     live: live?.mode === 'live',
-    taskKind: displayedLivePlan?.task_kind || live?.settings?.task?.kind || 'reach',
-    plan: displayedLivePlan,
-    state: live?.displayedState || live?.state,
+    taskKind: displayedLiveReference?.kind || displayedLivePlan?.task_kind || live?.settings?.task?.kind || 'reach',
+    plan: displayedLiveReference ? { ...displayedLivePlan, task_path_xyz: displayedLiveReference.points,
+      target_xyz: displayedLiveReference.target_xyz } : displayedLivePlan,
+    state: displayedLiveReference?.draft ? { ...(live?.displayedState || live?.state), target_xyz: displayedLiveReference.target_xyz } : live?.displayedState || live?.state,
     taskStart: liveTaskStart,
     precomputedPath: live?.mode === 'live' ? live.precomputedPath : undefined,
     ...options,
@@ -428,7 +430,7 @@ function animate(timestamp) {
   live?.frame(timestamp);
   viewCube.update(timestamp);
   targetGizmo?.update();
-  if (liveGroup?.userData.target) liveGroup.userData.target.visible = !targetGizmo?.active;
+  if (liveGroup?.userData.target) liveGroup.userData.target.visible = displayedLiveReference?.kind === 'figure8' || !targetGizmo?.active;
   renderer.render(scene, camera);
   workbench.update(); updateExpandedTimeline(); metrics.update(); auxiliaryViews?.render(timestamp);
 }
@@ -511,7 +513,7 @@ async function start() {
     robotBounds = new THREE.Box3().setFromObject(robot);
     setCamera("home");
     ready = true;
-    live = setupLive({ onMode: changeMode, onPlan: showLivePlan, onState: showLiveState, onReset: resetLiveTrace });
+    live = setupLive({ onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace });
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
       moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: isStartingScene(data) ? 'Starting pose' : 'Default recording' });
@@ -527,6 +529,8 @@ async function start() {
       get library() { return replayLibrary; },
       get replayScene() { return data; },
       get pathInfo() { return { replay: (pathGroup?.children || []).filter(line => line.isLine2).map(pathLineInfo), live: (liveGroup?.children || []).filter(line => line.isLine2).map(pathLineInfo) }; },
+      get liveReference() { return displayedLiveReference; },
+      get liveReferenceTarget() { return liveGroup?.userData.target?.position.toArray() ?? null; },
       get replayTarget() { return referenceMarker?.position.toArray() ?? null; },
       get live() {
         return live;
@@ -613,16 +617,25 @@ function showLivePlan(plan) {
   if (!liveGroup) return;
   displayedLivePlan = plan;
   disposeLiveObject(livePrediction);
-  disposeLiveObject(liveReference);
-  if (liveGroup.userData.target) disposeLiveObject(liveGroup.userData.target);
-  livePrediction = liveReference = liveGroup.userData.target = undefined;
+  livePrediction = undefined;
   if (!plan) { refreshFitAvailability(); return; }
   livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false);
-  liveReference = makeLiveLine(plan.task_path_xyz || plan.reference_xyz, targetColor, true);
-  // A reaching reference is a repeated point; keep a visible target marker.
-  const target = makeMarker(plan.target_xyz || plan.reference_xyz[0], targetColor, 0.022, true);
-  liveGroup.userData.target = target;
-  liveGroup.add(livePrediction, liveReference, target);
+  liveGroup.add(livePrediction);
+  refreshFitAvailability();
+}
+
+function showLiveReference(reference) {
+  if (!liveGroup) return;
+  auxiliaryViews?.invalidate();
+  displayedLiveReference = reference;
+  disposeLiveObject(liveReference);
+  if (liveGroup.userData.target) disposeLiveObject(liveGroup.userData.target);
+  liveReference = liveGroup.userData.target = undefined;
+  if (reference) {
+    liveReference = makeLiveLine(reference.points, targetColor, true);
+    liveGroup.userData.target = makeMarker(reference.target_xyz, targetColor, 0.022, true);
+    liveGroup.add(liveReference, liveGroup.userData.target);
+  }
   refreshFitAvailability();
 }
 
@@ -643,7 +656,8 @@ function showLiveState(state, context = {}) {
     robot.setJointValue(name, state.q[i]);
   });
   updateJointTelemetry(state.q, state.qd, state.torque_nm, state.joint_limits || defaultData.joint_limits);
-  if (Array.isArray(state.target_xyz) && state.target_xyz.length === 3 && state.target_xyz.every(Number.isFinite) && liveGroup.userData.target) liveGroup.userData.target.position.fromArray(state.target_xyz);
+  const referenceTarget = context.referenceTarget || (!displayedLiveReference?.draft ? state.target_xyz : null);
+  if (Array.isArray(referenceTarget) && referenceTarget.length === 3 && referenceTarget.every(Number.isFinite) && liveGroup.userData.target) liveGroup.userData.target.position.fromArray(referenceTarget);
   if (context.tracePoints) {
     if (tracePoints !== context.tracePoints) {
       tracePoints = context.tracePoints;

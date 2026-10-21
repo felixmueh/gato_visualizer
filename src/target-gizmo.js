@@ -21,7 +21,7 @@ export function taskGizmoShortcut(event, kind) {
       /^(INPUT|SELECT|TEXTAREA)$/i.test(event.target?.tagName || '')) return null;
   const key = event.key.toLowerCase();
   if (key === 'escape') return 'deselect';
-  if (key === 'g') return 'translate';
+  if (key === 't' || key === 'g') return 'translate';
   if (kind === 'figure8' && key === 'r') return 'rotate';
   if (kind === 'figure8' && key === 's') return 'scale';
   return null;
@@ -130,8 +130,8 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     if (button) button.disabled = !active;
     if (note) note.textContent = !active
       ? 'Task handles become available at the latest live state after preview.'
-      : selected ? `${toolMode === 'scale' ? 'Scale local X width / Y height' : toolMode === 'rotate' ? 'Rotate path around its start point in world coordinates' : 'Move task in world coordinates'}. G move${target.kind === 'figure8' ? ' · R rotate · S scale' : ''} · Esc deselect.${target.pending ? ' Preview updating…' : ''}`
-        : `Click the gold task anchor or press G to move${target.kind === 'figure8' ? ', R to rotate, S to scale' : ''}.`;
+      : selected ? `${toolMode === 'scale' ? 'Scale local X width / Y height' : toolMode === 'rotate' ? 'Rotate path around its start point in world coordinates' : 'Move task in world coordinates'}. T translate${target.kind === 'figure8' ? ' · R rotate · S scale' : ''} · Esc deselect.${target.pending ? ' Prediction updating…' : ''}`
+        : `Click the gold task anchor or press T to translate${target.kind === 'figure8' ? ', R to rotate, S to scale' : ''}.`;
   };
   const project = (point) => {
     const position = point.clone().project(camera);

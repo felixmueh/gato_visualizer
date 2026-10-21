@@ -370,7 +370,7 @@ test('accepted settings reconcile a completed job whose notices arrived before i
 });
 
 test('Play at an idle recorded end restarts history locally; an active growing tip keeps waiting', async () => {
-  const h = harness();
+  const h = harness(); h.schema.defaults.execution.calculation = 'manual';
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
   try {
@@ -390,6 +390,33 @@ test('Play at an idle recorded end restarts history locally; an active growing t
     assert.equal(h.commands.filter(command => command.type === 'play').length, 0);
     h.$('replay-mode').emit('click'); await flush();
   } finally {
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('On Play resumes at the existing history tip and keeps waiting for continuous computation regardless of Stop', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
+    await flush(); source.emit(plan(1, 1));
+    for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+    h.$('live-history-latest').emit('click'); assert.equal(live.settings.execution.continue_at_end, false);
+    h.$('live-play').emit('click'); await flush();
+    assert.equal(live.history.selectedTime, .2); assert.equal(live.playing, true);
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
+    source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true });
+    for (let i = 1; i <= 3; i++) live.frame(performance.now() + 1000 * i);
+    await flush(); assert.equal(live.playing, true); assert.equal(live.history.selectedTime, .2);
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 1); // No duplicate jobs at a growing tip.
+    h.$('live-play').emit('click'); await flush(); assert.equal(live.playing, false);
+    source.emit({ type: 'status', state: 'paused', settings_version: 1, job_active: false });
+    live.frame(performance.now() + 4000);
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
 });
@@ -483,6 +510,52 @@ test('figure-eight transforms use static start anchor, preserve period and reach
     assert.deepEqual(live.settings.task, retained.task); // includes edited rotation and dimensions
     const width = h.document.querySelector('[data-task-path="width_m"]'); width.value = '99'; width.emit('input');
     assert.equal(live.targetInteraction.available, false);
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('desired figure-eight redraws before planner responses and stale predictions cannot replace the local draft', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const references = [], predictions = [], states = [];
+    const live = setupLive({ onMode() {}, onPlan: value => predictions.push(value), onReference: value => references.push(value), onState: (value, context) => states.push(context), onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
+    const anchors = { reach: [.7, -.2, .9], figure8: [.5, -.2, .9] };
+    source.emit({ ...plan(1, 1), task_anchors: anchors });
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    const commandCount = h.commands.length;
+    live.frame(0);
+    assert.equal(references.at(-1).kind, 'figure8'); // No tracking plan has ever arrived.
+    assert.deepEqual(references.at(-1).points[0], anchors.figure8);
+    assert.equal(predictions.at(-1), null);
+    const before = references.at(-1);
+    live.setTaskTransform({ quaternion_xyzw: [0, 0, Math.SQRT1_2, Math.SQRT1_2], size_m: [.4, .2] });
+    live.frame(1);
+    assert.notDeepEqual(references.at(-1).points, before.points);
+    assert(Math.abs(references.at(-1).points[128][1] - .2) < 1e-12);
+    live.setTargetWorld([.6, -.1, 1]); live.frame(2);
+    assert.deepEqual(references.at(-1).points[0], [.6, -.1, 1]);
+    assert.equal(h.commands.length, commandCount); // Visible before the edit debounce or any POST.
+    const current = references.at(-1);
+    source.emit({ type: 'state', settings_version: 1, sim_time_s: 4, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [9,9,9], target_xyz: [99,99,99], task_anchors: anchors });
+    live.frame(2.5);
+    assert(Math.abs(states.at(-1).referenceTarget[0] - .6) < 1e-12);
+    assert(Math.abs(states.at(-1).referenceTarget[1] - .3) < 1e-12); // Rotated/scaled half-cycle target, not the stale state target.
+    assert.deepEqual(live.targetInteraction.position_world, [.6, -.1, 1]); // Gizmo pivot stays fixed even as the target moves.
+    source.emit({ ...plan(1, 2), task_anchors: anchors }); live.frame(3);
+    assert.equal(references.at(-1), current); // Delayed optimizer response cannot redraw geometry.
+    assert.equal(predictions.at(-1), null);
+    h.$('live-preview').emit('click'); await flush(); live.frame(4);
+    assert.equal(live.pending, true);
+    assert.equal(references.at(-1), current);
+    source.emit({ ...plan(1, 3), task_anchors: anchors }); live.frame(5);
+    assert.equal(references.at(-1), current);
+    assert.deepEqual(live.targetInteraction.position_world, [.6, -.1, 1]);
   } finally {
     h.$('replay-mode').emit('click'); await flush();
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }

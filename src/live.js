@@ -1,5 +1,6 @@
 import { createSettingResets, canonicalOrientation, settingValuesEqual } from './setting-resets.js';
 import { targetWorldPosition, targetWorldOffset, normalizeQuaternion } from './target-gizmo.js';
+import { taskReference, taskReferencePoint } from './task-reference.js';
 
 // The API uses native joint values and full robot-root coordinates. No sign or
 // frame conversions belong in the browser.
@@ -66,7 +67,7 @@ export function validPoints(points) {
     Array.isArray(point) && point.length === 3 && point.every(Number.isFinite));
 }
 
-export function setupLive({ onMode, onPlan, onState, onReset }) {
+export function setupLive({ onMode, onPlan, onState, onReset, onReference = () => {} }) {
   const $ = id => document.getElementById(id);
   let schema, settings, defaultSettings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
@@ -76,6 +77,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   let historyRevision = 0, paintedRevision = -1, job = {}, extensionPending = false, extensionStartTime = null, frozenAnchor;
   let inspectingPreview = false, inspectionPlan = null;
   let defaultTargetWorld, figure8BaseWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
+  let desiredReference, referenceKey, renderedReference;
   const latestServerEvents = new Map();
   const taskDrafts = new Map();
   const resetIndicators = createSettingResets();
@@ -83,6 +85,11 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
   const connected = () => liveReady && source?.readyState === EventSource.OPEN && !needsInitialPreview;
+  const continueAtEnd = () => settings.execution.calculation === 'on_play' || settings.execution.continue_at_end;
+  const acceptTaskAnchors = item => {
+    if (validPoints([item?.task_anchors?.reach])) defaultTargetWorld = [...item.task_anchors.reach];
+    if (validPoints([item?.task_anchors?.figure8])) figure8BaseWorld = [...item.task_anchors.figure8];
+  };
   const displayedAnchor = () => {
     const value = presentedState || history.at(clock.time)?.state || state;
     return value && Array.isArray(value.q) && Array.isArray(value.qd)
@@ -361,6 +368,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
         for (const record of records) {
           if (record.generation !== generation || (expectedVersion != null && record.settings_version < expectedVersion)) continue;
           history.addRecord(record); appliedRecords++;
+          acceptTaskAnchors(record);
           if (record.type === 'state') state = record;
           if (record.type === 'plan') acceptPlan(record, false);
         }
@@ -378,6 +386,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   function acceptPlan(item, presentation = true) {
     if (!validPoints(item.ee_xyz) || !validPoints(item.reference_xyz)) return false;
     plan = item;
+    acceptTaskAnchors(item);
     if (presentation && inspectingPreview && item.origin === 'preview') inspectionPlan = item;
     if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
     // Authoritative history can contain plans whose presentation SSE was
@@ -403,6 +412,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   function receiveItem(item) {
     if (!needsInitialPreview && generation != null && item.generation != null && item.generation < generation) return;
     if (!needsInitialPreview && item.type === 'status' && expectedVersion != null && item.settings_version < expectedVersion) return;
+    acceptTaskAnchors(item);
     if (item.type === 'status') {
       status = item.state; job = item;
       if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
@@ -483,6 +493,18 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     const selected = history.interpolateAt(clock.time, { trace: false });
     if (traceRevision !== historyRevision) { displayPath = history.displayPath(); traceRevision = historyRevision; }
     const shownState = selected?.state || state, shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || plan;
+    const historical = clock.time != null && clock.time < history.bounds[1] - 1e-7;
+    const editing = dirty || pending;
+    const draft = (!historical || editing) && settings?.task;
+    const base = draft?.kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
+    const nextReferenceKey = draft ? JSON.stringify([draft, base]) : shownPlan;
+    if (referenceKey !== nextReferenceKey) {
+      referenceKey = nextReferenceKey;
+      desiredReference = draft ? taskReference(draft, base) : shownPlan ? {
+        kind: shownPlan.task_kind, points: shownPlan.task_path_xyz || shownPlan.reference_xyz,
+        target_xyz: shownPlan.target_xyz || shownPlan.reference_xyz[0], draft: false,
+      } : null;
+    }
     const stats = shownPlan?.stats || {};
     for (const [id, value] of [['live-sqp', stats.sqp_iters], ['live-pcg', stats.pcg_iters], ['live-admm', stats.admm_iters], ['live-linsys', stats.admm_linsys_iters]]) $(id).textContent = number(value);
     $('live-solve').textContent = number(stats.solve_time_ms, 2);
@@ -499,11 +521,17 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     $('live-play').classList.toggle('compute-limited', clock.playing && clock.time >= history.bounds[1] - .001 && Boolean(job.job_active) && job.calculation_rtf < .99);
     refreshPlanLabel(shownPlan); refreshHistoryControls();
     if (mode === 'live') {
-      if (renderedPlan !== (shownPlan || null)) { onPlan(shownPlan || null); renderedPlan = shownPlan || null; }
+      // An old optimizer output must not look like a prediction of the edited
+      // task. Desired geometry still redraws while its replacement is pending.
+      const currentPlan = editing ? null : shownPlan || null;
+      if (renderedPlan !== currentPlan) { onPlan(currentPlan); renderedPlan = currentPlan; }
+      if (renderedReference !== desiredReference) { onReference(desiredReference); renderedReference = desiredReference; }
       if (shownState) {
         const tracePoints = selected ? displayPath.points : [shownState.ee_xyz];
         const traceCount = selected ? Math.min(tracePoints.length, Math.floor(selected.index / displayPath.stride) + 1 + (selected.index === history.length - 1 && selected.index % displayPath.stride ? 1 : 0)) : 1;
-        onState(shownState, { tracePoints, traceCount, historical: clock.time != null && clock.time < history.bounds[1] - 1e-7, interpolated: Boolean(shownState.render_interpolated) }); presentedState = shownState;
+        onState(shownState, { tracePoints, traceCount,
+          referenceTarget: desiredReference?.draft ? taskReferencePoint(draft, base, shownState.sim_time_s) : shownState.target_xyz,
+          historical: clock.time != null && clock.time < history.bounds[1] - 1e-7, interpolated: Boolean(shownState.render_interpolated) }); presentedState = shownState;
       }
     }
     renderDirty = false;
@@ -529,7 +557,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     if (clock.playing) {
       const tick = clock.tick(timestamp, history.bounds);
       if (tick.atEnd && !job.job_active && !fetching) {
-        if (settings.execution.continue_at_end) extendHistory();
+        if (continueAtEnd()) extendHistory();
         else if (!extensionPending) { clock.pause(); controlsEnabled(); }
       }
       renderDirty = true;
@@ -590,10 +618,10 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     if (dirty && !await submitSettings()) return;
     const noMotion = history.length < 2;
     if (clock.time == null) clock.seek(history.bounds[0]);
-    // An idle recording at its end should replay when Play is pressed. A
-    // growing tip must keep waiting there, and Continue extends from that tip.
-    if (!noMotion && !job.job_active && !extensionPending && !settings.execution.continue_at_end && clock.time >= history.bounds[1] - 1e-7) clock.seek(history.bounds[0]);
-    if (noMotion || (clock.time >= history.bounds[1] - 1e-7 && settings.execution.continue_at_end)) { if (!await extendHistory()) return; }
+    // Finite precalculations replay from the start when Stop is selected.
+    // On Play resumes continuous computation from the existing recording tip.
+    if (!noMotion && !job.job_active && !extensionPending && !continueAtEnd() && clock.time >= history.bounds[1] - 1e-7) clock.seek(history.bounds[0]);
+    if (noMotion || (clock.time >= history.bounds[1] - 1e-7 && continueAtEnd())) { if (!await extendHistory()) return; }
     clock.play(performance.now()); controlsEnabled(); renderView();
   });
   $('live-reset').addEventListener('click', async () => {
@@ -610,7 +638,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     event.target.title = `${number(time, 3)} s · ${interval ? intervalDescription(interval) : 'Recorded simulation time'}`;
   });
   $('live-history-latest').addEventListener('click', showLatest);
-  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings); liveReady = true; populate(); }).catch(error => { liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
+  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings); liveReady = true; populate(); }).catch(error => { liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
   return {
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
@@ -638,6 +666,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       });
       change(); return this.targetInteraction;
     },
+    get reference() { return desiredReference; },
     get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
     get metricHistory() { return history.metricSnapshot; },
     get history() { return { length: history.length, bounds: history.bounds, selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },

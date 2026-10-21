@@ -63,8 +63,9 @@ position, velocity and actuator torque). Auxiliary views show the same robot and
 playback time and suspend rendering when their panel is hidden.
 
 The playback bar contains Play/Pause, Reset, the timeline and **Stop**. Checked
-Stop ends playback at the recording's end. In Live, unchecking it continues
-simulation from the tip; in Replay, unchecking it loops the recording. Live also
+Stop ends playback at the recording's end. With Manual/Automatic Live calculation,
+unchecking it continues simulation from the tip; in Replay, unchecking it loops
+the recording. On Play runs continuously until paused. Live also
 provides the calculation mode, a precalculation icon and a duration in seconds.
 Task position inputs remain available below the controller settings; direct
 viewport manipulation avoids scrolling to them during normal use.
@@ -105,20 +106,23 @@ the application starts a fresh episode at the comfortable pose and time zero.
 
 The **Calculation** menu selects how full closed-loop motion is generated:
 
-- **On Play:** calculate as playback needs new motion, paced at at most 1×.
+- **On Play:** continuously calculate new motion until Pause, paced at at most 1×.
+  The duration and Stop toggle do not end this continuous simulation.
 - **Manual:** press **Precalculate** to prepare the requested duration.
 - **Automatic:** settings edits replace obsolete work and calculate the requested
   duration from the displayed state captured when the edit began.
 
 Every calculation repeats optimization, control application and physics
-integration for the chosen **Calculation duration**. New settings replace obsolete calculation work after the current numerical
+integration. Manual/Automatic calculation and the explicit Precalculate button
+use the chosen **Calculation duration**. New settings replace obsolete calculation work after the current numerical
 operation; a native solve cannot be interrupted.
 Playback and calculation are independent. Play with no recorded motion starts
-calculation. **Stop**, checked by default, decides whether
+calculation. For Manual/Automatic recordings, **Stop**, checked by default, decides whether
 playing through existing history stops at its end or extends it when unchecked. Changing this
 toggle preserves the recording. Scrubbing changes only the displayed time.
-Pressing Play at a completed recording's end with Stop checked replays it from
-the beginning. At a growing recording's end, playback waits for new samples.
+Pressing Play at a completed Manual/Automatic recording's end with Stop checked
+replays it from the beginning. On Play resumes simulation from the latest state
+without rewinding history. At a growing recording's end, playback waits for new samples.
 
 Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz**. Simulation Hz controls
 RK4 integration, Control Hz samples the active plan's torque, and TO Hz requests
@@ -135,10 +139,13 @@ position when switching; Figure eight also retains its rotation and dimensions.
 Figure eight defaults to a
 horizontal world-XY path, starting at the comfortable-pose tool position. Its
 default full spans are 24 × 16 cm with a 24 s period; dimensions, period and
-world offsets are editable. Click the gold task anchor or press **G** to move
+world offsets are editable. Click the gold task anchor or press **T** to translate
 it; for Figure eight, **R** selects rotation and **S** selects width/height
 scaling. Drag the corresponding gizmo handles; **Escape** hides them. Rotation
 uses the fixed path start as its pivot and changes the controller reference too.
+**G** remains an alias for translation. The gold desired path updates immediately
+while dragging, independently of the solver. Obsolete predictions are hidden
+until a replacement arrives; recorded history keeps its recorded reference.
 Shortcuts are inactive while typing. The paused prediction uses that simulation
 time's reference phase; Reset returns the phase to zero.
 

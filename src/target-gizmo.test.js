@@ -21,11 +21,13 @@ test('drag targets respect the API offset range and reject invalid coordinates',
 
 test('task shortcuts support world movement and figure-eight rotation and scaling without stealing typing', () => {
   assert.equal(taskGizmoShortcut({key: 'G'}, 'reach'), 'translate');
+  assert.equal(taskGizmoShortcut({key: 'T'}, 'reach'), 'translate');
   assert.equal(taskGizmoShortcut({key: 'R'}, 'figure8'), 'rotate');
   assert.equal(taskGizmoShortcut({key: 's'}, 'figure8'), 'scale');
   assert.equal(taskGizmoShortcut({key: 'Escape'}, 'figure8'), 'deselect');
   assert.equal(taskGizmoShortcut({key: 's'}, 'reach'), null);
   for (const tagName of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(taskGizmoShortcut({key: 's', target: {tagName}}, 'figure8'), null);
+  for (const tagName of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(taskGizmoShortcut({key: 't', target: {tagName}}, 'figure8'), null);
   assert.equal(taskGizmoShortcut({key: 'r', target: {isContentEditable: true}}, 'figure8'), null);
   assert.equal(taskGizmoShortcut({key: 's', ctrlKey: true}, 'figure8'), null);
 });
@@ -63,6 +65,7 @@ test('real TransformControls preserve scale drag baseline and restore orbit on d
     assert.deepEqual(control.object.position.toArray(), pivot); // Server updates cannot move an active drag.
     press('Escape'); assert.equal(control.object, undefined); assert.equal(orbit.enabled, true);
     press('r'); assert.equal(control.mode, 'rotate'); assert.equal(control.space, 'world'); assert.equal(control.showZ, true);
+    press('t'); assert.equal(control.mode, 'translate');
     press('g'); assert.equal(control.mode, 'translate');
   } finally {
     gizmo.dispose();
