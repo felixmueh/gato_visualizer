@@ -58,12 +58,12 @@ Prediction-horizon scrubbing is deferred. Horizon-time profiles may still show
 the selected iteration's predicted positions/velocities/controls, but no second
 horizon cursor or prediction playback is introduced by this design.
 
-Recommended control placement, still a UI proposal: a compact, labelled SQP
-iteration strip at the top of the Solve inspector, with previous/next buttons,
-Seed / iteration k of K, and a horizontal slider. Keep it distinct from the
-episode's bottom timeline. Explicit manipulation should pin the selected solve
-so incoming Live solves do not replace it mid-inspection; this automatic pinning
-detail remains a proposal rather than an implemented rule.
+Agreed initial control placement: a compact, labelled SQP iteration strip in
+the Solve inspector, with previous/next buttons, Seed / iteration k of K, and
+a horizontal slider. Keep it distinct from the episode's bottom timeline.
+Explicit manipulation should pin the selected solve so incoming Live solves
+do not replace it mid-inspection; this automatic pinning detail remains a
+proposal rather than an implemented rule.
 
 ## Continue SQP
 
