@@ -60,6 +60,7 @@ the ones `reach_sim.py --config <that file>` would use.
 
 - `{"kind": "reach", "target_offset_m": [dx, dy, dz]}`: offset in the world
   frame from the default `reach_sim` target, FK(`Q_START_RAD + Q_GOAL_DELTA_RAD`).
+  The visualizer defaults to `[0.15, 0.2, 0.2]` m; these are offsets, not absolute XYZ coordinates.
 - `{"kind": "figure8", "target_offset_m": [dx,dy,dz], "width_m": 0.24,
   "height_m": 0.16, "period_s": 24}`: horizontal world-XY tracking. The loop
   starts at the comfortable-pose tool position plus the offset, extends
@@ -91,7 +92,7 @@ converts world-frame values with the transform derived from the full URDF.
 
 ```json
 {
-  "defaults": {"config": {...}, "task": {"kind": "reach", "target_offset_m": [0, 0, 0]}},
+  "defaults": {"config": {...}, "task": {"kind": "reach", "target_offset_m": [0.15, 0.2, 0.2]}},
   "available_N": [16, 32, 64, 128],
   "parameters": [
     {"path": "solver_params.q_cost", "label": "Position cost", "group": "Costs",

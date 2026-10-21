@@ -12,7 +12,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from live_mpc import GPULocks, LiveService, MPCAdapter, figure8_reference, FIGURE8_DEFAULT_TASK, parameter_specs, validate_settings
+from live_mpc import GPULocks, LiveService, MPCAdapter, figure8_reference, FIGURE8_DEFAULT_TASK, REACH_DEFAULT_TASK, parameter_specs, validate_settings
 from server import make_server
 from live_presentation import LatestPresentation, mutable, render_plan, render_state, snapshot
 
@@ -24,7 +24,7 @@ class SettingsTests(unittest.TestCase):
     def setUp(self):
         config = json.loads((MPC_ROOT / "configs/reaching.json").read_text())
         self.config = {k: v for k, v in config.items() if k not in ("description", "save_plan_steps")}
-        self.task = dict(kind="reach", target_offset_m=[0, 0, 0])
+        self.task = deepcopy(REACH_DEFAULT_TASK)
         self.schema = dict(parameters=parameter_specs(self.config, [16, 32]))
 
     def test_complete_config_and_runtime_choices(self):

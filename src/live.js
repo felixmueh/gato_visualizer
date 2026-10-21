@@ -77,6 +77,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   let inspectingPreview = false, inspectionPlan = null;
   let defaultTargetWorld, figure8BaseWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
   const latestServerEvents = new Map();
+  const taskDrafts = new Map();
   const resetIndicators = createSettingResets();
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock(), inputs = [];
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
@@ -148,7 +149,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     if (mode !== 'live' || !liveReady) return false;
     const next = readSettings(true);
     if (!next) return false;
-    settings = next; submittedSettings = cloneSettings(next); pending = true; dirty = false; inspectingPreview = false;
+    settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); submittedSettings = cloneSettings(next); pending = true; dirty = false; inspectingPreview = false;
     const previousExpectedVersion = expectedVersion;
     expectedVersion = Math.max(expectedVersion ?? 0, settingsVersion ?? 0) + 1;
     const request = ++submission;
@@ -177,7 +178,8 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   }
   function change() {
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
-    settings = readSettings() || settings;
+    const next = readSettings();
+    if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); }
     resetIndicators.update();
     dirty = true; renderDirty = true; clock.pause(); refreshPlanLabel();
     message('Settings changed · replacing obsolete calculation…');
@@ -233,7 +235,22 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       });
       $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'G moves the path in world coordinates; R rotates and S scales width/height about its start. Period sets speed. Reset restarts phase.' : 'Offset from the default reaching target. Click the target to move it along an axis.';
     };
-    taskFields(); $('live-task').addEventListener('change', () => { taskFields(); change(); });
+    taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
+    taskFields(); $('live-task').addEventListener('change', () => {
+      taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
+      const kind = $('live-task').value, descriptor = tasks.find(task => task.kind === kind);
+      const fallback = defaultSettings.task.kind === kind ? defaultSettings.task : {};
+      const defaults = { ...fallback, ...descriptor?.defaults, kind };
+      defaults.target_offset_m ||= [0, 0, 0];
+      settings.task = cloneSettings(taskDrafts.get(kind) || defaults);
+      // Hydrate the visible task before parsing the form. Reach and tracking
+      // keep independent positions, and tracking keeps its size/orientation.
+      settings.task.target_offset_m.forEach((offset, i) => {
+        $(`target-offset-${i}`).value = String(offset);
+        $(`target-offset-${i}`).setCustomValidity('');
+      });
+      taskFields(); change();
+    });
     resetIndicators.bind({ key: 'task.kind', name: 'task', input: $('live-task'), host: $('live-task').parentElement,
       getValue: () => $('live-task').value, getDefault: () => defaultSettings.task.kind,
       reset: value => { $('live-task').value = value; $('live-task').dispatchEvent(new Event('change', { bubbles: true })); } });

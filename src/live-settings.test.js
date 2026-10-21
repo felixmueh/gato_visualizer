@@ -49,15 +49,15 @@ function harness() {
     },
   };
   const schema = {
-    defaults: { execution: { ...DEFAULT_EXECUTION }, config: { N: 32, solver_params: { q_cost: 4, max_sqp_iters: 5, max_pcg_iters: 120 }, unlisted: { preserved: true } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
+    defaults: { execution: { ...DEFAULT_EXECUTION }, config: { N: 32, solver_params: { q_cost: 4, max_sqp_iters: 5, max_pcg_iters: 120 }, unlisted: { preserved: true } }, task: { kind: 'reach', target_offset_m: [.15, .2, .2] } },
     available_N: [16, 32, 64],
     parameters: [
       { path: 'N', kind: 'int' },
       ...['q_cost', 'max_sqp_iters', 'max_pcg_iters'].map(path => ({ path: `solver_params.${path}`, label: path, kind: path === 'q_cost' ? 'float' : 'int', min: 0 })),
     ],
     tasks: [
-      { kind: 'reach', label: 'Reach', defaults: { kind: 'reach' } },
-      { kind: 'figure8', label: 'Figure eight', defaults: { kind: 'figure8', width_m: .24, height_m: .16, period_s: 8 }, parameters: ['width_m', 'height_m', 'period_s'].map(path => ({ path, label: path, kind: 'float', min: .001 })) },
+      { kind: 'reach', label: 'Reach', defaults: { kind: 'reach', target_offset_m: [.15, .2, .2] } },
+      { kind: 'figure8', label: 'Figure eight', defaults: { kind: 'figure8', target_offset_m: [0, 0, 0], width_m: .24, height_m: .16, period_s: 8 }, parameters: ['width_m', 'height_m', 'period_s'].map(path => ({ path, label: path, kind: 'float', min: .001 })) },
     ],
   };
   const commands = [], sources = [];
@@ -107,6 +107,8 @@ test('Replay roundtrip retains complete Live draft and rejects cached plans from
     h.edit('solver_params.max_sqp_iters', 17); h.edit('solver_params.max_pcg_iters', 345);
     h.edit('target-offset-0', .13); h.edit('target-offset-1', -.21); h.edit('target-offset-2', .08);
     h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    assert.deepEqual(live.settings.task.target_offset_m, [0, 0, 0]);
+    h.edit('target-offset-0', .13); h.edit('target-offset-1', -.21); h.edit('target-offset-2', .08);
     for (const [path, value] of [['width_m', .42], ['height_m', .28], ['period_s', 13]]) {
       const input = h.document.querySelector(`[data-task-path="${path}"]`); input.value = String(value); input.emit('input');
     }
@@ -475,6 +477,10 @@ test('figure-eight transforms use static start anchor, preserve period and reach
     const retained = live.settings;
     assert.equal(live.setTaskTransform({quaternion_xyzw: [NaN, 0, 0, 1]}), null);
     assert.deepEqual(live.settings, retained);
+    h.$('live-task').value = 'reach'; h.$('live-task').emit('change');
+    assert.deepEqual(live.settings.task.target_offset_m, [.15, .2, .2]);
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    assert.deepEqual(live.settings.task, retained.task); // includes edited rotation and dimensions
     const width = h.document.querySelector('[data-task-path="width_m"]'); width.value = '99'; width.emit('input');
     assert.equal(live.targetInteraction.available, false);
   } finally {
@@ -491,6 +497,13 @@ test('setting resets use normalized schema defaults, keep selected N for Horizon
   const reset = key => h.created.find(el => el.dataset.resetSetting === key);
   try {
     const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    assert.deepEqual(live.settings.task.target_offset_m, [.15, .2, .2]);
+    h.edit('target-offset-0', -.1);
+    reset('task.target_offset_m.0').emit('click');
+    assert.deepEqual(live.settings.task.target_offset_m, [.15, .2, .2]);
+    h.edit('target-offset-1', -.1);
+    reset('task.pose').emit('click');
+    assert.deepEqual(live.settings.task.target_offset_m, [.15, .2, .2]);
     assert.equal(live.settings.config.N, 16); assert.equal(reset('config.N').disabled, true);
     h.edit('N', 1); assert.equal(live.settings.config.N, 64); assert.equal(reset('config.N').disabled, false);
     assert.equal(reset('config.horizon_s').disabled, true); // same default dt at selected N
@@ -525,6 +538,47 @@ test('active-task defaults, pose group and execution reset route through normal 
     reset('execution.duration_s').emit('click'); assert.equal(live.settings.execution.duration_s, DEFAULT_EXECUTION.duration_s);
     reset('task.kind').emit('click'); assert.equal(live.settings.task.kind, 'reach'); assert.equal(reset('task.kind').disabled, true);
     h.$('replay-mode').emit('click'); await flush();
+  } finally {
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('task switches restore independent reach and figure-eight positions and tracking dimensions', async () => {
+  const h = harness(); h.schema.tasks[1].defaults.orientation_xyzw = [0, 0, 0, 1];
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const switchTask = kind => { h.$('live-task').value = kind; h.$('live-task').emit('change'); };
+  const visibleOffsets = () => [0, 1, 2].map(i => Number(h.$(`target-offset-${i}`).value));
+  const reset = key => h.created.filter(el => el.dataset.resetSetting === key).at(-1);
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    assert.deepEqual(visibleOffsets(), [.15, .2, .2]);
+    h.edit('target-offset-0', -.12); h.edit('target-offset-1', .31);
+    switchTask('figure8');
+    assert.deepEqual(visibleOffsets(), [0, 0, 0]);
+    assert.deepEqual(live.settings.task.target_offset_m, [0, 0, 0]);
+    assert.equal(reset('task.pose').disabled, true);
+    h.edit('target-offset-0', .08); h.edit('target-offset-2', -.09);
+    const width = h.document.querySelector('[data-task-path="width_m"]'); width.value = '.4'; width.emit('input');
+    switchTask('reach');
+    assert.deepEqual(visibleOffsets(), [-.12, .31, .2]);
+    assert.deepEqual(live.settings.task, { kind: 'reach', target_offset_m: [-.12, .31, .2] });
+    assert.equal(reset('task.pose').disabled, false);
+    switchTask('figure8');
+    assert.deepEqual(visibleOffsets(), [.08, 0, -.09]);
+    assert.equal(Number(h.document.querySelector('[data-task-path="width_m"]').value), .4);
+    assert.deepEqual(live.settings.task.orientation_xyzw, [0, 0, 0, 1]);
+    reset('task.pose').emit('click');
+    assert.deepEqual(visibleOffsets(), [0, 0, 0]);
+    switchTask('reach');
+    assert.deepEqual(visibleOffsets(), [-.12, .31, .2]);
+    reset('task.pose').emit('click');
+    assert.deepEqual(visibleOffsets(), [.15, .2, .2]);
+    switchTask('figure8');
+    assert.deepEqual(visibleOffsets(), [0, 0, 0]);
+    assert.equal(Number(h.document.querySelector('[data-task-path="width_m"]').value), .4);
+    h.$('replay-mode').emit('click'); await flush();
+    assert.equal(h.commands.length, 0);
   } finally {
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }

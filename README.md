@@ -128,7 +128,11 @@ are available within backend limits; they may make calculation slower than 1×.
 The N, interval and horizon inputs sit together: horizon is `(N − 1) × interval`.
 Editing either time input updates the other using the selected prebuilt N.
 
-Choose Reach or Figure eight in the task selector. Figure eight defaults to a
+Choose Reach or Figure eight in the task selector. Reach defaults to world-axis
+offsets X = 0.15 m, Y = 0.2 m, Z = 0.2 m from the imported default reaching
+target; the reset controls restore these offsets. Each task retains its own
+position when switching; Figure eight also retains its rotation and dimensions.
+Figure eight defaults to a
 horizontal world-XY path, starting at the comfortable-pose tool position. Its
 default full spans are 24 × 16 cm with a 24 s period; dimensions, period and
 world offsets are editable. Click the gold task anchor or press **G** to move

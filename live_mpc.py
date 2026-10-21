@@ -98,6 +98,9 @@ def parameter_specs(config, available_n):
     return specs
 
 
+REACH_DEFAULT_TASK = dict(kind="reach", target_offset_m=[.15, .2, .2])
+
+
 FIGURE8_DEFAULT_TASK = dict(kind="figure8", target_offset_m=[0, 0, 0],
                             width_m=.24, height_m=.16, period_s=24., orientation_xyzw=[0., 0., 0., 1.])
 
@@ -240,7 +243,7 @@ class MPCAdapter:
             self.model, self.data, self.reach.Q_START_RAD + self.reach.Q_GOAL_DELTA_RAD, self.fid)
         self.figure8_start_world = self.kinematics.target_to_world(self.reach.ee_position(
             self.model, self.data, self.reach.Q_START_RAD, self.fid))
-        self.task = dict(kind="reach", target_offset_m=[0, 0, 0])
+        self.task = deepcopy(REACH_DEFAULT_TASK)
         self.solver = self.controller = None
         self.sequence = 0
         self.reset_state()
@@ -408,10 +411,10 @@ def build_schema(mpc_root):
         available = []
     _, settings, _ = configuration.load_configuration()
     defaults = {k: deepcopy(v) for k, v in settings.items() if k not in ("description", "save_plan_steps")}
-    schema = dict(defaults=dict(config=defaults, task=dict(kind="reach", target_offset_m=[0, 0, 0]),
+    schema = dict(defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK),
                                                 execution=deepcopy(DEFAULT_EXECUTION)),
                        available_N=available, parameters=parameter_specs(defaults, available),
-                       tasks=[dict(kind="reach", label="Reach", defaults=dict(kind="reach", target_offset_m=[0, 0, 0])),
+                       tasks=[dict(kind="reach", label="Reach", defaults=deepcopy(REACH_DEFAULT_TASK)),
                               dict(kind="figure8", label="Figure eight", defaults=deepcopy(FIGURE8_DEFAULT_TASK),
                                    parameters=[dict(path="width_m", label="Width (m)", min=.01, max=.6),
                                                dict(path="height_m", label="Height (m)", min=.01, max=.6),
