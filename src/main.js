@@ -2,11 +2,14 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
+import { workbenchShell } from "./workbench-shell.js";
+import { setupWorkbench } from "./workbench-ui.js";
+import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-telemetry.js";
 import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartingScene } from "./replay-library.js";
 import { setupTargetGizmo } from "./target-gizmo.js";
 import { setupViewCube } from "./view-cube.js";
-import { fitPerspectivePoints, objectWorldPoints, trajectoryFitPoints } from "./camera-fit.js";
+import { fitPerspectivePoints, objectWorldPoints, trajectoryFitPoints, TRAJECTORY_FIT_PADDING } from "./camera-fit.js";
 import { createPathLine, setPathPoints, setPathPointCount, pathLineInfo } from "./path-lines.js";
 import {
   sampleTrajectory,
@@ -27,103 +30,16 @@ const icons = {
   focus:
     '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><circle cx="12" cy="12" r="3"/>',
   robot: '<path d="M8 5h8l3 5v10H5V10l3-5ZM12 2v3M8 12h1m6 0h1M9 16h6"/>',
+  panelLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+  calculate: '<path d="M13 2 5 13h6l-1 9 9-13h-6l1-7Z"/>',
   chevron: '<path d="m8 5 7 7-7 7"/>',
 };
 const icon = (name) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 
-document.querySelector("#app").innerHTML = `
-  <header class="header">
-    <a class="brand" href="/" aria-label="TIAGo Motion studio"><span class="brand-icon">${icon("robot")}</span><span>TIAGo <span class="brand-light">/ Motion studio</span></span></a>
-    <div class="header-right"><span id="mode-label" class="read-only">TRAJECTORY REPLAY</span><span class="connection"><i></i><span id="connection-label">Connecting</span></span></div>
-  </header>
-  <div class="workspace">
-    <aside class="sidebar">
-      <div class="section-heading"><span class="eyebrow">WORKSPACE</span><span class="version">MVP / 02</span></div>
-      <h1>See the motion.</h1><p class="intro">Explore the path. Follow the robot.</p>
-      <div class="mode-tabs" role="group" aria-label="Workspace mode"><button id="replay-mode" class="active" aria-pressed="true">Replay</button><button id="live-mode" disabled aria-pressed="false">Live MPC</button></div>
-      <p id="live-availability" class="availability" role="status"></p>
-      <section id="live-panel" hidden>
-        <div class="section-heading"><h2>Live task</h2><span class="unit-label">WORLD · M</span></div>
-        <label class="field-label" for="live-task">TASK</label><div class="select-wrap"><select id="live-task" aria-label="Live task"><option value="reach">Reaching</option></select></div>
-        <p id="live-task-note" class="settings-note">Offset from the default reaching target. Each change updates the prediction.</p>
-        <div class="target-offsets">${['X', 'Y', 'Z'].map((axis, i) => `<label>${axis}<input id="target-offset-${i}" aria-label="Target ${axis} offset in metres" type="number" step="0.01" value="0" /></label>`).join('')}</div>
-        <div id="live-task-parameters"></div>
-        <p class="settings-note">Only prebuilt knot counts are available. Calculation settings are independent of replay recordings. Prediction knot spacing is independent of execution rates.</p>
-        <button id="target-move" class="secondary-action" disabled>Move target in 3D</button>
-        <p id="target-move-note" class="settings-note">Target handles become available after the live preview is ready.</p>
-        <details class="settings-group" open><summary>Execution timing</summary><div class="settings-fields">
-        <label class="parameter-row"><span>Simulation Hz</span><input id="live-simulation-hz" type="number" min=".01" step="any" value="1000" required></label>
-        <label class="parameter-row"><span>Control Hz</span><input id="live-control-hz" type="number" min=".01" step="any" value="100" required></label>
-        <label class="parameter-row"><span>TO / replanning Hz</span><input id="live-to-hz" type="number" min=".01" step="any" value="100" required></label>
-        </div><p class="settings-note">Simulation ≥ control ≥ TO. Rates follow simulation time.</p></details><div id="live-settings"></div>
-        <p id="live-source" class="settings-note source-live"></p>
-      </section>
-      <section id="replay-section" class="sidebar-section">
-        <label class="field-label" for="recording-select">RECORDING LIBRARY</label>
-        <div class="select-wrap"><select id="recording-select" aria-label="Recording library"><option value="default">Default recording</option></select></div>
-        <p id="recording-path" class="recording-path"></p>
-        <p id="recording-update" class="recording-update" role="status"></p>
-        <button id="recording-reload" class="secondary-action recording-reload" hidden>Reload recording</button>
-        <div class="upload-actions"><button id="upload-files" class="secondary-action">Upload .npz</button><button id="upload-folder" class="secondary-action">Upload folder</button></div>
-        <input id="recording-files" class="sr-only" type="file" accept=".npz" multiple tabindex="-1" aria-label="Choose recordings to upload" />
-        <input id="recording-folder" class="sr-only" type="file" webkitdirectory directory multiple tabindex="-1" aria-label="Choose folder to upload" />
-        <p id="library-message" class="library-message" role="status" aria-live="polite">The library updates as recordings are added.</p>
-        <details id="library-errors" class="library-errors" hidden><summary id="library-errors-summary"></summary><ul id="library-errors-list"></ul></details>
-        <label class="field-label trajectory-label" for="trajectory-select">TRAJECTORY</label>
-        <div class="select-wrap"><select id="trajectory-select" disabled><option>Loading trajectories…</option></select></div>
-        <div class="trajectory-kind" id="trajectory-kind">Recorded MPC & solver predictions</div>
-        <p class="trajectory-description" id="trajectory-description">Native robot states, replayed in simulation time.</p>
-        <div class="stats-grid">
-          <div><span class="stat-label">DURATION</span><strong id="duration-stat">—<small>s</small></strong></div>
-          <div><span class="stat-label">SAMPLES</span><strong id="samples-stat">—</strong></div>
-          <div><span class="stat-label">TOOL PATH</span><strong id="distance-stat">—<small>m</small></strong></div>
-          <div><span class="stat-label">END / TARGET</span><strong id="error-stat">—<small>mm</small></strong></div>
-        </div>
-      </section>
-      <section class="sidebar-section pose-section">
-        <div class="section-heading"><h2>Right arm</h2><span class="unit-label">NATIVE JOINTS</span></div>
-        <div class="joint-list" id="joint-list"></div><p class="joint-limit-note"><span class="limit-yellow">Near limit</span> · <span class="limit-red">At limit</span> · — unavailable</p>
-      </section>
-      <section class="source-section">
-        <span class="field-label">CONNECTED SOURCE</span>
-        <div class="source-name">tiago_mpc <span id="source-commit"></span></div>
-        <p id="source-run">Loading local recording…</p>
-        <span class="source-footnote">Full URDF · native joint axes</span>
-      </section>
-    </aside>
-    <main class="main">
-      <section class="viewport" id="viewport" aria-label="Interactive 3D robot workspace">
-        <div class="viewport-top"><div class="scene-title"><span class="live-dot"></span><span>3D WORKSPACE</span><span class="scene-slash">/</span><span id="scene-title">TIAGo Pro</span></div><div class="camera-controls"><button id="camera-home" title="Fit the full robot in its current pose" aria-label="Fit robot">${icon("robot")}<span>Fit robot</span></button><button id="camera-arm" title="Fit the selected trajectory or full task reference" aria-label="Fit trajectory">${icon("focus")}<span>Fit trajectory</span></button></div></div>
-        <div class="viewport-legend" id="path-legend"><span><i class="legend-line"></i>Tool path</span><span><i class="legend-start"></i>Start</span><span><i class="legend-target"></i>Target</span></div>
-        <div class="viewport-help">Drag to orbit <span>·</span> Right-drag to pan <span>·</span> Scroll to zoom</div>
-        <div class="axis-label"><span class="axis-x">X</span><span class="axis-y">Y</span><span class="axis-z">Z ↑</span><span>WORLD · METERS</span></div>
-        <div class="load-overlay" id="load-overlay" role="status"><div class="spinner"></div><strong id="load-title">Opening your workspace</strong><p id="load-detail">Loading trajectory and robot description…</p></div>
-      </section>
-      <section id="live-controls" class="playback live-controls" aria-label="Live MPC controls" hidden>
-        <div class="playback-heading"><div><span class="eyebrow">SIMULATED CLOSED-LOOP MPC</span><h2 id="live-plan-label">Waiting for a prediction</h2></div><div class="playback-state" id="live-status">IDLE</div></div>
-        <div class="live-actions"><button id="live-play" class="primary-action" disabled>Play</button><button id="live-preview" class="secondary-action" disabled>Preview</button><button id="live-reset" class="secondary-action" disabled>Reset state</button>
-        <label class="calculation-setting">Calculation <select id="live-calculation" aria-label="Calculation mode"><option value="on_play">On Play</option><option value="manual">Manual</option><option value="automatic">Automatic</option></select></label>
-        <label class="calculation-setting">Calculation duration (s) <input id="live-duration" type="number" min=".01" step="any" value="10" aria-label="Precalculation duration seconds"></label>
-        <button id="live-precalculate" class="secondary-action" disabled>Precalculate</button><button id="live-cancel" class="secondary-action" disabled>Cancel calculation</button>
-        </div>
-        <div class="live-history-row"><label for="live-history">STATE HISTORY</label><div class="live-history-track"><div id="live-history-intervals" aria-hidden="true"></div><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Scrub live state history"/></div><span id="live-history-position">No state history yet</span><button id="live-history-latest" class="secondary-action" disabled>Go latest</button></div>
-        <div class="live-history-options"><label><input id="live-continue" type="checkbox"> Continue simulation at end</label><span><i class="interval-key red"></i>MPC over budget</span><span><i class="interval-key yellow"></i>Simulation / combined over budget</span></div>
-        <div class="live-clock"><strong id="live-sim-time">0.00</strong><span>s simulated</span><strong id="live-playback-rate">Paused</strong><span>playback</span><strong id="live-rtf">—</strong><span>calculation RTF</span></div>
-        <p id="live-history-note" class="settings-note">History plays at 1× simulation time. Go latest only moves the view.</p>
-        <p id="live-history-window" class="settings-note"></p><p id="live-rates" class="settings-note"></p>
-        <p id="live-message" class="live-message" role="status" aria-live="polite">Loading live settings…</p>
-        <div class="solver-stats"><div><span>Native solve wall</span><strong><b id="live-solve">—</b> ms</strong></div><div><span>SQP / PCG</span><strong><b id="live-sqp">—</b> / <b id="live-pcg">—</b></strong></div><div><span>ADMM / linear solve</span><strong><b id="live-admm">—</b> / <b id="live-linsys">—</b></strong></div><div><span>Max row violation</span><strong id="live-violation">—</strong></div><div><span>Current target distance</span><strong id="live-distance">—</strong></div></div>
-        <div class="live-detail"><span id="live-horizon">—</span><span id="live-arrival">Waiting for state</span><span id="live-restarted" hidden>Controller restarted for this plan</span></div>
-        <div class="playback-foot"><span>Preview solves one horizon. Precalculation runs full closed-loop MPC. Recorded history always plays at 1×; computation may limit progress at its end.</span><span>Diagnostic view · finite plans do not certify convergence.</span></div>
-      </section>
-      <section class="playback" id="replay-controls" aria-label="Trajectory playback">
-        <div class="playback-heading"><div><span id="playback-kind" class="eyebrow">RECORDED MOTION</span><h2 id="playback-title">Motion timeline</h2></div><div class="playback-state" id="playback-state">READY TO LOAD</div></div>
-        <div class="timeline-row" id="replay-timeline"><button class="play-button" id="play" disabled aria-label="Play trajectory">${icon("play")}</button><button class="icon-button restart" id="restart" disabled title="Restart" aria-label="Restart trajectory">${icon("restart")}</button><div class="timeline-wrap"><label for="timeline" class="sr-only">Trajectory time</label><input type="range" id="timeline" min="0" max="1" step="any" value="0" disabled/><div class="timeline-ticks"><span>0.00 s</span><span id="timeline-middle">—</span><span id="timeline-end">—</span></div></div><div class="time-readout"><strong id="time-current">0.00</strong><span> / <span id="time-total">—</span> s</span></div><label class="speed-wrap"><span class="sr-only">Playback speed</span><select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label></div>
-        <div class="playback-foot"><span id="timing-note">Playback follows recorded simulation timestamps.</span><span class="keyboard-hint"><kbd>space</kbd> play / pause</span></div>
-      </section>
-    </main>
-  </div>`;
+document.body.classList.add('studio-workbench');
+document.querySelector("#app").innerHTML = workbenchShell(icon);
 
 const $ = (id) => document.getElementById(id);
 let data;
@@ -158,6 +74,8 @@ let displayedLivePlan;
 let liveTaskStart;
 let lastCameraFit;
 let jointCells = [];
+let auxiliaryViews;
+const workbench = setupWorkbench({ onLayout: () => auxiliaryViews?.invalidate() });
 
 function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_limits, torqueKind = "applied") {
   updateJointTable(jointCells, {q, qd, torque, limits, torqueKind});
@@ -287,7 +205,8 @@ function setCamera(mode = "robot", options = {}) {
   viewCube?.cancel();
   const isTask = mode === 'trajectory' || mode === 'arm';
   const selection = isTask ? fitTaskPoints(options) : { points: objectWorldPoints(robot), source: 'Full robot in current pose' };
-  const fit = fitPerspectivePoints(camera, selection.points, { minDistance: controls.minDistance });
+  const padding = isTask ? TRAJECTORY_FIT_PADDING : 1.15;
+  const fit = fitPerspectivePoints(camera, selection.points, { minDistance: controls.minDistance, padding });
   if (!fit) return;
   // Clear residual orbit/pan damping, then restore the existing orientation.
   const orientation = camera.quaternion.clone();
@@ -303,7 +222,7 @@ function setCamera(mode = "robot", options = {}) {
   controls.maxDistance = Math.max(controls.maxDistance, fit.distance * 2);
   controls.update();
   controls.enableDamping = damping;
-  lastCameraFit = { source: selection.source, points: fit.points.map(point => point.toArray()), padding: 1.15 };
+  lastCameraFit = { source: selection.source, points: fit.points.map(point => point.toArray()), padding };
   $(isTask ? 'camera-arm' : 'camera-home').title = `${isTask ? 'Fit trajectory' : 'Fit robot'}: ${selection.source}`;
 }
 
@@ -333,6 +252,7 @@ function clearPath() {
 }
 
 function selectTrajectory(id) {
+  auxiliaryViews?.invalidate();
   $("replay-timeline").hidden = false;
   document.querySelector("#replay-controls .keyboard-hint").hidden = false;
   trajectory = data.trajectories.find((item) => item.id === id);
@@ -458,11 +378,13 @@ function animate(timestamp) {
   lastFrame = timestamp;
   if (playing && trajectory) {
     const duration = trajectory.time_s.at(-1) - trajectory.time_s[0];
-    elapsed = Math.min(duration, elapsed + delta * Number($("speed").value));
+    const nextTime = elapsed + delta * Number($("speed").value);
+    elapsed = Math.min(duration, nextTime);
     updatePose();
     if (elapsed >= duration) {
-      playing = false;
-      updatePlaybackState();
+      if ($('replay-stop-at-end').checked || duration <= 0) playing = false;
+      else elapsed = nextTime % duration;
+      updatePose(); updatePlaybackState();
     }
   }
   controls.update();
@@ -471,6 +393,7 @@ function animate(timestamp) {
   targetGizmo?.update();
   if (liveGroup?.userData.target) liveGroup.userData.target.visible = !targetGizmo?.active;
   renderer.render(scene, camera);
+  workbench.update(); auxiliaryViews?.render(timestamp);
 }
 
 $("play").addEventListener("click", togglePlay);
@@ -536,6 +459,9 @@ async function start() {
         throw new Error(`Robot description is missing joint ${name}.`);
     }
     scene.add(robot);
+    auxiliaryViews = setupAuxiliaryViews({ scene, top: $('auxiliary-top'), right: $('auxiliary-right'),
+      getBounds: () => visibleSceneBounds(robot, live?.mode === 'live' ? liveGroup : pathGroup),
+      visible: () => workbench.auxiliaryVisible });
     robot.traverse((object) => {
       if (object.isMesh) {
         object.material = object.material.clone();
@@ -550,13 +476,15 @@ async function start() {
     ready = true;
     live = setupLive({ onMode: changeMode, onPlan: showLivePlan, onState: showLiveState, onReset: resetLiveTrace });
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
-      moveTarget: position => live.setTargetWorld(position), button: $('target-move'), note: $('target-move-note') });
+      moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: isStartingScene(data) ? 'Starting pose' : 'Default recording' });
     $("connection-label").textContent = "Local source";
     document.querySelector(".connection").classList.add("connected");
     $("load-overlay").hidden = true;
     // Expose a small read-only handle for browser smoke checks and local inspection.
     window.__motionStudio = {
+      get auxiliaryViews() { return auxiliaryViews?.snapshot; },
+      get workbench() { return { activeTab: workbench.activeTab, auxiliaryVisible: workbench.auxiliaryVisible }; },
       get targetGizmo() { return targetGizmo?.snapshot; },
       get library() { return replayLibrary; },
       get replayScene() { return data; },
@@ -605,6 +533,7 @@ async function start() {
 start();
 
 function changeMode(mode) {
+  auxiliaryViews?.invalidate();
   playing = false;
   updatePlaybackState();
   if (pathGroup) pathGroup.visible = mode === 'replay';
@@ -642,6 +571,7 @@ function disposeLiveObject(object) {
 }
 
 function showLivePlan(plan) {
+  auxiliaryViews?.invalidate();
   if (!liveGroup) return;
   displayedLivePlan = plan;
   disposeLiveObject(livePrediction);
@@ -761,7 +691,7 @@ function showJointLabels() {
 }
 
 function showStartingPose() {
-  $('replay-timeline').hidden = true;
+  $('replay-timeline').hidden = false;
   document.querySelector('#replay-controls .keyboard-hint').hidden = true;
   trajectory = undefined;
   playing = false;

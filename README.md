@@ -53,14 +53,31 @@ to load it; file changes update the library without replacing current playback.
 The producer-side exporter is `tiago_mpc/experiments/tools.py`;
 see the [format and export cookbook](docs/replay-format.md).
 
+## Workspace
+
+The viewport fills the window above a single compact playback bar. Use its top
+left and top right buttons to hide or restore either sidebar. The right sidebar
+has **Views** (synchronized Top and Right cameras), **Graphs** (a clearly labeled
+demonstration signal plus actual displayed-plan metrics), and **Joints** (native
+position, velocity and actuator torque). Auxiliary views show the same robot and
+playback time and suspend rendering when their panel is hidden.
+
+The playback bar contains Play/Pause, Reset, the timeline and **Stop**. Checked
+Stop ends playback at the recording's end. In Live, unchecking it continues
+simulation from the tip; in Replay, unchecking it loops the recording. Live also
+provides the calculation mode, a precalculation icon and a duration in seconds.
+Task position inputs remain available below the controller settings; direct
+viewport manipulation avoids scrolling to them during normal use.
+
 ## Live MPC
 
 Select Live, adjust the target offset and settings, and inspect the prediction.
-**Preview** computes one optimized horizon from the displayed state. It does
-not advance the simulated plant. **Reset state** returns to the comfortable
+The prediction computes one optimized horizon from the displayed state. It
+does not advance the simulated plant. **Reset state** returns to the comfortable
 starting pose, clears recorded motion, and restarts the episode's plan count.
 Live settings stay intact when switching to Replay and back; replay metadata
-never replaces the Live configuration.
+never replaces the Live configuration. The first Live connection after loading
+the application starts a fresh episode at the comfortable pose and time zero.
 
 The **Calculation** menu selects how full closed-loop motion is generated:
 
@@ -70,13 +87,13 @@ The **Calculation** menu selects how full closed-loop motion is generated:
   duration from the displayed state captured when the edit began.
 
 Every calculation repeats optimization, control application and physics
-integration for the chosen **Calculation duration**. **Cancel calculation**
-stops after the current numerical operation; it cannot interrupt a native solve.
+integration for the chosen **Calculation duration**. New settings replace obsolete calculation work after the current numerical
+operation; a native solve cannot be interrupted.
 Playback and calculation are independent. Play with no recorded motion starts
-calculation. **Continue simulation at end**, off by default, decides whether
-playing through existing history extends it or stops at its end. Changing this
-toggle preserves the recording. **Go latest** only moves the displayed time.
-Pressing Play at a completed recording's end with Continue off replays it from
+calculation. **Stop**, checked by default, decides whether
+playing through existing history stops at its end or extends it when unchecked. Changing this
+toggle preserves the recording. Scrubbing changes only the displayed time.
+Pressing Play at a completed recording's end with Stop checked replays it from
 the beginning. At a growing recording's end, playback waits for new samples.
 
 Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz**. Simulation Hz controls
@@ -84,11 +101,17 @@ RK4 integration, Control Hz samples the active plan's torque, and TO Hz requests
 new plans. The prediction knot interval is separate. The existing upstream
 warm-start behavior is preserved and has no UI setting. Large SQP/PCG budgets
 are available within backend limits; they may make calculation slower than 1×.
+The N, interval and horizon inputs sit together: horizon is `(N − 1) × interval`.
+Editing either time input updates the other using the selected prebuilt N.
 
-Choose Reach or Figure eight in the task selector. Figure eight follows a
+Choose Reach or Figure eight in the task selector. Figure eight defaults to a
 horizontal world-XY path, starting at the comfortable-pose tool position. Its
 default full spans are 24 × 16 cm with a 24 s period; dimensions, period and
-world offsets are editable. Preview at a paused state uses that simulation
+world offsets are editable. Click the gold task anchor or press **G** to move
+it; for Figure eight, **R** selects rotation and **S** selects width/height
+scaling. Drag the corresponding gizmo handles; **Escape** hides them. Rotation
+uses the fixed path start as its pivot and changes the controller reference too.
+Shortcuts are inactive while typing. The paused prediction uses that simulation
 time's reference phase; Reset returns the phase to zero.
 
 The Live timeline uses authoritative saved physics timestamps. Scrub to inspect
@@ -143,7 +166,8 @@ select the eight equal-angle diagonal views.
 frames the selected Replay motion and reference. In Live, it frames a completed precalculated closed-loop path when available;
 otherwise it uses the full tracking reference, or the task start and reaching target. Both
 commands retain the viewing direction and adjust the center and distance with
-margin for the viewport's current shape. They do not run the solver.
+margin for the viewport's current shape. Trajectory fitting uses a 40% margin
+(previously 15%); robot fitting retains 15%. They do not run the solver.
 
 The right-arm table shows native position (rad), velocity (rad/s), and actuator
 torque (Nm). Missing telemetry displays “—”. Position values turn yellow within
