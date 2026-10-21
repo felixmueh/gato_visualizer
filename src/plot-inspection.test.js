@@ -181,6 +181,29 @@ test('SQP plot drag selects recorded iterations across card rebuilds without see
   } finally { globalThis.document = original; }
 });
 
+test('Replay Run again selects one retained solve identity for capability and submission', async () => {
+  const { document } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const source = { kind: 'replay', id: 'recording', trajectory_index: 4 }, requests = [];
+  const request = async (path, body) => {
+    requests.push({ path, body: structuredClone(body) });
+    if (path.endsWith('/capability')) return { available: Object.keys(body.selection).length === 1 };
+    if (path === '/api/solve-inspections') return { id: 'job', state: 'failed', error: 'Fixture stops before native execution' };
+    return { state: 'complete', catalog: [], context: { selected_solve: { id: 'retained-17', seq: 17, iterations: [] } }, results: [] };
+  };
+  let ui;
+  try {
+    ui = setupPlotInspection({ episodeContainer: document.createElement('section'), solveContainer: document.createElement('section'), bottomContainer: document.createElement('section'), getSource: () => ({ source }), getView: () => ({ window: [0, 5], cursor: 2 }), getSolverProfile: () => ({ id: 'candidate' }), request, storage: null });
+    ui.update(); await flush();
+    assert.equal(ui.runAgain.run.disabled, false);
+    await ui.runAgain.run.emit('click');
+    for (const path of ['/api/solve-inspections/capability', '/api/solve-inspections']) {
+      const body = requests.find(item => item.path === path)?.body;
+      assert.deepEqual(body?.source, source);
+      assert.deepEqual(body?.selection, { solve_id: 'retained-17' });
+    }
+  } finally { ui?.destroy(); globalThis.document = original; }
+});
+
 test('fresh inspection pins only Solve, hydrates true snapshots safely, and leaves original Episode source/cursor/settings unchanged', async () => {
   const { document, find } = plotDOM(), original = { document: globalThis.document, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
   globalThis.document = document;

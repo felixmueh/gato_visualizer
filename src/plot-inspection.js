@@ -153,7 +153,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   function runContext() {
     const selected = state.selected, source = solveSource()?.source, profile = getSolverProfile();
     if (!selected || !source) return null;
-    return { source, selection: { solve_id: selected.id ?? selected.seq, ...(source.kind === 'replay' && source.trajectory_index != null ? { trajectory_index: source.trajectory_index } : {}) }, profile_id: typeof profile === 'string' ? profile : profile?.id, switching: Boolean(profile?.switching) };
+    return { source, selection: { solve_id: selected.id ?? selected.seq }, profile_id: typeof profile === 'string' ? profile : profile?.id, switching: Boolean(profile?.switching) };
   }
   function syncSolveSource() {
     const key = sourceKey(solveSource()?.source);
