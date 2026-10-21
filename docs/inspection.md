@@ -91,8 +91,12 @@ as an exact continuation.
 
 At GATO 37a6768d575c4a09e2ec90e51a7c4029568e3fec, the public API exposes the
 final predicted trajectory, initial/final merit, and some per-SQP merit,
-line-search and PCG statistics when enabled. The visualizer currently retains
-the final trajectory and summary counts, not those detailed traces.
+line-search and PCG statistics when enabled. The visualizer retains each
+published solve's final q/v/u, initial state, exact reference, effective
+configuration, model/source identity, summary counts and returned scalar traces.
+It does not retain intermediate SQP trajectories, the incoming warm trajectory
+or private optimizer state. Keeping the final prediction visible as context
+while selecting a metrics-only iteration does not make it an iteration snapshot.
 
 The public API does not expose per-SQP trajectory snapshots or complete
 checkpoint/restore/resume. The SQP cap is constructor-sized, including native
