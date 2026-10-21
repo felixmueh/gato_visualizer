@@ -129,7 +129,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     // Concrete-iteration responses intentionally omit the final trajectory.
     // Retain only this solve's real final snapshot as labelled display context.
     if (selected?.final_prediction?.ee_xyz?.length) finalContextPrediction = structuredClone(selected.final_prediction);
-    solveContainer.classList.toggle('solve-pinned', state.pinned); pin.textContent = solveOverride ? 'Follow episode' : state.pinned ? 'Follow cursor' : 'Pin solve'; pin.setAttribute('aria-pressed', String(state.pinned)); pin.disabled = !selected && !solveOverride;
+    solveContainer.classList.toggle('solve-pinned', state.pinned); pin.textContent = solveOverride ? 'Follow episode' : state.pinned ? 'Follow cursor' : 'Pin solve'; pin.setAttribute('aria-label', pin.textContent); pin.title = pin.textContent; pin.setAttribute('aria-pressed', String(state.pinned)); pin.disabled = !selected && !solveOverride;
     identity.textContent = selected ? `${state.pinned ? 'Pinned · ' : ''}${selected.origin === 'preview' ? 'Preview' : 'Solve'} ${selected.seq ?? selected.id}${Number.isFinite(selected.sim_time_s ?? selected.time_s) ? ` · ${(selected.sim_time_s ?? selected.time_s).toFixed(3)} s` : ''}${metadata.solve?.context?.association ? ` · ${metadata.solve.context.association}` : ''}` : 'No recorded solve associated with the episode cursor.';
     if (selected) { const source = solveSource()?.source; identity.textContent += ` · ${source?.kind}:${source?.id ?? source?.generation ?? 'current'}${source?.trajectory_index != null ? `/${source.trajectory_index}` : ''}`; }
     if (solveOverride) {
