@@ -8,9 +8,8 @@ from pathlib import Path
 from gato_visualizer.plotting.views import freeze
 
 
-CONTINUE_REASON = ("Exact Continue SQP is unavailable: the current GATO public API does not expose "
-                   "optimizer checkpoint/restore/resume or per-SQP trajectory snapshots. "
-                   "A new warm-seeded invocation is a different solve.")
+CONTINUE_REASON = ("Exact continuation is unavailable because this solver does not expose "
+                   "a resumable optimizer checkpoint.")
 
 
 def serializable(value):

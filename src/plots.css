@@ -17,6 +17,7 @@
 .plot-renderer table { width: 100%; border-collapse: collapse; font-size: 10px; }
 .plot-renderer th, .plot-renderer td { padding: 5px 3px; border-bottom: 1px solid #304154; text-align: left; overflow-wrap: anywhere; }
 .plot-renderer th { color: #8fa9bc; font-weight: 400; }
+.plot-renderer th:nth-child(3), .plot-renderer td:nth-child(3) { white-space: nowrap; overflow-wrap: normal; }
 .plot-unit { color: #8fa8bc; font-size: 10px; margin: 7px 0; }
 .plot-legend { display: flex; flex-wrap: wrap; gap: 4px 9px; font-size: 9px; }
 .plot-hover { min-height: 16px; font: 9px 'IBM Plex Mono', monospace; color: #a8bacc; }

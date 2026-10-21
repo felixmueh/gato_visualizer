@@ -36,7 +36,9 @@ export function renderPlot(container, spec, options = {}) {
   const lanes = [...new Set((spec.spans || []).map(span => span.lane))];
   const yValues = [...(visible.length ? visible : valid).map(p => p[1]), ...guideValues, ...(spec.kind === 'bars' ? [0] : [])];
   const yRange = spec.kind === 'spans' ? [0, Math.max(1, lanes.length)] : spec.y_axis?.range || (yValues.length ? extent(yValues) : [0, 1]);
-  const width = 600, height = options.compact ? 115 : 200;
+  // Use display pixels so text stays legible in a narrow inspector. Observe
+  // visibility/layout changes too: plots may first render inside a hidden tab.
+  const width = Math.max(220, Math.round(container.clientWidth || 600)), height = options.compact ? 115 : 200;
   // Linked timeline plots use the full width. Their ruler is the timeline's.
   const margin = options.linked ? { left: 0, right: 0, top: 10, bottom: 20 } : { left: 62, right: 12, top: 12, bottom: 38 };
   const innerWidth = width - margin.left - margin.right, innerHeight = height - margin.top - margin.bottom;
@@ -100,12 +102,19 @@ export function renderPlot(container, spec, options = {}) {
   root.append(svg, readout); container.replaceChildren(root);
   const updateCursor = value => { const visible = Number.isFinite(value) && value >= xRange[0] && value <= xRange[1]; cursor.setAttribute('visibility', visible ? 'visible' : 'hidden'); cursor.setAttribute('x1', sx(value)); cursor.setAttribute('x2', sx(value)); };
   updateCursor(options.cursor);
-  return makeHandle(updateCursor);
-  function makeHandle(setCursor = () => {}) {
+  return makeHandle(updateCursor, width);
+  function makeHandle(setCursor = () => {}, renderedWidth) {
+    let observer;
     const handle = { axisIdentity: spec.x?.identity, updateCursor: setCursor,
-      update(nextSpec, nextOptions = options) { const replacement = renderPlot(container, nextSpec, nextOptions); Object.assign(handle, replacement); return handle; },
+      update(nextSpec, nextOptions = options) { observer?.disconnect(); const replacement = renderPlot(container, nextSpec, nextOptions); Object.assign(handle, replacement); return handle; },
       setView(view) { return handle.update(spec, { ...options, ...view }); },
-      destroy() { root.remove(); } };
+      destroy() { observer?.disconnect(); root.remove(); } };
+    if (renderedWidth != null && typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => {
+        if (container.clientWidth > 0 && Math.max(220, Math.round(container.clientWidth)) !== renderedWidth) handle.update(spec, options);
+      });
+      observer.observe(container);
+    }
     return handle;
   }
 }
