@@ -171,6 +171,9 @@ plant interval still executes. Browser history contains the displayed snapshots,
 not a complete experiment recording. SSE writes run on each client's HTTP thread
 against the existing bounded event buffer, without blocking the control worker.
 
+Figure-eight plans additionally carry `task_path_xyz`, a complete world-frame
+reference loop. `reference_xyz` remains the reference over the predicted horizon.
+
 Joint telemetry is native throughout: each plan also includes `qd_rad_s[N,7]`,
 `torque_nm[N-1,7]`, `torque_time_s` (nonterminal knot offsets),
 `torque_kind: "predicted"`, and an exclusive `torque_end_time_s` at the terminal
