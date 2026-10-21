@@ -1,3 +1,8 @@
+> **Current execution contract:** see [execution-api.md](execution-api.md).
+> Its spawned worker, independent rates, history and calculation modes supersede
+> the original thread/pacing model below. Configuration and legacy event details
+> remain useful where the current contract does not override them.
+
 # Live MPC API contract (MVP)
 
 Contract between the Python backend and the browser frontend for the live

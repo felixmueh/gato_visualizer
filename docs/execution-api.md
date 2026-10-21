@@ -36,9 +36,13 @@ The UI hides `controller.warm_start` while retaining its complete config value.
   optional `anchor`.
 - `precalculate`: generate `duration_s` of closed-loop motion without pacing;
   optional `anchor` chooses its initial state.
+- `preview`: compute one prediction at the optional displayed-state `anchor`
+  without replacing existing motion history or moving its authoritative tip.
 - `play`: produce motion from the authoritative history tip, paced at at most
-  one simulated second per wall second. It never branches from a scrubbed frame.
-- `pause`: stop further generation cooperatively. Browser playback is local.
+  one simulated second per wall second in On Play mode. Each request extends
+  by at most `duration_s`; it never branches from a scrubbed frame.
+- `pause`: stop On Play generation cooperatively. In Manual/Automatic mode it
+  pauses browser playback while explicit precalculation continues.
 - `cancel`: invalidate the current job cooperatively.
 - `reset`: return to the comfortable pose, zero velocity and simulation time;
   clear the current history and episode plan sequence.
@@ -74,8 +78,10 @@ Cancellation is checked after the current solve and between integration chunks.
 It does not promise to interrupt a native solver call.
 
 `settings_version` identifies effective settings. `generation` identifies a
-particular history/job. Acceptance of an invalidating command updates generation
-in the parent immediately, so old child outputs cannot overwrite new state.
+particular history/job. A replacement history gets a new generation immediately
+in the parent. A separate cancellation revision invalidates in-flight work while
+retaining the current generation on Pause/Cancel. Old child outputs cannot
+overwrite new state; already committed records for retained history still drain.
 Preserve or clear retained history intentionally at each command boundary;
 cancelled work must never be presented as a completed requested recording.
 
@@ -101,14 +107,20 @@ cursor to pass on the next request. The endpoint returns bounded pages:
 }
 ```
 
-`records` contains existing native `plan` and `state` payloads and the interval
-records below. Every record carries `generation` and `settings_version`.
+`records` contains existing native `plan` and `state` payloads, explicit control
+updates, and the interval records below. Every record carries `generation` and
+`settings_version`. A control update has `type: "control"`, `sim_time_s`, native
+`torque_nm`, `plan_seq`, `plan_elapsed_s`, and `horizon_exhausted` (also exposed
+as `plan_exhausted`). Control timestamps distinguish when the held command
+changed from endpoint state torques, which record the input producing that state.
 History includes the initial state, every integration endpoint, every solved
 plan, and every completed timing interval. Saved states retain actual applied
 torque. Predictions retain only their nonterminal control samples. A generation
 mismatch returns HTTP 409; clients discard the obsolete page and synchronize
 to the active generation. `complete` means the requested calculation finished,
-not merely that this page has caught up with the producer.
+not merely that this page has caught up with the producer. Cancellation,
+capacity exhaustion and a paused producer do not make an unfinished requested
+duration complete; `status.job_active` separately reports active generation.
 
 SSE sends lightweight notices, also included when reconnecting:
 
@@ -167,6 +179,9 @@ the existing solver timing remains separate. `physics_wall_s` measures plant
 integration and control execution. `total_wall_s` includes serial execution
 overhead, excluding deliberate pacing sleeps, rendering and transport work.
 Setup costs are separate from recurring interval costs.
+Internal chunks used for cancellation and bounded transport do not create
+additional TO intervals: their measured costs accumulate until the TO boundary
+or requested final endpoint.
 
 Red means `solve_wall_s > to_budget_s`, with the nominal TO period as the
 optimizer deadline even for a final partial interval. Otherwise yellow means

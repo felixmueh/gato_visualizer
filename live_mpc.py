@@ -1,11 +1,10 @@
-"""Live diagnostic MPC: unchanged tiago_mpc helpers, one CUDA-owning worker.
+"""Native-coordinate MPC adapter and schema using unchanged tiago_mpc helpers.
 
-This is intentionally not an experiment runner. The only duplicated numerical
-logic is reach_sim's controller setup and fixed-interval episode stepping.
+Visualizer execution timing and process/history transport live in the execution
+modules. The synchronous fixed-loop adapter remains a conformance reference.
 """
 from __future__ import annotations
 
-from collections import deque
 from copy import deepcopy
 import fcntl
 import hashlib
@@ -16,13 +15,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
-import time
-import traceback
 
 import numpy as np
 
-from live_presentation import LatestPresentation, LiveRenderer, render_plan, render_state, snapshot
+from live_presentation import render_plan, render_state, snapshot
 
 ROOT = Path(__file__).resolve().parent
 SUPPORTED_N = (16, 32, 64, 128)
@@ -65,8 +61,8 @@ def parameter_specs(config, available_n):
     choices = {"N": list(available_n), "solver_params.linsys": [None], "solver_params.exact_hessian": [False],
                "controller.warm_start": ["shift", "hold"],
                "controller.admm_linsys": ["pcg", "bdsv_factor", "auto"]}
-    limits = {"dt_s": (.001, .1), "solver_params.max_sqp_iters": (1, 20),
-              "solver_params.max_pcg_iters": (1, 800),
+    limits = {"dt_s": (.001, .1), "solver_params.max_sqp_iters": (1, 100000),
+              "solver_params.max_pcg_iters": (1, 1000000),
               "solver_params.pcg_tol": (1e-8, 1), "solver_params.solve_ratio": (.001, 1),
               "solver_params.mu": (1e-6, 1e5), "solver_params.rho": (1e-8, 1e4),
               "controller.limits_kw.iters": (1, 200),
@@ -375,222 +371,35 @@ class MPCAdapter:
         return render_state(self.state_snapshot(rtf), self.kinematics)
 
 
-class LiveService:
-    """Thread-safe command/event bridge. HTTP threads never touch the adapter."""
-    def __init__(self, mpc_root, adapter_factory=MPCAdapter):
-        self.mpc_root = Path(mpc_root).expanduser().resolve()
-        self.reach, configuration = import_mpc(self.mpc_root)
-        from gato import _cache
-        try:
-            from gato.builder import _codegen_key
-            gpu_path = self.reach.runtime_urdf()[1]
-            entry = _cache.robot_entry(self.reach.PLANT)
-            current_key = _codegen_key(gpu_path, self.reach.EE_FRAME, .15, None, False)
-            available = ([n for n in SUPPORTED_N if _cache.find_module(self.reach.PLANT, n) is not None]
-                         if entry and entry.get("codegen_key") == current_key else [])
-        except (OSError, ValueError, KeyError):
-            available = []
-        _, settings, _ = configuration.load_configuration()
-        defaults = {k: deepcopy(v) for k, v in settings.items() if k not in ("description", "save_plan_steps")}
-        self.schema = dict(defaults=dict(config=defaults, task=dict(kind="reach", target_offset_m=[0, 0, 0])),
-                           available_N=available, parameters=parameter_specs(defaults, available),
-                           tasks=[dict(kind="reach", label="Reach", defaults=dict(kind="reach", target_offset_m=[0, 0, 0])),
-                                  dict(kind="figure8", label="Figure eight", defaults=deepcopy(FIGURE8_DEFAULT_TASK),
-                                       parameters=[dict(path="width_m", label="Width (m)", min=.01, max=.6),
-                                                   dict(path="height_m", label="Height (m)", min=.01, max=.6),
-                                                   dict(path="period_s", label="Period (s)", min=1., max=120.)])],
-                           source=source_identity(self.mpc_root))
-        self.config, self.task = deepcopy(defaults), deepcopy(self.schema["defaults"]["task"])
-        self.adapter_factory = adapter_factory
-        self.condition = threading.Condition()
-        self.commands = deque()
-        self.events = deque(maxlen=256)
-        self.latest = {}
-        self.cursor = self.version = self.subscribers = self.next_version = 0
-        self.closed = False
-        self.presentation = LatestPresentation(LiveRenderer(self.mpc_root), self.publish_events)
-        self.thread = threading.Thread(target=self._run, name="live-mpc-gpu", daemon=True)
-        self.publish(dict(type="status", state="idle", message="Live reaching ready; connect to preview",
-                          settings_version=0, N=defaults["N"], dt_s=defaults["dt_s"]))
-        self.thread.start()
+def build_schema(mpc_root):
+    """Discover imports/build availability inside the numerical subprocess."""
+    from execution_session import DEFAULT_EXECUTION
+    mpc_root = Path(mpc_root).expanduser().resolve()
+    reach, configuration = import_mpc(mpc_root)
+    from gato import _cache
+    try:
+        from gato.builder import _codegen_key
+        gpu_path = reach.runtime_urdf()[1]
+        entry = _cache.robot_entry(reach.PLANT)
+        current_key = _codegen_key(gpu_path, reach.EE_FRAME, .15, None, False)
+        available = ([n for n in SUPPORTED_N if _cache.find_module(reach.PLANT, n) is not None]
+                     if entry and entry.get("codegen_key") == current_key else [])
+    except (OSError, ValueError, KeyError):
+        available = []
+    _, settings, _ = configuration.load_configuration()
+    defaults = {k: deepcopy(v) for k, v in settings.items() if k not in ("description", "save_plan_steps")}
+    schema = dict(defaults=dict(config=defaults, task=dict(kind="reach", target_offset_m=[0, 0, 0]),
+                                                execution=deepcopy(DEFAULT_EXECUTION)),
+                       available_N=available, parameters=parameter_specs(defaults, available),
+                       tasks=[dict(kind="reach", label="Reach", defaults=dict(kind="reach", target_offset_m=[0, 0, 0])),
+                              dict(kind="figure8", label="Figure eight", defaults=deepcopy(FIGURE8_DEFAULT_TASK),
+                                   parameters=[dict(path="width_m", label="Width (m)", min=.01, max=.6),
+                                               dict(path="height_m", label="Height (m)", min=.01, max=.6),
+                                               dict(path="period_s", label="Period (s)", min=1., max=120.)])],
+                       source=source_identity(mpc_root))
+    return schema
 
-    def publish(self, event):
-        # Small startup event only; ongoing presentation validates off the GPU worker.
-        json.dumps(event, allow_nan=False)
-        self.publish_events([event])
 
-    def publish_events(self, events):
-        with self.condition:
-            for event in events:
-                self.cursor += 1
-                self.events.append((self.cursor, event))
-                if event["type"] in ("status", "plan", "state"):
-                    self.latest[event["type"]] = event
-            self.condition.notify_all()
-
-    def subscribe(self):
-        with self.condition:
-            self.subscribers += 1
-            self.condition.notify_all()
-            return self.cursor, [self.latest[k] for k in ("status", "plan", "state") if k in self.latest]
-
-    def unsubscribe(self):
-        with self.condition:
-            self.subscribers = max(0, self.subscribers - 1)
-            if not self.subscribers:
-                self.commands.append(dict(type="pause"))
-            self.condition.notify_all()
-
-    def read_events(self, cursor, timeout=1):
-        with self.condition:
-            self.condition.wait_for(lambda: self.closed or self.cursor > cursor, timeout=timeout)
-            return self.cursor, [event for seq, event in self.events if seq > cursor]
-
-    def command(self, command):
-        if not isinstance(command, dict) or command.get("type") not in ("set_settings", "play", "pause", "reset"):
-            raise ValueError("Unknown live command")
-        kind = command["type"]
-        if kind == "set_settings":
-            if set(command) != {"type", "config", "task"}:
-                raise ValueError("set_settings requires config and task")
-            config, task = validate_settings(command["config"], command["task"], self.schema)
-            command = dict(type=kind, config=config, task=task)
-        elif set(command) != {"type"}:
-            raise ValueError(f"Unexpected {kind} command fields")
-        with self.condition:
-            if self.closed:
-                raise ValueError("Live service is closed")
-            if kind == "set_settings":
-                self.next_version += 1
-                command["settings_version"] = self.next_version
-                if self.commands and self.commands[-1]["type"] == kind:
-                    self.commands.pop()
-            if len(self.commands) >= 64:
-                raise ValueError("Command queue full")
-            self.commands.append(command)
-            self.condition.notify_all()
-            return self.next_version
-
-    def close(self):
-        with self.condition:
-            self.closed = True
-            self.condition.notify_all()
-        # CUDA destruction waits for the shared experiment window too. Returning
-        # early would let process teardown free CUDA resources outside the lock.
-        self.thread.join()
-        self.presentation.close()
-
-    def _run(self):
-        locks = GPULocks(self.mpc_root)
-        adapter = None
-        playing = False
-        needs_config = needs_preview = True
-        needs_restart = False
-        wall_epoch = sim_epoch = next_tick = 0.0
-        last_plan = None
-        last_rtf = 0.0
-        last_busy = 0.0
-        def status_event(state, message):
-            return snapshot(dict(type="status", state=state, message=message,
-                                 settings_version=self.version, N=self.config["N"], dt_s=self.config["dt_s"]))
-
-        def present(state, message, *, plan=None, capture=False, urgent=False, extra=()):
-            native = adapter.state_snapshot(last_rtf, self.version) if capture and adapter is not None else None
-            self.presentation.submit((plan, native, (*extra, status_event(state, message))), urgent=urgent)
-
-        try:
-            while True:
-                with self.condition:
-                    if self.closed:
-                        return
-                    commands = list(self.commands)
-                    self.commands.clear()
-                    clients = self.subscribers
-                for command in commands:
-                    kind = command["type"]
-                    self.presentation.invalidate()
-                    if kind == "set_settings":
-                        last_plan = None
-                        self.config, self.task = command["config"], command["task"]
-                        self.version = command["settings_version"]
-                        needs_config = needs_preview = True
-                    elif kind == "play":
-                        playing = True
-                        needs_restart = True
-                        wall_epoch, sim_epoch = time.monotonic(), adapter.t if adapter else 0
-                        next_tick = wall_epoch
-                    elif kind == "pause":
-                        playing = False
-                        locks.release()
-                        present("paused", "Paused; solve latency does not advance simulated time",
-                                plan=last_plan, capture=not needs_config, urgent=True)
-                    elif kind == "reset":
-                        last_plan = None
-                        last_rtf = 0.0
-                        if adapter is not None:
-                            adapter.reset_state(reset_controller=False)
-                        needs_restart = True
-                        needs_preview = True
-                        wall_epoch, sim_epoch = time.monotonic(), 0
-                        next_tick = wall_epoch
-                if not clients:
-                    playing = False
-                    locks.release()
-                ready = not playing or time.monotonic() >= next_tick
-                if clients and ready and (playing or needs_preview):
-                    if not locks.acquire():
-                        if time.monotonic() - last_busy > 1:
-                            present("gpu_busy", "Experiment GPU locks are held; waiting without solving", urgent=True)
-                            last_busy = time.monotonic()
-                    else:
-                        try:
-                            if adapter is None:
-                                adapter = self.adapter_factory(self.mpc_root, reach=self.reach)
-                            if needs_config:
-                                folder = ROOT / "_expr_data/live"
-                                folder.mkdir(parents=True, exist_ok=True)
-                                path = folder / f"config-{time.time_ns()}-v{self.version}.json"
-                                path.write_text(json.dumps(self.config, indent=2, allow_nan=False)+"\n")
-                                adapter.configure(path, self.task)
-                                needs_config = False
-                                wall_epoch, sim_epoch = time.monotonic(), adapter.t
-                                next_tick = wall_epoch
-                            if needs_restart:
-                                adapter.controller.reset(adapter.x * adapter.state_signs)
-                                adapter.restarted = True
-                                needs_restart = False
-                            last_plan = adapter.solve_snapshot("play" if playing else "preview", self.version)
-                            needs_preview = False
-                            if playing:
-                                adapter.advance()
-                                now = time.monotonic()
-                                last_rtf = (adapter.t-sim_epoch)/max(now-wall_epoch, 1e-9)
-                                present("playing", "Simulated MPC motion; target held until paused",
-                                        plan=last_plan, capture=True)
-                                # Fixed dt plant advances, paced at a maximum of real time.
-                                next_tick = max(next_tick + adapter.dt, now)
-                            else:
-                                last_rtf = 0.0
-                                present("paused", "Preview: reset at current state followed by one solve",
-                                        plan=last_plan, capture=True, urgent=True)
-                                locks.release()
-                        except Exception as exc:
-                            playing = needs_preview = False
-                            needs_config = True
-                            locks.release()
-                            self.presentation.invalidate()
-                            present("error", str(exc), urgent=True, extra=(
-                                snapshot(dict(type="error", message=str(exc), detail=traceback.format_exc())),))
-                with self.condition:
-                    timeout = min(.1, max(0, next_tick-time.monotonic())) if playing and locks.handles else .1
-                    self.condition.wait(timeout=timeout)
-        finally:
-            if adapter is not None:
-                # CUDA buffer/event destruction belongs to this worker too.
-                # A graceful shutdown waits for an experiment owner to finish.
-                while not locks.acquire():
-                    time.sleep(.1)
-                adapter.controller = None
-                adapter.solver = None
-                adapter = None
-            locks.release()
+# Numerical controller/plant operations stay above; process/transport/history
+# policy belongs to the visualizer bridge and never initializes CUDA here.
+from execution_bridge import ProcessLiveService as LiveService

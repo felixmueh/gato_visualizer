@@ -504,6 +504,21 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             elif path == "/api/live/schema" and live is not None:
                 self.send_payload(json.dumps(live.schema, allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
+            elif path == "/api/live/history" and live is not None:
+                from execution_bridge import HistoryGenerationError
+                try:
+                    query = parse_qs(urlsplit(self.path).query)
+                    if "generation" not in query or not set(query) <= {"generation", "after", "limit"} or any(len(values) != 1 for values in query.values()):
+                        raise ValueError("History requires one generation and optional after/limit")
+                    payload = live.history(int(query["generation"][0]),
+                                           int(query.get("after", ["0"])[0]),
+                                           int(query.get("limit", ["256"])[0]))
+                    status = 200
+                except (ValueError, TypeError) as exc:
+                    status = 409 if isinstance(exc, HistoryGenerationError) else 400
+                    payload = dict(error=str(exc), generation=live.generation)
+                self.send_payload(json.dumps(payload, allow_nan=False).encode(),
+                                  "application/json; charset=utf-8", status)
             elif path == "/api/live/events" and live is not None:
                 self.live_events()
             elif path == "/assets/robot.urdf":
