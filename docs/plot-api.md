@@ -73,6 +73,8 @@ The SDK agent owns concrete helper class names and typed Python interfaces.
 - Source is Live generation or `{kind: "replay", id, trajectory_index}`.
 - `context` is `episode` or `solve`.
 - Null/omitted `solve_seq` follows the episode cursor's recorded association.
+  Explicit identities may be strings or integers; previews use `preview:<seq>`
+  to distinguish them from controller solves. Keep identities opaque in the UI.
 - Null/omitted `iteration` selects the final result; integer indices select
   only actual recorded SQP data. Seed index 0 requires a recorded seed.
 - Episode range modes: `entire`, `through_cursor`, `visible` with cursor/window
@@ -98,6 +100,11 @@ Completed responses include `results: [{instance_id, spec, error?}]`, `catalog`,
 `sim_time_s`, `origin`, `iterations: [{index, status, has_prediction}]`, final
 `has_prediction`, `can_continue`, and explanatory capability reasons. Do not
 create a fake per-iteration prediction or advertise exact resumption.
+
+Preview solves have a separate append-only inspection store, written after
+presentation and identified by Live generation. They remain available to a
+pinned inspector after newer previews arrive, without becoming executed plans
+or changing the authoritative episode history.
 
 One bounded CPU plotting worker handles computation apart from the numerical
 worker and HTTP threads. Coalesce obsolete pending jobs and discard stale UI
