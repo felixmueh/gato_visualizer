@@ -63,7 +63,7 @@ export function setupSolverProfiles({ liveContainer, editorContainer, beforeActi
       try {
         const result = await refresh({ observeSwitch: false });
         if (result.switch?.state === 'switching') poll();
-        else await handleEvent({ type: 'solver_profile', state: result.switch?.state === 'failed' ? 'failed' : 'active', profile_id: result.active_profile_id || result.switch?.profile_id, generation: result.generation, error: result.switch?.error });
+        else await handleEvent({ type: 'solver_profile', state: result.switch?.state === 'failed' ? 'failed' : 'active', profile_id: result.active_profile_id || result.switch?.profile_id, active_profile_id: result.active_profile_id, generation: result.generation, error: result.switch?.error });
       } catch (error) { say(`Checking solver switch: ${error.message}`, true); if (switching) poll(); }
     }, 500);
   }
@@ -94,12 +94,13 @@ export function setupSolverProfiles({ liveContainer, editorContainer, beforeActi
   }
   async function handleEvent(item) {
     if (!['active', 'failed'].includes(item.state)) return;
-    const key = JSON.stringify([item.state, item.profile_id, item.generation, item.error]);
+    const key = JSON.stringify([item.state, item.profile_id, item.active_profile_id, item.generation, item.error]);
     if (key === settledKey) return settling;
     settledKey = key; ++epoch; unschedule(timer); switching = true; controls();
     settling = (async () => {
       try {
-        await Promise.all([refresh({ observeSwitch: false }), onSettled(item)]);
+        await refresh({ observeSwitch: false });
+        await onSettled({ ...item, active_profile_id: Object.hasOwn(item, 'active_profile_id') ? item.active_profile_id : catalog.active_profile_id });
         say(item.state === 'failed' ? `Solver switch failed: ${item.error || 'No solver is active.'}` : 'Solver ready · simulation paused.', item.state === 'failed');
       } catch (error) { say(`Solver setup: ${error.message}`, true); }
       finally { switching = false; render(); }

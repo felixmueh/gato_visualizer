@@ -56,3 +56,12 @@ test('switch polling supports Replay and failed selection keeps profile retry av
   h.ui.fields.name.value = 'Draft stays'; await h.ui.fields.name.emit('input'); await h.ui.refresh(); assert.equal(h.ui.fields.name.value, 'Draft stays');
   h.ui.destroy();
 });
+
+test('preflight failure reports the retained active solver to Live controls', async () => {
+  const events = [], h = fixture({ onSettled: item => events.push(item) });
+  await h.ui.refresh(); await h.ui.activate('candidate');
+  h.catalog.switch = { state: 'failed', profile_id: 'candidate', error: 'N unavailable' };
+  await h.ui.handleEvent({ state: 'failed', profile_id: 'candidate', error: 'N unavailable' });
+  assert.equal(events[0].active_profile_id, 'main'); assert.equal(h.ui.select.value, 'main'); assert.equal(h.ui.select.disabled, false);
+  h.ui.destroy();
+});

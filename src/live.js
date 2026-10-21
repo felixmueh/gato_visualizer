@@ -735,7 +735,9 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       const response = await fetch('/api/live/schema'), nextSchema = await response.json();
       if (reload !== schemaReload) return;
       if (item.state === 'failed') {
-        profileUnavailable = true;
+        profileUnavailable = !item.active_profile_id || !response.ok;
+        status = 'paused'; job = { ...job, job_active: false };
+        $('live-status').textContent = 'PAUSED';
         message(`Solver switch failed: ${item.error || 'No solver is active.'}`, true);
         return;
       }

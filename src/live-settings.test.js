@@ -755,6 +755,9 @@ test('failed solver switch leaves paused history and settings intact; unavailabl
     const retained = live.settings, beforeHistory = live.history, count = h.commands.length;
     live.beginSolverProfileSwitch(); await live.finishSolverProfileSwitch({ state: 'failed', profile_id: 'bad', error: 'N=32 unavailable' });
     assert.deepEqual(live.settings, retained); assert.deepEqual(live.history, beforeHistory); assert.equal(live.playing, false); assert.equal(h.$('live-preview').disabled, true); assert(h.$('live-message').textContent.includes('N=32 unavailable'));
+    // A preflight rejection leaves the previous child usable and paused.
+    live.beginSolverProfileSwitch(); await live.finishSolverProfileSwitch({ state: 'failed', profile_id: 'bad', active_profile_id: 'main', error: 'Prebuilt N unavailable' });
+    assert.deepEqual(live.settings, retained); assert.deepEqual(live.history, beforeHistory); assert.equal(live.playing, false); assert.equal(h.$('live-preview').disabled, false); assert.equal(h.commands.length, count);
     // Defensive schema reconciliation also exposes a removed N rather than replacing it.
     h.schema.available_N = [16, 128]; live.beginSolverProfileSwitch(); await live.finishSolverProfileSwitch({ state: 'active', profile_id: 'other' });
     assert.equal(live.settings.config.N, 32); assert(h.$('live-message').textContent.includes('N=32')); assert.equal(h.$('live-preview').disabled, true);
