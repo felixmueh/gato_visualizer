@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gato-visualizer"
+version = "0.1.0"
+description = "Lightweight Python plotting SDK for TIAGo MPC inspection"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+visualizer-plot-check = "gato_visualizer.plotting.check:main"
+
+[tool.setuptools.packages.find]
+include = ["gato_visualizer*"]

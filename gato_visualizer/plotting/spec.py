@@ -1,0 +1,120 @@
+"""PlotSpec v1 constructors and strict JSON/shape validation."""
+from __future__ import annotations
+from typing import Any, Literal, TypedDict
+import json
+import math
+from .views import finite
+
+
+class Axis(TypedDict, total=False):
+    identity: Literal['episode_time', 'sqp_iteration', 'prediction_time', 'wall_time', 'numeric', 'category']
+    label: str
+    unit: str
+    clock: str
+
+
+class Series(TypedDict, total=False):
+    label: str
+    x: list[float]
+    y: list[float | None]
+    style: Literal['line', 'step', 'bar']
+    color: str
+
+
+class PlotSpec(TypedDict, total=False):
+    version: int
+    kind: Literal['lines', 'bars', 'table', 'spans', 'unavailable']
+    title: str
+    x: Axis
+    y: dict[str, str]
+    series: list[Series]
+    rows: list[dict[str, Any]]
+    notes: list[str]
+    guides: list[dict[str, Any]]
+    spans: list[dict[str, Any]]
+    message: str
+
+
+def lines(title, series, *, identity='episode_time', x_label='Episode time', x_unit='s', y_label='', unit='', guides=(), notes=(), kind='lines') -> PlotSpec:
+    return dict(version=1, kind=kind, title=title, x=dict(identity=identity, label=x_label, unit=x_unit),
+                y=dict(label=y_label, unit=unit), series=list(series), guides=list(guides), notes=list(notes))
+
+
+def series(label, x, y, *, style='line', color=None) -> Series:
+    result = dict(label=label, x=list(x), y=list(y), style=style)
+    if color is not None:
+        result['color'] = color
+    return result
+
+
+def table(title, rows, *, notes=()) -> PlotSpec:
+    return dict(version=1, kind='table', title=title, rows=list(rows), notes=list(notes))
+
+
+def unavailable(title, message) -> PlotSpec:
+    return dict(version=1, kind='unavailable', title=title, message=message, notes=[])
+
+
+def validate_spec(spec: Any) -> PlotSpec:
+    """Validate shape and finite JSON values; gaps must be explicit nulls.
+
+    Return a detached plain JSON dict. No HTML, JavaScript, callbacks or custom
+    objects are accepted. This establishes structure, not metric correctness.
+    """
+    def require(test, message):
+        if not test:
+            raise ValueError(f'PlotSpec: {message}')
+    require(isinstance(spec, dict), 'expected a dictionary')
+    allowed = {'version', 'kind', 'title', 'x', 'y', 'series', 'rows', 'notes', 'guides', 'spans', 'message'}
+    require(not spec.keys() - allowed, f'unsupported fields {sorted(spec.keys() - allowed)}')
+    require(spec.get('version') == 1, 'version must be 1')
+    kind = spec.get('kind')
+    require(kind in ('lines', 'bars', 'table', 'spans', 'unavailable'), 'unsupported kind')
+    require(isinstance(spec.get('title'), str), 'title must be text')
+    require(isinstance(spec.get('notes', []), list) and all(isinstance(x, str) for x in spec.get('notes', [])), 'notes must be strings')
+    if kind in ('lines', 'bars', 'spans'):
+        axis = spec.get('x', {})
+        require(isinstance(axis, dict) and axis.get('identity') in ('episode_time', 'sqp_iteration', 'prediction_time', 'wall_time', 'numeric', 'category'), 'invalid x axis identity')
+        require(all(isinstance(axis.get(key), str) for key in ('label', 'unit')), 'x label/unit must be text')
+    if kind in ('lines', 'bars'):
+        axis = spec.get('y', {})
+        require(isinstance(axis, dict) and all(isinstance(axis.get(key), str) for key in ('label', 'unit')), 'y label/unit must be text')
+        require(isinstance(spec.get('series'), list), 'series must be an array')
+        for index, item in enumerate(spec['series']):
+            require(isinstance(item, dict) and isinstance(item.get('label'), str), f'series {index} needs label')
+            require(not item.keys() - {'label', 'x', 'y', 'style', 'color'}, f'series {index} has unsupported fields')
+            require(item.get('style', 'line') in ('line', 'step', 'bar'), f'series {index} invalid style')
+            require(isinstance(item.get('x'), list) and isinstance(item.get('y'), list), f'series {index} x/y must be arrays')
+            require(len(item['x']) == len(item['y']), f'series {index} x/y length mismatch')
+            require(all(finite(v) or (spec['x']['identity'] == 'category' and isinstance(v, str)) for v in item['x']), f'series {index} x must be finite')
+            require(all(v is None or finite(v) for v in item['y']), f'series {index} y must be finite or null')
+        for guide in spec.get('guides', []):
+            require(isinstance(guide, dict) and guide.get('axis') == 'y' and finite(guide.get('value')) and isinstance(guide.get('label'), str), 'invalid guide')
+    if kind == 'table':
+        require(isinstance(spec.get('rows'), list), 'rows must be an array')
+        for row in spec['rows']:
+            require(isinstance(row, dict) and isinstance(row.get('label'), str), 'table row needs label')
+            require(not row.keys() - {'label', 'value', 'unit', 'note'}, 'unsupported table row field')
+            require(row.get('value') is None or isinstance(row.get('value'), (str, bool)) or finite(row.get('value')), 'invalid table value')
+            require(all(isinstance(row.get(key, ''), str) for key in ('unit', 'note')), 'row unit/note must be text')
+    if kind == 'spans':
+        require(isinstance(spec.get('spans'), list), 'spans must be an array')
+        for item in spec['spans']:
+            require(isinstance(item, dict) and finite(item.get('start')) and finite(item.get('end')) and item['end'] >= item['start'], 'invalid span bounds')
+            require(isinstance(item.get('lane'), str) and isinstance(item.get('label'), str), 'span needs lane/label')
+    if kind == 'unavailable':
+        require(isinstance(spec.get('message'), str), 'unavailable needs message')
+    def check_json(value):
+        if value is None or isinstance(value, (str, bool)):
+            return
+        if isinstance(value, (int, float)):
+            require(math.isfinite(value), 'nonfinite JSON number; use null')
+        elif isinstance(value, list):
+            for item in value: check_json(item)
+        elif isinstance(value, dict):
+            require(all(isinstance(key, str) for key in value), 'JSON object keys must be strings')
+            for item in value.values(): check_json(item)
+        else:
+            require(False, f'unsupported JSON value {type(value).__name__}')
+    check_json(spec)
+    return json.loads(json.dumps(spec, allow_nan=False))
