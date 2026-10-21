@@ -61,20 +61,38 @@ class HistoryStore:
         self.append_encoded(self.encode(records))
 
     def append_encoded(self, encoded_records):
+        encoded_records = list(encoded_records)
+        if not encoded_records:
+            return
+        # Assemble the packet before taking the store lock. The receiver already
+        # encoded each record outside the Live lock; file I/O is one batch, not
+        # one buffered write/tell pair per physics state.
+        payload = b"".join(record[0] for record in encoded_records)
+        relative_offsets, plans = [], []
+        offset = state_count = 0
+        end_time = 0.
+        for index, (encoded, timestamp, is_state, plan_id) in enumerate(encoded_records):
+            relative_offsets.append(offset)
+            if plan_id is not None:
+                plans.append((plan_id, index, offset, len(encoded)))
+            offset += len(encoded)
+            state_count += is_state
+            end_time = max(end_time, timestamp)
         with self.lock:
-            for encoded, timestamp, is_state, plan_id in encoded_records:
-                offset = self.stream.tell()
-                if plan_id is not None:
-                    self.plan_offsets.setdefault(plan_id, (len(self.offsets), offset, len(encoded)))
-                self.offsets.append(offset)
-                self.stream.write(encoded)
-                self.end_time = max(self.end_time, timestamp)
-                self.state_count += is_state
+            start = self.stream.tell()
+            self.stream.write(payload)
             self.stream.flush()
+            cursor = len(self.offsets)
+            self.offsets.extend(start + offset for offset in relative_offsets)
+            for identifier, index, offset, size in plans:
+                self.plan_offsets.setdefault(identifier, (cursor + index, start + offset, size))
+            self.end_time = max(self.end_time, end_time)
+            self.state_count += state_count
 
     def metadata(self):
-        return dict(type="history", generation=self.generation, history_cursor=len(self.offsets),
-                    history_end_s=self.end_time, complete=self.complete)
+        with self.lock:
+            return dict(type="history", generation=self.generation, history_cursor=len(self.offsets),
+                        history_end_s=self.end_time, complete=self.complete)
 
     def plot_source(self, generation):
         """Capture only committed storage identity; plotting reads outside locks."""
