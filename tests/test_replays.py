@@ -93,6 +93,56 @@ class ReplayTests(unittest.TestCase):
         self.assertNotIn("import pinocchio", source)
         self.assertNotIn("import gato", source)
 
+    def test_optional_telemetry_ordering_interval_timing_and_historical_limits(self):
+        order = np.arange(7)[::-1]
+        velocity = np.arange(14).reshape(2, 7) / 10
+        torque = np.arange(7)[None, :] - 3
+        limits = dict(lower_position_rad=[-2]*7, upper_position_rad=[2]*7,
+                      velocity_rad_s=list(range(1, 8)), effort_nm=list(range(10, 17)),
+                      source="Recorded historical protocol")
+        path = self.export(self.path, q=self.q[:, order], joint_names=list(reversed(JOINT_NAMES)),
+            qd_rad_s=velocity[:, order], torque_nm=torque[:, order], torque_time_s=[0],
+            joint_limits={key: (np.asarray(value)[order].tolist() if key != "source" else value)
+                          for key, value in limits.items()},
+            plans=[dict(origin_time_s=0, time_s=self.time, q=self.q[:, order],
+                        qd_rad_s=velocity[:, order], torque_nm=torque[:, order], torque_time_s=[0])])
+        replay = load_replay(path, model_urdf=MODEL)
+        np.testing.assert_array_equal(replay.qd_rad_s, velocity)
+        np.testing.assert_array_equal(replay.torque_nm, torque)
+        np.testing.assert_array_equal(replay.torque_time_s, [0])
+        self.assertEqual(replay.joint_limits, limits)
+        np.testing.assert_array_equal(replay.predictions[0].qd_rad_s, velocity)
+        scene = replay_scene(replay, path, MPC_ROOT, self.base_scene)
+        recorded, plan = scene["trajectories"]
+        self.assertEqual(scene["joint_limits"], limits)
+        self.assertEqual(recorded["torque_kind"], "applied")
+        self.assertNotIn("torque_end_time_s", recorded)
+        self.assertEqual(plan["torque_kind"], "predicted")
+        self.assertEqual(plan["torque_end_time_s"], .03)
+        np.testing.assert_array_equal(plan["torque_nm"], torque)
+        # Position-only archives retain genuinely unavailable telemetry.
+        replay = load_replay(self.export(self.path), model_urdf=MODEL)
+        self.assertIsNone(replay.qd_rad_s)
+        self.assertIsNone(replay.torque_nm)
+        fallback = replay_scene(replay, self.path, MPC_ROOT, self.base_scene)
+        self.assertNotIn("qd_rad_s", fallback["trajectories"][0])
+        self.assertEqual(fallback["joint_limits"]["source"], "Canonical display URDF limits")
+
+    def test_optional_telemetry_rejects_wrong_shape_nonfinite_and_invalid_timestamps(self):
+        for changes in (dict(qd_rad_s=np.zeros((1, 7))), dict(qd_rad_s=np.full((2, 7), np.nan)),
+                        dict(torque_nm=np.zeros((1, 7))), dict(torque_time_s=[0]),
+                        dict(torque_nm=np.zeros((2, 7)), torque_time_s=[0, .04]),
+                        dict(torque_nm=np.zeros((2, 7)), torque_time_s=[0, 0]),
+                        dict(metadata=dict(joint_limits=dict(lower_position_rad=[0]*7)))):
+            with self.subTest(changes=changes), self.assertRaises(ReplayError):
+                load_replay(self.rewritten(**changes), model_urdf=MODEL)
+        for changes in (dict(qd_rad_s=np.zeros((1, 7))), dict(torque_time_s=[0]),
+                        dict(torque_nm=np.zeros((1, 7))),
+                        dict(torque_nm=np.zeros((1, 7)), torque_time_s=[.04]),
+                        dict(joint_limits=dict(lower_position_rad=[0]*7))):
+            with self.subTest(export=changes), self.assertRaises(ValueError):
+                self.export(self.path, **changes)
+
     def test_invalid_samples_names_identity_and_reference_are_rejected_without_repair(self):
         cases = [dict(time_s=[0, 0]), dict(time_s=[.03, .01]), dict(q=np.full((2, 7), np.nan)),
                  dict(metadata=dict(joint_names=["unknown"]*7)),

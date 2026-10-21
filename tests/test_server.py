@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pinocchio as pin
 
-from server import DEFAULT_RUN, JOINT_NAMES, RobotKinematics, SourceError, decode_prediction, load_scene, make_server
+from server import DEFAULT_RUN, JOINT_NAMES, RobotKinematics, SourceError, decode_prediction, decode_prediction_telemetry, load_scene, make_server
 
 MPC_ROOT = Path(__file__).resolve().parents[2] / "tiago_mpc"
 
@@ -26,6 +26,12 @@ class PredictionTests(unittest.TestCase):
         np.testing.assert_array_equal(q, np.array([np.arange(7), np.arange(21, 28),
                                                  np.arange(42, 49)]) * signs)
         self.assertEqual(q[-1, 5], -47)
+        positions, velocity, torque = decode_prediction_telemetry(packed, signs, 3)
+        np.testing.assert_array_equal(positions, q)
+        np.testing.assert_array_equal(velocity, np.array([np.arange(7, 14), np.arange(28, 35),
+                                                        np.arange(49, 56)]) * signs)
+        np.testing.assert_array_equal(torque, np.array([np.arange(14, 21), np.arange(35, 42)]) * signs)
+        self.assertEqual(torque.shape, (2, 7))  # no invented terminal control
 
     def test_bad_packed_shape_signs_and_nonfinite_rejected(self):
         for packed, signs in [(np.zeros(42), np.ones(7)),

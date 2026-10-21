@@ -112,7 +112,7 @@ Unless Felix explicitly requests a particular plot, present experiments as:
 - A portable replay exported with main `tiago_mpc/experiments/tools.py` into
   the shared ingest directory. Include actual native joint positions and sample
   timestamps, the task reference, and saved predictions when available/useful.
-  Do not invent motion or rerun a retained experiment just to populate the UI.
+  Include recorded velocity, actuator torque and historical limits when available; these are optional, so position-only exports remain simple. Do not invent motion or rerun a retained experiment just to populate the UI.
 - A clickable viewer URL (normally `http://192.168.178.82:8090`) and the exact
   library path(s) to select. New files appear through the watched catalog;
   changed files require explicit Reload so ongoing playback stays intact.
@@ -133,6 +133,8 @@ to inspect, without an unsolicited plotting/reporting framework.
 ## Coordination
 
 Use bounded parallel implementation and review when useful. Coordinate shared
-edits. Remove worktrees after merging their branches; first retain any loose
-changes or results that still matter. Do not delete branches without the user's
-approval.
+edits. Queue worktree cleanup after merging branches. At the end of the work
+session, inspect loose changes/results and propose the exact paths and branches
+to remove, stating where useful work is retained. Do not remove worktrees or
+delete branches automatically; wait for approval. Do not interrupt ongoing tasks
+with cleanup proposals.

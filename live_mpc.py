@@ -22,6 +22,8 @@ import traceback
 
 import numpy as np
 
+from live_presentation import LatestPresentation, LiveRenderer, render_plan, render_state, snapshot
+
 ROOT = Path(__file__).resolve().parent
 SUPPORTED_N = (16, 32, 64, 128)
 
@@ -100,6 +102,25 @@ def parameter_specs(config, available_n):
     return specs
 
 
+FIGURE8_DEFAULT_TASK = dict(kind="figure8", target_offset_m=[0, 0, 0],
+                            width_m=.24, height_m=.16, period_s=24.)
+
+
+def figure8_reference(times, start_xyz, task):
+    """World-XY loop, starting at its back edge without a position jump.
+
+    Geometry follows the retained tracking examples: x=(w/2)(1-cos phase),
+    y=(h/2)sin(2 phase). Unlike their experiment-specific 20 mm edge offset,
+    the interactive default starts exactly at the comfortable-pose tool.
+    """
+    phase = 2*np.pi*np.asarray(times, dtype=float)/task["period_s"]
+    xyz = np.broadcast_to(np.asarray(start_xyz, dtype=float), (len(phase), 3)).copy()
+    xyz += np.asarray(task["target_offset_m"])
+    xyz[:, 0] += .5*task["width_m"]*(1-np.cos(phase))
+    xyz[:, 1] += .5*task["height_m"]*np.sin(2*phase)
+    return xyz
+
+
 def validate_settings(config, task, schema):
     """Reject malformed, missing or extra fields before handing work to CUDA."""
     if not isinstance(config, dict) or not isinstance(task, dict):
@@ -134,8 +155,17 @@ def validate_settings(config, task, schema):
                 valid = valid and isinstance(value, int)
         if not valid:
             raise ValueError(f"Invalid {path}: {value!r}")
-    if task.get("kind") != "reach" or set(task) != {"kind", "target_offset_m"}:
-        raise ValueError("This MVP supports reaching tasks only")
+    task_kind = task.get("kind")
+    required_task_fields = ({"kind", "target_offset_m"} if task_kind == "reach" else
+                            set(FIGURE8_DEFAULT_TASK) if task_kind == "figure8" else None)
+    if required_task_fields is None or set(task) != required_task_fields:
+        raise ValueError("task requires a complete reach or figure8 object")
+    if task_kind == "figure8":
+        for field, lo, hi in (("width_m", .01, .6), ("height_m", .01, .6), ("period_s", 1., 120.)):
+            value = task[field]
+            if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                    not math.isfinite(value) or not lo <= value <= hi):
+                raise ValueError(f"{field} must be finite within [{lo}, {hi}]")
     offset = task["target_offset_m"]
     if (not isinstance(offset, list) or len(offset) != 3 or
             any(isinstance(x, bool) or not isinstance(x, (int, float)) or
@@ -194,6 +224,9 @@ class MPCAdapter:
             raise ValueError("Unexpected reduced TIAGo model or end-effector frame")
         self.default_target = self.reach.ee_position(
             self.model, self.data, self.reach.Q_START_RAD + self.reach.Q_GOAL_DELTA_RAD, self.fid)
+        self.figure8_start_world = self.kinematics.target_to_world(self.reach.ee_position(
+            self.model, self.data, self.reach.Q_START_RAD, self.fid))
+        self.task = dict(kind="reach", target_offset_m=[0, 0, 0])
         self.solver = self.controller = None
         self.sequence = 0
         self.reset_state()
@@ -201,6 +234,8 @@ class MPCAdapter:
     def reset_state(self, reset_controller=True):
         self.x = np.r_[self.reach.Q_START_RAD, np.zeros(7)]
         self.t = 0.0
+        self.sequence = 0
+        self.applied_torque = None
         if reset_controller and self.controller is not None:
             self.controller.reset(self.x * self.state_signs)
 
@@ -225,6 +260,13 @@ class MPCAdapter:
         options = settings.get("controller", {})
         self.controller = self.gato.MPCController(self.solver, limits="admm", linsys="pcg", **options)
         bounds = settings.get("limit_bounds", {})
+        margin = float(bounds.get("joint_margin_rad", 0))
+        self.joint_limits = dict(
+            lower_position_rad=(self.model.lowerPositionLimit + margin).tolist(),
+            upper_position_rad=(self.model.upperPositionLimit - margin).tolist(),
+            velocity_rad_s=(self.model.velocityLimit * bounds.get("velocity_fraction", 1)).tolist(),
+            effort_nm=(self.model.effortLimit * bounds.get("effort_fraction", 1)).tolist(),
+            source="Live configured MPC bounds (native coordinates)")
         for group, key in ((0, "joint_margin_rad"), (1, "velocity_fraction"), (2, "effort_fraction")):
             if key not in bounds:
                 continue
@@ -242,15 +284,34 @@ class MPCAdapter:
                 lo, hi = -value * raw, value * raw
             self.solver.set_row_group_bounds(group, lo, hi)
         self.N, self.dt = effective["N"], effective["dt_s"]
+        self.task = deepcopy(task)
+        self.task_path_xyz = (figure8_reference(np.linspace(0., task["period_s"], 257),
+                                              self.figure8_start_world, task).tolist()
+                              if task["kind"] == "figure8" else None)
         world_target = self.kinematics.target_to_world(self.default_target) + np.asarray(task["target_offset_m"])
         self.target = self.kinematics.world_from_torso.actInv(world_target)
         self.reference = np.zeros((self.N, 6), dtype=np.float32)
         self.reference[:, :3] = self.target
+        if self.task["kind"] == "figure8":
+            self.update_tracking_reference()
         self.controller.reset(self.x * self.state_signs)
         self.restarted = True
 
-    def solve(self, origin, settings_version):
-        from server import decode_prediction
+    def target_world_at(self, timestamp):
+        if self.task["kind"] == "figure8":
+            return figure8_reference([timestamp], self.figure8_start_world, self.task)[0]
+        return self.kinematics.target_to_world(self.target)
+
+    def update_tracking_reference(self):
+        world = figure8_reference(self.t+np.arange(self.N)*self.dt,
+                                 self.figure8_start_world, self.task)
+        self.reference[:, :3] = np.asarray([
+            self.kinematics.world_from_torso.actInv(point) for point in world])
+
+    def solve_snapshot(self, origin, settings_version):
+        """Solve numerically and copy buffers; trajectory FK/encoding runs elsewhere."""
+        if self.task["kind"] == "figure8":
+            self.update_tracking_reference()
         if origin == "preview":
             self.controller.reset(self.x * self.state_signs)
         step = self.controller.step(self.x * self.state_signs, self.reference.ravel())
@@ -258,15 +319,14 @@ class MPCAdapter:
         self.last_xu = np.asarray(step.solve.xu).copy()
         if not np.isfinite(self.u).all() or not np.isfinite(self.last_xu).all():
             raise FloatingPointError("Nonfinite torque or predicted trajectory")
-        q = decode_prediction(self.last_xu, self.signs, self.N)
         stats = step.solve.stats
         self.sequence += 1
         event = dict(type="plan", seq=self.sequence, origin=origin, settings_version=settings_version,
-                     sim_time_s=self.t, N=self.N, dt_s=self.dt,
-                     knot_time_s=(np.arange(self.N) * self.dt).tolist(), q=q.tolist(),
-                     ee_xyz=self.kinematics.ee_positions(q).tolist(),
-                     reference_xyz=[self.kinematics.target_to_world(row[:3]).tolist()
-                                    for row in self.reference],
+                     sim_time_s=self.t, N=self.N, dt_s=self.dt, task_kind=self.task["kind"],
+                     target_xyz=self.target_world_at(self.t).tolist(),
+                     task_path_xyz=getattr(self, "task_path_xyz", None),
+                     _xu=self.last_xu, _signs=self.signs, _reference=self.reference,
+                     joint_limits=self.joint_limits,
                      stats=dict(sqp_iters=int(np.sum(stats.sqp_iters)), pcg_iters=int(np.sum(stats.pcg_iters)),
                                 admm_iters=int(np.sum(stats.admm_iters)),
                                 admm_linsys_iters=int(np.sum(stats.admm_linsys_iters)),
@@ -278,8 +338,13 @@ class MPCAdapter:
         violation = np.asarray(step.row_viol)
         if not np.isfinite(violation).all():
             event["stats"]["row_violation"] = None
-        json.dumps(event, allow_nan=False)
         self.restarted = False
+        return snapshot(event)
+
+    def solve(self, origin, settings_version):
+        """Synchronous diagnostic/conformance API, sharing the exact numerical path."""
+        event = render_plan(self.solve_snapshot(origin, settings_version), self.kinematics)
+        json.dumps(event, allow_nan=False)
         return event
 
     def advance(self, end_time=None):
@@ -293,15 +358,21 @@ class MPCAdapter:
             if not np.isfinite(self.x).all():
                 raise FloatingPointError("Nonfinite simulated state")
             self.t += h
+            self.applied_torque = self.u.copy()
             samples.append((self.t, self.x.copy(), self.u.copy()))
         return samples
 
+    def state_snapshot(self, rtf=0, settings_version=0):
+        return snapshot(dict(type="state", sim_time_s=self.t, _x=self.x,
+                    settings_version=settings_version,
+                    torque_nm=None if self.applied_torque is None else self.applied_torque.tolist(),
+                    torque_kind="applied", joint_limits=self.joint_limits,
+                    task_kind=self.task["kind"], target_xyz=self.target_world_at(self.t).tolist(),
+                    _position_tol=self.reach.POSITION_TOL_M, _speed_tol=self.reach.SPEED_L1_TOL_RAD_S,
+                    rtf=float(rtf)))
+
     def state_event(self, rtf=0):
-        ee = self.kinematics.ee_positions(self.x[None, :7])[0]
-        distance = float(np.linalg.norm(ee-self.kinematics.target_to_world(self.target)))
-        arrived = distance <= self.reach.POSITION_TOL_M and np.abs(self.x[7:]).sum() <= self.reach.SPEED_L1_TOL_RAD_S
-        return dict(type="state", sim_time_s=self.t, q=self.x[:7].tolist(), qd=self.x[7:].tolist(),
-                    ee_xyz=ee.tolist(), distance_m=distance, arrived=bool(arrived), rtf=float(rtf))
+        return render_state(self.state_snapshot(rtf), self.kinematics)
 
 
 class LiveService:
@@ -323,6 +394,11 @@ class LiveService:
         defaults = {k: deepcopy(v) for k, v in settings.items() if k not in ("description", "save_plan_steps")}
         self.schema = dict(defaults=dict(config=defaults, task=dict(kind="reach", target_offset_m=[0, 0, 0])),
                            available_N=available, parameters=parameter_specs(defaults, available),
+                           tasks=[dict(kind="reach", label="Reach", defaults=dict(kind="reach", target_offset_m=[0, 0, 0])),
+                                  dict(kind="figure8", label="Figure eight", defaults=deepcopy(FIGURE8_DEFAULT_TASK),
+                                       parameters=[dict(path="width_m", label="Width (m)", min=.01, max=.6),
+                                                   dict(path="height_m", label="Height (m)", min=.01, max=.6),
+                                                   dict(path="period_s", label="Period (s)", min=1., max=120.)])],
                            source=source_identity(self.mpc_root))
         self.config, self.task = deepcopy(defaults), deepcopy(self.schema["defaults"]["task"])
         self.adapter_factory = adapter_factory
@@ -332,18 +408,24 @@ class LiveService:
         self.latest = {}
         self.cursor = self.version = self.subscribers = self.next_version = 0
         self.closed = False
+        self.presentation = LatestPresentation(LiveRenderer(self.mpc_root), self.publish_events)
         self.thread = threading.Thread(target=self._run, name="live-mpc-gpu", daemon=True)
         self.publish(dict(type="status", state="idle", message="Live reaching ready; connect to preview",
                           settings_version=0, N=defaults["N"], dt_s=defaults["dt_s"]))
         self.thread.start()
 
     def publish(self, event):
+        # Small startup event only; ongoing presentation validates off the GPU worker.
         json.dumps(event, allow_nan=False)
+        self.publish_events([event])
+
+    def publish_events(self, events):
         with self.condition:
-            self.cursor += 1
-            self.events.append((self.cursor, event))
-            if event["type"] in ("status", "plan", "state"):
-                self.latest[event["type"]] = event
+            for event in events:
+                self.cursor += 1
+                self.events.append((self.cursor, event))
+                if event["type"] in ("status", "plan", "state"):
+                    self.latest[event["type"]] = event
             self.condition.notify_all()
 
     def subscribe(self):
@@ -396,6 +478,7 @@ class LiveService:
         # CUDA destruction waits for the shared experiment window too. Returning
         # early would let process teardown free CUDA resources outside the lock.
         self.thread.join()
+        self.presentation.close()
 
     def _run(self):
         locks = GPULocks(self.mpc_root)
@@ -404,11 +487,17 @@ class LiveService:
         needs_config = needs_preview = True
         needs_restart = False
         wall_epoch = sim_epoch = next_tick = 0.0
-        last_state_at = 0.0
+        last_plan = None
+        last_rtf = 0.0
         last_busy = 0.0
-        def status(state, message):
-            self.publish(dict(type="status", state=state, message=message,
-                              settings_version=self.version, N=self.config["N"], dt_s=self.config["dt_s"]))
+        def status_event(state, message):
+            return snapshot(dict(type="status", state=state, message=message,
+                                 settings_version=self.version, N=self.config["N"], dt_s=self.config["dt_s"]))
+
+        def present(state, message, *, plan=None, capture=False, urgent=False, extra=()):
+            native = adapter.state_snapshot(last_rtf, self.version) if capture and adapter is not None else None
+            self.presentation.submit((plan, native, (*extra, status_event(state, message))), urgent=urgent)
+
         try:
             while True:
                 with self.condition:
@@ -419,7 +508,9 @@ class LiveService:
                     clients = self.subscribers
                 for command in commands:
                     kind = command["type"]
+                    self.presentation.invalidate()
                     if kind == "set_settings":
+                        last_plan = None
                         self.config, self.task = command["config"], command["task"]
                         self.version = command["settings_version"]
                         needs_config = needs_preview = True
@@ -431,8 +522,11 @@ class LiveService:
                     elif kind == "pause":
                         playing = False
                         locks.release()
-                        status("paused", "Paused; solve latency does not advance simulated time")
+                        present("paused", "Paused; solve latency does not advance simulated time",
+                                plan=last_plan, capture=not needs_config, urgent=True)
                     elif kind == "reset":
+                        last_plan = None
+                        last_rtf = 0.0
                         if adapter is not None:
                             adapter.reset_state(reset_controller=False)
                         needs_restart = True
@@ -446,7 +540,7 @@ class LiveService:
                 if clients and ready and (playing or needs_preview):
                     if not locks.acquire():
                         if time.monotonic() - last_busy > 1:
-                            status("gpu_busy", "Experiment GPU locks are held; waiting without solving")
+                            present("gpu_busy", "Experiment GPU locks are held; waiting without solving", urgent=True)
                             last_busy = time.monotonic()
                     else:
                         try:
@@ -465,27 +559,28 @@ class LiveService:
                                 adapter.controller.reset(adapter.x * adapter.state_signs)
                                 adapter.restarted = True
                                 needs_restart = False
-                            self.publish(adapter.solve("play" if playing else "preview", self.version))
+                            last_plan = adapter.solve_snapshot("play" if playing else "preview", self.version)
                             needs_preview = False
                             if playing:
                                 adapter.advance()
                                 now = time.monotonic()
-                                if now-last_state_at >= 1/60:
-                                    self.publish(adapter.state_event((adapter.t-sim_epoch)/max(now-wall_epoch, 1e-9)))
-                                    last_state_at = now
-                                status("playing", "Simulated MPC motion; target held until paused")
+                                last_rtf = (adapter.t-sim_epoch)/max(now-wall_epoch, 1e-9)
+                                present("playing", "Simulated MPC motion; target held until paused",
+                                        plan=last_plan, capture=True)
                                 # Fixed dt plant advances, paced at a maximum of real time.
                                 next_tick = max(next_tick + adapter.dt, now)
                             else:
-                                self.publish(adapter.state_event())
-                                status("paused", "Preview: reset at current state followed by one solve")
+                                last_rtf = 0.0
+                                present("paused", "Preview: reset at current state followed by one solve",
+                                        plan=last_plan, capture=True, urgent=True)
                                 locks.release()
                         except Exception as exc:
                             playing = needs_preview = False
                             needs_config = True
                             locks.release()
-                            self.publish(dict(type="error", message=str(exc), detail=traceback.format_exc()))
-                            status("error", str(exc))
+                            self.presentation.invalidate()
+                            present("error", str(exc), urgent=True, extra=(
+                                snapshot(dict(type="error", message=str(exc), detail=traceback.format_exc())),))
                 with self.condition:
                     timeout = min(.1, max(0, next_tick-time.monotonic())) if playing and locks.handles else .1
                     self.condition.wait(timeout=timeout)

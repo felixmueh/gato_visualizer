@@ -271,7 +271,9 @@ a {
   margin-top: 13px;
 }
 .joint-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 30px repeat(3, minmax(0, 1fr));
+  column-gap: 4px;
   align-items: center;
   justify-content: space-between;
   padding: 7px 0;
@@ -284,7 +286,7 @@ a {
   gap: 9px;
 }
 .joint-name:before {
-  content: "";
+  content: none;
   height: 4px;
   width: 4px;
   border-radius: 50%;
@@ -295,7 +297,14 @@ a {
   font-size: 11px;
   color: #bdd0df;
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
+.joint-columns { color: #879ab2; font-size: 8px; white-space: nowrap; }
+.joint-columns span:not(:first-child) { text-align: right; }
+.joint-value.near-limit, .limit-yellow { color: #ffd166; }
+.joint-value.at-limit, .limit-red { color: #ff737b; }
+.joint-value.at-limit { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.joint-limit-note { color: #879ab2; font-size: 9px; margin: 7px 0 0; }
 .source-section {
   margin-top: auto;
   padding-top: 1px;
@@ -1092,6 +1101,14 @@ kbd {
 .legend-reference { width: 16px; height: 0; border-top: 2px dashed #ffb547; }
 .legend-executed { width: 16px; height: 2px; background: #fff; }
 .live-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.live-history-row { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+.live-history-row label { font-size: 9px; color: #91a8bc; letter-spacing: .5px; }
+.live-history-row input { flex: 1; min-width: 60px; }
+#live-history-position { font: 10px 'IBM Plex Mono', monospace; color: #cadddf; white-space: nowrap; }
+.live-history-row .secondary-action { min-height: 28px; padding: 5px 9px; white-space: nowrap; }
+#live-history-note, #live-history-window { margin: 7px 0 0; }
+#live-history-window { font-size: 8px; color: #8fa6bd; }
+@media (max-width: 800px) { .live-history-row { flex-wrap: wrap; gap: 9px; } .live-history-row label { width: 100%; } }
 .primary-action, .secondary-action { min-height: 35px; border-radius: 6px; padding: 8px 16px; font-size: 11px; }
 .primary-action { background: #68d9ce; color: #102c30; min-width: 75px; font-weight: 600; }
 .secondary-action { border: 1px solid #3b5069; background: #203044; color: #c7d8e8; }

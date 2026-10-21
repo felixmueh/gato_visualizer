@@ -21,6 +21,9 @@ save_replay(
     Path("../_expr_data/ingest/my-study/replay.npz"),
     time_s=np.asarray(times),               # actual saved sample timestamps
     q=np.asarray(native_states)[:, :7],    # native right-arm radians
+    qd_rad_s=np.asarray(native_states)[:, 7:],  # optional saved velocities
+    torque_nm=applied_actuator_torque,     # optional saved actuator controls
+    torque_time_s=np.asarray(times)[:-1], # one value per plant interval
     joint_names=JOINT_NAMES,
     model_urdf=Path("models/tiago_pro/tiago_pro.urdf"),
     time_basis="simulation",              # use "wall" for wall-clock samples
@@ -76,7 +79,8 @@ Each plan can also supply `id`, `reference_xyz_m`, `reference_time_s` and
 `reference_frame`. Its reference times are offsets from its origin. A plan
 without its own reference uses the recording reference over that horizon.
 Convert GPU predictions to native coordinates in the experiment before
-exporting; the format contains no GPU signs, packed states or controls.
+exporting; the format contains no GPU signs or packed states. Native predicted
+velocities/controls can be exported explicitly using the optional fields below.
 
 ## Archive fields
 
@@ -122,6 +126,45 @@ The viewer accepts at most 64 MiB compressed, 256 MiB expanded, 1 MiB of JSON
 metadata, 1,024 prediction descriptors and 200,000 total trajectory/reference
 samples. Excess files receive an explicit error; samples are not filtered.
 Object arrays and malformed NPY headers are rejected before loading.
+
+## Optional joint telemetry and limits
+
+Position-only exports remain valid. The viewer shows missing velocity/torque as
+`—`; it never differentiates positions or invents torque. All telemetry columns
+use the same native `joint_names` order as `q` (including native joint-6 signs).
+
+- `qd_rad_s`: finite `(T, 7)` recorded velocities, aligned with `time_s`.
+- `torque_nm`: finite `(K, 7)` **applied actuator torque**, excluding separately
+  modeled passive friction/damping. Supply `torque_time_s` `(K,)` when controls
+  use different timestamps from states; otherwise K must equal T.
+- Torque timestamps must strictly increase within the state's time span.
+  Torque uses zero-order hold from each timestamp until the next. For a plant
+  with T states and T−1 interval controls, pass `torque_time_s=time_s[:-1]`.
+  At the final recorded state, the table displays the last actually applied
+  interval torque, not a newly inferred terminal command. Before the first
+  control timestamp torque is unavailable.
+
+Each optional plan accepts `qd_rad_s`, `torque_nm`, and `torque_time_s` with
+these same shapes, using offsets from its origin. They become descriptor
+`qd_key`, `torque_key`, and `torque_time_key` fields naming the archived arrays.
+Plan torque is labeled **predicted actuator torque**. For N knots, export only
+N−1 controls at `time_s[:-1]`; the terminal knot has no predicted control and
+shows `—`. The API adds `torque_kind="predicted"` and an exclusive
+`torque_end_time_s` equal to the final state timestamp. Recorded API torque is
+labeled `torque_kind="applied"`. Live state torque is the last torque actually
+applied to the simulated plant; a preview changes the predicted command only,
+and never claims to have applied it. After Reset it remains null until motion.
+
+The exporter optionally accepts `joint_limits` as a JSON object containing
+seven-element arrays `lower_position_rad`, `upper_position_rad`,
+`velocity_rad_s`, and `effort_nm`, plus a descriptive `source` string. Position
+bounds must be ordered and velocity/effort limits positive. Use the recording's
+actual historical bounds when available; the reader normalizes their order
+along with joint columns. These recorded bounds take precedence over display
+URDF limits. Without them, the scene uses and labels canonical display URDF
+limits. Live uses and labels the effective configured MPC bounds, including
+position margin and velocity/effort fractions. Limit colors describe proximity
+to the identified bounds; they are not a convergence or physical-safety verdict.
 
 ## Library and uploads
 

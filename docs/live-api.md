@@ -11,8 +11,18 @@ modes. Agents change it only through the coordinating agent. Replay endpoints
 - One GPU worker thread owns every GATO/CUDA object. HTTP threads only enqueue
   commands and read published events. Consecutive pending settings commands
   coalesce to the newest one; play/pause/reset ordering is preserved.
+- A separate presentation thread decodes predictions, computes full-model FK,
+  and validates JSON. It owns its own Pinocchio model/data and receives copied,
+  immutable numerical snapshots. Its mailbox holds one pending frame in addition
+  to the frame being rendered; a newer frame replaces the pending frame. Control
+  and plant stepping never wait for presentation or SSE socket writes.
+- Settings, play, pause and reset invalidate obsolete presentation work. Pause
+  sends the exact final native state and last solved plan, followed by paused
+  status. This can repeat the last plan's identity without a new solve.
 - The native solve holds Python's GIL. Pause and settings responses may wait
-  for the current solve to finish. Browser rendering remains independent.
+  for the current solve to finish. Presentation also shares that GIL, so this
+  removes synchronous work/backpressure from control without promising CPU
+  isolation or hard real-time scheduling. Browser rendering remains independent.
 - MPC code comes from the unchanged `tiago_mpc` checkout (see `AGENTS.md`).
   `GATO_CACHE_DIR` is this checkout's `.cache/gato`, set before importing
   `reach_sim`.
@@ -45,9 +55,29 @@ the ones `reach_sim.py --config <that file>` would use.
 
 - `{"kind": "reach", "target_offset_m": [dx, dy, dz]}`: offset in the world
   frame from the default `reach_sim` target, FK(`Q_START_RAD + Q_GOAL_DELTA_RAD`).
-- `{"kind": "figure8", "amplitude_m": [ax, az], "period_s": T}`: optional
-  stretch goal, a figure-eight reference centred on the start tool position,
-  in the plane spanned by world x and z.
+- `{"kind": "figure8", "target_offset_m": [dx,dy,dz], "width_m": 0.24,
+  "height_m": 0.16, "period_s": 24}`: horizontal world-XY tracking. The loop
+  starts at the comfortable-pose tool position plus the offset, extends
+  `width_m` forward (+X), and spans `height_m` laterally (Y). There is no
+  position jump at t=0 with the zero offset. Its center is start+offset+
+  `[width_m/2,0,0]`. Width/height accept .01–.6 m; period accepts 1–120 s.
+
+For figure8, phase is `2*pi*t/period_s`, X adds
+`width_m/2*(1-cos(phase))`, Y adds `height_m/2*sin(2*phase)`, and Z stays fixed.
+Every solve builds its reference at exact simulation times `t+k*dt_s`; state
+tracking error compares with the reference at that state's timestamp. Pause
+holds simulation time and phase. Reset returns both to zero. Changing settings
+preserves current time/phase and the deterministic comfortable-pose anchor.
+The reach target drag handles are hidden for figure8; its moving marker is
+read-only. The schema's `tasks` list supplies both task defaults plus editable
+figure8 parameter descriptors. Plans/states include `task_kind` and their
+instantaneous world `target_xyz`; tracking does not report target arrival.
+
+This is a simulation diagnostic using the currently selected solver/plant
+settings, with the existing position-reference/orientation semantics. Geometry
+follows `tiago_mpc-larger-fig8/examples/track_figure8.py` and retained 24×16 cm
+examples, but omits their experiment-specific 20 mm initial edge offset. It
+does not reproduce or qualify those historical dynamics/cost settings.
 
 The solver reference is in the reduced arm's root (torso) frame; the backend
 converts world-frame values with the transform derived from the full URDF.
@@ -124,7 +154,8 @@ response to a command.
            "admm_linsys_iters": 0, "solve_time_ms": 4.9,
            "row_violation": [...], "controller_restarted": false}}
 
-{"type": "state", "sim_time_s": 0.13, "q": [7 floats], "qd": [7 floats],
+{"type": "state", "sim_time_s": 0.13, "settings_version": 3,
+ "q": [7 floats], "qd": [7 floats],
  "ee_xyz": [3 floats], "distance_m": 0.031, "arrived": false, "rtf": 0.98}
 
 {"type": "error", "message": "...", "detail": "..."}
@@ -132,5 +163,25 @@ response to a command.
 
 All positions are in the full robot's root frame. `q` values are native joint
 coordinates, already converted from the GPU convention with the joint-6 sign.
-Plans are sent after every solve; `state` events at most about 60 per second
-of wall time.
+Presentation publishes matching plan/state/status bundles at most about 60 times
+per second of wall time, with immediate final pause/preview updates. It may skip
+intermediate solves when control is faster than presentation; `seq` still counts
+every solve. This is display-only subsampling: every numerical solve and fixed
+plant interval still executes. Browser history contains the displayed snapshots,
+not a complete experiment recording. SSE writes run on each client's HTTP thread
+against the existing bounded event buffer, without blocking the control worker.
+
+Joint telemetry is native throughout: each plan also includes `qd_rad_s[N,7]`,
+`torque_nm[N-1,7]`, `torque_time_s` (nonterminal knot offsets),
+`torque_kind: "predicted"`, and an exclusive `torque_end_time_s` at the terminal
+knot. The terminal knot has no actuator control. Each state includes
+`torque_nm[7]` for the last control actually applied to the simulated plant,
+`torque_kind: "applied"`, or null before any plant step. Solving a preview
+never changes the last applied control. These are actuator torques; they are
+not reconstructed from positions or passive resisting torques.
+
+Plans and states carry `joint_limits` with native `lower_position_rad`,
+`upper_position_rad`, `velocity_rad_s`, `effort_nm`, and `source`. Live bounds
+are the effective configured MPC bounds, including margin/fractions. Reset
+clears episode plan count (`seq`); its next plan is 1. Settings/controller
+restarts keep counting. SSE transport event IDs remain monotonic independently.

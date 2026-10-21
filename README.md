@@ -1,6 +1,6 @@
 # TIAGo MPC visualizer
 
-A local browser application for live reaching MPC and saved trajectory replay.
+A local browser application for live reaching/tracking MPC and saved trajectory replay.
 Orbit, pan and zoom around the full canonical TIAGo; change solver settings,
 inspect its predicted tool path, then play the simulated closed-loop motion.
 
@@ -53,7 +53,7 @@ to load it; file changes update the library without replacing current playback.
 The producer-side exporter is `tiago_mpc/experiments/tools.py`;
 see the [format and export cookbook](docs/replay-format.md).
 
-## Live reaching
+## Live MPC
 
 Select Live, adjust the target offset and settings, and inspect the preview.
 The prediction recomputes when settings change. Preview resets the controller
@@ -61,6 +61,18 @@ at the current plant state and computes one plan; Play starts from that same
 reset policy and advances the simulated plant with continuous MPC replanning.
 Pause holds the current state; Reset returns to the comfortable starting pose.
 Changing settings during Play restarts the controller at the current state.
+Reset also restarts the episode's plan count.
+
+Choose Reach or Figure eight in the task selector. Figure eight follows a
+horizontal world-XY path, starting at the comfortable-pose tool position. Its
+default full spans are 24 × 16 cm with a 24 s period; dimensions, period and
+world offsets are editable. Preview at a paused state uses that simulation
+time's reference phase; Reset returns the phase to zero.
+
+Pause enables the Live history slider. Scrubbing shows the saved robot state,
+prediction and joint telemetry. Play always returns to the newest backend state
+and continues there. History is retained in the browser with a bounded window;
+the actual retained interval appears beside the controls. Reset clears history.
 
 The settings include horizon N and knot interval, costs, SQP/PCG budgets and
 tolerance, ADMM and warm-start choices, and bound margins/fractions. Only
@@ -81,8 +93,8 @@ with large solver budgets. Browser camera controls continue to work. Closing
 the last live view pauses solving and releases the experiment locks.
 
 This MVP is a simulation diagnostic. It does not command a physical robot,
-check collisions, or provide experiment/timing evidence. Figure-eight tracking
-and live convergence plots are follow-up work.
+check collisions, or provide experiment/timing evidence. Live convergence plots
+remain follow-up work.
 
 ## Replay
 
@@ -97,6 +109,17 @@ at zero by default. Portable recordings can supply their own fixed context.
 
 The orientation cube at the top right snaps to Front, Back, Left, Right, Top
 and Bottom while preserving the current pan target and zoom distance.
+Top places the robot's forward direction toward screen right. Cube corners
+select the eight equal-angle diagonal views.
+
+The right-arm table shows native position (rad), velocity (rad/s), and actuator
+torque (Nm). Missing telemetry displays “—”. Position values turn yellow within
+10% of either position bound; velocity/torque turn yellow at 90% of their
+magnitude limit. Values at or beyond a limit turn red. Hover for the limit source
+and bounds: recordings can carry their historical limits, otherwise the current
+display URDF supplies them; Live uses the configured MPC bounds. Recorded torque
+holds between its saved command timestamps; a prediction's final knot has no
+torque. Live torque reports the last command actually applied to the plant.
 
 The canonical full URDF supplies the torso-to-root transform for every tool
 path and reference. Models and existing recordings stay in `tiago_mpc` and are

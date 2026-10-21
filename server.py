@@ -18,6 +18,7 @@ import numpy as np
 import pinocchio as pin
 
 from visualizer_config import DEFAULT_CONFIG, load_visualizer_config
+from replay_format import normalize_joint_limits
 
 ROOT = Path(__file__).resolve().parent
 JOINT_NAMES = [f"arm_right_{i}_joint" for i in range(1, 8)]
@@ -61,6 +62,36 @@ def decode_prediction(xu, signs, knots):
     # The final block is 14 values, so a reshape into N full blocks is wrong.
     q_gpu = np.stack([packed[21 * k:21 * k + 7] for k in range(knots)])
     return q_gpu * signs
+
+
+def decode_prediction_telemetry(xu, signs, knots):
+    """Native q, velocity and nonterminal actuator controls; no terminal u."""
+    q = decode_prediction(xu, signs, knots)
+    packed = np.asarray(xu, dtype=float).reshape(-1)
+    velocity = np.stack([packed[21*k+7:21*k+14] for k in range(int(knots))]) * signs
+    torque = np.stack([packed[21*k+14:21*k+21] for k in range(int(knots)-1)]) * signs
+    return q, velocity, torque
+
+
+def canonical_joint_limits(urdf):
+    joints = {joint.get("name"): joint for joint in ET.parse(urdf).getroot().findall("joint")}
+    fields = (("lower_position_rad", "lower"), ("upper_position_rad", "upper"),
+              ("velocity_rad_s", "velocity"), ("effort_nm", "effort"))
+    result = {name: [float(joints[joint].find("limit").get(attribute)) for joint in JOINT_NAMES]
+              for name, attribute in fields}
+    result["source"] = "Canonical display URDF limits"
+    return result
+
+
+def add_telemetry(item, qd=None, torque=None, torque_times=None, kind="applied"):
+    if qd is not None:
+        item["qd_rad_s"] = np.asarray(qd).tolist()
+    if torque is not None:
+        item.update(torque_nm=np.asarray(torque).tolist(), torque_kind=kind,
+                    torque_time_s=np.asarray(torque_times).tolist())
+        if kind == "predicted":
+            item["torque_end_time_s"] = item["time_s"][-1]
+    return item
 
 
 def discover_run(mpc_root):
@@ -177,6 +208,7 @@ def load_bootstrap_scene(mpc_root):
     fixed_joints.update(zip(JOINT_NAMES, starting_right_rad))
     urdf = Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf"
     scene = dict(robot_url="/assets/robot.urdf", joint_names=JOINT_NAMES,
+                 joint_limits=canonical_joint_limits(urdf),
                  fixed_joints=fixed_joints, world_frame=world_frame, up_axis="Z",
                  end_effector_frame="arm_right_tool_joint", trajectories=[],
                  source=dict(mpc_root=str(Path(mpc_root).resolve()), bootstrap=True,
@@ -216,6 +248,8 @@ def load_scene(mpc_root, run_dir=None):
             if times[0] < 0 or not (np.diff(times) > 0).all():
                 raise SourceError("Recorded timestamps must be nonnegative and strictly increasing")
             states = finite_array(data["state"], "recorded state", (len(times), 14))
+            applied = (finite_array(data["applied_torque_nm"], "recorded applied_torque_nm", (len(times)-1, 7))
+                       if "applied_torque_nm" in data.files else None)
     except (OSError, KeyError, ValueError) as exc:
         raise SourceError(f"Cannot load recorded trajectory from {run_dir}: {exc}") from exc
 
@@ -232,11 +266,12 @@ def load_scene(mpc_root, run_dir=None):
     recorded_metadata.update(coordinates="native", source_file="trajectory.npz")
     trajectories = [trajectory("recorded", "Recorded MPC motion", "recorded",
                                times, states[:, :7], recorded_metadata)]
+    add_telemetry(trajectories[0], states[:, 7:], applied, times[:-1])
     source_files = [run_dir / "trajectory.npz", run_dir / "summary.json"]
     for index, plan in enumerate(sorted(run_dir.glob("plan_[0-9][0-9][0-9][0-9].npz"))):
         try:
             with np.load(plan, allow_pickle=False) as data:
-                q = decode_prediction(data["xu"], data["signs"], knots)
+                q, qd, torque = decode_prediction_telemetry(data["xu"], data["signs"], knots)
                 reference = finite_array(data["reference"], "plan reference", (int(knots), 6))
                 if not np.allclose(reference[:, :3], target, atol=1e-7, rtol=1e-6):
                     raise SourceError("Plan has a moving/different target; this MVP supports fixed-target reaches")
@@ -252,10 +287,13 @@ def load_scene(mpc_root, run_dir=None):
                                             recorded_start_s=step * dt, dt_s=dt, N=int(knots),
                                             initial_q_difference_rad=initial_delta,
                                             coordinates="native, decoded from GPU signs")))
+        add_telemetry(trajectories[-1], qd, torque, np.arange(int(knots)-1)*dt, kind="predicted")
         source_files.append(plan)
 
     robot_xml, assets, fixed_joints, world_frame = canonical_model_assets(mpc_root)
     scene = dict(robot_url="/assets/robot.urdf", joint_names=JOINT_NAMES,
+                 joint_limits=(normalize_joint_limits(summary.get("raw_limits"), list(range(7)))
+                               or canonical_joint_limits(urdf)),
                  fixed_joints=fixed_joints, world_frame=world_frame,
                  up_axis="Z", end_effector_frame="arm_right_tool_joint",
                  source=dict(mpc_root=str(mpc_root), run_dir=str(run_dir),
@@ -313,11 +351,16 @@ def replay_scene(replay, path, mpc_root, base_scene):
 
     trajectories = [trajectory("recorded", replay.metadata.get("label", "Recorded motion"), "recorded",
                                replay.time_s, replay.q, replay.reference)]
+    add_telemetry(trajectories[0], replay.qd_rad_s, replay.torque_nm, replay.torque_time_s)
     trajectories.extend(trajectory(plan.identifier, plan.label, "prediction", plan.time_s, plan.q,
                                    plan.reference or replay.reference, plan.origin_time_s, plan.stats)
                         for plan in replay.predictions)
+    for item, plan in zip(trajectories[1:], replay.predictions):
+        add_telemetry(item, plan.qd_rad_s, plan.torque_nm, plan.torque_time_s, kind="predicted")
     result = deepcopy(base_scene)
-    result.update(fixed_joints=fixed, trajectories=trajectories)
+    result.update(fixed_joints=fixed, trajectories=trajectories,
+                  joint_limits=(replay.joint_limits or canonical_joint_limits(
+                      Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf")))
     result["source"] = dict(mpc_root=str(Path(mpc_root).resolve()), replay_file=str(path),
                             full_urdf_sha256=replay.metadata["model_sha256"],
                             replay_format="tiago-replay", replay_version=1,

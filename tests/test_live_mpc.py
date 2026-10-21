@@ -6,12 +6,15 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+import numpy as np
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from live_mpc import GPULocks, LiveService, parameter_specs, validate_settings
+from live_mpc import GPULocks, LiveService, MPCAdapter, figure8_reference, FIGURE8_DEFAULT_TASK, parameter_specs, validate_settings
 from server import make_server
+from live_presentation import LatestPresentation, mutable, render_plan, render_state, snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 MPC_ROOT = ROOT.parent / "tiago_mpc"
@@ -53,6 +56,40 @@ class SettingsTests(unittest.TestCase):
             validate_settings({**self.config, "save_plan_steps": 1}, self.task, self.schema)
         with self.assertRaises(ValueError):
             validate_settings(self.config, {**self.task, "target_offset_m": [True, 0, 0]}, self.schema)
+
+
+class Figure8Tests(SettingsTests):
+    def test_shape_clock_extent_and_native_validation(self):
+        task = deepcopy(FIGURE8_DEFAULT_TASK)
+        self.assertEqual(validate_settings(self.config, task, self.schema)[1], task)
+        start = np.array([.4, -.3, 1.2])
+        times = np.linspace(0, task["period_s"], 257)
+        points = figure8_reference(times, start, task)
+        np.testing.assert_allclose(points[0], start, atol=1e-15)
+        np.testing.assert_allclose(points[-1], start, atol=1e-15)
+        np.testing.assert_allclose(np.ptp(points, axis=0), [.24, .16, 0], atol=1e-14)
+        # The plan and same-timestamp state target share exactly the same clock.
+        np.testing.assert_array_equal(figure8_reference([3.], start, task)[0], points[32])
+        task["target_offset_m"] = [.01, -.02, .03]
+        np.testing.assert_allclose(figure8_reference([0], start, task)[0], start+task["target_offset_m"])
+        for changes in (dict(period_s=0), dict(width_m=float("nan")), dict(height_m=True),
+                        dict(unexpected=1), dict(kind="unknown")):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_settings(self.config, {**task, **changes}, self.schema)
+
+    def test_tracking_horizon_offsets_and_terminal_reference_remain_aligned(self):
+        adapter = MPCAdapter.__new__(MPCAdapter)
+        adapter.task = deepcopy(FIGURE8_DEFAULT_TASK)
+        adapter.figure8_start_world = np.array([.4, -.3, 1.2])
+        adapter.t, adapter.N, adapter.dt = 7.2, 4, .03
+        translation = np.array([.1, .2, .5])
+        adapter.kinematics = SimpleNamespace(world_from_torso=SimpleNamespace(actInv=lambda p:p-translation))
+        adapter.reference = np.zeros((4, 6), dtype=np.float32)
+        adapter.update_tracking_reference()
+        expected = figure8_reference(adapter.t+np.arange(4)*.03, adapter.figure8_start_world, adapter.task)
+        np.testing.assert_allclose(adapter.reference[:, :3]+translation, expected, atol=1e-7)
+        np.testing.assert_array_equal(adapter.reference[:, 3:], np.zeros((4, 3)))
+        np.testing.assert_array_equal(adapter.target_world_at(adapter.t), expected[0])
 
 
 class LockTests(unittest.TestCase):
@@ -114,7 +151,20 @@ class WorkerTests(unittest.TestCase):
         service.latest = {}
         service.cursor = service.version = service.next_version = service.subscribers = 0
         service.closed = False
-        owner = SimpleNamespace(held=False, busy=True, reset_calls=0, solve_calls=0)
+        owner = SimpleNamespace(held=False, busy=True, reset_calls=0, solve_calls=0, t=0)
+        blocked = threading.Event()
+        release_presenter = threading.Event()
+        block_play = threading.Event()
+        progressed = threading.Event()
+        paused = threading.Event()
+        def render(frame):
+            plan, state, events = frame
+            if plan and plan.get("origin") == "play" and block_play.is_set():
+                blocked.set()
+                if not release_presenter.wait(3):
+                    raise RuntimeError("Test presenter was not released")
+            return [mutable(item) for item in (plan, state, *events) if item is not None]
+        service.presentation = LatestPresentation(render, service.publish_events)
         test = self
         class Locks:
             handles = []
@@ -129,6 +179,8 @@ class WorkerTests(unittest.TestCase):
             def release(self):
                 owner.held = False
                 self.handles = []
+                if blocked.is_set():
+                    paused.set()
         class Controller:
             def reset(self, x):
                 test.assertTrue(owner.held, "CUDA reset escaped the GPU lock")
@@ -145,15 +197,18 @@ class WorkerTests(unittest.TestCase):
             def configure(self, path, task):
                 test.assertTrue(owner.held)
                 self.controller.reset(self.x)
-            def solve(self, origin, version):
+            def solve_snapshot(self, origin, version):
                 test.assertTrue(owner.held, "CUDA solve escaped the GPU lock")
                 owner.solve_calls += 1
                 return dict(type="plan", origin=origin, settings_version=version)
             def advance(self):
                 test.assertTrue(owner.held)
                 self.t += self.dt
-            def state_event(self, rtf=0):
-                return dict(type="state", sim_time_s=self.t)
+                owner.t = self.t
+                if owner.solve_calls >= 8:
+                    progressed.set()
+            def state_snapshot(self, rtf=0, settings_version=0):
+                return dict(type="state", sim_time_s=self.t, settings_version=settings_version)
             def reset_state(self, reset_controller=True):
                 test.assertFalse(reset_controller, "Command handling reset CUDA outside locks")
                 self.t = 0
@@ -173,21 +228,134 @@ class WorkerTests(unittest.TestCase):
                     self.assertTrue(service.condition.wait_for(
                         lambda: service.latest.get("plan", {}).get("origin") == "preview", timeout=2))
                 resets_after_preview = owner.reset_calls
+                # Hold the entire presentation path while numeric control keeps
+                # stepping. No browser/SSE consumer reads during this interval.
+                block_play.set()
                 service.command(dict(type="play"))
-                with service.condition:
-                    self.assertTrue(service.condition.wait_for(
-                        lambda: service.latest.get("plan", {}).get("origin") == "play", timeout=2))
+                self.assertTrue(blocked.wait(2))
+                self.assertTrue(progressed.wait(2), "Presentation blocked numerical control")
                 self.assertGreater(owner.reset_calls, resets_after_preview)
+                self.assertIsNotNone(service.presentation.pending)
                 service.unsubscribe()
+                self.assertTrue(paused.wait(2))
+                final_time = owner.t
+                release_presenter.set()
                 with service.condition:
                     self.assertTrue(service.condition.wait_for(
-                        lambda: service.latest.get("status", {}).get("state") == "paused", timeout=2))
+                        lambda: (service.latest.get("status", {}).get("state") == "paused" and
+                                 service.latest.get("state", {}).get("sim_time_s") == final_time), timeout=2))
                 self.assertFalse(owner.held)
+                self.assertEqual(service.latest["state"]["sim_time_s"], final_time)
+                self.assertGreater(final_time, .05)
+                self.assertFalse(any(e.get("state") == "playing" for _, e in service.events),
+                                 "A stale in-flight frame escaped after pause")
                 service.command(dict(type="reset"))
             finally:
+                release_presenter.set()
                 service.close()
             self.assertFalse(service.thread.is_alive())
             self.assertFalse(owner.held)
+
+
+class AdapterTelemetryTests(unittest.TestCase):
+    def adapter(self):
+        adapter = MPCAdapter.__new__(MPCAdapter)
+        adapter.reach = SimpleNamespace(Q_START_RAD=np.zeros(7), POSITION_TOL_M=.05,
+                                        SPEED_L1_TOL_RAD_S=1, SIM_DT_S=.005,
+                                        rk4=lambda model, data, q, v, u, h: (q+v*h, v+u*h))
+        adapter.kinematics = SimpleNamespace(ee_positions=lambda q: np.zeros((len(q), 3)),
+                                             target_to_world=lambda target: target)
+        stats = SimpleNamespace(sqp_iters=[1], pcg_iters=[2], admm_iters=[3], admm_linsys_iters=[4])
+        step = SimpleNamespace(u=np.arange(7), solve=SimpleNamespace(
+            xu=np.arange(35), stats=stats, solve_time_us=10), row_viol=[0])
+        adapter.controller = SimpleNamespace(reset=lambda x: None, step=lambda x, r: step)
+        adapter.signs = np.array([1, 1, 1, 1, 1, -1, 1])
+        adapter.state_signs = np.tile(adapter.signs, 2)
+        adapter.model = adapter.data = None
+        adapter.target = np.zeros(3)
+        adapter.task = dict(kind="reach", target_offset_m=[0, 0, 0])
+        adapter.reference = np.zeros((2, 6))
+        adapter.N, adapter.dt = 2, .01
+        adapter.joint_limits = dict(source="Test configured bounds")
+        adapter.restarted = False
+        adapter.reset_state()
+        return adapter
+
+    def test_reset_restarts_plan_count_and_preview_does_not_claim_applied_torque(self):
+        adapter = self.adapter()
+        self.assertEqual(adapter.solve("preview", 1)["seq"], 1)
+        self.assertIsNone(adapter.state_event()["torque_nm"])
+        adapter.advance()
+        applied = adapter.state_event()["torque_nm"]
+        np.testing.assert_array_equal(applied, np.arange(7)*adapter.signs)
+        # A preview/controller reset is another plan, not a new episode.
+        self.assertEqual(adapter.solve("preview", 2)["seq"], 2)
+        self.assertEqual(adapter.state_event()["torque_nm"], applied)
+        adapter.reset_state(reset_controller=False)
+        self.assertEqual(adapter.t, 0)
+        self.assertIsNone(adapter.state_event()["torque_nm"])
+        plan = adapter.solve("preview", 3)
+        self.assertEqual(plan["seq"], 1)
+        self.assertEqual(len(plan["torque_nm"]), 1)
+        self.assertEqual(plan["torque_end_time_s"], .01)
+        self.assertEqual(plan["torque_kind"], "predicted")
+
+    def test_presentation_snapshots_survive_control_progress_and_settings_mutation(self):
+        adapter = self.adapter()
+        plan = adapter.solve_snapshot("play", 3)
+        state = adapter.state_snapshot(.9, 3)
+        expected_plan = render_plan(plan, adapter.kinematics)
+        expected_state = render_state(state, adapter.kinematics)
+        adapter.advance()
+        adapter.last_xu[:] = -123
+        adapter.reference[:] = 123
+        adapter.signs[:] = -1
+        adapter.joint_limits["source"] = "New settings"
+        adapter.reset_state(reset_controller=False)
+        self.assertEqual(render_plan(plan, adapter.kinematics), expected_plan)
+        self.assertEqual(render_state(state, adapter.kinematics), expected_state)
+        with self.assertRaises(ValueError):
+            plan["_xu"][0] = 0
+        with self.assertRaises(TypeError):
+            plan["joint_limits"]["source"] = "Mutation"
+
+
+class PresentationTests(unittest.TestCase):
+    def test_slow_frames_coalesce_and_command_boundaries_drop_obsolete_work(self):
+        for invalidate in (False, True):
+            with self.subTest(command_boundary=invalidate):
+                entered, release, finished = (threading.Event() for _ in range(3))
+                rendered, published = [], []
+                def render(frame):
+                    rendered.append(frame)
+                    if frame == 1:
+                        entered.set()
+                        if not release.wait(2):
+                            raise RuntimeError("Test did not release renderer")
+                    return [dict(type="state", sim_time_s=frame, settings_version=int(invalidate))]
+                def publish(events):
+                    published.extend(events)
+                    if events[-1].get("sim_time_s") == 101:
+                        finished.set()
+                pipeline = LatestPresentation(render, publish)
+                try:
+                    pipeline.submit(1)
+                    self.assertTrue(entered.wait(2))
+                    for frame in range(2, 101):
+                        pipeline.submit(frame)
+                    self.assertEqual(pipeline.pending[1], 100)
+                    if invalidate:
+                        pipeline.invalidate()
+                        self.assertIsNone(pipeline.pending)
+                    pipeline.submit(101, urgent=True)
+                    release.set()
+                    self.assertTrue(finished.wait(2))
+                    self.assertEqual(rendered, [1, 101])
+                    self.assertEqual([e["sim_time_s"] for e in published],
+                                     [101] if invalidate else [1, 101])
+                finally:
+                    release.set()
+                    pipeline.close()
 
 
 class FakeLive:

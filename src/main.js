@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
+import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-telemetry.js";
 import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartingScene } from "./replay-library.js";
 import { setupViewCube } from "./view-cube.js";
 import { createPathLine, setPathPoints, setPathPointCount, pathLineInfo } from "./path-lines.js";
@@ -41,9 +42,11 @@ document.querySelector("#app").innerHTML = `
       <div class="mode-tabs" role="group" aria-label="Workspace mode"><button id="replay-mode" class="active" aria-pressed="true">Replay</button><button id="live-mode" disabled aria-pressed="false">Live MPC</button></div>
       <p id="live-availability" class="availability" role="status"></p>
       <section id="live-panel" hidden>
-        <div class="section-heading"><h2>Reaching target</h2><span class="unit-label">WORLD · M</span></div>
-        <p class="settings-note">Offset from the default reaching target. Each change updates the prediction.</p>
+        <div class="section-heading"><h2>Live task</h2><span class="unit-label">WORLD · M</span></div>
+        <label class="field-label" for="live-task">TASK</label><div class="select-wrap"><select id="live-task" aria-label="Live task"><option value="reach">Reaching</option></select></div>
+        <p id="live-task-note" class="settings-note">Offset from the default reaching target. Each change updates the prediction.</p>
         <div class="target-offsets">${['X', 'Y', 'Z'].map((axis, i) => `<label>${axis}<input id="target-offset-${i}" aria-label="Target ${axis} offset in metres" type="number" step="0.01" value="0" /></label>`).join('')}</div>
+        <div id="live-task-parameters"></div>
         <p class="settings-note">Only prebuilt knot counts are available. Changes during Play restart the controller at its current state.</p>
         <div id="live-settings"></div>
         <p id="live-source" class="settings-note source-live"></p>
@@ -71,8 +74,8 @@ document.querySelector("#app").innerHTML = `
         </div>
       </section>
       <section class="sidebar-section pose-section">
-        <div class="section-heading"><h2>Right arm</h2><span class="unit-label">RAD</span></div>
-        <div class="joint-list" id="joint-list"></div>
+        <div class="section-heading"><h2>Right arm</h2><span class="unit-label">NATIVE JOINTS</span></div>
+        <div class="joint-list" id="joint-list"></div><p class="joint-limit-note"><span class="limit-yellow">Near limit</span> · <span class="limit-red">At limit</span> · — unavailable</p>
       </section>
       <section class="source-section">
         <span class="field-label">CONNECTED SOURCE</span>
@@ -92,6 +95,10 @@ document.querySelector("#app").innerHTML = `
       <section id="live-controls" class="playback live-controls" aria-label="Live MPC controls" hidden>
         <div class="playback-heading"><div><span class="eyebrow">SIMULATED CLOSED-LOOP MPC</span><h2 id="live-plan-label">Waiting for a prediction</h2></div><div class="playback-state" id="live-status">IDLE</div></div>
         <div class="live-actions"><button id="live-play" class="primary-action" disabled>Play</button><button id="live-preview" class="secondary-action" disabled>Preview</button><button id="live-reset" class="secondary-action" disabled>Reset state</button><div class="live-clock"><strong id="live-sim-time">0.00</strong><span>s simulated</span><strong id="live-rtf">—</strong><span>real-time factor</span></div></div>
+        <div class="live-history-row"><label for="live-history">STATE HISTORY</label><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Scrub paused live state history"/><span id="live-history-position">No state history yet</span><button id="live-history-latest" class="secondary-action" disabled>Newest state</button></div>
+        <p id="live-history-note" class="settings-note">Pause to scrub. Play always resumes the newest backend state.</p>
+        <p id="live-history-window" class="settings-note"></p>
+        <p class="settings-note">Motion display uses a brief buffer between received states. Pause shows the exact saved state; simulation time and real-time factor remain measured.</p>
         <p id="live-message" class="live-message" role="status" aria-live="polite">Loading live settings…</p>
         <div class="solver-stats"><div><span>Native solve wall</span><strong><b id="live-solve">—</b> ms</strong></div><div><span>SQP / PCG</span><strong><b id="live-sqp">—</b> / <b id="live-pcg">—</b></strong></div><div><span>ADMM / linear solve</span><strong><b id="live-admm">—</b> / <b id="live-linsys">—</b></strong></div><div><span>Max row violation</span><strong id="live-violation">—</strong></div><div><span>Current target distance</span><strong id="live-distance">—</strong></div></div>
         <div class="live-detail"><span id="live-horizon">—</span><span id="live-arrival">Waiting for state</span><span id="live-restarted" hidden>Controller restarted for this plan</span></div>
@@ -133,7 +140,11 @@ let tracePoints = [];
 let lastLiveTime;
 let livePrediction;
 let liveReference;
-const jointLabels = [];
+let jointCells = [];
+
+function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_limits, torqueKind = "applied") {
+  updateJointTable(jointCells, {q, qd, torque, limits, torqueKind});
+}
 const pathColor = 0x34d8d4;
 const targetColor = 0xffb547;
 
@@ -357,9 +368,9 @@ function updatePose() {
   const sample = sampleTrajectory(trajectory, elapsed + trajectory.time_s[0]);
   data.joint_names.forEach((name, i) => {
     robot.setJointValue(name, sample.q[i]);
-    jointLabels[i].textContent =
-      `${sample.q[i] >= 0 ? "+" : "−"}${Math.abs(sample.q[i]).toFixed(3)}`;
   });
+  const telemetry = sampleTelemetry(trajectory, elapsed + trajectory.time_s[0]);
+  updateJointTelemetry(sample.q, telemetry.qd, telemetry.torque, trajectory.joint_limits || data.joint_limits, trajectory.torque_kind);
   currentMarker.position.fromArray(sample.xyz);
   if (referenceMarker) referenceMarker.position.fromArray(referencePosition(trajectory, elapsed + trajectory.time_s[0]));
   setPathPointCount(progressLine, sample.index + 1);
@@ -416,6 +427,7 @@ function animate(timestamp) {
     }
   }
   controls.update();
+  live?.frame(timestamp);
   viewCube.update(timestamp);
   renderer.render(scene, camera);
 }
@@ -489,19 +501,7 @@ async function start() {
         object.material.side = THREE.DoubleSide;
       }
     });
-    data.joint_names.forEach((name, i) => {
-      const row = document.createElement("div");
-      row.className = "joint-row";
-      const jointName = document.createElement("span");
-      jointName.className = "joint-name";
-      jointName.textContent = `Joint ${i + 1}`;
-      jointName.title = name;
-      const value = document.createElement("span");
-      value.className = "joint-value";
-      row.append(jointName, value);
-      $("joint-list").append(row);
-      jointLabels.push(value);
-    });
+    jointCells = createJointTable($("joint-list"), data.joint_names);
     populateReplay(data, {name: isStartingScene(data) ? 'Starting pose' : 'Default recording'});
     robot.updateMatrixWorld(true);
     robotBounds = new THREE.Box3().setFromObject(robot);
@@ -598,11 +598,13 @@ function showLivePlan(plan) {
   if (!liveGroup) return;
   disposeLiveObject(livePrediction);
   disposeLiveObject(liveReference);
-  livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false);
-  liveReference = makeLiveLine(plan.reference_xyz, targetColor, true);
-  // A reaching reference is a repeated point; keep a visible target marker.
   if (liveGroup.userData.target) disposeLiveObject(liveGroup.userData.target);
-  const target = makeMarker(plan.reference_xyz[0], targetColor, 0.022, true);
+  livePrediction = liveReference = liveGroup.userData.target = undefined;
+  if (!plan) return;
+  livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false);
+  liveReference = makeLiveLine(plan.task_path_xyz || plan.reference_xyz, targetColor, true);
+  // A reaching reference is a repeated point; keep a visible target marker.
+  const target = makeMarker(plan.target_xyz || plan.reference_xyz[0], targetColor, 0.022, true);
   liveGroup.userData.target = target;
   liveGroup.add(livePrediction, liveReference, target);
 }
@@ -613,14 +615,18 @@ function resetLiveTrace() {
   if (liveTrace) setPathPoints(liveTrace, []);
 }
 
-function showLiveState(state) {
+function showLiveState(state, context = {}) {
   if (!robot || !liveGroup) return;
   defaultData.joint_names.forEach((name, i) => {
     robot.setJointValue(name, state.q[i]);
-    jointLabels[i].textContent = `${state.q[i] >= 0 ? '+' : '−'}${Math.abs(state.q[i]).toFixed(3)}`;
   });
-  if (lastLiveTime !== undefined && state.sim_time_s < lastLiveTime) resetLiveTrace();
-  if (lastLiveTime === undefined || state.sim_time_s !== lastLiveTime) {
+  updateJointTelemetry(state.q, state.qd, state.torque_nm, state.joint_limits || defaultData.joint_limits);
+  if (Array.isArray(state.target_xyz) && state.target_xyz.length === 3 && state.target_xyz.every(Number.isFinite) && liveGroup.userData.target) liveGroup.userData.target.position.fromArray(state.target_xyz);
+  if (context.tracePoints) {
+    tracePoints = context.tracePoints;
+    setPathPoints(liveTrace, tracePoints);
+  } else if (lastLiveTime === undefined || state.sim_time_s !== lastLiveTime) {
+    if (lastLiveTime !== undefined && state.sim_time_s < lastLiveTime) resetLiveTrace();
     tracePoints.push(state.ee_xyz);
     if (tracePoints.length > 1500) tracePoints.shift();
     setPathPoints(liveTrace, tracePoints);
@@ -693,10 +699,7 @@ async function loadReplayScene(next, item) {
 }
 
 function showJointLabels() {
-  data.joint_names.forEach((name, i) => {
-    const value = robot.joints[name].angle;
-    jointLabels[i].textContent = `${value >= 0 ? '+' : '−'}${Math.abs(value).toFixed(3)}`;
-  });
+  updateJointTelemetry(data.joint_names.map((name) => robot.joints[name].angle));
 }
 
 function showStartingPose() {
