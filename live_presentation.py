@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 from types import MappingProxyType
 import json
+import math
 import threading
 import time
 import traceback
@@ -49,7 +50,8 @@ def render_state(captured, kinematics):
     event = mutable(captured)
     x = event.pop("_x")
     ee = kinematics.ee_positions(x[None, :7])[0]
-    distance = float(np.linalg.norm(ee-np.asarray(event["target_xyz"])))
+    # Three scalar coordinates need no BLAS call or temporary NumPy vector.
+    distance = math.dist(ee, event["target_xyz"])
     position_tol, speed_tol = event.pop("_position_tol"), event.pop("_speed_tol")
     arrived = (event["task_kind"] == "reach" and distance <= position_tol and
                np.abs(x[7:]).sum() <= speed_tol)
