@@ -62,16 +62,20 @@ def build(selection, reach, ns, emit, rebuild=False):
                                   ee_frame=reach.EE_FRAME, build=False)
         for n in ns:
             if rebuild:
-                existing = _cache.find_module(reach.PLANT, n)
-                if existing is not None:
-                    archive_root = ROOT / "_expr_data/source-builds"
-                    archive_root.mkdir(parents=True, exist_ok=True)
-                    archive = Path(tempfile.mkdtemp(prefix=f"previous-N{n}-", dir=archive_root))
-                    with _cache._locked(Path(selection["cache"])):
+                # The lookup and removal form one cache mutation. Release this
+                # lock before ensure_module, which acquires the same lock itself.
+                archive = None
+                with _cache._locked(_cache.cache_dir()):
+                    existing = _cache.find_module(reach.PLANT, n)
+                    if existing is not None:
+                        archive_root = ROOT / "_expr_data/source-builds"
+                        archive_root.mkdir(parents=True, exist_ok=True)
+                        archive = Path(tempfile.mkdtemp(prefix=f"previous-N{n}-", dir=archive_root))
                         shutil.move(str(existing), archive / Path(existing).name)
                         meta = Path(existing).parent / "meta.json"
                         if meta.exists():
                             shutil.copy2(meta, archive / "meta.json")
+                if archive is not None:
                     emit(dict(event="progress", stage="archived", N=n, path=str(archive)))
             emit(dict(event="progress", stage="building", N=n, jobs=jobs))
             robot, plant_root = _cache.resolve(reach.PLANT)

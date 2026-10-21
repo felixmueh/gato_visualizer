@@ -64,7 +64,8 @@ def build_command(selection, counts, rebuild=False):
 def probe_selection(selection, timeout=120):
     """Run source imports in the selected environment; never import them here."""
     try:
-        result = subprocess.run(source_command(selection), capture_output=True, text=True,
+        command = source_command(selection)
+        result = subprocess.run(command, capture_output=True, text=True,
                                 timeout=timeout, check=False)
         try:
             payload = json.loads(result.stdout)
@@ -75,7 +76,9 @@ def probe_selection(selection, timeout=120):
             raise ValueError("probe did not return an object")
         return payload
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        return dict(compatible=False, available_N=[], modules=[], error=str(exc))
+        interpreter = command[0] if "command" in locals() else selection.get("python") or "automatic Python selection"
+        return dict(compatible=False, available_N=[], modules=[], selection=selection,
+                    error=f"Source probe using {interpreter}: {exc}")
 
 
 def source_identity(root):

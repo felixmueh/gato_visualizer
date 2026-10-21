@@ -70,6 +70,18 @@ class SourceSelectionTests(unittest.TestCase):
         self.assertFalse(result["compatible"])
         self.assertIn("timed out", result["error"])
 
+    def test_malformed_probe_reports_selected_python_and_last_stderr(self):
+        interpreter = "/selected/venv/bin/python"
+        stderr = "x" * 5000 + "missing host library"
+        with patch.object(runtime, "source_command", return_value=[interpreter]), patch.object(
+                runtime.subprocess, "run", return_value=SimpleNamespace(
+                    stdout="", stderr=stderr, returncode=127)):
+            result = runtime.probe_selection(dict(python=interpreter))
+        self.assertIn(interpreter, result["error"])
+        self.assertIn("127", result["error"])
+        self.assertIn("missing host library", result["error"])
+        self.assertLess(len(result["error"]), 4200)
+
     def test_half_cpu_jobs_respects_affinity_and_quota(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -207,6 +219,65 @@ class BuilderTests(unittest.TestCase):
             reach.gato.register_robot.assert_called_once_with("arm", root / "gpu.urdf", N=[32, 48], ee_frame="grasp", build=False)
             self.assertTrue(any(e["stage"] == "built" for e in events))
             cache._locked.assert_not_called()  # ensure_module owns its own lock
+
+    def test_rebuild_lookup_and_archive_hold_only_gato_cache_lock(self):
+        spec = importlib.util.spec_from_file_location("source_probe_rebuild_test", runtime.PROBE_SCRIPT)
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "current.so"
+            current.write_bytes(b"old binary")
+            (root / "meta.json").write_text('{"old": true}')
+            reach = SimpleNamespace(PLANT="arm", EE_FRAME="grasp", gato=Mock(__file__=str(root / "__init__.py")))
+            cache = Mock()
+            cache.cache_dir.return_value = root
+            cache.detect_arch.return_value = "120"
+            cache.resolve.return_value = ({}, root / "robots")
+            cache.module_key.return_value = ("current", {})
+            locked = []
+            @contextmanager
+            def lock(path):
+                self.assertEqual(path, root)
+                locked.append(True)
+                try:
+                    yield
+                finally:
+                    locked.pop()
+            def find(*args):
+                self.assertEqual(locked, [True])
+                return current
+            def ensure(*args, **kwargs):
+                self.assertEqual(locked, [])
+                self.assertFalse(current.exists())
+                return current
+            cache._locked.side_effect = lock
+            cache.find_module.side_effect = find
+            cache.ensure_module.side_effect = ensure
+            @contextmanager
+            def model(*args, **kwargs):
+                yield root / "native.urdf", root / "gpu.urdf", None
+            events = []
+            with patch.dict(sys.modules, {"gato": SimpleNamespace(_cache=cache)}), patch.object(
+                    script, "prepared_model", model), patch.object(script, "build_jobs", return_value=2), patch.object(
+                    script, "ROOT", root / "visualizer"), patch.object(script, "probe", return_value={}):
+                script.build(dict(cache=str(root)), reach, [32], events.append, rebuild=True)
+            cache._locked.assert_called_once_with(root)
+            archived = next(Path(e["path"]) for e in events if e["stage"] == "archived")
+            self.assertEqual((archived / "current.so").read_bytes(), b"old binary")
+            self.assertEqual(json.loads((archived / "meta.json").read_text()), dict(old=True))
+
+    def test_cli_import_error_retains_resolved_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout(root)
+            result = subprocess.run([sys.executable, str(runtime.PROBE_SCRIPT), "probe", "--mpc-root", str(root),
+                                     "--python", sys.executable], capture_output=True, text=True)
+            data = json.loads(result.stdout)
+            self.assertFalse(data["compatible"])
+            self.assertEqual(data["selection"]["mpc_root"], str(root))
+            self.assertEqual(data["selection"]["python"], sys.executable)
+            self.assertIn("source", data)
 
     def test_cli_invalid_source_emits_json_without_source_imports(self):
         result = subprocess.run([sys.executable, str(runtime.PROBE_SCRIPT), "probe", "--mpc-root", "/definitely-missing-mpc"],
