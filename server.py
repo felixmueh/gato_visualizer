@@ -417,7 +417,7 @@ def accepts_gzip(value):
 
 
 def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist=None, live=None,
-                replays=None, sources=None, live_error=None, plots=None, solver_profiles=None):
+                replays=None, sources=None, live_error=None, plots=None, solver_profiles=None, inspections=None):
     dist = Path(dist or ROOT / "dist").resolve()
     scene_json = json.dumps(scene, allow_nan=False, separators=(",", ":")).encode()
     backend_id = uuid.uuid4().hex
@@ -447,6 +447,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             self.do_GET()
 
         def do_POST(self):
+            if urlsplit(self.path).path.startswith("/api/solve-inspections") and inspections is not None:
+                self.inspection_command()
+                return
             if urlsplit(self.path).path in ("/api/solver-profiles", "/api/solver-profiles/activate") and solver_profiles is not None:
                 self.solver_profile_command()
                 return
@@ -480,6 +483,33 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 result, status = dict(accepted=False, error=str(exc)), 400
             self.send_payload(json.dumps(result, allow_nan=False).encode(),
                               "application/json; charset=utf-8", status)
+
+        def inspection_command(self):
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
+                self.send_error(403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 65536 or self.headers.get_content_type() != "application/json":
+                    raise ValueError("Expected JSON solve selectors under 64 KiB")
+                body = json.loads(self.rfile.read(length))
+                path = urlsplit(self.path).path
+                if path == "/api/solve-inspections":
+                    result, status = inspections.submit(body), 202
+                elif path == "/api/solve-inspections/capability":
+                    result, status = inspections.capability(body), 200
+                elif path.startswith("/api/solve-inspections/jobs/") and path.endswith("/stop"):
+                    if body != {}:
+                        raise ValueError("Stop requires an empty JSON object")
+                    identifier = path.removeprefix("/api/solve-inspections/jobs/").removesuffix("/stop")
+                    result, status = inspections.stop(identifier), 200
+                else:
+                    self.send_error(404)
+                    return
+            except (ValueError, TypeError, KeyError, OSError, RuntimeError) as exc:
+                result, status = dict(error=str(exc)), 404 if isinstance(exc, KeyError) else 400
+            self.send_payload(json.dumps(result, allow_nan=False).encode(), "application/json; charset=utf-8", status)
 
         def solver_profile_command(self):
             origin = self.headers.get("Origin")
@@ -617,6 +647,14 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 return
             if path == "/api/scene":
                 self.send_payload(scene_json, "application/json; charset=utf-8")
+            elif path.startswith("/api/solve-inspections/jobs/") and inspections is not None:
+                try:
+                    result = inspections.job(path.removeprefix("/api/solve-inspections/jobs/"))
+                    status = 200
+                except KeyError as exc:
+                    result, status = dict(error=str(exc)), 404
+                self.send_payload(json.dumps(result, allow_nan=False).encode(),
+                                  "application/json; charset=utf-8", status, compress=True)
             elif path.startswith("/api/plots/") and plots is not None:
                 try:
                     if path == "/api/plots/settings":
@@ -762,8 +800,11 @@ def main(argv=None):
     from solver_profiles import SolverProfiles
     profiles = (SolverProfiles(live, selection, visualizer_config.path, visualizer_config.solver_profiles)
                 if live is not None else None)
+    from solve_inspections import InspectionService
+    inspections = InspectionService(plots, profiles, live=live) if profiles is not None else None
+    plots.inspections = inspections
     server = make_server(scene, robot_xml, meshes, args.host, args.port, live=live, replays=library,
-                         sources=sources, live_error=live_error, plots=plots, solver_profiles=profiles)
+                         sources=sources, live_error=live_error, plots=plots, solver_profiles=profiles, inspections=inspections)
     server.replay_library = library
     server.visualizer_config = visualizer_config
     print(f"TIAGo visualizer: http://{args.host}:{server.server_port}", flush=True)
@@ -782,6 +823,8 @@ def main(argv=None):
     finally:
         server.server_close()
         sources.close()
+        if inspections is not None:
+            inspections.close()
         plots.close()
         if live is not None:
             live.close()

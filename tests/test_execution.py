@@ -368,6 +368,33 @@ class SpawnTests(unittest.TestCase):
         times=[r['sim_time_s'] for r in self.records() if r['type']=='state']
         self.assertTrue(all(left<right for left,right in zip(times,times[1:])))
 
+    def test_inspection_pause_preserves_private_controller_and_committed_history(self):
+        request=self.settings(simulation_hz=100.,control_hz=25.,to_hz=10.)
+        request['execution']['calculation']='on_play'
+        self.service.command(request)
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
+        self.service.command(dict(type='play'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('history_end_s',0)>=.15)
+        revision=self.service.revision.value
+        generation=self.service.generation
+        self.service.pause_for_inspection('inspection-cpu-check',timeout=3)
+        self.assertEqual(self.service.revision.value,revision)
+        self.assertEqual(self.service.generation,generation)
+        self.assertFalse(self.service.latest['status']['job_active'])
+        paused_tip=self.service.latest['status']['history_end_s']
+        plans_before=[r for r in self.records() if r['type']=='plan' and r['origin']=='play']
+        time.sleep(.05)
+        self.assertEqual(self.service.latest['status']['history_end_s'],paused_tip)
+        self.service.command(dict(type='play'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('history_end_s',0)>=paused_tip+.1)
+        self.service.pause_for_inspection('inspection-cpu-check-again',timeout=3)
+        plans_after=[r for r in self.records() if r['type']=='plan' and r['origin']=='play']
+        self.assertGreater(len(plans_after),len(plans_before))
+        self.assertTrue(all(not p['stats']['controller_restarted'] for p in plans_after[len(plans_before):]))
+        self.assertEqual(self.service.revision.value,revision)
+        times=[r['sim_time_s'] for r in self.records() if r['type']=='state']
+        self.assertTrue(all(a<b for a,b in zip(times,times[1:])))
+
     def test_on_play_pause_during_native_solve_is_reported(self):
         request=self.settings()
         request['execution']['calculation']='on_play'

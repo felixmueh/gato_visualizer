@@ -96,6 +96,7 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                     iteration = selection.get("iteration", selection.get("iteration_index"))
                     source = request["source"]
                     clock = (f"live:{source['generation']}" if source["kind"] == "live" else
+                             f"inspection:{source['id']}" if source["kind"] == "inspection" else
                              f"replay:{source.get('id', 'default')}:{source.get('trajectory_index', 0)}")
                     context = InspectionContext(episode_cursor_s=analysis.get("cursor_s"),
                         analysis_range=analysis.get("mode", "entire"),
@@ -109,7 +110,7 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                     if inspection["selected_solve"] is not None:
                         solve = inspection["selected_solve"]
                         solve.update(seq=solve["id"], sim_time_s=solve.get("time_s"),
-                                     has_prediction=bool(solve["final_prediction"]), can_continue=False,
+                                     has_prediction=bool(solve.get("selected_prediction") or solve["final_prediction"]), can_continue=False,
                                      reason=solve["capabilities"]["continue_reason"])
                     states = raw.get("states", [])
                     payload = dict(catalog=registry.catalog(scope, view), errors=registry.errors,
@@ -151,12 +152,13 @@ class PlotService:
     process; HTTP handlers snapshot small selectors and never read long history.
     """
     def __init__(self, mpc_root, config_path, default_scene, *, live=None, replays=None,
-                 worker_target=_worker_main, timeout_s=30):
+                 worker_target=_worker_main, timeout_s=30, inspections=None):
         from visualizer_config import load_visualizer_config
         self.mpc_root, self.config_path = Path(mpc_root), Path(config_path)
         self.override = load_visualizer_config(config_path).plotters_directory
         self.default_scene, self.live, self.replays = default_scene, live, replays
         self.worker_target, self.timeout_s = worker_target, timeout_s
+        self.inspections = inspections
         self.lock = threading.RLock()
         self.pending, self.jobs = OrderedDict(), OrderedDict()
         self.active = None
@@ -243,6 +245,12 @@ class PlotService:
             return dict(catalog=plots, plots=plots, **self.settings())
 
     def _descriptor(self, source):
+        if source.get("kind") == "inspection":
+            if set(source) != {"kind", "id"} or not isinstance(source.get("id"), str):
+                raise ValueError("Inspection source requires exactly kind and retained result id")
+            if self.inspections is None:
+                raise ValueError("Solve inspection results are unavailable")
+            return self.inspections.descriptor(source["id"])
         if source.get("kind") == "live":
             if self.live is None:
                 raise ValueError("Live history is unavailable")

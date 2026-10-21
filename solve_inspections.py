@@ -5,6 +5,7 @@ from collections import OrderedDict
 from copy import deepcopy
 import json
 import math
+import re
 from pathlib import Path
 import threading
 import time
@@ -126,9 +127,23 @@ class InspectionService:
     def descriptor(self, identifier):
         with self.lock:
             job = self.jobs.get(identifier)
-            if job is None or job["state"] != "completed":
-                raise ValueError("Inspection result is not available")
-            return deepcopy(job["_artifact"])
+            if job is not None:
+                if job["state"] != "completed":
+                    raise ValueError("Inspection result is not available")
+                return deepcopy(job["_artifact"])
+        # Binary artifacts survive job expiry/backend restart. Only opaque
+        # generated ids can address files beneath this checkout's own storage.
+        if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
+            raise ValueError("Invalid retained inspection id")
+        folder = self.directory / identifier
+        path, binary = folder / "metadata.json", folder / "iterations.npz"
+        if not path.is_file() or not binary.is_file():
+            raise ValueError("Inspection result is not available")
+        metadata = json.loads(path.read_text())
+        if metadata.get("id") != identifier:
+            raise ValueError("Retained inspection identity is inconsistent")
+        return dict(kind="inspection", id=identifier, path=str(path), binary_path=str(binary),
+                    revision=identifier, iterations_run=metadata["iterations_run"], stop_reason=metadata["stop_reason"])
 
     def stop(self, identifier):
         with self.lock:
@@ -144,7 +159,7 @@ class InspectionService:
                 job["message"] = "Queued inspection cancelled before solver construction"
             remote = self.remote if self.active == identifier else None
         if remote is not None:
-            remote._stop("Inspection cancelled explicitly; partial trace unavailable")
+            remote.terminate("Inspection cancelled explicitly; partial trace unavailable")
         return self.job(identifier)
 
     def _pump(self):

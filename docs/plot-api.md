@@ -70,7 +70,9 @@ The SDK agent owns concrete helper class names and typed Python interfaces.
 }
 ```
 
-- Source is Live generation or `{kind: "replay", id, trajectory_index}`.
+- Source is Live generation, `{kind: "replay", id, trajectory_index}`, or
+  `{kind: "inspection", id}` for a completed standalone Run again result.
+  Inspection sources have no Episode; use them only for the Solve inspector.
 - `context` is `episode` or `solve`.
 - Null/omitted `solve_seq` follows the episode cursor's recorded association.
   Explicit identities may be strings or integers; previews use `preview:<seq>`
@@ -100,6 +102,14 @@ Completed responses include `results: [{instance_id, spec, error?}]`, `catalog`,
 `sim_time_s`, `origin`, `iterations: [{index, status, has_prediction}]`, final
 `has_prediction`, `can_continue`, and explanatory capability reasons. Do not
 create a fake per-iteration prediction or advertise exact resumption.
+
+For binary inspection results, `selected_prediction` contains only the requested
+snapshot and `selected_iteration` echoes its index (null means final). Entries
+in `iterations` remain scalar summaries, including index 0 for Seed. The full
+raw trace stays in a lazy read-only `SolveView.iteration_trace` handle in the
+CPU process. Context `provenance` records initialization, requested cap/budget,
+actual count/stop reason, original solve/source and actual implementation/model.
+See [the inspection HTTP contract](inspection.md#fresh-inspection-http-contract).
 
 Preview solves have a separate append-only inspection store, written after
 presentation and identified by Live generation. They remain available to a

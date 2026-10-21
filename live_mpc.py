@@ -244,6 +244,7 @@ class MPCAdapter:
         self.model_identity = dict(full_urdf_sha256=hashlib.sha256(
             (Path(mpc_root)/"models/tiago_pro/tiago_pro.urdf").read_bytes()).hexdigest(),
             gpu_urdf_sha256=hashlib.sha256(self.gpu_path.read_bytes()).hexdigest(),
+            native_urdf_sha256=hashlib.sha256(Path(self.reach.URDF).read_bytes()).hexdigest(),
             end_effector_frame=self.reach.EE_FRAME, source=source_identity(mpc_root))
         self.state_signs = np.tile(self.signs, 2)
         self.model = self.pin.buildModelFromUrdf(str(path))
@@ -316,6 +317,8 @@ class MPCAdapter:
                 raw = self.model.velocityLimit if group == 1 else self.model.effortLimit
                 lo, hi = -value * raw, value * raw
             self.solver.set_row_group_bounds(group, lo, hi)
+        from inspection_problem import capture_constraint_bounds
+        self.constraint_bounds_native = capture_constraint_bounds(self.solver, self.signs)
         self.configure_task(effective, task)
         self.controller.reset(self.x * self.state_signs)
         self.restarted = True
@@ -371,6 +374,7 @@ class MPCAdapter:
                      task_path_xyz=getattr(self, "task_path_xyz", None),
                      _xu=self.last_xu, _signs=self.signs, _reference=self.reference,
                      joint_limits=self.joint_limits,
+                     constraint_bounds_native=deepcopy(getattr(self, "constraint_bounds_native", None)),
                      stats=dict(sqp_iters=int(np.sum(stats.sqp_iters)), pcg_iters=int(np.sum(stats.pcg_iters)),
                                 admm_iters=int(np.sum(stats.admm_iters)),
                                 admm_linsys_iters=int(np.sum(stats.admm_linsys_iters)),

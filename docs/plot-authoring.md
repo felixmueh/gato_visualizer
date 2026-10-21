@@ -102,3 +102,12 @@ standard plot checks in [test_plotting.py](../tests/test_plotting.py): call the
 same definition with known inputs, then assert meaningful independently known
 values, units, range behavior and missing-data behavior. Open the shared HTML
 preview to inspect labels, clipping and layout when changing presentation.
+
+Fresh Run again results can supply `SolveView.iteration_trace`, also available
+at `raw['iteration_trace']`. It is an optional read-only binary trace handle,
+not a JSON list or a solver checkpoint. `prediction(index)` decodes one native
+q/v/u snapshot; `xu` exposes the read-only raw GPU-coordinate NumPy array for
+explicit local numerical prototypes, with shape `(K+1, 1, 21*N-7)`. Prefer the
+ordinary selected-iteration accessors for plots. The host keeps this handle
+local to the CPU plot process and never materializes it through `freeze()` or
+HTTP. Its metadata records the original solve and actual inspection source.

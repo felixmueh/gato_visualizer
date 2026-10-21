@@ -79,8 +79,16 @@ class SolveView:
         return self.raw.get('iterations', ())
 
     @property
+    def iteration_trace(self):
+        """Optional read-only binary trace handle; never materialized by freeze."""
+        return self.raw.get('iteration_trace')
+
+    @property
     def prediction(self) -> Mapping[str, Any] | None:
         selected = self.context.sqp_iteration
+        trace = self.raw.get('iteration_trace')
+        if trace is not None:
+            return freeze(trace.prediction(selected))
         if selected is None:
             return self.raw.get('prediction', self.raw) if ('prediction' in self.raw or 'q' in self.raw) else None
         if selected in ('seed', 0):

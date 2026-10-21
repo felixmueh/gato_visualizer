@@ -36,8 +36,40 @@ class SourceReader:
         self.cursor = self.offset = 0
         self.replay_cache = {}
         self.preview_reader = None
+        self.inspection_cache = {}
 
     def read(self, descriptor):
+        if descriptor["kind"] == "inspection":
+            identifier = descriptor["id"]
+            if identifier not in self.inspection_cache:
+                from inspection_artifacts import ReadOnlyIterationTrace
+                from server import RobotKinematics
+                # The source path and frame are actual inspection provenance.
+                metadata = json.loads(Path(descriptor["path"]).read_text())
+                models = metadata.get("model_snapshots")
+                if models is not None:
+                    import hashlib
+                    folder = Path(descriptor["path"]).parent
+                    paths = {}
+                    for key in ("full", "reduced"):
+                        filename = models[key]["filename"]
+                        if Path(filename).name != filename:
+                            raise ValueError("Invalid inspection model snapshot path")
+                        path = folder / filename
+                        if hashlib.sha256(path.read_bytes()).hexdigest() != models[key]["sha256"]:
+                            raise ValueError("Inspection model snapshot changed")
+                        paths[key] = path
+                    kinematics = RobotKinematics(paths["full"], reduced_urdf=paths["reduced"],
+                        end_effector_frame=metadata["end_effector_frame"])
+                else:
+                    raise ValueError("Inspection result lacks captured FK models; current source geometry is not historical evidence")
+                trace = ReadOnlyIterationTrace(descriptor, kinematics)
+                plan = dict(metadata, id=identifier, origin="inspection", sim_time_s=None,
+                            iterations=trace.summaries(), iteration_trace=trace)
+                raw = freeze(dict(source=descriptor, states=[], plans=[plan], records=[],
+                                  joint_limits=metadata["joint_limits"]))
+                self.inspection_cache = {identifier: raw}
+            return self.inspection_cache[identifier]
         if descriptor["kind"] == "live":
             identity = (descriptor["path"], descriptor["generation"])
             if identity != self.identity or descriptor["cursor"] < self.cursor:
@@ -216,9 +248,20 @@ def inspect_source(raw, selection=None, analysis=None):
         selected = dict(selected)
         selected["id"] = identity(selected)
         selected["iterations"] = solve_iterations(selected)
+        from inspection_problem import run_again_capability
+        trace = selected.get("iteration_trace")
+        iteration = selection.get("iteration", selection.get("iteration_index"))
+        prediction = trace.prediction(iteration) if trace is not None else None
+        final = ({k: selected[k] for k in ("q", "ee_xyz", "knot_time_s", "reference_xyz") if k in selected}
+                 if trace is None else prediction if iteration is None else {})
         info["selected_solve"] = dict(id=selected["id"], time_s=selected.get("sim_time_s"),
             origin=selected.get("origin", "recorded"), iterations=selected["iterations"],
-            final_prediction={k: selected[k] for k in ("q", "ee_xyz", "knot_time_s", "reference_xyz") if k in selected},
-            stats=selected.get("stats", {}), capabilities=dict(continue_sqp=False, continue_reason=CONTINUE_REASON,
-                iteration_predictions=any(i.get("prediction") is not None for i in selected["iterations"])))
+            final_prediction=final, selected_prediction=prediction, selected_iteration=iteration,
+            stats=selected.get("stats", {}),
+            provenance=({key: selected.get(key) for key in ("original", "initialization", "requested",
+                "iterations_run", "stop_reason", "solver_profile", "model_identity",
+                "original_solver_profile", "original_model_identity")} if trace is not None else None),
+            capabilities=dict(continue_sqp=False, continue_reason=CONTINUE_REASON,
+                run_again=run_again_capability(selected),
+                iteration_predictions=trace is not None or any(i.get("prediction") is not None for i in selected["iterations"])))
     return selected, serializable(info)

@@ -55,7 +55,8 @@ class ReadOnlyIterationTrace:
     only metadata; .prediction(index) decodes a single retained snapshot.
     """
     def __init__(self, descriptor, kinematics=None):
-        self.metadata = json.loads(Path(descriptor["path"]).read_text())
+        from gato_visualizer.plotting.views import freeze
+        self.metadata = freeze(json.loads(Path(descriptor["path"]).read_text()))
         with np.load(descriptor["binary_path"], allow_pickle=False) as archive:
             self._xu = archive["xu"]
             self.pcg_iters = archive["pcg_iters"]
@@ -86,7 +87,7 @@ class ReadOnlyIterationTrace:
                 # A shortcut has no line-search row; never align invented rows.
                 if self.line_search_ran[i] and i < len(values):
                     value = values[i]
-                    stats[target] = value[0] if isinstance(value, list) and len(value) == 1 else value
+                    stats[target] = value[0] if isinstance(value, (list, tuple)) and len(value) == 1 else value
             status = "recorded"
             if not self.line_search_ran[i] and stats["pcg_iters"] == 0:
                 status = "zero-PCG shortcut"
@@ -97,6 +98,7 @@ class ReadOnlyIterationTrace:
 
     def prediction(self, index=None):
         from server import decode_prediction_telemetry
+        from gato_visualizer.plotting.views import freeze
         index = self.iterations_run if index is None else 0 if index == "seed" else index
         if type(index) is not int or not 0 <= index <= self.iterations_run:
             return None
@@ -112,5 +114,5 @@ class ReadOnlyIterationTrace:
                 result["reference_xyz"] = [self.kinematics.target_to_world(row[:3]).tolist()
                                            for row in self.metadata["reference_native"]]
             # Bound decoded snapshots as the user scrubs; binary is loaded once.
-            self._prediction_cache = {index: result}
+            self._prediction_cache = {index: freeze(result)}
         return self._prediction_cache[index]

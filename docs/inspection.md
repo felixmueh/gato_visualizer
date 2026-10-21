@@ -135,3 +135,84 @@ The authoring, directory and verification design is in [plotting.md](plotting.md
 - Plot computations are read-only; Run again is a Solve-inspector action,
   not an effect of evaluating a plot.
 - Standard and custom plots use the same contract and availability rules.
+
+## Fresh inspection service and binary data flow
+
+Run again uses the currently active compatible solver profile in a temporary
+isolated child. The normal Live child remains idle with its private controller
+state intact. The coordinator pauses Live calculation at a committed numerical
+chunk boundary, without invalidating its revision, rewinding history, resetting
+the controller, or stepping the plant for the inspection. A later Play resumes
+that retained controller/session. There is one active GPU computation under the
+same canonical GPU leases as Live and experiments. The extra idle process and
+CUDA context can consume resources; inspection timings are diagnostics rather
+than benchmark evidence. Inspection never interrupts an external experiment;
+a failed nonblocking lease acquisition reports a terminal `busy` job.
+
+The selected problem must contain native initial q/qd/task time, the exact
+native reference, effective solver/controller settings, and explicitly captured
+installed constraint rows. `constraint_bounds_native` records the actual native
+position/velocity/torque bounds and activity masks once after configuration.
+These are separate from display/physical `joint_limits`; compiled default
+margins and offsets must never be inferred from a physical-limit table.
+Historical records without exact constraint capture report unavailable. Missing
+Replay references, configuration or state are also unavailable, including a
+position-only replay with enough geometry to draw a trajectory.
+
+Only an interpreter and module supporting `capture_iterations` plus
+`ITERATION_CAPTURE_AVAILABLE` can run an inspection. A CPU profile preflight
+checks that capability for the selected N; the configured child checks again.
+The request changes only the constructor-sized finite SQP cap and optional
+native wall budget. It calls `BSQP.solve` once with a cold held-state seed,
+preserving the solver's practical zero-PCG stop. This is neither the original
+warm initialization nor exact optimizer continuation. Requested cap/budget,
+actual completed count, stop reason, original selection, and the model, binary,
+process epoch and source actually used are retained independently.
+
+The solver child writes `_expr_data/solve-inspections/<id>/iterations.npz`
+(float32 raw GPU-coordinate XU snapshots, integer PCG rows, and line-search
+flags) and captures the hashed full/reduced URDF inputs used for later CPU FK. It
+publishes `metadata.json` last. The shared metadata, captured problem
+and effective configuration are written once. The socket returns only a small
+artifact descriptor: full traces never become JSON RPC, HTTP or plot context
+arrays. Seed is index 0 after native initialization; 1..K are the actual outer
+iterations, including unchanged zero-PCG and rejected-step snapshots.
+
+The CPU plot reader loads the selected binary artifact once and keeps its
+arrays read-only while scrubbing. It decodes only the requested snapshot to
+native q/v/u, including joint 6, and computes its FK in Python. Context iteration
+entries contain only index, status, has_prediction and scalar statistics.
+`selected_solve.selected_prediction` is the sole selected-iteration prediction;
+`selected_iteration` echoes the request so the browser can reject stale results.
+A standalone inspection source has no episode. It does not replace the source
+of the Episode inspector or advance the episode cursor.
+
+## Fresh inspection HTTP contract
+
+`POST /api/solve-inspections/capability` accepts `{source, selection, profile_id}`
+and returns `{available, reason, initialization: "cold_state"}` with selected
+profile/capability details when available. Source/selection use retained IDs,
+never browser-uploaded problems or file paths. This CPU-only check can take as
+long as the selected interpreter's bounded source preflight.
+
+`POST /api/solve-inspections` additionally requires integer `sqp_iters` in
+1..10000 and optional positive finite `budget_s` (null means no wall budget).
+Only the currently active profile is accepted. `selection.solve_id` is the
+opaque selected ID; `solve_seq` is an alias and `trajectory_index` supports
+Replay selections. The response is HTTP 202 `{id, job_id, state, requested, ...}`.
+One job runs at a time and at most two wait. The native 256 MiB snapshot
+allocation ceiling is also checked before construction.
+
+`GET /api/solve-inspections/jobs/<id>` returns `pending`, `running`, `completed`,
+`failed`, `cancelled` or `busy`. Running jobs expose `phase` and `message`.
+Completed jobs include `{source: {kind: "inspection", id}, iterations_run,
+stop_reason, requested, original, original_solve_id, actual_solver_profile}`.
+The existing plot endpoints accept `{kind: "inspection", id}` as their source;
+result IDs remain usable from retained disk artifacts after job expiry/restart.
+
+`POST /api/solve-inspections/jobs/<id>/stop` requires `{}`. It cancels a queued
+job before construction or explicitly terminates only the isolated inspection
+child. The coordinator retains the GPU leases until that child exits. There is
+no graceful mid-SQP checkpoint and no partial trace result. Ordinary Live
+Pause/cancel never uses this termination behavior. Jobs and failed/interrupted
+artifact directories remain distinct from the original episode records.

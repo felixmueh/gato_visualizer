@@ -46,6 +46,7 @@ def serve(channel, root):
                     binary=dict(path=str(module_path), sha256=hashlib.sha256(module_path.read_bytes()).hexdigest(),
                         native_source_id=getattr(module, "NATIVE_SOURCE_ID", None)),
                     joint_limits=adapter.joint_limits,
+                    constraint_bounds_native=adapter.constraint_bounds_native,
                     configuration=adapter.problem_configuration, model_identity=adapter.model_identity,
                     prediction_joint_dynamics=adapter.problem_configuration.get("prediction_joint_dynamics"),
                     gpu_joint_coordinate_signs=adapter.signs.tolist())
