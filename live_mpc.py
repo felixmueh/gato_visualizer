@@ -235,7 +235,7 @@ class MPCAdapter:
         self.model_identity = dict(full_urdf_sha256=hashlib.sha256(
             (Path(mpc_root)/"models/tiago_pro/tiago_pro.urdf").read_bytes()).hexdigest(),
             gpu_urdf_sha256=hashlib.sha256(self.gpu_path.read_bytes()).hexdigest(),
-            end_effector_frame=self.reach.EE_FRAME)
+            end_effector_frame=self.reach.EE_FRAME, source=source_identity(mpc_root))
         self.state_signs = np.tile(self.signs, 2)
         self.model = self.pin.buildModelFromUrdf(str(path))
         self.data = self.model.createData()
