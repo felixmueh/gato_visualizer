@@ -94,6 +94,8 @@ class MultirateSession:
         state["horizon_exhausted"] = self.horizon_exhausted
         state["plan_exhausted"] = self.horizon_exhausted
         state["control_updates"] = self.control_updates
+        if self.plan is not None:
+            state["plan_seq"] = self.plan["seq"]
         return state
 
     def initial_state(self):

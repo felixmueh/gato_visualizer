@@ -65,6 +65,15 @@ class HistoryStore:
         return dict(type="history", generation=self.generation, history_cursor=len(self.offsets),
                     history_end_s=self.end_time, complete=self.complete)
 
+    def plot_source(self, generation):
+        """Capture only committed storage identity; plotting reads outside locks."""
+        with self.lock:
+            if generation != self.generation:
+                raise HistoryGenerationError(f"History changed; current generation={self.generation}")
+            return dict(kind="live", generation=generation, path=str(self.path),
+                        cursor=len(self.offsets), byte_end=self.stream.tell(),
+                        complete=self.complete)
+
     def page(self, generation, after, limit):
         # Snapshot the file and cursor metadata quickly, then parse outside both
         # transport and store locks. Superseded files remain readable on disk.

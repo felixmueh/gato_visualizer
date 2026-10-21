@@ -260,6 +260,7 @@ class MPCAdapter:
 
     def configure(self, config_path, task):
         _, settings, effective = importlib.import_module("reaching_config").load_configuration(config_path)
+        self.problem_configuration = deepcopy(effective)
         from gato import _cache
         entry = _cache.robot_entry(self.reach.PLANT)
         if entry is None or entry.get("urdf_sha256") != hashlib.sha256(self.gpu_path.read_bytes()).hexdigest():
@@ -341,6 +342,9 @@ class MPCAdapter:
         stats = step.solve.stats
         self.sequence += 1
         event = dict(type="plan", seq=self.sequence, origin=origin, settings_version=settings_version,
+                     initial_state=dict(q=self.x[:7].tolist(), qd=self.x[7:].tolist(), time_s=self.t),
+                     problem_configuration=deepcopy(getattr(self, "problem_configuration", {})),
+                     task=deepcopy(self.task),
                      end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
                      sim_time_s=self.t, N=self.N, dt_s=self.dt, task_kind=self.task["kind"],
                      target_xyz=self.target_world_at(self.t).tolist(),
@@ -353,6 +357,21 @@ class MPCAdapter:
                                 solve_time_ms=float(step.solve.solve_time_us)/1000,
                                 row_violation=np.asarray(step.row_viol).tolist(),
                                 controller_restarted=self.restarted))
+        # Copy already-returned public telemetry only. No native solver handle,
+        # invented SQP prediction or optimizer checkpoint enters history.
+        def retained(value):
+            if isinstance(value, np.ndarray):
+                return retained(value.tolist())
+            if isinstance(value, (list, tuple)):
+                return [retained(item) for item in value]
+            if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+                return None
+            return value.item() if isinstance(value, np.generic) else value
+        diagnostic_names = ("initial_merit", "final_merit", "min_merit", "step_size", "pcg_iters",
+                            "pcg_times_us", "ls_num_iters", "budget_hit", "linsys",
+                            "admm_r_prim", "admm_r_dual", "row_max_violation", "row_sum_violation")
+        event["diagnostics"] = {name: retained(getattr(stats, name)) for name in diagnostic_names
+                                if hasattr(stats, name)}
         # Constraint telemetry can be nonfinite even for a finite trajectory.
         # Report unavailable telemetry explicitly instead of fabricating convergence.
         violation = np.asarray(step.row_viol)

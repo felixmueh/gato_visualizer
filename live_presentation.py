@@ -35,6 +35,7 @@ def render_plan(captured, kinematics):
     event = mutable(captured)
     q, qd, torque = decode_prediction_telemetry(event.pop("_xu"), event.pop("_signs"), event["N"])
     reference = event.pop("_reference")
+    event["reference_native"] = np.asarray(reference).tolist()
     n, dt = event["N"], event["dt_s"]
     event.update(knot_time_s=(np.arange(n)*dt).tolist(), q=q.tolist(),
                  qd_rad_s=qd.tolist(), torque_nm=torque.tolist(), torque_kind="predicted",

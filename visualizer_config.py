@@ -16,6 +16,7 @@ class VisualizerConfig:
     path: Path
     ingest_directory: Path
     source: dict | None = None
+    plotters_directory: Path | None = None
 
 
 def load_visualizer_config(path=DEFAULT_CONFIG):
@@ -32,7 +33,7 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
         raise ValueError(f"Cannot read visualizer config {selected}: {exc}") from exc
     if not isinstance(settings, dict):
         raise ValueError("Visualizer config must be a JSON object")
-    unknown = set(settings) - {"ingest_directory", "source"}
+    unknown = set(settings) - {"ingest_directory", "source", "plotters_directory"}
     if unknown:
         raise ValueError(f"Unknown visualizer config fields: {sorted(unknown)}")
     value = settings.get("ingest_directory", str(DEFAULT_INGEST_DIRECTORY))
@@ -56,20 +57,44 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
             if not source_path.is_absolute():
                 source_path = selected.parent / source_path
             source[key] = str(source_path.absolute())
-    return VisualizerConfig(path=selected, ingest_directory=directory.resolve(), source=source)
+    plotters = settings.get("plotters_directory")
+    if plotters is not None:
+        if not isinstance(plotters, str) or not plotters.strip() or "\x00" in plotters:
+            raise ValueError("plotters_directory must be null or a nonempty path string")
+        plotters = Path(plotters).expanduser()
+        if not plotters.is_absolute():
+            plotters = selected.parent / plotters
+        plotters = plotters.resolve()
+    return VisualizerConfig(path=selected, ingest_directory=directory.resolve(), source=source,
+                            plotters_directory=plotters)
 
 
 def save_source_selection(path, source):
     """Atomically retain other local settings while changing the source."""
-    selected = Path(path).expanduser().resolve()
-    settings = json.loads(selected.read_text())
-    settings["source"] = source
-    temporary = selected.with_name(selected.name + ".tmp")
-    try:
-        temporary.write_text(json.dumps(settings, indent=2) + "\n")
-        os.replace(temporary, selected)
-    finally:
-        temporary.unlink(missing_ok=True)
+    save_local_settings(path, source=source)
+
+
+def save_local_settings(path, **updates):
+    """Serialize atomic source/plot-setting edits while retaining other fields."""
+    import tempfile
+    with _SAVE_LOCK:
+        selected = Path(path).expanduser().resolve()
+        settings = json.loads(selected.read_text())
+        settings.update(updates)
+        descriptor, name = tempfile.mkstemp(prefix=selected.name + ".", suffix=".tmp", dir=selected.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, "w") as stream:
+                stream.write(json.dumps(settings, indent=2) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, selected)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+import threading
+_SAVE_LOCK = threading.RLock()
 
 
 def effective_source_selection(config, mpc_root=None, environment=None):
