@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from source_settings import SourceSettings, restart_arguments
 from visualizer_config import effective_source_selection, load_visualizer_config
+from presentation_settings import DEFAULT_PRESENTATION
 from server import make_server
 
 SELECTION = dict(mpc_root='/prepared/source', python=sys.executable, cache='/prepared/source/.cache/gato')
@@ -110,7 +111,8 @@ class SourceSettingsTests(unittest.TestCase):
             self.assertNotIn('TIAGO_PYTHON', environment)
             self.assertNotIn('GATO_CACHE_DIR', environment)
             raise Restarted()
-        config = SimpleNamespace(path=Path('/config/viewer.json'), ingest_directory=Path('/ingest'))
+        config = SimpleNamespace(path=Path('/config/viewer.json'), ingest_directory=Path('/ingest'),
+                                 presentation=dict(DEFAULT_PRESENTATION))
         scene = dict(trajectories=[], source=dict(bootstrap=True))
         with patch.dict(os.environ, {'TIAGO_MPC_ROOT':'/launch', 'TIAGO_PYTHON':'/old/python', 'GATO_CACHE_DIR':'/old/cache'}), patch('server.load_visualizer_config', return_value=config), patch('visualizer_config.effective_source_selection', return_value=SELECTION), patch('server.load_scene', return_value=(scene, b'<robot/>', {})), patch('replay_library.ReplayLibrary', return_value=SimpleNamespace(upload_directory='/uploads')), patch('source_settings.SourceSettings', side_effect=source_factory), patch('server.make_server', return_value=service), patch('plot_service.PlotService', return_value=SimpleNamespace(close=lambda: events.append('plots-close'))), patch('server.os.execve', side_effect=execute):
             with self.assertRaises(Restarted):
