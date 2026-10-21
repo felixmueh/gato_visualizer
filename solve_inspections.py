@@ -41,8 +41,11 @@ class InspectionService:
         source, selection = body.get("source"), body.get("selection")
         if not isinstance(source, dict) or not isinstance(selection, dict):
             raise ValueError("Select a retained source and solve")
-        if not any(selection.get(key) is not None for key in ("solve_id", "solve_seq", "trajectory_index")):
-            raise ValueError("Select one retained solve explicitly")
+        selectors = [key for key in ("solve_id", "solve_seq", "trajectory_index") if selection.get(key) is not None]
+        if len(selectors) != 1:
+            raise ValueError("Select exactly one retained solve explicitly")
+        if selectors == ["trajectory_index"] and (type(selection["trajectory_index"]) is not int or selection["trajectory_index"] < 0):
+            raise ValueError("trajectory_index must be a nonnegative integer")
         if set(selection)-{"solve_id", "solve_seq", "trajectory_index"}:
             raise ValueError("Unknown selected solve fields")
         profile = self.profiles.active_selection(body.get("profile_id"))
@@ -61,7 +64,11 @@ class InspectionService:
         if selection.get("solve_seq") is not None:
             selection["solve_id"] = selection["solve_seq"]
         with self.reader_lock:
-            selected, _ = inspect_source(self.reader.read(request["descriptor"]), selection)
+            raw = self.reader.read(request["descriptor"])
+            if selection.get("trajectory_index") is not None and not any(
+                    plan.get("trajectory_index") == selection["trajectory_index"] for plan in raw.get("plans", ())):
+                raise ValueError("Selected replay trajectory is not a retained solve in this source")
+            selected, _ = inspect_source(raw, selection)
             problem = captured_problem(serializable(selected))
         return problem, str(selected["id"])
 

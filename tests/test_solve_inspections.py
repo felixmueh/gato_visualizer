@@ -278,6 +278,19 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.calls,[])
         self.assertIn('locks',result['message'])
 
+    def test_missing_explicit_replay_trajectory_never_substitutes_latest_plan(self):
+        request=self.request()
+        request['source']=dict(kind='replay',id='recorded')
+        request['selection']=dict(trajectory_index=99)
+        self.plots._descriptor=lambda source:dict(kind='replay',id='recorded')
+        raw=dict(plans=[dict(plan(),id='first',trajectory_index=2),dict(plan(),id='latest',trajectory_index=4)])
+        with patch.object(self.service.reader,'read',return_value=raw):
+            result=self.wait(self.service.submit(request)['id'])
+        self.assertEqual(result['state'],'failed')
+        self.assertIn('not a retained solve',result['error'])
+        self.assertEqual(self.calls,[])
+        self.assertEqual(self.live.pauses,[])
+
     def test_invalid_caps_and_budget_are_rejected_before_enqueue(self):
         for value in (0,-1,True,1.5,float('inf'),10001):
             request=self.request();request['sqp_iters']=value
