@@ -103,6 +103,14 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       return result;
     } catch (error) { message(`Command failed: ${error.message}`, true); return false; }
   }
+  function calculationControls() {
+    const stop = $('live-stop-at-end'), continuous = settings?.execution?.calculation === 'on_play';
+    stop.disabled = continuous;
+    stop.title = continuous ? 'Live Play continues until paused. Stop at end applies to precalculated playback.'
+      : 'Stop at the recorded end; uncheck to continue simulation';
+    stop.closest('label')?.setAttribute('title', stop.title);
+    $('live-duration').title = 'Precalculation duration; Live Play continues until paused.';
+  }
   function controlsEnabled() {
     const unavailable = !connected();
     $('live-play').disabled = unavailable;
@@ -112,6 +120,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     $('live-cancel').disabled = unavailable || (!job.job_active && !pending);
     $('live-play').textContent = clock.playing ? 'Pause' : 'Play';
     $('live-play').setAttribute('aria-label', clock.playing ? 'Pause live history' : 'Play live history');
+    calculationControls();
     refreshHistoryControls();
   }
   function readSettings(reportErrors = false) {
@@ -187,6 +196,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
     const next = readSettings();
     if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); }
+    calculationControls();
     resetIndicators.update();
     dirty = true; renderDirty = true; clock.pause(); refreshPlanLabel();
     message('Settings changed · replacing obsolete calculation…');
@@ -338,6 +348,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     const commit = schema.source?.mpc_commit;
     $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · prebuilt N: ${schema.available_N.join(', ')}`;
     resetIndicators.update();
+    calculationControls();
     $('live-mode').disabled = false; message('Choose Live MPC to compute a prediction.');
   }
   function useGeneration(next, force = false) {
@@ -671,7 +682,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     get metricHistory() { return history.metricSnapshot; },
     get history() { return { length: history.length, bounds: history.bounds, selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || plan?.task_path_xyz?.length); },
-    get precomputedPath() { return historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
+    get precomputedPath() { return !dirty && !pending && historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
     get settings() { return settings ? cloneSettings(settings) : null; }, get status() { return status; },
     get pending() { return pending || (mode === 'live' && !connected()); }, get playing() { return clock.playing; },
     frame, togglePlay: () => { if (mode === 'live' && !$('live-play').disabled) $('live-play').click(); },

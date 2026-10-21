@@ -332,8 +332,10 @@ test('Automatic history plans settle settings without a presentation plan SSE an
     source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: 3, complete: true });
     await flush(); await flush();
     assert.equal(live.pending, false); assert.equal(live.plan.seq, 1); assert.equal(live.history.length, 2);
+    assert.equal(live.precomputedPath.length, 2);
     live.frame(performance.now()); assert.doesNotMatch(h.$('live-plan-label').textContent, /settings pending/);
-    h.edit('solver_params.q_cost', 9); await new Promise(resolve => setTimeout(resolve, 380)); await flush();
+    h.edit('solver_params.q_cost', 9); assert.equal(live.precomputedPath, undefined);
+    await new Promise(resolve => setTimeout(resolve, 380)); await flush();
     assert.equal(h.commands.at(-1).type, 'set_settings'); assert.equal(h.commands.at(-1).execution.calculation, 'automatic');
     version = 2;
     source.emit({ type: 'history', generation: 2, settings_version: 2, history_cursor: 3, complete: true });
@@ -377,6 +379,7 @@ test('Play at an idle recorded end restarts history locally; an active growing t
     const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
     await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
     await flush(); source.emit(plan(1, 1));
+    assert.equal(h.$('live-stop-at-end').disabled, false);
     for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
     h.$('live-history-latest').emit('click'); assert.equal(live.history.selectedTime, .2);
     const before = h.commands.length;
@@ -402,6 +405,9 @@ test('On Play resumes at the existing history tip and keeps waiting for continuo
     const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
     await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
     await flush(); source.emit(plan(1, 1));
+    assert.equal(h.$('live-stop-at-end').disabled, true);
+    assert.match(h.$('live-stop-at-end').title, /continues until paused/);
+    assert.match(h.$('live-duration').title, /Precalculation duration/);
     for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
     h.$('live-history-latest').emit('click'); assert.equal(live.settings.execution.continue_at_end, false);
     h.$('live-play').emit('click'); await flush();
@@ -415,6 +421,9 @@ test('On Play resumes at the existing history tip and keeps waiting for continuo
     source.emit({ type: 'status', state: 'paused', settings_version: 1, job_active: false });
     live.frame(performance.now() + 4000);
     assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
+    h.$('live-calculation').value = 'manual'; h.$('live-calculation').emit('input');
+    assert.equal(h.$('live-stop-at-end').disabled, false);
+    assert.equal(live.settings.execution.continue_at_end, false);
   } finally {
     h.$('replay-mode').emit('click'); await flush();
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
