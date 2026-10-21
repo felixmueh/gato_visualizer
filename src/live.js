@@ -69,6 +69,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   const $ = (id) => document.getElementById(id);
   let schema;
   let settings;
+  let submittedSettings;
   let liveReady = false;
   let mode = 'replay';
   let source;
@@ -133,17 +134,16 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       : shownPlan ? `${shownPlan.origin === 'play' ? 'Closed-loop' : 'Reset preview'} · plan ${shownPlan.seq} · settings v${shownPlan.settings_version}` : 'Waiting for a prediction';
     $('live-plan-label').classList.toggle('stale', Boolean(stale));
   };
-  const submitSettings = async () => {
-    clearTimeout(settingsTimer);
-    if (mode !== 'live' || !liveReady) return false;
-    if (pending) { queuedPreview = true; return false; }
+  // The browser owns its Live draft. Replay data and stream snapshots never
+  // replace it; requests carry a copy so edits made during a solve stay local.
+  const readSettings = (reportErrors = false) => {
     const next = cloneSettings(settings);
     try {
       for (const { parameter, input } of inputs) {
         input.setCustomValidity('');
         let value;
         try { value = parseParameter(parameter, input); }
-        catch (error) { input.setCustomValidity(error.message); input.reportValidity(); throw error; }
+        catch (error) { input.setCustomValidity(error.message); if (reportErrors) input.reportValidity(); throw error; }
         writePath(next.config, parameter.path, value);
       }
       if (!schema.available_N.includes(next.config.N)) throw new Error('Choose an available knot count before running Live MPC.');
@@ -160,10 +160,19 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
         return value;
       });
     } catch (error) {
-      message(error.message, true);
-      return false;
+      if (reportErrors) message(error.message, true);
+      return null;
     }
+    return next;
+  };
+  const submitSettings = async () => {
+    clearTimeout(settingsTimer);
+    if (mode !== 'live' || !liveReady) return false;
+    if (pending) { queuedPreview = true; return false; }
+    const next = readSettings(true);
+    if (!next) return false;
     settings = next;
+    submittedSettings = cloneSettings(next);
     pending = true;
     dirty = false;
     expectedVersion = settingsVersion == null ? undefined : settingsVersion + 1;
@@ -171,7 +180,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     refreshPlanLabel();
     message(status === 'playing' ? 'Applying settings at the next interval; controller will restart at the current state.' : 'Computing a reset preview from the current state…');
     const request = ++submission;
-    const accepted = await send({ type: 'set_settings', ...settings });
+    const accepted = await send({ type: 'set_settings', ...next });
     if (request === submission) {
       if (!accepted) { pending = false; dirty = true; }
       else if (Number.isInteger(accepted.settings_version)) {
@@ -184,6 +193,9 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     return Boolean(accepted);
   };
   const change = () => {
+    // Capture valid edits before the debounce or a mode switch can interrupt it.
+    // Invalid text remains in its input for correction, without a partial POST.
+    settings = readSettings() || settings;
     showLatest();
     dirty = true;
     refreshPlanLabel();
@@ -303,6 +315,10 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       controlsEnabled();
       if (needsInitialPreview) { needsInitialPreview = false; submitSettings(); }
     } else if (item.type === 'plan') {
+      // An SSE subscription starts with the server's cached plan, which can
+      // belong to a different Live configuration (or another browser). Keep
+      // our retained prediction until this connection's draft has been applied.
+      if (needsInitialPreview || (expectedVersion != null && item.settings_version < expectedVersion)) return;
       if (!validPoints(item.ee_xyz) || !validPoints(item.reference_xyz)) {
         message('Invalid prediction received; keeping the last valid plan.', true); return;
       }
@@ -312,8 +328,8 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
       const applied = pending && expectedVersion != null && item.settings_version >= expectedVersion;
       if (applied) pending = false;
-      if (!defaultTargetWorld && (item.task_kind || settings.task.kind) === 'reach' && expectedVersion != null && item.settings_version >= expectedVersion) {
-        defaultTargetWorld = item.reference_xyz[0].map((value, i) => value - settings.task.target_offset_m[i]);
+      if (!defaultTargetWorld && (item.task_kind || submittedSettings?.task.kind) === 'reach' && expectedVersion != null && item.settings_version >= expectedVersion) {
+        defaultTargetWorld = item.reference_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
       }
       controlsEnabled();
       refreshPlanLabel();
@@ -404,6 +420,9 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   const switchMode = async (next) => {
     if (next === mode || (next === 'live' && !liveReady)) return;
     clearTimeout(settingsTimer);
+    // Detach callbacks for a request made by the previous Live subscription.
+    // Its server-side work may finish, but cannot settle the next draft.
+    submission++;
     mode = next;
     document.body.classList.toggle('live-mode', mode === 'live');
     $('live-panel').hidden = mode !== 'live';
