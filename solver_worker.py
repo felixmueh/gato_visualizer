@@ -60,6 +60,11 @@ def serve(channel, root):
                 event = adapter.solve_snapshot(payload["origin"], payload["settings_version"],
                                               reference=payload["reference"])
                 result = dict(plan=native_plan(event), torque_nm=adapter.u.tolist())
+            elif operation == "inspect":
+                if adapter is None or adapter.solver is None:
+                    raise ValueError("Inspection solver is not configured")
+                from inspection_worker import inspect_solve
+                result = inspect_solve(adapter, payload)
             elif operation == "close":
                 if adapter is not None:
                     adapter.controller = adapter.solver = None

@@ -31,6 +31,16 @@ class SolverProfiles:
                 continue  # Reserved alias always follows the fixed simulator source.
             self.profiles[validated["id"]] = validated
 
+    def active_selection(self, profile_id=None):
+        with self.live.condition:
+            if self.live.closed or self.live.profile_switch["state"] == "switching":
+                raise ValueError("A solver profile switch is in progress or Live is closed")
+            active = self.live.active_profile_id
+            if active is None or (profile_id is not None and profile_id != active):
+                raise ValueError("Run again requires the currently active compatible solver profile")
+            # Catalog edits do not change the already-active numerical process.
+            return deepcopy(self.live.active_profile)
+
     def status(self):
         with self.live.condition:
             return dict(profiles=deepcopy(list(self.profiles.values())),

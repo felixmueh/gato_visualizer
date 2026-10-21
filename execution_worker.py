@@ -211,6 +211,16 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         finally:
                             locks.release()
                         continue
+                    if kind == "inspection_pause":
+                        # No revision invalidation, rollback, reset, or plant step.
+                        # A completed batch remains committed; private controller
+                        # and multirate session remain ready for the next Play.
+                        job = None
+                        locks.release()
+                        status("paused", "Live calculation paused for solve inspection",
+                               inspection_pause_id=command["inspection_id"],
+                               job_active_override=False, complete=history_complete)
+                        continue
                     if kind in ("pause", "cancel"):
                         if kind == "cancel" or execution["calculation"] == "on_play":
                             job = None

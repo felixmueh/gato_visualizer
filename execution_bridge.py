@@ -120,6 +120,7 @@ class ProcessLiveService:
                                  cache=str(self.mpc_root / ".cache/gato"))
             solver_profile = dict(id="simulator", name="Simulator checkout", **selection)
         self.active_profile_id = solver_profile["id"]
+        self.active_profile = deepcopy(solver_profile)
         self.profile_switch = dict(state="idle")
         self._profile_revision_floor = 0
         self.condition = threading.Condition()
@@ -231,6 +232,21 @@ class ProcessLiveService:
             self.publish(dict(type="status", state="paused", message="Switching solver profile",
                 generation=self.generation, settings_version=self.version, job_active=False))
 
+    def pause_for_inspection(self, identifier, timeout=15):
+        """Pause at a committed chunk boundary, preserving controller/session state."""
+        with self.condition:
+            if self.closed or self.profile_switch["state"] == "switching":
+                raise ValueError("Live is unavailable or switching solver profiles")
+            if self.commands.full():
+                raise ValueError("Live command queue is busy")
+            token = self.revision.value
+            self.commands.put_nowait(dict(type="inspection_pause", token=token,
+                inspection_id=identifier, generation=self.generation, settings_version=self.version))
+            ready = self.condition.wait_for(lambda: self.closed or self.revision.value != token or
+                self.latest.get("status", {}).get("inspection_pause_id") == identifier, timeout=timeout)
+            if not ready or self.closed or self.revision.value != token:
+                raise ValueError("Live did not reach an inspection pause boundary; try again when idle")
+
     def command(self, command):
         from live_mpc import validate_settings
         if not isinstance(command, dict):
@@ -330,6 +346,7 @@ class ProcessLiveService:
                             self.latest.pop("state", None)
                             self.latest.pop("plan", None)
                             self.active_profile_id = identifier
+                            self.active_profile = deepcopy(packet["profile"])
                             self.profile_switch = dict(state="idle")
                             for key in ("available_N", "parameters", "source"):
                                 self.schema[key] = deepcopy(packet["schema"].get(key))
