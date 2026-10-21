@@ -13,8 +13,9 @@ The launcher uses `../tiago_mpc/venv-host` on the desktop. `TIAGO_PYTHON` can
 select another prepared interpreter; inside the existing container the launcher
 falls back to `../tiago_mpc/.venv`. It does not install Python packages there.
 
-Prepare the supported horizon modules once, and again after changing the MPC,
-model or toolchain. This is the only step that compiles CUDA:
+The viewer reuses compatible GATO binaries in the selected checkout’s
+`.cache/gato`. Prepare missing horizon modules explicitly during setup or use
+the **Source / Build settings** gear button:
 
 ```bash
 cd /workspace/tiago_mpc_visualizer
@@ -29,9 +30,10 @@ laptop Python environment, or internet connection is needed after setup.
 
 The launcher installs locked frontend dependencies if absent, builds the
 frontend, and serves the application, robot assets and API from one process.
-GPU setup/solving respects the experiment locks. If another experiment owns
-them, setup exits with an explanation and the live viewer reports GPU busy.
-Replay and camera controls remain available.
+Numerical solving respects the experiment locks and reports GPU busy while
+another experiment owns them. Explicit compilation is CPU work: it keeps Live
+running, takes no GPU experiment lock, and uses half the available CPU cores
+while respecting CPU affinity/quota. Replay and camera controls remain available.
 
 Use another MPC checkout, interpreter, or replay recording with:
 
@@ -40,6 +42,32 @@ TIAGO_MPC_ROOT=/workspace/tiago_mpc-other ./scripts/start.sh --port 8090
 TIAGO_PYTHON=/path/to/python ./scripts/start.sh --port 8090
 ./scripts/start.sh --port 8090 --run-dir /absolute/path/to/recording
 ```
+
+The gear button opens a movable **Source / Build settings** window. Enter a
+`tiago_mpc` checkout or worktree path; it shows the resolved source branch,
+commit/dirty state, Python environment, cache and compatible knot counts. Python
+and cache overrides are optional. The previous visualizer cache can be reused by
+entering `/workspace/tiago_mpc_visualizer/.cache/gato` explicitly; it is never
+copied into the selected project cache. Compatibility checks include the current
+URDF/grasp frame, generated/native GATO sources, toolchain, Python ABI, GPU
+architecture, and extension load/embedded identity. Discovery includes built N
+values beyond 16/32/64/128 and does not rely on manifest.N alone.
+
+**Build selected N** accepts additional integer counts, reuses current binaries,
+and compiles missing/stale ones with progress and retained logs. The explicit
+rebuild checkbox preserves prior binary bytes under `_expr_data/source-builds/`.
+Changing normal Live settings or selecting N never compiles. **Apply and restart
+backend** saves the selected paths, closes the numerical worker, restarts in the
+selected interpreter, and reloads all source-bound models/renderers/replay
+bindings. This starts a fresh Live session while retaining compatible controls,
+saved replays and disk history. Restart may wait for an active solve or timing
+window to release the GPU safely.
+
+Startup source precedence is `--mpc-root` > `TIAGO_MPC_ROOT` > saved selection >
+`../tiago_mpc`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
+Selecting another source with CLI/environment chooses that project's default
+environment/cache unless explicitly overridden. Apply replaces those launch-time
+overrides for its restart. No packages are installed in the selected environment.
 
 Server configuration lives in [`visualizer.json`](visualizer.json). Its
 `ingest_directory` defaults to the shared `../_expr_data/ingest`; directory
@@ -169,7 +197,8 @@ rates per calculation-wall second are labeled separately.
 The settings include horizon N and knot interval, costs, SQP/PCG budgets and
 tolerance, ADMM choices, and bound margins/fractions. Only modules prepared for
 the current MPC/toolchain are offered; changing a setting never compiles one.
-Restart the server and rerun setup after changing `tiago_mpc` code. See the
+Use Source / Build settings to inspect changed `tiago_mpc` code, build missing
+modules explicitly and Apply the selected source/binaries. See the
 [execution API](docs/execution-api.md) and [prediction fields](docs/live-api.md).
 
 Predicted tool path, task reference, and recorded simulated motion have separate
@@ -217,7 +246,8 @@ The canonical full URDF supplies the torso-to-root transform for every tool
 path and reference. Models and existing recordings stay in `tiago_mpc` and are
 read-only; the viewer imports its controller/configuration/plant code unchanged.
 All new logs, configuration snapshots and validation artifacts live under this
-checkout's ignored `_expr_data/`; compiled modules stay in `.cache/gato`.
+checkout's ignored `_expr_data/`; compiled modules stay in the selected GATO
+cache (the selected MPC checkout’s `.cache/gato` by default).
 
 ## Development
 

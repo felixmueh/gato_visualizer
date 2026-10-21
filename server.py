@@ -10,8 +10,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
 import os
+import queue
 from pathlib import Path
 import sys
+import threading
+import uuid
 from urllib.parse import parse_qs, unquote, urlsplit
 import xml.etree.ElementTree as ET
 
@@ -414,9 +417,10 @@ def accepts_gzip(value):
 
 
 def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist=None, live=None,
-                replays=None):
+                replays=None, sources=None, live_error=None):
     dist = Path(dist or ROOT / "dist").resolve()
     scene_json = json.dumps(scene, allow_nan=False, separators=(",", ":")).encode()
+    backend_id = uuid.uuid4().hex
 
     class Handler(BaseHTTPRequestHandler):
         def send_payload(self, payload, content_type, status=200, *, compress=False):
@@ -443,6 +447,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             self.do_GET()
 
         def do_POST(self):
+            if urlsplit(self.path).path.startswith("/api/source/") and sources is not None:
+                self.source_command()
+                return
             if urlsplit(self.path).path == "/api/replays/upload" and replays is not None:
                 self.upload_replay()
                 return
@@ -467,6 +474,30 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 result, status = dict(accepted=False, error=str(exc)), 400
             self.send_payload(json.dumps(result, allow_nan=False).encode(),
                               "application/json; charset=utf-8", status)
+
+        def source_command(self):
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
+                self.send_error(403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 65536 or self.headers.get_content_type() != "application/json":
+                    raise ValueError("Expected a JSON source command under 64 KiB")
+                body = json.loads(self.rfile.read(length))
+                action = urlsplit(self.path).path.removeprefix("/api/source/")
+                methods = {"inspect": sources.inspect, "build": sources.build, "apply": sources.apply}
+                if action not in methods:
+                    self.send_error(404)
+                    return
+                result, status = methods[action](body), 200
+            except (ValueError, TypeError, OSError, RuntimeError) as exc:
+                result, status = dict(error=str(exc)), 400
+            self.send_payload(json.dumps(result, allow_nan=False).encode(),
+                              "application/json; charset=utf-8", status)
+            if status == 200 and action == "apply":
+                self.wfile.flush()
+                sources.finish_apply()
 
         def upload_replay(self):
             from replay_format import MAX_COMPRESSED_BYTES, ReplayError
@@ -537,6 +568,13 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             elif path == "/api/replays" and replays is not None:
                 self.send_payload(json.dumps(replays.catalog(), allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
+            elif path == "/api/source" and sources is not None:
+                try:
+                    result, status = sources.status(), 200
+                except (ValueError, OSError, RuntimeError) as exc:
+                    result, status = dict(error=str(exc)), 400
+                self.send_payload(json.dumps(result, allow_nan=False).encode(),
+                                  "application/json; charset=utf-8", status)
             elif path == "/api/replays/scene" and replays is not None:
                 try:
                     query = parse_qs(urlsplit(self.path).query)
@@ -550,11 +588,14 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                     self.send_payload(json.dumps(dict(error=str(exc))).encode(),
                                       "application/json; charset=utf-8", status)
             elif path == "/api/health":
-                self.send_payload(json.dumps(dict(status="ok", trajectories=len(scene["trajectories"]))).encode(),
+                self.send_payload(json.dumps(dict(status="ok", trajectories=len(scene["trajectories"]), backend_id=backend_id)).encode(),
                                   "application/json; charset=utf-8")
             elif path == "/api/live/schema" and live is not None:
                 self.send_payload(json.dumps(live.schema, allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
+            elif path == "/api/live/schema" and live_error:
+                self.send_payload(json.dumps(dict(error=live_error)).encode(),
+                                  "application/json; charset=utf-8", 503)
             elif path == "/api/live/history" and live is not None:
                 from execution_bridge import HistoryGenerationError
                 try:
@@ -602,7 +643,7 @@ def main(argv=None):
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="Visualizer JSON config (default: checkout visualizer.json)")
     parser.add_argument("--mpc-root", type=Path,
-                        default=Path(os.environ.get("TIAGO_MPC_ROOT", ROOT.parent / "tiago_mpc")))
+                        help="Source checkout; overrides TIAGO_MPC_ROOT and saved Source / Build selection")
     parser.add_argument("--run-dir", type=Path, help="Existing reaching recording directory (read only)")
     parser.add_argument("--host", default="127.0.0.1", help="Use 0.0.0.0 to view over your local network")
     parser.add_argument("--port", type=int, default=8090)
@@ -612,23 +653,41 @@ def main(argv=None):
         visualizer_config = load_visualizer_config(args.config)
     except ValueError as exc:
         parser.exit(1, f"Config error: {exc}\n")
+    from visualizer_config import effective_source_selection
+    selection = effective_source_selection(visualizer_config, args.mpc_root)
+    args.mpc_root = Path(selection["mpc_root"])
+    # A new process is essential: Python extension modules and CUDA imports
+    # cannot be exchanged safely inside an existing numerical worker.
+    if os.path.abspath(sys.executable) != os.path.abspath(selection["python"]):
+        os.execve(selection["python"], [selection["python"], str(ROOT / "server.py"),
+                  *(sys.argv[1:] if argv is None else argv)], os.environ.copy())
+    os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    os.environ["PATH"] = str(Path(selection["python"]).parent) + os.pathsep + os.environ.get("PATH", "")
     try:
         scene, robot_xml, meshes = load_scene(args.mpc_root, args.run_dir)
     except (SourceError, OSError, RuntimeError) as exc:
         parser.exit(1, f"Source error: {exc}\n")
-    live = None
+    live, live_error = None, None
     if not args.replay_only:
         from live_mpc import LiveService
         try:
             live = LiveService(args.mpc_root)
-        except (ValueError, OSError, RuntimeError) as exc:
-            parser.exit(1, f"Live setup error: {exc}\n")
+        except (ValueError, OSError, RuntimeError, queue.Empty) as exc:
+            live_error = str(exc) or "Numerical worker did not become ready within 60 seconds"
+            print(f"Live setup error: {exc}; use Source / Build to check this selection", file=sys.stderr)
     from replay_library import ReplayLibrary
     library = ReplayLibrary(ingest_directory=visualizer_config.ingest_directory,
                             model_urdf=args.mpc_root / "models/tiago_pro/tiago_pro.urdf",
                             default_scene=scene,
                             scene_builder=lambda replay, path: replay_scene(replay, path, args.mpc_root, scene))
-    server = make_server(scene, robot_xml, meshes, args.host, args.port, live=live, replays=library)
+    from source_settings import SourceSettings, restart_arguments
+    restart_requested = threading.Event()
+    def request_restart():
+        restart_requested.set()
+        server.shutdown()
+    sources = SourceSettings(selection, visualizer_config.path, request_restart)
+    server = make_server(scene, robot_xml, meshes, args.host, args.port, live=live, replays=library,
+                         sources=sources, live_error=live_error)
     server.replay_library = library
     server.visualizer_config = visualizer_config
     print(f"TIAGo visualizer: http://{args.host}:{server.server_port}", flush=True)
@@ -646,8 +705,17 @@ def main(argv=None):
         pass
     finally:
         server.server_close()
+        sources.close()
         if live is not None:
             live.close()
+    if restart_requested.is_set():
+        environment = os.environ.copy()
+        # Apply explicitly replaces source launch overrides. Numerical workers
+        # inherit the newly selected cache after exec, and disk history stays.
+        for key in ("TIAGO_MPC_ROOT", "TIAGO_PYTHON", "GATO_CACHE_DIR"):
+            environment.pop(key, None)
+        os.execve(sources.selection["python"], [sources.selection["python"],
+                  *restart_arguments(sys.argv[1:] if argv is None else argv, visualizer_config.path)], environment)
     return 0
 
 

@@ -21,7 +21,8 @@ a small API around the MPC.
   prediction follows immediately. This covers the cost weights, SQP iteration
   cap, PCG cap and tolerance, ADMM parameters, knot interval, and the number
   of knot points N. Each N needs its own compiled GATO module: prebuild the
-  supported set during setup and never compile in response to a UI change.
+  supported set during setup. Normal parameter/N changes never compile. The
+  explicit Source / Build action may compile additional selected N values.
 - **Later, not now:** live plots, for example of solver convergence.
 
 The first deliverable is the interactive trajectory visualizer: prediction
@@ -95,17 +96,33 @@ timestamps at 1x. Visualizer runs are diagnostics, not experiment or timing evid
 
 ## Host environment and GPU
 
-Run on the host with `tiago_mpc`'s interpreter `../tiago_mpc/venv-host`. If the
-backend needs further packages, give this repository its own venv instead of
-installing them there. Keep the visualizer's compiled GATO modules, including
-the prebuilt N set, in this checkout's ignored `.cache/gato`: set
-`GATO_CACHE_DIR` before importing `reach_sim`, which otherwise defaults it to
-`tiago_mpc`'s cache. `runtime_urdf()` rewrites `tiago_mpc/.cache/models` with
-identical content, as every `reach_sim.py` run does. The container
-(`gato-felix-container`, which mounts `impl/` at `/workspace`) owns
-`tiago_mpc/.venv` and `tiago_mpc/.cache/gato`; do not modify them. nvcc 12.9
-rejects the host's GCC 15; Felix's shell sets `CUDAHOSTCXX=/usr/bin/g++-14`.
-The container uses host networking, so its servers occupy host ports.
+Run on the host with the selected `tiago_mpc` checkout's interpreter, preferring
+`venv-host/bin/python` and falling back to `.venv/bin/python`. Do not install
+packages into these environments. Source / Build settings may select a different
+prepared interpreter and persist that selection in the visualizer config.
+
+**Source/build update — Felix, 2026-10-21:** reuse the selected project's
+`.cache/gato` by default, with an explicit optional cache override (including
+this visualizer's existing `.cache/gato`). Do not copy compatible binaries or
+build duplicates. Validate actual current GATO model/frame/native/toolchain/
+Python ABI/GPU architecture identities and loadability; do not trust manifest.N
+as the complete built set. Source checks and normal settings/N changes never
+compile. Explicit Build selected N uses half the usable CPU cores and GATO's
+internal cache-write coordination; it does not pause Live or acquire GPU
+experiment locks. Only missing/stale selected modules build unless the user
+explicitly requests rebuilding. The user authorizes these selected project-cache
+writes; older private-cache-only/container-cache prohibitions are superseded.
+Keep compiler logs, receipts, temporary models and rebuild backups beneath this
+checkout's ignored `_expr_data/`. Do not modify upstream sources or packages.
+
+Applying a source/cache/interpreter or newly built set fully restarts the backend
+and its numerical worker; never swap Python/CUDA imports in an existing worker.
+Reconstruct source-bound robot/render/replay objects and start fresh Live history;
+retain saved replays/disk history and compatible UI settings. Path precedence is
+`--mpc-root`, then `TIAGO_MPC_ROOT`, then the saved selection, then `../tiago_mpc`.
+An explicit Apply replaces launch-time source/environment overrides for that
+restart. nvcc 12.9 rejects host GCC 15; Felix's shell uses
+`CUDAHOSTCXX=/usr/bin/g++-14`. Do not change toolchain settings silently.
 
 The GPU is shared with experiment runs. Use one solver process, solve only while
 a view needs it, and pause solving while a GPU timing run holds the locks used by

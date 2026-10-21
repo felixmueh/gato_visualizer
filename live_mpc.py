@@ -21,13 +21,12 @@ import numpy as np
 from live_presentation import render_plan, render_state, snapshot
 
 ROOT = Path(__file__).resolve().parent
-SUPPORTED_N = (16, 32, 64, 128)
 
 
 def import_mpc(mpc_root):
-    """Set our cache before reach_sim's setdefault and import unchanged sources."""
+    """Use the startup-selected cache and import unchanged source in one worker."""
     mpc_root = Path(mpc_root).expanduser().resolve()
-    os.environ["GATO_CACHE_DIR"] = str(ROOT / ".cache/gato")
+    os.environ.setdefault("GATO_CACHE_DIR", str(mpc_root / ".cache/gato"))
     for location in (mpc_root / "external/gato/python", mpc_root / "examples"):
         if str(location) not in sys.path:
             sys.path.insert(0, str(location))
@@ -402,14 +401,10 @@ def build_schema(mpc_root):
     from execution_session import DEFAULT_EXECUTION
     mpc_root = Path(mpc_root).expanduser().resolve()
     reach, configuration = import_mpc(mpc_root)
-    from gato import _cache
     try:
-        from gato.builder import _codegen_key
-        gpu_path = reach.runtime_urdf()[1]
-        entry = _cache.robot_entry(reach.PLANT)
-        current_key = _codegen_key(gpu_path, reach.EE_FRAME, .15, None, False)
-        available = ([n for n in SUPPORTED_N if _cache.find_module(reach.PLANT, n) is not None]
-                     if entry and entry.get("codegen_key") == current_key else [])
+        from source_runtime import discover_compatible_modules
+        discovery = discover_compatible_modules(reach)
+        available = discovery["available_N"]
     except (OSError, ValueError, KeyError):
         available = []
     _, settings, _ = configuration.load_configuration()

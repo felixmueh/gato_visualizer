@@ -23,7 +23,7 @@ export function writePath(value, path, next) {
 
 export function initialLiveSettings(schema) {
   if (!Array.isArray(schema.available_N) || !schema.available_N.length) {
-    throw new Error('No knot counts are ready. Run visualizer setup, restart its server, then reload this page. Replay is available.');
+    throw new Error('No knot counts are ready. Open Source / Build settings to select a compatible cache or build them. Replay is available.');
   }
   if (!schema.available_N.every((value) => Number.isInteger(value) && value > 1)) {
     throw new Error('The live knot-count list is invalid. Restart the visualizer server and reload this page.');
@@ -31,6 +31,42 @@ export function initialLiveSettings(schema) {
   const settings = cloneSettings(schema.defaults);
   if (!settings?.config || typeof settings.config !== 'object') throw new Error('The live settings could not load.');
   if (!schema.available_N.includes(settings.config.N)) settings.config.N = schema.available_N[0];
+  return settings;
+}
+
+export function restoreCompatibleSettings(schema, saved) {
+  const settings = initialLiveSettings(schema);
+  if (!saved || typeof saved !== 'object') return settings;
+  for (const parameter of schema.parameters || []) {
+    const path = parameter.path.replace(/^config\./, ''), value = readPath(saved.config, path);
+    if (value === undefined) continue;
+    try {
+      if (parameter.kind === 'choice') {
+        const choices = path === 'N' ? schema.available_N : parameter.choices;
+        if (!choices.some(choice => Object.is(choice && typeof choice === 'object' && 'value' in choice ? choice.value : choice, value))) continue;
+      } else if (parameter.kind === 'bool') {
+        if (typeof value !== 'boolean') continue;
+      } else {
+        if (typeof value !== 'number') continue;
+        parseParameter(parameter, { value: String(value) });
+      }
+      writePath(settings.config, path, value);
+    } catch { /* A source can remove or narrow settings; retain its own default. */ }
+  }
+  const task = (schema.tasks || []).find(item => item.kind === saved.task?.kind);
+  if (task) {
+    settings.task = { ...cloneSettings(task.defaults || {}), kind: task.kind };
+    const offset = saved.task.target_offset_m;
+    settings.task.target_offset_m = Array.isArray(offset) && offset.length === 3 && offset.every(value => Number.isFinite(value) && Math.abs(value) <= 1) ? [...offset] : settings.task.target_offset_m || [0, 0, 0];
+    for (const parameter of task.parameters || []) {
+      const value = saved.task[parameter.path];
+      if (typeof value !== 'number') continue;
+      try { settings.task[parameter.path] = parseParameter({ kind: 'float', ...parameter }, { value: String(value) }); } catch {}
+    }
+    const orientation = normalizeQuaternion(saved.task.orientation_xyzw);
+    if (orientation && task.kind === 'figure8') settings.task.orientation_xyzw = orientation;
+  }
+  try { settings.execution = validateExecution(saved.execution); } catch {}
   return settings;
 }
 
@@ -335,7 +371,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       const input = $(`target-offset-${i}`); input.value = value; input.addEventListener('input', change);
       bindReset(input, { kind: 'float', path: `target_offset_m.${i}`, label: `target ${['X', 'Y', 'Z'][i]}`, min: -1, max: 1 }, () => activeTaskDefaults().target_offset_m[i], { key: `task.target_offset_m.${i}` });
     });
-    settings.execution = validateExecution({ ...DEFAULT_EXECUTION, ...(schema.defaults.execution || {}) });
+    settings.execution = validateExecution({ ...DEFAULT_EXECUTION, ...(settings.execution || schema.defaults.execution || {}) });
     for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration'], ['calculation', 'live-calculation']]) {
       const input = $(id); input.value = settings.execution[key]; input.addEventListener('input', change);
       const baseline = { ...DEFAULT_EXECUTION, ...defaultSettings.execution };
@@ -653,7 +689,13 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     event.target.title = `${number(time, 3)} s · ${interval ? intervalDescription(interval) : 'Recorded simulation time'}`;
   });
   $('live-history-latest').addEventListener('click', showLatest);
-  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings); liveReady = true; populate(); }).catch(error => { liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
+  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings);
+    try {
+      const retained = sessionStorage.getItem('source-restart-live-settings');
+      sessionStorage.removeItem('source-restart-live-settings');
+      if (retained) { settings = restoreCompatibleSettings(schema, JSON.parse(retained)); dirty = !settingValuesEqual(settings, defaultSettings); }
+    } catch {}
+    liveReady = true; populate(); }).catch(error => { liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
   return {
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));

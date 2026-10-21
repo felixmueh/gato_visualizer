@@ -1,0 +1,19 @@
+.floating-dialog { position: fixed; inset: 12vh auto auto max(24px, calc(50vw - 300px)); margin: 0; width: min(600px, calc(100vw - 32px)); max-height: 82vh; padding: 0; color: var(--text, #243343); background: #fff; border: 1px solid #d1d9e0; border-radius: 12px; box-shadow: 0 16px 70px #142d4e44; z-index: 30; resize: both; overflow: auto; }
+.floating-dialog::backdrop { background: #10223444; }
+.floating-dialog-header { display: flex; align-items: center; justify-content: space-between; padding: 13px 17px; border-bottom: 1px solid #e0e5ea; cursor: move; touch-action: none; }
+.floating-dialog-header h2 { font-size: 15px; margin: 0; }
+.floating-dialog-close { border: 0; background: transparent; font-size: 25px; line-height: 24px; width: 30px; height: 30px; cursor: pointer; }
+.floating-dialog-body { padding: 16px; }
+.source-settings-form { display: grid; gap: 13px; }
+.source-settings-form label { display: grid; gap: 5px; font-size: 12px; font-weight: 600; }
+.source-settings-form input { width: 100%; padding: 8px; border: 1px solid #cbd5df; border-radius: 5px; font: 12px 'IBM Plex Mono', monospace; box-sizing: border-box; }
+.source-settings-form label.source-rebuild { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+.source-settings-form label.source-rebuild input { width: auto; }
+.source-settings-form p { margin: 0; font-size: 12px; line-height: 1.5; }
+.source-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.source-actions button { padding: 8px 12px; border-radius: 5px; border: 1px solid #bac7d3; background: #f5f8fa; cursor: pointer; font: inherit; font-size: 12px; }
+.source-actions button:disabled { opacity: .5; cursor: default; }
+.source-actions .source-apply { background: #234c6d; color: white; border-color: #234c6d; }
+.source-identity { white-space: pre-wrap; overflow-wrap: anywhere; color: #526374; font: 11px/1.6 'IBM Plex Mono', monospace; }
+.source-build-log { max-height: 190px; overflow: auto; white-space: pre-wrap; background: #f3f6f8; padding: 10px; border-radius: 5px; font: 11px/1.5 'IBM Plex Mono', monospace; }
+.source-message[data-error="true"] { color: #a22e34; }
