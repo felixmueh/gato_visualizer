@@ -126,8 +126,11 @@ cursor. Drag in a plot to scrub; Y scales hold headroom and expand smoothly as
 new values arrive. The Solve inspector follows the recorded
 plan association. **Pin solve** retains its identity and SQP selection with a
 muted red indicator. Its separate SQP strip selects recorded iterations without
-moving the episode clock. A missing intermediate prediction remains unavailable;
-exact **Continue SQP** is disabled until the solver exposes checkpoint/resume.
+moving the episode clock. **Run again** offers a finite SQP cap and optional
+wall budget, creates a separate pinned result with genuine iteration snapshots,
+and preserves the original episode. Initialization is explicitly cold; **Stop**
+terminates only that inspection worker. Older data without captured inputs
+explains why rerunning is unavailable. See [Solve inspection](docs/inspection.md).
 
 Bundled Python plotters cover timing/budgets, iteration counts, tracking error,
 joint motion and bounds, timing histograms, episode aggregates, prediction joint
@@ -137,6 +140,15 @@ Custom `@plot_episode` and `@plot_solve` functions load from
 plotters in Source / Build settings without restarting MPC. See the
 [plot authoring guide](docs/plot-authoring.md) for typed views, the starter and
 offline numerical checks with shared-renderer HTML previews.
+
+## Solver profiles
+
+Source / Build settings also save named solver checkout/interpreter/cache
+profiles. Select one in Live to switch solver implementations without reloading
+the browser or replacing the simulator. Switching pauses at the displayed native
+state and starts a new history segment. Profiles must have compatible model
+coordinates and prebuilt binaries for the chosen knot count. See
+[solver profiles](docs/solver-profiles.md) for provenance and failure behavior.
 
 ## Live MPC
 

@@ -1,9 +1,10 @@
 # Episode and Solve inspection
 
 Design decisions agreed with Felix on 2026-10-21. The Episode/Solve UI and
-inspection of retained diagnostics are implemented. Intermediate prediction
-snapshots and exact SQP continuation still depend on upstream capabilities;
-the inspector reports their absence explicitly.
+inspection of retained diagnostics are implemented. Run again records authentic
+intermediate predictions in an isolated fresh solve. Ordinary episode solves
+retain their final plan and lightweight diagnostics; older data may lack the
+inputs required to rerun. Exact optimizer checkpoint/resume is not offered.
 Canonical terminology is in [UBIQUITOUS_LANGUAGE.md](../UBIQUITOUS_LANGUAGE.md).
 
 ## Source and inspection context
@@ -63,11 +64,11 @@ horizon cursor or prediction playback is introduced by this design.
 Agreed initial control placement: a compact, labelled SQP iteration strip in
 the Solve inspector, with previous/next buttons, Seed / iteration k of K, and
 a horizontal slider. Keep it distinct from the episode's bottom timeline.
-Explicit manipulation should pin the selected solve so incoming Live solves
-do not replace it mid-inspection; this automatic pinning detail remains a
-proposal rather than an implemented rule.
+Explicit iteration selection pins the selected solve so incoming Live solves
+do not replace it mid-inspection. Run again also pins its separate result;
+Follow episode returns to the original source and cursor association.
 
-## Run again — accepted 2026-10-21, implementation in progress
+## Run again — implemented 2026-10-21
 
 Replace the proposed exact Continue SQP action with Run again. It creates a
 separate inspection result linked to the selected solve, using its captured
@@ -98,26 +99,24 @@ is outside this initial feature.
 
 ## Current diagnostic capability boundary
 
-At the integrated GATO f7be8b75dae562400f84816883e7bb848b9874fa, the public API exposes the
-final predicted trajectory, initial/final merit, and some per-SQP merit,
-line-search and PCG statistics when enabled. The visualizer retains each
-published solve's final q/v/u, initial state, exact reference, effective
-configuration, model/source identity, summary counts and returned scalar traces.
-It does not retain intermediate SQP trajectories, the incoming warm trajectory
-or private optimizer state. Keeping the final prediction visible as context
-while selecting a metrics-only iteration does not make it an iteration snapshot.
+The integrated GATO fa585971b71d69a001fb2f055010bba5dcd86f6b exposes opt-in
+`solve(capture_iterations=True)` with authentic seed/current trajectories at
+native SQP boundaries, aligned PCG counts, line-search presence and stop reason.
+The temporary inspection worker enables this recorder; ordinary episode solves
+leave it disabled. Binary snapshots are transferred once after solving and
+kept out of JSON responses; plots load only the requested prediction.
 
-The public API does not expose per-SQP trajectory snapshots or complete
-checkpoint/restore/resume. The SQP cap is constructor-sized, including native
-telemetry allocation, so changing a Python parameter does not extend an
-existing solver instance. Repeating solve with a saved trajectory is a new
-warm-seeded invocation with different initialization/finalization semantics.
+The visualizer retains ordinary solves' final q/v/u, initial state, exact
+reference, effective configuration, installed bounds/masks, model/source identity
+and available scalar traces. It does not retain their incoming warm trajectory
+or private optimizer state. Historical sources without complete captured inputs
+cannot be rerun safely and explain that limitation in the inspector.
 
-Full trajectory iteration scrubbing requires a native diagnostic recorder and
-inspection-session support, now being implemented separately. UI availability and plot requirements
-must describe recorded capabilities accurately, including imported data with
-only a final result. This document authorizes no solver algorithm change or
-silent substitution for missing diagnostic data.
+The public API does not expose complete checkpoint/restore/resume. Run again
+constructs a separate solver with the requested finite cap and a labelled cold
+initialization. Capturing iterations adds memory/copy overhead and can change
+how many iterations fit a wall budget. A final prediction used as context for
+missing historical snapshots is labelled as context, never as an iteration.
 
 ## Consequences for the plotting contract
 
