@@ -327,7 +327,9 @@ class PlotService:
             identifier = uuid.uuid4().hex
             self.jobs[identifier] = dict(job_id=identifier, id=identifier, state="pending", channel=channel,
                 request=request, descriptor=descriptor, registry_revision=self.registry_revision,
-                data_revision=descriptor.get("cursor", descriptor.get("revision")),
+                data_revision=(f"{descriptor['generation']}:{descriptor['cursor']}:"
+                               f"{descriptor.get('preview_source', {}).get('cursor', 0)}"
+                               if descriptor["kind"] == "live" else descriptor.get("revision")),
                 generation=descriptor.get("generation"))
             self.pending[channel] = identifier
             while len(self.jobs) > 128:
