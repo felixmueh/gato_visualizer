@@ -243,6 +243,9 @@ class MPCAdapter:
             self.model, self.data, self.reach.Q_START_RAD + self.reach.Q_GOAL_DELTA_RAD, self.fid)
         self.figure8_start_world = self.kinematics.target_to_world(self.reach.ee_position(
             self.model, self.data, self.reach.Q_START_RAD, self.fid))
+        self.task_anchors = snapshot(dict(
+            reach=self.kinematics.target_to_world(self.default_target).tolist(),
+            figure8=self.figure8_start_world.tolist()))
         self.task = deepcopy(REACH_DEFAULT_TASK)
         self.solver = self.controller = None
         self.sequence = 0
@@ -339,7 +342,7 @@ class MPCAdapter:
         stats = step.solve.stats
         self.sequence += 1
         event = dict(type="plan", seq=self.sequence, origin=origin, settings_version=settings_version,
-                     end_effector_frame=self.reach.EE_FRAME,
+                     end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
                      sim_time_s=self.t, N=self.N, dt_s=self.dt, task_kind=self.task["kind"],
                      target_xyz=self.target_world_at(self.t).tolist(),
                      task_path_xyz=getattr(self, "task_path_xyz", None),
@@ -382,7 +385,7 @@ class MPCAdapter:
 
     def state_snapshot(self, rtf=0, settings_version=0):
         return snapshot(dict(type="state", sim_time_s=self.t, _x=self.x,
-                    end_effector_frame=self.reach.EE_FRAME,
+                    end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
                     settings_version=settings_version,
                     torque_nm=None if self.applied_torque is None else self.applied_torque.tolist(),
                     torque_kind="applied", joint_limits=self.joint_limits,

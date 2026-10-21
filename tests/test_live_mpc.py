@@ -141,7 +141,8 @@ class AdapterTelemetryTests(unittest.TestCase):
                                         SPEED_L1_TOL_RAD_S=1, SIM_DT_S=.005,
                                         rk4=lambda model, data, q, v, u, h: (q+v*h, v+u*h))
         adapter.kinematics = SimpleNamespace(ee_positions=lambda q: np.zeros((len(q), 3)),
-                                             target_to_world=lambda target: target)
+                                             target_to_world=lambda target: target,
+                                             world_from_torso=SimpleNamespace(actInv=lambda point: point))
         stats = SimpleNamespace(sqp_iters=[1], pcg_iters=[2], admm_iters=[3], admm_linsys_iters=[4])
         step = SimpleNamespace(u=np.arange(7), solve=SimpleNamespace(
             xu=np.arange(35), stats=stats, solve_time_us=10), row_viol=[0])
@@ -150,6 +151,10 @@ class AdapterTelemetryTests(unittest.TestCase):
         adapter.state_signs = np.tile(adapter.signs, 2)
         adapter.model = adapter.data = None
         adapter.target = np.zeros(3)
+        adapter.default_target = np.array([.4, -.3, 1.2])
+        adapter.figure8_start_world = np.array([.3, -.4, 1.1])
+        adapter.task_anchors = snapshot(dict(reach=adapter.default_target.tolist(),
+                                             figure8=adapter.figure8_start_world.tolist()))
         adapter.task = dict(kind="reach", target_offset_m=[0, 0, 0])
         adapter.reference = np.zeros((2, 6))
         adapter.N, adapter.dt = 2, .01
@@ -157,6 +162,25 @@ class AdapterTelemetryTests(unittest.TestCase):
         adapter.restarted = False
         adapter.reset_state()
         return adapter
+
+    def test_task_anchors_are_public_immutable_and_independent_of_task_edits(self):
+        adapter = self.adapter()
+        expected = dict(reach=[.4, -.3, 1.2], figure8=[.3, -.4, 1.1])
+        initial_plan = adapter.solve_snapshot("preview", 1)
+        self.assertEqual(mutable(initial_plan["task_anchors"]), expected)
+        self.assertEqual(adapter.state_event()["task_anchors"], expected)
+        with self.assertRaises(TypeError):
+            initial_plan["task_anchors"]["reach"][0] = 99
+        adapter.target += [.15, .2, .2]
+        adapter.x[:7] += .1
+        self.assertEqual(adapter.solve("preview", 2)["task_anchors"], expected)
+        adapter.task = {**FIGURE8_DEFAULT_TASK, "target_offset_m": [.1, -.2, .3],
+                        "width_m": .4, "height_m": .3, "orientation_xyzw": [1., 0., 0., 0.]}
+        adapter.t = 3.
+        transformed = adapter.solve("preview", 3)
+        self.assertEqual(transformed["task_anchors"], expected)
+        self.assertEqual(adapter.state_event()["task_anchors"], expected)
+        self.assertEqual(mutable(initial_plan["task_anchors"]), expected)
 
     def test_reset_restarts_plan_count_and_preview_does_not_claim_applied_torque(self):
         adapter = self.adapter()

@@ -88,6 +88,13 @@ does not reproduce or qualify those historical dynamics/cost settings.
 The solver reference is in the reduced arm's root (torso) frame; the backend
 converts world-frame values with the transform derived from the full URDF.
 
+Plan and state events include `task_anchors: {"reach": [x,y,z],
+"figure8": [x,y,z]}` in world coordinates, before task offsets. These fixed
+anchors identify the imported default reaching target and comfortable-pose
+tracking start. They do not move when the simulated state, task position,
+tracking dimensions or orientation change; the UI can edit either task before
+receiving its first solved plan.
+
 ## Schema response
 
 ```json
