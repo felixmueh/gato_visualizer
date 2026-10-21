@@ -5,7 +5,9 @@ from collections import OrderedDict
 from copy import deepcopy
 import json
 import math
+import os
 import re
+import shutil
 from pathlib import Path
 import threading
 import time
@@ -18,6 +20,49 @@ ROOT = Path(__file__).resolve().parent
 TERMINAL = {"completed", "failed", "cancelled", "busy"}
 
 
+def profile_fingerprint(profile):
+    """Cheap invalidation for cached CPU probes; never import the selected MPC.
+
+    Watch source/model inputs and binaries rather than history/solve revisions.
+    File metadata includes ctime and inode, so replacing a rebuilt binary even
+    with its original name/mtime invalidates the result. Source / Build Apply
+    also restarts this service and therefore drops the entire cache.
+    """
+    root, cache = Path(profile["mpc_root"]), Path(profile["cache"])
+    python = Path(profile["python"])
+    gato = root / "external/gato"
+    paths = {python, python.parent.parent / "pyvenv.cfg", cache / "manifest.json",
+             gato / "CMakeLists.txt", gato / "pyproject.toml", gato / "setup.py"}
+    suffixes = {".py", ".h", ".hpp", ".cuh", ".cu", ".cpp", ".cmake", ".json", ".urdf", ".xml", ".so"}
+    for directory in (root / "examples", root / "configs", root / "models",
+                      gato / "python", gato / "gato", gato / "tools",
+                      cache / "modules", cache / "robots"):
+        for folder, directories, files in os.walk(directory):
+            directories[:] = [name for name in directories if name not in
+                              {"__pycache__", ".git", "build", "CMakeFiles", "meshes"}]
+            paths.update(Path(folder) / name for name in files if Path(name).suffix in suffixes)
+    # Installing/replacing packages updates environment metadata; do not scan
+    # numerical packages or import them into the web process on every selection.
+    for packages in (python.parent.parent / "lib").glob("python*/site-packages"):
+        paths.add(packages)
+        paths.update(packages.glob("*.dist-info/METADATA"))
+    tool_path = str(python.parent) + os.pathsep + os.environ.get("PATH", "")
+    for tool in ("nvcc", "c++", "cmake"):
+        found = shutil.which(tool, path=tool_path)
+        if found:
+            paths.add(Path(found))
+    stamps = []
+    for path in sorted(paths):
+        try:
+            stat = path.stat()
+            value = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        except FileNotFoundError:
+            value = None
+        stamps.append((str(path), value))
+    return (tuple(sorted(profile.items())), tuple(stamps), tool_path,
+            os.environ.get("CUDAHOSTCXX"), os.environ.get("CUDA_HOME"))
+
+
 class InspectionService:
     def __init__(self, plots, profiles, *, live=None, directory=None, process_factory=None,
                  locks_factory=None, probe=None, pause_timeout_s=15):
@@ -27,6 +72,8 @@ class InspectionService:
         self.pause_timeout_s = pause_timeout_s
         self.lock = threading.Condition()
         self.reader_lock = threading.Lock()
+        self.probe_lock = threading.Lock()
+        self.probe_cache = OrderedDict()
         self.reader = SourceReader(plots.mpc_root, plots.default_scene)
         self.jobs = OrderedDict()
         self.pending = []
@@ -73,11 +120,9 @@ class InspectionService:
         return problem, str(selected["id"])
 
     def _checked(self, request, problem):
-        from source_runtime import probe_selection
         from solver_process import validate_contract
         profile = request["profile"]
-        checked = (self.probe or probe_selection)(
-            {key: profile[key] for key in ("mpc_root", "python", "cache")}, operation="profile-probe")
+        checked = self._profile_capabilities(profile)
         if not checked.get("compatible"):
             raise ValueError(checked.get("error", "Active solver profile is incompatible"))
         n = problem["problem_configuration"]["N"]
@@ -91,6 +136,27 @@ class InspectionService:
         # Normal UI bounds on SQP cap do not constrain this explicit finite
         # inspection cap. Native allocation validation remains authoritative.
         return checked
+
+    def _profile_capabilities(self, profile):
+        from source_runtime import probe_selection
+        # One probe per unchanged selected environment, including concurrent
+        # capability requests and Run again preflight. This lock is independent
+        # of Live and job lifecycle locks; no numerical scheduling is changed.
+        with self.probe_lock:
+            key = tuple(sorted(profile.items()))
+            fingerprint = profile_fingerprint(profile)
+            cached = self.probe_cache.get(key)
+            if cached is None or cached[0] != fingerprint:
+                result = (self.probe or probe_selection)(
+                    {name: profile[name] for name in ("mpc_root", "python", "cache")}, operation="profile-probe")
+                if profile_fingerprint(profile) != fingerprint:
+                    raise ValueError("Solver source or binaries changed while checking capability; select again")
+                self.probe_cache[key] = (fingerprint, {name: result[name] for name in
+                    ("compatible", "available_N", "capabilities", "contract", "error") if name in result})
+                while len(self.probe_cache) > 8:
+                    self.probe_cache.popitem(last=False)
+            self.probe_cache.move_to_end(key)
+            return deepcopy(self.probe_cache[key][1])
 
     def capability(self, body):
         try:

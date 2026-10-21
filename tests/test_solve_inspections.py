@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -286,6 +287,134 @@ class JobTests(unittest.TestCase):
         self.assertEqual(result['state'],'failed')
         self.assertEqual(self.calls,[])
         self.assertEqual(self.live.pauses,[])
+
+    def cached_profile(self):
+        root = self.folder/'mpc'
+        (root/'examples').mkdir(parents=True)
+        source = root/'examples/reach_sim.py'; source.write_text('# original')
+        cache = self.folder/'cache'
+        module = cache/'modules/tiago/current/bsqpN3_tiago.so'
+        module.parent.mkdir(parents=True); module.write_bytes(b'old native binary')
+        python = self.folder/'venv/bin/python'
+        python.parent.mkdir(parents=True); python.write_text('test interpreter')
+        self.profile.update(mpc_root=str(root), python=str(python), cache=str(cache))
+        original = self.probe
+        self.probes = []
+        def counted(selection, operation):
+            self.probes.append(deepcopy(selection))
+            return original(selection, operation)
+        self.service.probe = counted
+        return source, module, python
+
+    def test_following_different_solves_reuses_probe_but_checks_each_captured_problem(self):
+        self.cached_profile()
+        self.assertTrue(self.service.capability(self.request())['available'])
+        self.history.append([dict(plan(),type='plan',id='8',seq=8)])
+        request = self.request(); request['selection'] = dict(solve_id='8')
+        self.assertTrue(self.service.capability(request)['available'])
+        missing = dict(plan(),type='plan',id='9',seq=9); missing.pop('reference_native')
+        self.history.append([missing])
+        request['selection'] = dict(solve_id='9')
+        result = self.service.capability(request)
+        self.assertFalse(result['available'])
+        self.assertIn('reference_native',result['reason'])
+        wrong_contract = dict(plan(),type='plan',id='10',seq=10,
+                              solver_profile=dict(coordinate_contract=dict(nq=99)))
+        self.history.append([wrong_contract])
+        request['selection'] = dict(solve_id='10')
+        result = self.service.capability(request)
+        self.assertFalse(result['available'])
+        self.assertIn('nq',result['reason'])
+        unsupported = dict(plan(),type='plan',id='11',seq=11,N=4,
+                           reference_native=[[.1,.2,.3,0,0,0]]*4,
+                           constraint_bounds_native=groups(4))
+        unsupported['problem_configuration']['N'] = 4
+        self.history.append([unsupported])
+        request['selection'] = dict(solve_id='11')
+        result = self.service.capability(request)
+        self.assertFalse(result['available'])
+        self.assertIn('N=4',result['reason'])
+        self.assertEqual(len(self.probes),1)
+        self.assertEqual(self.calls,[])
+
+    def test_capability_cache_invalidates_for_rebuild_source_environment_and_profile(self):
+        source, module, python = self.cached_profile()
+        def check(count):
+            request = self.request(); request['profile_id'] = self.profile['id']
+            result = self.service.capability(request)
+            self.assertTrue(result['available'], result)
+            self.assertEqual(len(self.probes),count)
+        check(1); check(1)
+        # Replacement at the same path, preserving size and mtime, must still
+        # invalidate: rebuilds can preserve names and restored timestamps.
+        stamp = module.stat()
+        replacement = module.with_suffix('.new'); replacement.write_bytes(module.read_bytes())
+        os.utime(replacement, ns=(stamp.st_atime_ns,stamp.st_mtime_ns))
+        replacement.replace(module)
+        check(2)
+        source.write_text('# updated source'); check(3)
+        python.write_text('new interpreter'); check(4)
+        self.profile['id'] = 'replacement-profile'; check(5)
+        new_module = module.with_name('bsqpN32_tiago.so'); new_module.write_bytes(b'new N')
+        check(6)
+        new_module.unlink(); check(7)
+
+    def test_negative_capture_capability_is_cached_until_binary_rebuild(self):
+        _, module, _ = self.cached_profile()
+        counted = self.service.probe
+        def without_capture(selection, operation):
+            result = counted(selection, operation)
+            result['capabilities']['iteration_capture_by_N']['3'] = False
+            return result
+        self.service.probe = without_capture
+        for _ in range(3):
+            result = self.service.capability(self.request())
+            self.assertFalse(result['available'])
+            self.assertIn('capture',result['reason'])
+        self.assertEqual(len(self.probes),1)
+        self.service.probe = counted
+        module.write_bytes(b'capture-capable rebuilt binary')
+        self.assertTrue(self.service.capability(self.request())['available'])
+        self.assertEqual(len(self.probes),2)
+
+    def test_concurrent_capability_checks_share_one_probe(self):
+        self.cached_profile()
+        entered, release = threading.Event(), threading.Event()
+        counted = self.service.probe
+        def slow(selection, operation):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('Test did not release source probe')
+            return counted(selection,operation)
+        self.service.probe = slow
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(self.service.capability(self.request())))
+                   for _ in range(4)]
+        try:
+            for thread in threads: thread.start()
+            self.assertTrue(entered.wait(2))
+        finally:
+            release.set()
+            for thread in threads: thread.join(timeout=3)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(len(results),4)
+        self.assertTrue(all(result['available'] for result in results),results)
+        self.assertEqual(len(self.probes),1)
+
+    def test_changes_during_probe_are_not_cached_as_current(self):
+        source, _, _ = self.cached_profile()
+        counted = self.service.probe
+        def changing(selection, operation):
+            result = counted(selection,operation)
+            source.write_text('# source changed during probe')
+            return result
+        self.service.probe = changing
+        result = self.service.capability(self.request())
+        self.assertFalse(result['available'])
+        self.assertIn('changed while checking',result['reason'])
+        self.service.probe = counted
+        self.assertTrue(self.service.capability(self.request())['available'])
+        self.assertEqual(len(self.probes),2)
 
     def test_canonical_busy_never_constructs_a_solver(self):
         self.service.locks_factory=lambda root:SimpleNamespace(acquire=lambda:False)
