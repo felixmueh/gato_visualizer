@@ -82,11 +82,15 @@ test('Live reset clears pinned inspection; zoom-only Entire mode never reruns Py
     ui.update(); await flush(); const evaluations = () => calls.filter(item => item.path === '/api/plots/evaluate').length;
     const initial = evaluations(); assert.equal(initial, 2);
     now += 210; view.window = [2, 6]; ui.update(); await flush(); assert.equal(evaluations(), initial);
-    now += 210; view.cursor = 5.4; ui.update(); await flush(); assert.equal(evaluations(), initial); assert(calls.filter(item => item.path === '/api/plots/catalog').length >= 2);
+    now += 210; view.cursor = 5.04; ui.update(); await flush(); assert.equal(evaluations(), initial); assert(calls.filter(item => item.path === '/api/plots/catalog').length >= 2);
     await find(solve, 'button', 'Pin solve').emit('click'); ui.state.selectIteration(2); assert.equal(ui.snapshot.pinned, true);
     source = { source: { kind: 'live', generation: 2 }, revision: 1 }; now += 210; ui.update();
     assert.equal(ui.snapshot.pinned, false); assert.equal(ui.snapshot.iteration, null); assert.equal(ui.snapshot.selectedSolve, null); await flush();
     const range = episode.querySelector('select'); range.value = 'visible'; await range.emit('change'); now += 210; ui.update(); await flush(); assert(evaluations() > initial);
+    range.value = 'through_cursor'; await range.emit('change'); now += 210; ui.update(); await flush();
+    const throughCount = evaluations();
+    view.cursor = 5.08; now += 210; ui.update(); await flush();
+    assert(evaluations() > throughCount); assert(calls.some(item => item.path === '/api/plots/evaluate' && item.body.context === 'episode' && item.body.range.cursor_s === 5.08));
     ui.destroy();
   } finally { globalThis.document = original.document; Date.now = original.now; }
 });

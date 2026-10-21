@@ -79,7 +79,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       const definition = definitionFor(item), spec = specs.get(item.id);
       for (const placement of ['sidebar', ...(item.timeline && eligible(item.id) ? ['timeline'] : [])]) {
         const card = el('section', null, 'plot-card'); card.dataset.instance = item.id;
-        const title = el('header', null, 'plot-card-heading'), grip = el('span', definition?.title || item.plot_id, 'plot-card-grip'); grip.draggable = true; grip.title = 'Drag to reorder or show on timeline';
+        const title = el('header', null, 'plot-card-heading'), grip = el('span', spec?.title || definition?.title || item.plot_id, 'plot-card-grip'); grip.draggable = true; grip.title = 'Drag to reorder or show on timeline';
         grip.addEventListener('dragstart', event => { drag = { id: item.id, from: placement, accepted: false }; event.dataTransfer.setData('text/plain', item.id); event.dataTransfer.effectAllowed = 'move'; });
         grip.addEventListener('dragend', () => { if (drag?.from === 'timeline' && !drag.accepted) { state.place(item.id, false); renderCards(); } drag = null; }); title.append(grip);
         if (placement === 'sidebar') {
@@ -192,7 +192,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       episodeNote.textContent = current ? 'Loading active source…' : 'No episode selected.';
       renderCards();
     }
-    const key = JSON.stringify([current?.source, current?.revision, state.rangeMode, state.rangeMode === 'visible' ? view.window : null, state.rangeMode === 'through_cursor' ? Math.round(view.cursor * 5) / 5 : null, state.pinned ? state.selected?.id : Math.round(view.cursor * 5) / 5, state.iteration, state.instances]);
+    const key = JSON.stringify([current?.source, current?.revision, state.rangeMode, state.rangeMode === 'visible' ? view.window : null, state.rangeMode === 'through_cursor' ? view.cursor : null, state.pinned ? state.selected?.id : view.cursor, state.iteration, state.instances]);
     if (key !== lastRequest) { lastRequest = key; pending = true; }
     if (lastInspectActive !== view.inspectSolve) { lastInspectActive = view.inspectSolve; renderSolve(); }
     // Presentation markers update cheaply at RAF; Python is capped at 5 Hz.
