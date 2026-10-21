@@ -85,8 +85,9 @@ see the [format and export cookbook](docs/replay-format.md).
 
 The viewport fills the window above a single compact playback bar. Use its top
 left and top right buttons to hide or restore either sidebar. The right sidebar
-has **Views** (synchronized Top and Right cameras), **Graphs** (selectable recorded
-time series and scoped aggregate statistics), and **Joints** (native
+has **Views** (synchronized Top and Right cameras), **Episode** (recorded motion
+and scoped aggregate statistics), **Solve** (a selected optimizer invocation
+and its recorded SQP iterations), and **Joints** (native
 position, velocity and actuator torque). Auxiliary views show the same robot and
 playback time and suspend rendering when their panel is hidden.
 
@@ -110,17 +111,28 @@ to pan; click or drag to scrub. Arrow keys seek, Shift+arrows seek by 1 ms,
 +/− zoom, and Fit (or 0) shows the full recording. Colored intervals retain the
 same MPC/simulation over-budget meanings as the compact timeline.
 
-In **Graphs**, each metric has independent **Right** and **Timeline** checkboxes.
-Expand the timeline, then **Show timeline graphs** to place the selected plots
-above its ruler. They share its time range and scrub cursor. Use the row arrows
-to scroll multiple plots. Available metrics include controller wall time and TO
-budget, physics and total time, SQP/PCG/ADMM work, target distance, and joint
-position/velocity/torque. Missing recorded values remain unavailable.
+Use **+** in Episode or Solve to open the searchable plot catalog. Add several
+plots without closing it, configure each instance independently, duplicate them,
+and drag their titles to reorder. **Show on timeline**, or dragging a compatible
+Episode plot to the expanded timeline, docks it above the ruler. Drag it out to
+remove that placement. Docked graphs share the episode window and scrub cursor.
+Aggregates and prediction-horizon/SQP plots stay in the sidebar.
 
-Aggregate statistics stay in the right panel: **Selected predicted plan** covers
-its horizon, path length and peaks; **Full recording** covers all retained motion,
-solve-time median/p95, duration-weighted over-budget shares and target error.
-Scrubbing or zooming does not change the full-recording aggregate scope.
+Episode analysis defaults to **Entire episode**; select **Through cursor** or
+**Visible window** to change the scope. The Solve inspector follows the recorded
+plan association. **Pin solve** retains its identity and SQP selection with a
+muted red indicator. Its separate SQP strip selects recorded iterations without
+moving the episode clock. A missing intermediate prediction remains unavailable;
+exact **Continue SQP** is disabled until the solver exposes checkpoint/resume.
+
+Bundled Python plotters cover timing/budgets, iteration counts, tracking error,
+joint motion and bounds, timing histograms, episode aggregates, prediction joint
+profiles and recorded iteration diagnostics. Missing values remain unavailable.
+Custom `@plot_episode` and `@plot_solve` functions load from
+`<selected tiago_mpc>/_visualizer` by default. Change the directory and reload
+plotters in Source / Build settings without restarting MPC. See the
+[plot authoring guide](docs/plot-authoring.md) for typed views, the starter and
+offline numerical checks with shared-renderer HTML previews.
 
 ## Live MPC
 
@@ -207,8 +219,8 @@ each plan. A finite plan does not establish convergence. A separate persistent
 compute process keeps native solver calls independent of HTTP and rendering.
 
 This MVP is a simulation diagnostic. It does not command a physical robot,
-check collisions, or provide experiment/timing evidence. Live convergence plots
-remain follow-up work.
+check collisions, or provide experiment/timing evidence. Plotting exposes only
+diagnostics actually retained by the selected solver or recording.
 
 ## Replay
 

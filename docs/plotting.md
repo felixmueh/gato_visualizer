@@ -1,7 +1,8 @@
 # Python plotting extension design
 
-Discussion decisions from Felix, 2026-10-21. This document specifies the intended
-design; the Python plotting system and its settings are not implemented yet.
+Discussion decisions from Felix, 2026-10-21. The Python plotting system,
+directory settings and Episode/Solve inspectors implement this design.
+See [plot-authoring.md](plot-authoring.md) for the runnable author workflow.
 Inspection scopes and cursor behavior are defined in [inspection.md](inspection.md).
 
 ## Plot authorship and rendering

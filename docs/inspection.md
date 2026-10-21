@@ -1,7 +1,9 @@
 # Episode and Solve inspection
 
-Design decisions agreed with Felix on 2026-10-21. This is a specification, not a
-claim that the inspection UI or new solver diagnostics are implemented.
+Design decisions agreed with Felix on 2026-10-21. The Episode/Solve UI and
+inspection of retained diagnostics are implemented. Intermediate prediction
+snapshots and exact SQP continuation still depend on upstream capabilities;
+the inspector reports their absence explicitly.
 Canonical terminology is in [UBIQUITOUS_LANGUAGE.md](../UBIQUITOUS_LANGUAGE.md).
 
 ## Source and inspection context
