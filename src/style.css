@@ -1312,3 +1312,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .replay-metrics #playback-kind { display: none; }
 .studio-workbench #playback-state { display: block; margin: 8px 0; color: #93b0c3; font: 9px 'IBM Plex Mono', monospace; }
 .studio-workbench .timing-legend { display: flex; flex-wrap: wrap; gap: 7px 12px; margin: 11px 0; font-size: 8px; color: #9bb1c5; }
+/* Per-setting reset indicators reserve their space without moving labels. */
+.studio-workbench .setting-reset-field { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 3px; min-width: 0; }
+.studio-workbench .setting-reset-field > label, .studio-workbench .setting-reset-field > input, .studio-workbench .setting-reset-field > select, .studio-workbench .setting-reset-field > .select-wrap { min-width: 0; width: 100%; }
+.studio-workbench .setting-reset { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 20px; min-width: 16px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #71bdb6; cursor: pointer; }
+.studio-workbench .setting-reset svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.studio-workbench .setting-reset:hover { color: #b2f4e8; background: #2a414c; }
+.studio-workbench .setting-reset:focus-visible { outline-offset: 1px; }
+.studio-workbench .setting-reset[disabled] { cursor: default; }
+.studio-workbench .execution-rate-row > .setting-reset-field, .studio-workbench .horizon-row > .setting-reset-field { align-items: end; }
+.studio-workbench .execution-rate-row .setting-reset, .studio-workbench .horizon-row .setting-reset { margin-bottom: 4px; }
+.studio-workbench .target-offsets > .setting-reset-field { flex: 1; align-items: end; }
+.studio-workbench .target-offsets .setting-reset { margin-bottom: 5px; }
+.studio-workbench .task-pose-reset-caption { color: #91a8c0; font-size: 10px; }
+.studio-workbench #live-task-parameters > .setting-reset-field { margin-bottom: 10px; }
+.studio-workbench .transport-calculation > .setting-reset-field { gap: 1px; }

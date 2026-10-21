@@ -15,9 +15,18 @@ function harness() {
     get value() { return this._value; }
     set value(value) { this._value = String(value); }
     addEventListener(type, callback) { (this.handlers[type] ||= []).push(callback); }
-    emit(type) { for (const callback of this.handlers[type] || []) callback({ target: this }); }
+    emit(type) { this.dispatchEvent({ type, target: this, preventDefault() {}, stopPropagation() {} }); }
+    dispatchEvent(event) { for (const callback of this.handlers[event.type] || []) callback(event); return true; }
+    closest(tag) { for (let item = this; item; item = item.parentElement) if (item.tagName === tag) return item; return null; }
+    replaceWith(next) {
+      const parent = this.parentElement;
+      if (!parent) return;
+      const index = parent.children.indexOf(this); parent.children[index] = next; next.parentElement = parent; this.parentElement = null;
+    }
+    focus() { document.activeElement = this; }
     append(...children) {
       this.children.push(...children);
+      for (const child of children) if (child) child.parentElement = this;
       if (this.tagName === 'select') {
         for (const child of children) if (!this.value || child.selected) this.value = child.value;
       }
@@ -470,6 +479,53 @@ test('figure-eight transforms use static start anchor, preserve period and reach
     assert.equal(live.targetInteraction.available, false);
   } finally {
     h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('setting resets use normalized schema defaults, keep selected N for Horizon, and do not submit passively', async () => {
+  const h = harness(); h.schema.available_N = [16, 64]; h.schema.defaults.config.dt_s = .03;
+  h.schema.parameters.push({ path: 'dt_s', label: 'Knot interval', kind: 'float', min: .001, max: .1 });
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const reset = key => h.created.find(el => el.dataset.resetSetting === key);
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    assert.equal(live.settings.config.N, 16); assert.equal(reset('config.N').disabled, true);
+    h.edit('N', 1); assert.equal(live.settings.config.N, 64); assert.equal(reset('config.N').disabled, false);
+    assert.equal(reset('config.horizon_s').disabled, true); // same default dt at selected N
+    h.edit('dt_s', .04); assert.equal(reset('config.horizon_s').disabled, false);
+    reset('config.horizon_s').emit('click'); assert.equal(live.settings.config.dt_s, .03); assert.equal(live.settings.config.N, 64);
+    assert.equal(reset('config.horizon_s').disabled, true); assert.equal(reset('config.N').disabled, false);
+    reset('config.N').emit('click'); assert.equal(live.settings.config.N, 16);
+    h.edit('dt_s', ''); assert.equal(reset('config.dt_s').disabled, false);
+    reset('config.dt_s').emit('click'); assert.equal(live.settings.config.dt_s, .03);
+    for (let i = 0; i < 20; i++) live.frame(performance.now() + i * 20);
+    await flush(); assert.equal(h.commands.length, 0); // all edits happened in Replay
+    assert.deepEqual(live.settings.config.unlisted, { preserved: true });
+    h.$('replay-mode').emit('click'); await flush();
+  } finally {
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('active-task defaults, pose group and execution reset route through normal edits', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const reset = key => h.created.filter(el => el.dataset.resetSetting === key).at(-1);
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    const width = h.document.querySelector('[data-task-path="width_m"]'); width.value = '.4'; width.emit('input');
+    assert.equal(reset('task.width_m').disabled, false); reset('task.width_m').emit('click'); assert.equal(live.settings.task.width_m, .24);
+    h.edit('target-offset-0', .15); h.edit('target-offset-2', -.2); assert.equal(reset('task.pose').disabled, false);
+    reset('task.pose').emit('click'); assert.deepEqual(live.settings.task.target_offset_m, [0, 0, 0]); assert.deepEqual(live.settings.task.orientation_xyzw, [0, 0, 0, 1]);
+    h.$('live-duration').value = '20'; h.$('live-duration').emit('input'); assert.equal(reset('execution.duration_s').disabled, false);
+    reset('execution.duration_s').emit('click'); assert.equal(live.settings.execution.duration_s, DEFAULT_EXECUTION.duration_s);
+    reset('task.kind').emit('click'); assert.equal(live.settings.task.kind, 'reach'); assert.equal(reset('task.kind').disabled, true);
+    h.$('replay-mode').emit('click'); await flush();
+  } finally {
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
 });

@@ -1,3 +1,4 @@
+import { createSettingResets, canonicalOrientation, settingValuesEqual } from './setting-resets.js';
 import { targetWorldPosition, targetWorldOffset, normalizeQuaternion } from './target-gizmo.js';
 
 // The API uses native joint values and full robot-root coordinates. No sign or
@@ -67,7 +68,7 @@ export function validPoints(points) {
 
 export function setupLive({ onMode, onPlan, onState, onReset }) {
   const $ = id => document.getElementById(id);
-  let schema, settings, submittedSettings, source, state, plan, presentedState, renderedPlan;
+  let schema, settings, defaultSettings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
   let settingsVersion, expectedVersion, needsInitialPreview = false, settingsTimer, submission = 0;
   let historyEpoch = 0, initialResetPending = true;
@@ -76,6 +77,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   let inspectingPreview = false, inspectionPlan = null;
   let defaultTargetWorld, figure8BaseWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
   const latestServerEvents = new Map();
+  const resetIndicators = createSettingResets();
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock(), inputs = [];
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
@@ -176,15 +178,36 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   function change() {
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
     settings = readSettings() || settings;
+    resetIndicators.update();
     dirty = true; renderDirty = true; clock.pause(); refreshPlanLabel();
     message('Settings changed · replacing obsolete calculation…');
     clearTimeout(settingsTimer); settingsTimer = setTimeout(submitSettings, 350);
   }
   function populate() {
+    const resetInput = (input, value, parameter = {}) => {
+      input.setCustomValidity('');
+      if (parameter.kind === 'bool') input.checked = value;
+      else if (parameter.kind === 'choice') input.value = parameter.choices.findIndex(choice => settingValuesEqual(choice && typeof choice === 'object' && 'value' in choice ? choice.value : choice, value));
+      else input.value = String(value);
+      input.dispatchEvent(new Event(parameter.event || 'input', { bubbles: true }));
+    };
+    const bindReset = (input, parameter, getDefault, { key = parameter.path, host, group = 'settings', event = 'input' } = {}) => resetIndicators.bind({
+      key, name: parameter.label || parameter.path, input, host, group,
+      getValue: () => parseParameter(parameter, input), getDefault,
+      reset: value => resetInput(input, value, { ...parameter, event }),
+    });
     const tasks = schema.tasks || [{ kind: 'reach', label: 'Reaching', defaults: { kind: 'reach' } }];
     $('live-task').replaceChildren(...tasks.map(task => { const option = document.createElement('option'); option.value = task.kind; option.textContent = task.label; return option; }));
     $('live-task').value = settings.task.kind;
+    const activeTaskDefaults = () => {
+      const kind = $('live-task').value, descriptor = tasks.find(task => task.kind === kind);
+      const fallback = defaultSettings.task.kind === kind ? defaultSettings.task : {};
+      return { ...fallback, ...descriptor?.defaults, kind,
+        target_offset_m: descriptor?.defaults?.target_offset_m || fallback.target_offset_m || [0, 0, 0],
+        orientation_xyzw: descriptor?.defaults?.orientation_xyzw || fallback.orientation_xyzw || [0, 0, 0, 1] };
+    };
     const taskFields = () => {
+      resetIndicators.forget('task-parameters');
       const descriptor = tasks.find(task => task.kind === $('live-task').value);
       $('live-task-parameters').replaceChildren();
       for (const parameter of descriptor?.parameters || []) {
@@ -194,10 +217,26 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
         input.dataset.taskPath = parameter.path; input.min = parameter.min; input.max = parameter.max;
         input.value = settings.task.kind === descriptor.kind ? settings.task[parameter.path] : descriptor.defaults[parameter.path];
         input.addEventListener('input', change); label.append(caption, input); $('live-task-parameters').append(label);
+        bindReset(input, { ...parameter, kind: parameter.kind || 'float' }, () => activeTaskDefaults()[parameter.path], { key: `task.${parameter.path}`, group: 'task-parameters' });
       }
+      const poseCaption = document.createElement('span'); poseCaption.className = 'task-pose-reset-caption'; poseCaption.textContent = 'Task pose';
+      $('live-task-parameters').append(poseCaption);
+      resetIndicators.bind({ key: 'task.pose', name: 'task pose', host: poseCaption, group: 'task-parameters', focusTarget: $('target-offset-0'),
+        getValue: () => ({ offset: [0, 1, 2].map(i => parseParameter({ kind: 'float', label: 'Target offset', min: -1, max: 1 }, $(`target-offset-${i}`))),
+          orientation: canonicalOrientation(settings.task.kind === $('live-task').value ? settings.task.orientation_xyzw : undefined) }),
+        getDefault: () => ({ offset: activeTaskDefaults().target_offset_m, orientation: canonicalOrientation(activeTaskDefaults().orientation_xyzw) }),
+        reset: value => {
+          value.offset.forEach((offset, i) => { $(`target-offset-${i}`).value = String(offset); $(`target-offset-${i}`).setCustomValidity(''); });
+          if ($('live-task').value === 'figure8') settings.task.orientation_xyzw = [...value.orientation];
+          change();
+        },
+      });
       $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'G moves the path in world coordinates; R rotates and S scales width/height about its start. Period sets speed. Reset restarts phase.' : 'Offset from the default reaching target. Click the target to move it along an axis.';
     };
     taskFields(); $('live-task').addEventListener('change', () => { taskFields(); change(); });
+    resetIndicators.bind({ key: 'task.kind', name: 'task', input: $('live-task'), host: $('live-task').parentElement,
+      getValue: () => $('live-task').value, getDefault: () => defaultSettings.task.kind,
+      reset: value => { $('live-task').value = value; $('live-task').dispatchEvent(new Event('change', { bubbles: true })); } });
     const groups = new Map();
     const horizonRow = document.createElement('div'); horizonRow.className = 'horizon-row';
     ($('live-horizon-settings') || $('live-settings')).append(horizonRow);
@@ -237,6 +276,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       input.disabled = Boolean(parameter.disabled); input.title = parameter.path; input.addEventListener('input', () => { if (isHorizon) syncHorizon(); change(); });
       if (isHorizon) { label.className = 'horizon-field'; text.textContent = parameter.path === 'N' ? 'N' : 'Δt (s)'; }
       label.append(text, input); (isHorizon ? horizonRow : groups.get(name)).append(label); inputs.push({ parameter, input });
+      bindReset(input, parameter, () => readPath(defaultSettings.config, parameter.path), { key: `config.${parameter.path}` });
     }
     if (inputs.some(item => item.parameter.path === 'dt_s')) {
       const label = document.createElement('label'); label.className = 'horizon-field';
@@ -251,14 +291,29 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
         horizonInput.setCustomValidity(dt.input.validationMessage || '');
       });
       label.append(text, horizonInput); horizonRow.append(label); syncHorizon();
+      resetIndicators.bind({ key: 'config.horizon_s', name: 'horizon', input: horizonInput,
+        getValue: () => parseParameter({ kind: 'float', label: 'Horizon', min: Number(horizonInput.min), max: Number(horizonInput.max) }, horizonInput),
+        getDefault: () => (parseParameter(inputs.find(item => item.parameter.path === 'N').parameter, inputs.find(item => item.parameter.path === 'N').input) - 1) * defaultSettings.config.dt_s,
+        reset: () => { resetInput(inputs.find(item => item.parameter.path === 'dt_s').input, defaultSettings.config.dt_s); },
+      });
     }
-    settings.task.target_offset_m.forEach((value, i) => { $(`target-offset-${i}`).value = value; $(`target-offset-${i}`).addEventListener('input', change); });
+    settings.task.target_offset_m.forEach((value, i) => {
+      const input = $(`target-offset-${i}`); input.value = value; input.addEventListener('input', change);
+      bindReset(input, { kind: 'float', path: `target_offset_m.${i}`, label: `target ${['X', 'Y', 'Z'][i]}`, min: -1, max: 1 }, () => activeTaskDefaults().target_offset_m[i], { key: `task.target_offset_m.${i}` });
+    });
     settings.execution = validateExecution({ ...DEFAULT_EXECUTION, ...(schema.defaults.execution || {}) });
-    for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration'], ['calculation', 'live-calculation']]) { $(id).value = settings.execution[key]; $(id).addEventListener('input', change); }
+    for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration'], ['calculation', 'live-calculation']]) {
+      const input = $(id); input.value = settings.execution[key]; input.addEventListener('input', change);
+      const baseline = { ...DEFAULT_EXECUTION, ...defaultSettings.execution };
+      if (key === 'calculation') resetIndicators.bind({ key: `execution.${key}`, name: 'calculation mode', input,
+        getValue: () => input.value, getDefault: () => baseline[key], reset: value => resetInput(input, value) });
+      else bindReset(input, { kind: 'float', path: key, label: key.replaceAll('_', ' '), min: Number.MIN_VALUE }, () => baseline[key], { key: `execution.${key}` });
+    }
     $('live-continue').checked = settings.execution.continue_at_end;
     $('live-continue').addEventListener('change', () => { settings.execution.continue_at_end = $('live-continue').checked; });
     const commit = schema.source?.mpc_commit;
     $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · prebuilt N: ${schema.available_N.join(', ')}`;
+    resetIndicators.update();
     $('live-mode').disabled = false; message('Choose Live MPC to compute a prediction.');
   }
   function useGeneration(next, force = false) {
@@ -538,7 +593,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     event.target.title = `${number(time, 3)} s · ${interval ? intervalDescription(interval) : 'Recorded simulation time'}`;
   });
   $('live-history-latest').addEventListener('click', showLatest);
-  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; settings = initialLiveSettings(schema); liveReady = true; populate(); }).catch(error => { liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
+  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings); liveReady = true; populate(); }).catch(error => { liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
   return {
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
@@ -567,6 +622,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       change(); return this.targetInteraction;
     },
     get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
+    get metricHistory() { return history.metricSnapshot; },
     get history() { return { length: history.length, bounds: history.bounds, selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || plan?.task_path_xyz?.length); },
     get precomputedPath() { return historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
