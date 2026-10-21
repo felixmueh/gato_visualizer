@@ -39,6 +39,28 @@ The producer-side replay exporter is the explicitly requested exception:
 `tiago_mpc/experiments/tools.py`. Keep one lightweight implementation there;
 visualizer tests can use it to create portable recording fixtures.
 
+### Visualizer timing ownership — Felix, 2026-10-21
+
+The visualizer owns its scheduling, precalculation and playback. Reuse the
+existing upstream MPC controller and `tiago_mpc` simulation steps directly.
+Do not require a shared timing engine in `tiago_mpc`: its self-contained
+experiments and real-robot execution have their own timing requirements.
+Keep upstream GATO unchanged. Accept its existing heuristic warm-start behavior;
+exact warm-start time alignment is not a prerequisite and has no UI option.
+
+Expose simulation, control and TO/replanning frequencies separately from the
+prediction knot interval. The simulation clock follows the requested schedule;
+slow computation reduces wall-clock real-time factor. Record MPC and physics
+costs separately. Replay-bar overruns are red for MPC and yellow for simulation,
+with red taking precedence when both apply. Identify combined-only overloads
+explicitly rather than claiming that physics alone exceeded its budget.
+
+Manual and automatic precalculation run the full closed-loop simulation for the
+requested duration. New parameter edits invalidate obsolete calculation jobs;
+automatic jobs use a frozen displayed starting state. History playback follows
+recorded simulation timestamps at 1x, with a separate "Continue simulation at
+end" toggle. Imported Replay recordings remain independent of Live settings.
+
 Import `tiago_mpc` code unchanged instead of re-implementing it. With
 `examples/` on `sys.path`, `reach_sim.py` imports without running and provides
 the model preparation and joint-6 GPU signs (`runtime_urdf`), the model check
