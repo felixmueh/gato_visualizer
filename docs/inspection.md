@@ -64,9 +64,10 @@ horizon cursor or prediction playback is introduced by this design.
 Agreed initial control placement: a compact, labelled SQP iteration strip in
 the Solve inspector, with previous/next buttons, Seed / iteration k of K, and
 a horizontal slider. Keep it distinct from the episode's bottom timeline.
-Explicit iteration selection pins the selected solve so incoming Live solves
-do not replace it mid-inspection. Run again also pins its separate result;
-Follow episode returns to the original source and cursor association.
+Use Pin solve to keep incoming Live solves from replacing the selected solve
+mid-inspection. Run again automatically pins its separate result; Follow episode
+returns to the original source and cursor association. Automatically pinning
+ordinary solves on iteration manipulation remains a proposed refinement.
 
 ## Run again — implemented 2026-10-21
 
