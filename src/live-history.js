@@ -8,15 +8,18 @@ export function createLiveHistory(options = {}) {
   let currentPlan = null;
   let intervals = [];
   let planAfterState = false;
-  const clear = () => { samples = []; intervals = []; currentPlan = null; planAfterState = false; };
+  let revision = 0, metricCache = null, truncated = false;
+  const changed = () => { revision++; metricCache = null; };
+  const clear = () => { samples = []; intervals = []; currentPlan = null; planAfterState = false; truncated = false; changed(); };
   const trim = () => {
     const newest = samples.at(-1)?.state.sim_time_s;
-    while (samples.length > 1 && (samples.length > limits.maxSamples || newest - samples[0].state.sim_time_s > limits.maxSeconds)) samples.shift();
+    while (samples.length > 1 && (samples.length > limits.maxSamples || newest - samples[0].state.sim_time_s > limits.maxSeconds)) { samples.shift(); truncated = true; }
     if (!Number.isFinite(limits.maxPlans)) return;
     const plans = new Map();
     for (const sample of samples) if (sample.plan) plans.set(sample.plan, (plans.get(sample.plan) || 0) + 1);
     while (samples.length > 1 && plans.size > limits.maxPlans) {
       const { plan } = samples.shift();
+      truncated = true;
       if (plan) {
         const remaining = plans.get(plan) - 1;
         if (remaining) plans.set(plan, remaining);
@@ -33,6 +36,7 @@ export function createLiveHistory(options = {}) {
     planAfterState = true;
     if (samples.length && Math.abs(samples.at(-1).state.sim_time_s - plan.sim_time_s) < 1e-9) samples.at(-1).plan = currentPlan;
     trim();
+    changed();
   };
   const addState = (state) => {
     if (!Number.isFinite(state.sim_time_s)) return;
@@ -48,6 +52,7 @@ export function createLiveHistory(options = {}) {
     else samples.push(sample);
     planAfterState = false;
     trim();
+    changed();
   };
   const at = (time = null, { trace = true } = {}) => {
     if (!samples.length) return null;
@@ -83,11 +88,23 @@ export function createLiveHistory(options = {}) {
   const addRecord = (record) => {
     if (record.type === 'plan') addPlan(record);
     else if (record.type === 'state') addState(record);
-    else if (record.type === 'interval') intervals.push(record);
+    else if (record.type === 'interval') { intervals.push(record); changed(); }
   };
   return {
     clear, addPlan, addState, at, interpolateAt, addRecord,
     get intervals() { return intervals; },
+    // Read-only convention: rebuild views only on recorded changes, never RAF.
+    // Copies contain original immutable payload references, not copied states.
+    get metricSnapshot() {
+      if (!metricCache) {
+        const states = samples.map(sample => sample.state);
+        const plans = [...new Set(samples.map(sample => sample.plan).filter(Boolean))];
+        if (currentPlan && !plans.includes(currentPlan)) plans.push(currentPlan);
+        const start = states[0]?.sim_time_s ?? -Infinity;
+        metricCache = { revision, states, plans, intervals: intervals.filter(item => item.end_time_s > start), truncated, sourceKind: 'live' };
+      }
+      return metricCache;
+    },
     displayPath(maxPoints = 5000) {
       const stride = Math.max(1, Math.ceil(samples.length / maxPoints));
       const points = [];
