@@ -4,6 +4,7 @@ import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
 import { workbenchShell } from "./workbench-shell.js";
 import { setupExpandedTimeline } from "./expanded-timeline.js";
+import { setupMetrics, replayMetricSnapshot } from "./metrics.js";
 import { setupWorkbench } from "./workbench-ui.js";
 import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-telemetry.js";
@@ -23,6 +24,7 @@ import "@fontsource/dm-sans/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "./style.css";
 import "./timeline.css";
+import "./metrics.css";
 
 const icons = {
   play: '<path d="m8 5 11 7-11 7V5Z" fill="currentColor" stroke="none"/>',
@@ -87,6 +89,20 @@ const expandedTimeline = setupExpandedTimeline({
     input.value = time;
     input.dispatchEvent(new Event('input', { bubbles: true }));
   },
+});
+const linkedGraphContainer = $('timeline-linked-graphs');
+expandedTimeline.bindSurface(linkedGraphContainer);
+const metrics = setupMetrics({
+  rightContainer: $('demonstration-graph'),
+  bottomContainer: linkedGraphContainer,
+  getData: () => live?.mode === 'live'
+    ? { ...live.metricHistory, selectedPlan: displayedLivePlan, sourceKind: 'live', sourceLabel: 'Recorded Live MPC' }
+    : replayMetricSnapshot(trajectory),
+  getView: () => {
+    const view = expandedTimeline.snapshot;
+    return { window: view.visible, cursor: view.selectedTime };
+  },
+  onSeek: time => expandedTimeline.seek(time),
 });
 function updateExpandedTimeline() {
   if (live?.mode === 'live') {
@@ -414,7 +430,7 @@ function animate(timestamp) {
   targetGizmo?.update();
   if (liveGroup?.userData.target) liveGroup.userData.target.visible = !targetGizmo?.active;
   renderer.render(scene, camera);
-  workbench.update(); updateExpandedTimeline(); auxiliaryViews?.render(timestamp);
+  workbench.update(); updateExpandedTimeline(); metrics.update(); auxiliaryViews?.render(timestamp);
 }
 
 $("play").addEventListener("click", togglePlay);

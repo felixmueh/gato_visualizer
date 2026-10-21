@@ -57,8 +57,8 @@ see the [format and export cookbook](docs/replay-format.md).
 
 The viewport fills the window above a single compact playback bar. Use its top
 left and top right buttons to hide or restore either sidebar. The right sidebar
-has **Views** (synchronized Top and Right cameras), **Graphs** (a clearly labeled
-demonstration signal plus actual displayed-plan metrics), and **Joints** (native
+has **Views** (synchronized Top and Right cameras), **Graphs** (selectable recorded
+time series and scoped aggregate statistics), and **Joints** (native
 position, velocity and actuator torque). Auxiliary views show the same robot and
 playback time and suspend rendering when their panel is hidden.
 
@@ -68,6 +68,30 @@ simulation from the tip; in Replay, unchecking it loops the recording. Live also
 provides the calculation mode, a precalculation icon and a duration in seconds.
 Task position inputs remain available below the controller settings; direct
 viewport manipulation avoids scrolling to them during normal use.
+
+Changed Live settings show a circular-arrow button on their left. Click it to
+restore the original default supplied by the MPC configuration or active task.
+The horizon reset restores the default knot interval at the currently selected
+N. Resetting a setting follows the same preview/Automatic calculation behavior
+as editing it; task pose also has a reset for position and rotation.
+
+Use the chevron at the right of the bottom bar to expand the timestamp ruler
+above the controls. Scroll to zoom around the pointer; Alt-drag or middle-drag
+to pan; click or drag to scrub. Arrow keys seek, Shift+arrows seek by 1 ms,
++/− zoom, and Fit (or 0) shows the full recording. Colored intervals retain the
+same MPC/simulation over-budget meanings as the compact timeline.
+
+In **Graphs**, each metric has independent **Right** and **Timeline** checkboxes.
+Expand the timeline, then **Show timeline graphs** to place the selected plots
+above its ruler. They share its time range and scrub cursor. Use the row arrows
+to scroll multiple plots. Available metrics include controller wall time and TO
+budget, physics and total time, SQP/PCG/ADMM work, target distance, and joint
+position/velocity/torque. Missing recorded values remain unavailable.
+
+Aggregate statistics stay in the right panel: **Selected predicted plan** covers
+its horizon, path length and peaks; **Full recording** covers all retained motion,
+solve-time median/p95, duration-weighted over-budget shares and target error.
+Scrubbing or zooming does not change the full-recording aggregate scope.
 
 ## Live MPC
 
