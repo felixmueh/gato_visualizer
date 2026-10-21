@@ -9,8 +9,8 @@ def example_solve(*, missing=False, context=None):
                ee_xyz=[[0., 0., 0.], [.1, 0., 0.], [.2, 0., 0.]],
                stats=dict(sqp_iters=2, pcg_iters=5, admm_iters=3, solve_time_ms=4., initial_merit=12., final_merit=3.),
                diagnostics=dict(initial_merit=12., final_merit=3., min_merit=[7., 3.], step_size=[1., .5], pcg_iters=[3, 2]),
-               iterations=[dict(index=0, stats=dict(merit=7., pcg_iters=3, step_size=1.)),
-                           dict(index=1, stats=dict(merit=3., pcg_iters=2, step_size=.5))],
+               iterations=[dict(index=1, stats=dict(merit=7., pcg_iters=3, step_size=1.)),
+                           dict(index=2, stats=dict(merit=3., pcg_iters=2, step_size=.5))],
                joint_limits=dict(q_min=[-1., -2.], q_max=[1., 2.], qd_max=[2., 2.], torque_max=[5., 5.]),
                extra_experiment=dict(tag='retained'))
     if missing:

@@ -19,6 +19,7 @@ class Series(TypedDict, total=False):
     y: list[float | None]
     style: Literal['line', 'step', 'bar']
     color: str
+    bin_edges: list[float]
 
 
 class PlotSpec(TypedDict, total=False):
@@ -82,12 +83,16 @@ def validate_spec(spec: Any) -> PlotSpec:
         require(isinstance(spec.get('series'), list), 'series must be an array')
         for index, item in enumerate(spec['series']):
             require(isinstance(item, dict) and isinstance(item.get('label'), str), f'series {index} needs label')
-            require(not item.keys() - {'label', 'x', 'y', 'style', 'color'}, f'series {index} has unsupported fields')
+            require(not item.keys() - {'label', 'x', 'y', 'style', 'color', 'bin_edges'}, f'series {index} has unsupported fields')
             require(item.get('style', 'line') in ('line', 'step', 'bar'), f'series {index} invalid style')
             require(isinstance(item.get('x'), list) and isinstance(item.get('y'), list), f'series {index} x/y must be arrays')
             require(len(item['x']) == len(item['y']), f'series {index} x/y length mismatch')
             require(all(finite(v) or (spec['x']['identity'] == 'category' and isinstance(v, str)) for v in item['x']), f'series {index} x must be finite')
             require(all(v is None or finite(v) for v in item['y']), f'series {index} y must be finite or null')
+            if 'bin_edges' in item:
+                edges = item['bin_edges']
+                require(kind == 'bars' and isinstance(edges, list) and len(edges) == len(item['y']) + 1, f'series {index} bin edges length mismatch')
+                require(all(finite(v) for v in edges) and all(a < b for a, b in zip(edges, edges[1:])), f'series {index} bin edges must be finite and increasing')
         for guide in spec.get('guides', []):
             require(isinstance(guide, dict) and guide.get('axis') == 'y' and finite(guide.get('value')) and isinstance(guide.get('label'), str), 'invalid guide')
     if kind == 'table':

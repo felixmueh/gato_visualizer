@@ -4,10 +4,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
+from functools import cached_property
 import math
 
 
 def freeze(value: Any) -> Any:
+    # Host-owned cached records are already recursively detached and immutable.
+    if isinstance(value, MappingProxyType):
+        return value
     if isinstance(value, Mapping):
         return MappingProxyType({str(k): freeze(v) for k, v in value.items()})
     if hasattr(value, 'tolist'):
@@ -138,7 +142,7 @@ class EpisodeView:
     def all_states(self) -> tuple:
         return self.raw.get('states', ())
 
-    @property
+    @cached_property
     def bounds(self) -> tuple[float, float] | None:
         times = [s.get('sim_time_s') for s in self.all_states if finite(s.get('sim_time_s'))]
         if not times:
@@ -154,15 +158,15 @@ class EpisodeView:
         bounds = self.bounds
         return finite(timestamp) and (bounds is None or bounds[0] <= timestamp <= bounds[1])
 
-    @property
+    @cached_property
     def states(self) -> tuple:
         return tuple(s for s in self.all_states if self.in_range(s.get('sim_time_s')))
 
-    @property
+    @cached_property
     def plans(self) -> tuple:
         return tuple(s for s in self.raw.get('plans', ()) if self.in_range(s.get('sim_time_s')))
 
-    @property
+    @cached_property
     def intervals(self) -> tuple:
         bounds = self.bounds
         return tuple(s for s in self.raw.get('intervals', ()) if bounds is None or

@@ -95,7 +95,10 @@ def episode_timing_histogram(data: EpisodeView, bins=10):
         raise ValueError('bins must be an integer')
     values = [scaled(item.get('solve_wall_s', item.get('mpc_wall_s'))) for item in data.intervals]
     x, counts, edges = histogram(values, int(bins))
-    return lines('MPC wall-time histogram', [series('Recorded intervals', x, counts, style='bar')], kind='bars',
+    bars = series('Recorded intervals', x, counts, style='bar')
+    if edges:
+        bars['bin_edges'] = edges
+    return lines('MPC wall-time histogram', [bars], kind='bars',
                  identity='wall_time', x_label='MPC wall time', x_unit='ms', y_label='Count', unit='intervals',
                  notes=[f'{sum(counts)} intervals; bin edges in ms: {edges}. Full intersecting interval measurements; no duration weighting.'])
 
@@ -133,6 +136,11 @@ def solve_prediction_joint(data: SolveView, joint=0, quantity='q', show_bounds=T
     times = prediction.get('torque_time_s', data.horizon_time_s[:len(values)]) if quantity == 'torque_nm' else data.horizon_time_s
     if not values or not times or len(values) != len(times):
         return unavailable(title, f'No matching prediction clock and {quantity} samples for this selection.')
+    if quantity == 'torque_nm':
+        end = prediction.get('torque_end_time_s', data.horizon_time_s[-1] if data.horizon_time_s else None)
+        if finite(end) and times and end > times[-1]:
+            times = list(times) + [end]
+            values.append(None)  # End the held nonterminal command at the terminal knot.
     limits = prediction.get('joint_limits', data.raw.get('joint_limits', {}))
     guides = [dict(axis='y', value=value, label=label) for label, value in bound_values(limits, quantity, joint) if value is not None] if show_bounds else []
     return lines(title, [series('Predicted motion' if quantity != 'torque_nm' else 'Predicted actuator torque', times, values,
