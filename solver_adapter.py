@@ -36,11 +36,25 @@ class SimulatorAdapter(MPCAdapter):
         self.signs, self.state_signs = np.ones(7), np.ones(14)
         self.controller = RemoteController(self)
 
+    def preflight_profile(self, profile, config, task):
+        n = config["N"]
+        from source_runtime import probe_selection
+        selection = {key: profile[key] for key in ("mpc_root", "python", "cache")}
+        checked = probe_selection(selection, operation="profile-probe")
+        if not checked.get("compatible"):
+            raise ValueError(checked.get("error", "Solver profile has no compatible prebuilt modules"))
+        if n not in checked.get("available_N", []):
+            raise ValueError(f"Solver profile has no compatible prebuilt N={n} module; available N: {checked.get('available_N', [])}")
+        validate_contract(self.contract, checked.get("contract", {}))
+        from live_mpc import validate_settings
+        validate_settings(config, task, checked["schema"])
+        return checked
+
     def select_profile(self, profile):
         self.close_solver()
-        remote = SolverProcess(profile)
+        remote = SolverProcess(profile, lease_fds=lambda: [handle.fileno() for handle in self.gpu_locks.handles])
         try:
-            ready = remote.request("bootstrap")
+            ready = remote.request("bootstrap", timeout=60)
             validate_contract(self.contract, ready["contract"])
         except BaseException:
             remote.close()
@@ -54,7 +68,7 @@ class SimulatorAdapter(MPCAdapter):
         _, _, effective = importlib.import_module("reaching_config").load_configuration(config_path)
         if effective["N"] not in self.profile_schema["available_N"]:
             raise ValueError(f"Solver profile has no compatible prebuilt N={effective['N']} module")
-        predictor = self.remote.request("configure", config_path=str(Path(config_path).resolve()), task=task)
+        predictor = self.remote.request("configure", timeout=120, config_path=str(Path(config_path).resolve()), task=task)
         self.problem_configuration = deepcopy(effective)
         self.configure_task(effective, task)
         self.joint_limits = predictor["joint_limits"]

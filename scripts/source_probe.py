@@ -11,6 +11,7 @@ import argparse
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 import importlib
+import inspect
 import json
 import os
 import shutil
@@ -120,7 +121,7 @@ def build(selection, reach, ns, emit, rebuild=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("probe", "build"))
+    parser.add_argument("operation", choices=("probe", "profile-probe", "build"))
     parser.add_argument("--mpc-root", required=True)
     parser.add_argument("--python")
     parser.add_argument("--cache")
@@ -162,6 +163,22 @@ def main(argv=None):
                     raise RuntimeError("Build finished without all requested current compatible binaries")
             else:
                 result = probe(selection, reach, args.N)
+                if args.operation == "profile-probe":
+                    # CPU geometry only: no BSQP/controller or GPU allocations.
+                    from live_mpc import MPCAdapter, build_schema
+                    from solver_process import model_contract
+                    from gato import _cache
+                    python_capture = "capture_iterations" in inspect.signature(reach.gato.BSQP.solve).parameters
+                    iteration_capture = {}
+                    for n in result["available_N"]:
+                        module = _cache.load_module(reach.PLANT, n, build_if_missing=False)
+                        iteration_capture[str(n)] = python_capture and bool(
+                            getattr(module, "ITERATION_CAPTURE_AVAILABLE", False))
+                    result["capabilities"] = dict(iteration_capture_by_N=iteration_capture,
+                        python_iteration_capture=python_capture, exact_resume=False)
+                    adapter = MPCAdapter(Path(selection["mpc_root"]), reach=reach)
+                    result.update(contract=model_contract(adapter), model_identity=adapter.model_identity,
+                        schema=build_schema(Path(selection["mpc_root"]), available_n=result["available_N"]))
         emit(dict(event="result", result=result) if args.operation == "build" else result)
         return 0
     except Exception as exc:

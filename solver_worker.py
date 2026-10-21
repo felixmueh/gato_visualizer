@@ -1,6 +1,13 @@
 """One isolated GATO implementation. No plant stepping or lock acquisition."""
 from __future__ import annotations
+# Arm before NumPy, model imports or native extension initialization.
+import sys
+if __name__ == "__main__":
+    from solver_lifecycle import arm_parent_death_signal
+    arm_parent_death_signal(int(sys.argv[sys.argv.index("--parent-pid") + 1]))
+
 import argparse
+import os
 import hashlib
 import inspect
 import socket
@@ -9,7 +16,7 @@ import traceback
 
 import numpy as np
 
-from solver_process import receive_message, send_message, model_contract, native_plan
+from solver_process import receive_leased_message, send_message, model_contract, native_plan
 
 
 def serve(channel, root):
@@ -17,7 +24,7 @@ def serve(channel, root):
     root = Path(root).resolve()
     adapter = None
     while True:
-        request = receive_message(channel)
+        request, lease_descriptors = receive_leased_message(channel)
         identity = {key: request.get(key) for key in ("protocol", "epoch", "request_id")}
         operation, payload = request.get("operation"), request.get("payload", {})
         try:
@@ -65,12 +72,16 @@ def serve(channel, root):
         except Exception as exc:
             traceback.print_exc()
             send_message(channel, dict(identity, ok=False, error=str(exc)))
+        finally:
+            for descriptor in lease_descriptors:
+                os.close(descriptor)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--fd", type=int, required=True)
     parser.add_argument("--root", required=True)
+    parser.add_argument("--parent-pid", type=int, required=True)
     args = parser.parse_args()
     with socket.socket(fileno=args.fd) as channel:
         serve(channel, args.root)

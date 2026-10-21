@@ -13,6 +13,7 @@ import traceback
 from execution_session import DEFAULT_EXECUTION, validate_anchor, validate_execution
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
+SHUTDOWN_GRACE_SECONDS = 10
 
 class HistoryGenerationError(ValueError):
     pass
@@ -225,7 +226,7 @@ class ProcessLiveService:
             request = dict(type="switch_solver_profile", profile=deepcopy(profile), anchor=anchor,
                 token=self.revision.value, generation=self.generation, target_generation=self.generation+1,
                 settings_version=self.version, config=deepcopy(self.config), task=deepcopy(self.task),
-                execution=deepcopy(self.execution))
+                execution=deepcopy(self.execution), previous_profile_id=self.active_profile_id)
             self.commands.put_nowait(request)
             self.publish(dict(type="status", state="paused", message="Switching solver profile",
                 generation=self.generation, settings_version=self.version, job_active=False))
@@ -335,10 +336,10 @@ class ProcessLiveService:
                             self.publish_events([dict(type="solver_profile", state="active",
                                 profile_id=identifier, generation=self.generation), self._history_metadata()])
                         else:
-                            self.active_profile_id = None
+                            self.active_profile_id = packet.get("active_profile_id")
                             self.profile_switch = dict(state="failed", profile_id=identifier, error=packet["message"])
                             self.publish(dict(type="solver_profile", state="failed", profile_id=identifier,
-                                generation=self.generation, error=packet["message"]))
+                                generation=self.generation, active_profile_id=self.active_profile_id, error=packet["message"]))
                     continue
                 # A queued record from the replaced solver cannot enter either
                 # history while the activation transaction is in progress.
@@ -431,9 +432,22 @@ class ProcessLiveService:
             with self.revision.get_lock():
                 self.revision.value += 1
             self.condition.notify_all()
-        # Native solves finish cooperatively; teardown stays under GPU locks.
-        # Do not terminate an active CUDA call just to accelerate shutdown.
-        self._process.join()
+        # Pause/cancel remain cooperative. Explicit backend shutdown is bounded
+        # even if native work is stuck. The child has a parent-death guard and
+        # borrowed lease FDs keep GPU locks held until child cleanup completes.
+        self._process.join(timeout=SHUTDOWN_GRACE_SECONDS)
+        if self._process.is_alive():
+            directory = Path(__file__).resolve().parent / "_expr_data/live/coordinator-lifecycle"
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / f"shutdown-{time.time_ns()}.json").write_text(json.dumps(dict(
+                reason=f"Explicit backend shutdown exceeded {SHUTDOWN_GRACE_SECONDS}s cooperative grace",
+                coordinator_pid=self._process.pid, active_profile_id=self.active_profile_id,
+                generation=self.generation, settings_version=self.version)) + "\n")
+            self._process.terminate()
+            self._process.join(timeout=2)
+            if self._process.is_alive():
+                self._process.kill()
+                self._process.join(timeout=2)
         self.thread.join(timeout=2)
         self.history_store.close()
         self.inspection_store.close()

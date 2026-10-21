@@ -87,6 +87,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
         nonlocal adapter, need_config
         if adapter is None:
             adapter = (adapter_factory or SimulatorAdapter)(mpc_root)
+            adapter.gpu_locks = locks
             if adapter_factory is None:
                 adapter.select_profile(solver_profile)
         if need_config:
@@ -164,13 +165,18 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         if not current(token):
                             continue
                         saved_state = None
+                        replaced_child = False
                         try:
                             if adapter is None:
                                 adapter = (adapter_factory or SimulatorAdapter)(mpc_root)
+                            adapter.gpu_locks = locks
                             saved_state = (adapter.x.copy(), adapter.t, adapter.applied_torque, adapter.sequence)
+                            adapter.preflight_profile(command["profile"], config, task)
                             anchor = command.get("anchor")
                             if anchor is not None:
                                 apply_anchor(anchor)
+                            adapter.applied_torque = None
+                            replaced_child = True
                             adapter.select_profile(command["profile"])
                             need_config = True
                             ensure_adapter()
@@ -193,13 +199,14 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                                 records=[first_state], complete=False), token)
                             status("paused", "Solver profile selected; simulator state retained", complete=False)
                         except Exception as exc:
-                            if adapter is not None and hasattr(adapter, "close_solver"):
+                            if replaced_child and adapter is not None and hasattr(adapter, "close_solver"):
                                 adapter.close_solver()
                             if saved_state is not None:
                                 adapter.x, adapter.t, adapter.applied_torque, adapter.sequence = saved_state
                             need_config = True
                             emit(dict(kind="profile_failed", token=token, generation=generation,
-                                profile=command["profile"], message=str(exc)), token)
+                                profile=command["profile"], message=str(exc),
+                                active_profile_id=None if replaced_child else command.get("previous_profile_id")), token)
                             status("paused", f"Solver switch failed: {exc}; history retained", complete=history_complete)
                         finally:
                             locks.release()

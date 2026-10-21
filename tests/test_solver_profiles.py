@@ -8,13 +8,18 @@ import tempfile
 import time
 import unittest
 import threading
+import subprocess
+import fcntl
+from unittest.mock import patch
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 import numpy as np
 
 from execution_bridge import ProcessLiveService
-from solver_process import SolverProcess, native_plan, validate_contract
+from execution_session import DEFAULT_EXECUTION, MultirateSession
+from solver_process import SolverProcess, native_plan, validate_contract, send_lease, receive_leased_message
+from solver_adapter import SimulatorAdapter
 from solver_profiles import SolverProfiles
 from server import make_server
 from tests.test_execution import FakeAdapter, FakeRenderer, fake_schema, fake_worker, MPC_ROOT
@@ -26,6 +31,11 @@ class ProfileAdapter(FakeAdapter):
         self.plant_identity = str(id(self.model)) + str(id(self))
         self.profile = "simulator"
         self.profile_schema = fake_schema(root)
+
+    def preflight_profile(self, profile, config, task):
+        n = config["N"]
+        if profile["id"] == "unsupported_n":
+            raise ValueError(f"No compatible prebuilt N={n}")
 
     def select_profile(self, profile):
         self.close_solver()
@@ -55,6 +65,11 @@ def wait_until(predicate, timeout=5):
             return
         time.sleep(.01)
     raise AssertionError("Timed out waiting for coordinator")
+
+
+def unresponsive_coordinator(root, commands, results, *args):
+    results.put(dict(kind="ready", schema=fake_schema(root)))
+    time.sleep(600)
 
 
 class SwitchTests(unittest.TestCase):
@@ -122,6 +137,31 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(live.history_store.path, path)
         self.assertEqual(path.read_bytes(), old_bytes)
 
+    def test_preflight_rejection_preserves_working_solver_and_paused_history(self):
+        live = self.live
+        path, generation = live.history_store.path, live.generation
+        old_bytes = path.read_bytes()
+        live.switch_solver_profile(dict(id="unsupported_n"))
+        wait_until(lambda: live.profile_switch["state"] == "failed")
+        self.assertEqual(live.active_profile_id, "simulator")
+        self.assertEqual(live.generation, generation)
+        self.assertEqual(live.history_store.path, path)
+        self.assertEqual(path.read_bytes(), old_bytes)
+        event = next(event for _, event in reversed(live.events) if event["type"] == "solver_profile")
+        self.assertEqual(event["active_profile_id"], "simulator")
+        live.command(dict(type="play"))
+        wait_until(lambda: live.latest["state"]["sim_time_s"] > 0)
+        live.command(dict(type="pause"))
+
+    def test_new_segment_does_not_attribute_old_torque_to_new_profile(self):
+        live = self.live
+        live.command(dict(type="play"))
+        wait_until(lambda: live.latest["state"].get("torque_nm") is not None)
+        live.switch_solver_profile(dict(id="second"))
+        wait_until(lambda: live.active_profile_id == "second" and "state" in live.latest)
+        self.assertIsNone(live.latest["state"]["torque_nm"])
+        self.assertNotIn("plan_seq", live.latest["state"])
+
     def test_http_profile_save_activate_keeps_simulator_source_and_other_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory)/"viewer.json"
@@ -163,22 +203,168 @@ class SwitchTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    def test_explicit_backend_shutdown_bounds_unresponsive_coordinator(self):
+        live = ProcessLiveService(MPC_ROOT, adapter_factory=ProfileAdapter,
+            schema_factory=fake_schema, worker_target=unresponsive_coordinator, render_factory=FakeRenderer)
+        started = time.monotonic()
+        with patch("execution_bridge.SHUTDOWN_GRACE_SECONDS", .05):
+            live.close()
+        self.assertFalse(live._process.is_alive())
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_rejected_transport_closes_received_lock_descriptors(self):
+        import socket
+        import struct
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"lease.lock"
+            handle = path.open("a")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            sender, receiver = socket.socketpair()
+            try:
+                send_lease(sender, [handle.fileno()])
+                sender.sendall(struct.pack("!Q", 1) + b"{")
+                handle.close()
+                with self.assertRaises(ValueError):
+                    receive_leased_message(receiver)
+                with path.open("a") as contender:
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                sender.close()
+                receiver.close()
+                handle.close()
+
+    def test_preflight_rejects_changed_parameter_shape_before_replacing_solver(self):
+        adapter = SimulatorAdapter.__new__(SimulatorAdapter)
+        adapter.contract = dict(joint_names=[str(i) for i in range(7)], nq=7, nv=7,
+            coordinate_units="rad,rad/s,Nm", torque_semantics="actuator_joint_torque",
+            reference_frame="torso", end_effector_frame="tcp",
+            world_from_reference=np.eye(4).tolist(), tcp_offset=np.eye(4).tolist())
+        schema = fake_schema(MPC_ROOT)
+        profile = dict(mpc_root=str(MPC_ROOT), python=sys.executable, cache="unused")
+        checked = dict(compatible=True, available_N=[16], contract=adapter.contract, schema=schema)
+        with patch("source_runtime.probe_selection", return_value=checked):
+            adapter.preflight_profile(profile, schema["defaults"]["config"], schema["defaults"]["task"])
+            schema["parameters"].append(dict(path="additional_setting", kind="bool"))
+            with self.assertRaisesRegex(ValueError, "Complete config required"):
+                adapter.preflight_profile(profile, schema["defaults"]["config"], schema["defaults"]["task"])
+
+    @staticmethod
+    def blocking_child(directory):
+        root = Path(__file__).resolve().parents[1]
+        script = Path(directory)/"blocking_child.py"
+        script.write_text(f'''import sys, os, socket, time, json
+sys.path.insert(0, {str(root)!r})
+from solver_lifecycle import arm_parent_death_signal
+arm_parent_death_signal(int(sys.argv[sys.argv.index('--parent-pid')+1]))
+from solver_process import receive_leased_message
+fd = int(sys.argv[sys.argv.index('--fd')+1])
+with socket.socket(fileno=fd) as channel:
+    request, leases = receive_leased_message(channel)
+    with open({str(Path(directory)/'child.json')!r}, 'w') as stream:
+        json.dump(dict(pid=os.getpid(), leases=len(leases)), stream)
+    time.sleep(600)
+''')
+        return script
+
+    def test_bootstrap_timeout_stops_child_and_retains_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.blocking_child(directory)
+            child = SolverProcess(dict(id="test", mpc_root=directory, python=sys.executable,
+                cache=directory), script=script)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "bootstrap timed out"):
+                    child.request("bootstrap", timeout=1)
+                self.assertIsNotNone(child.process.poll())
+                self.assertIn("bootstrap exceeded", child.log_path.read_text())
+            finally:
+                child.close()
+
+    def test_borrowed_lock_survives_parent_handle_close_until_child_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.blocking_child(directory)
+            path = Path(directory)/"lease.lock"
+            handle = path.open("a")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            child = SolverProcess(dict(id="test", mpc_root=directory, python=sys.executable,
+                cache=directory), script=script, lease_fds=lambda: [handle.fileno()])
+            errors = []
+            def run():
+                try:
+                    child.request("block")
+                except Exception as exc:
+                    errors.append(exc)
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                wait_until(lambda: (Path(directory)/"child.json").exists())
+                info = json.loads((Path(directory)/"child.json").read_text())
+                self.assertEqual(info["leases"], 1)
+                handle.close()
+                with path.open("a") as contender:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    child._stop("CPU lease lifetime test")
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                child._stop("test cleanup")
+                thread.join(timeout=3)
+                child.close()
+                handle.close()
+            self.assertFalse(thread.is_alive())
+            self.assertTrue(errors)
+
+    def test_abrupt_coordinator_death_stops_inflight_child_and_releases_lease(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.blocking_child(directory)
+            parent = Path(directory)/"coordinator.py"
+            lock_path = Path(directory)/"lease.lock"
+            parent.write_text(f'''import sys, fcntl
+sys.path.insert(0, {str(root)!r})
+from solver_process import SolverProcess
+handle = open({str(lock_path)!r}, 'a')
+fcntl.flock(handle, fcntl.LOCK_EX)
+child = SolverProcess(dict(id='test', mpc_root={directory!r}, python=sys.executable,
+    cache={directory!r}), script={str(script)!r}, lease_fds=lambda: [handle.fileno()])
+child.request('block')
+''')
+            process = subprocess.Popen([sys.executable, str(parent)])
+            try:
+                info_path = Path(directory)/"child.json"
+                wait_until(info_path.exists)
+                child_pid = json.loads(info_path.read_text())["pid"]
+                process.kill()
+                process.wait(timeout=3)
+                def child_stopped():
+                    try:
+                        return Path(f"/proc/{child_pid}/stat").read_text().split()[2] == "Z"
+                    except FileNotFoundError:
+                        return True
+                wait_until(child_stopped)
+                with lock_path.open("a") as contender:
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=3)
+
     def test_selected_interpreter_socket_protocol_and_native_stdout_are_independent(self):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory)/"echo_worker.py"
             script.write_text(f'''import sys, socket, os
 sys.path.insert(0, {str(root)!r})
-from solver_process import send_message, receive_message
+from solver_process import send_message, receive_leased_message
 fd = int(sys.argv[sys.argv.index('--fd')+1])
 with socket.socket(fileno=fd) as channel:
     while True:
-        request = receive_message(channel)
+        request, leases = receive_leased_message(channel)
         os.write(1, b'native diagnostic output\\n')
-        result = dict(pid=os.getpid(), python=sys.executable, cache=os.environ['GATO_CACHE_DIR'])
+        result = dict(pid=os.getpid(), python=sys.executable, cache=os.environ['GATO_CACHE_DIR'], path=os.environ['PATH'])
         identity = {{k:request[k] for k in ('protocol','epoch','request_id')}}
         if request['operation'] == 'stale': identity['epoch'] = 'old'
         send_message(channel, dict(identity, ok=True, result=result))
+        for lease in leases: os.close(lease)
         if request['operation'] == 'close': break
 ''')
             profile = dict(id="cpu", mpc_root=directory, python=sys.executable, cache=directory)
@@ -188,6 +374,7 @@ with socket.socket(fileno=fd) as channel:
                 self.assertNotEqual(result["pid"], os.getpid())
                 self.assertEqual(result["python"], sys.executable)
                 self.assertEqual(result["cache"], directory)
+                self.assertEqual(result["path"].split(os.pathsep)[0], str(Path(sys.executable).parent))
                 with self.assertRaisesRegex(RuntimeError, "stale"):
                     child.request("stale")
             finally:
@@ -202,6 +389,24 @@ with socket.socket(fileno=fd) as channel:
         expected = raw*np.tile(signs, 8)
         np.testing.assert_array_equal(result["_xu"], expected)
         self.assertEqual(result["_signs"], [1.]*7)
+
+    def test_native_joint6_control_is_not_signed_again_by_fixed_simulator(self):
+        adapter = FakeAdapter()
+        # The predictor's GPU joint 6 torque is -3, native torque is +3.
+        # Even a simulator adapter exposing its original negative axis must use
+        # the packet's already-native convention for the applied plan.
+        raw = np.zeros(56, dtype=np.float32)
+        raw[19] = raw[40] = -3.
+        plan = native_plan(dict(_xu=raw, _signs=adapter.signs, N=3, dt_s=.02,
+            seq=1, stats=dict(solve_time_ms=0.), sim_time_s=0., type="plan"))
+        adapter.solve_snapshot = lambda origin, version: deepcopy(plan)
+        session = MultirateSession(adapter, dict(DEFAULT_EXECUTION,
+            simulation_hz=100., control_hz=100., to_hz=100.))
+        records = session.advance_interval(.01)
+        control = next(record for record in records if record["type"] == "control")
+        self.assertEqual(adapter.signs[5], -1.)
+        self.assertEqual(control["torque_nm"][5], 3.)
+        self.assertAlmostEqual(adapter.x[5], .03)
 
     def test_coordinate_compatibility_is_separate_from_physical_model_identity(self):
         contract = dict(joint_names=[str(i) for i in range(7)], nq=7, nv=7,

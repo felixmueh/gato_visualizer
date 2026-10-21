@@ -61,10 +61,10 @@ def build_command(selection, counts, rebuild=False):
     return command, dict(os.environ, PYTHONUNBUFFERED="1")
 
 
-def probe_selection(selection, timeout=120):
+def probe_selection(selection, timeout=120, operation="probe"):
     """Run source imports in the selected environment; never import them here."""
     try:
-        command = source_command(selection)
+        command = source_command(selection, operation=operation)
         result = subprocess.run(command, capture_output=True, text=True,
                                 timeout=timeout, check=False)
         try:
