@@ -17,9 +17,9 @@ export async function sourceRequest(path, body, fetcher = fetch) {
   return result;
 }
 
-export function setupSourceSettings({ button, beforeApply = () => {}, reload = () => location.reload(), onPlottersReload = () => {}, request = sourceRequest } = {}) {
+export function setupSourceSettings({ button, beforeApply = () => {}, reload = () => location.reload(), onPlottersReload = () => {}, onOpen = () => {}, request = sourceRequest } = {}) {
   const content = document.createElement('div'); content.className = 'source-settings-form';
-  content.innerHTML = `<label>tiago_mpc checkout<input name="mpc_root" type="text" spellcheck="false" autocomplete="off" required></label>
+  content.innerHTML = `<h3>Simulator source</h3><label>tiago_mpc checkout<input name="mpc_root" type="text" spellcheck="false" autocomplete="off" required></label>
     <label>Python interpreter override<input name="python" type="text" spellcheck="false" autocomplete="off" placeholder="Selected checkout environment"></label>
     <label>Binary cache override<input name="cache" type="text" spellcheck="false" autocomplete="off" placeholder="Selected checkout/.cache/gato"></label>
     <p class="source-identity"></p><div class="source-actions"><button type="button" data-action="inspect">Check source and binaries</button><button type="button" class="source-apply" data-action="apply">Apply and restart backend</button></div>
@@ -123,6 +123,6 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
       content.querySelector('.plotters-default').textContent = `Default after Apply: ${field('mpc_root').value.trim()}/_visualizer`;
     }
   });
-  button?.addEventListener('click', () => { dialog.open(); clearTimeout(timer); refresh(); });
+  button?.addEventListener('click', () => { dialog.open(); clearTimeout(timer); refresh(); onOpen(); });
   return { dialog, refresh, get selection() { return selection(); } };
 }

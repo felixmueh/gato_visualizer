@@ -15,6 +15,7 @@ function harness() {
     get value() { return this._value; }
     set value(value) { this._value = String(value); }
     addEventListener(type, callback) { (this.handlers[type] ||= []).push(callback); }
+    removeEventListener(type, callback) { this.handlers[type] = (this.handlers[type] || []).filter(item => item !== callback); }
     emit(type) { this.dispatchEvent({ type, target: this, preventDefault() {}, stopPropagation() {} }); }
     dispatchEvent(event) { for (const callback of this.handlers[event.type] || []) callback(event); return true; }
     closest(tag) { for (let item = this; item; item = item.parentElement) if (item.tagName === tag) return item; return null; }
@@ -710,4 +711,67 @@ test('task switches restore independent reach and figure-eight positions and tra
   } finally {
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
+});
+
+test('solver profile refresh keeps native history anchor and compatible drafts, updates controls once, and never submits a solve', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  h.setHistoryHandler(url => { const generation = Number(new URL(url, 'http://test').searchParams.get('generation')); return { ok: true, json: async () => ({ generation, complete: true, next_cursor: 1, records: [{ type: 'state', generation, settings_version: 1, sim_time_s: .1, q: Array(7).fill(.1), qd: Array(7).fill(-.2), ee_xyz: [.1, 0, 1] }] }) }; });
+  try {
+    let live; const events = [];
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {}, onSolverProfile: item => { events.push(item); return live.finishSolverProfileSwitch(item); } });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    for (const time of [0, .1, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(-.2), ee_xyz: [time, 0, 1] });
+    h.$('live-history').value = '.1'; h.$('live-history').emit('input');
+    h.edit('solver_params.q_cost', 9.25); h.edit('target-offset-0', .31);
+    const before = live.settings, count = h.commands.length, anchor = live.beginSolverProfileSwitch();
+    assert.deepEqual(anchor, { sim_time_s: .1, q: Array(7).fill(.1), qd: Array(7).fill(-.2) });
+    assert.equal(live.playing, false); assert.equal(h.$('live-preview').disabled, true);
+    // Even a synthetic old button event cannot enqueue calculation while switching.
+    h.$('live-preview').emit('click'); await flush(); assert.equal(h.commands.length, count);
+    h.schema.available_N = [32, 128]; h.schema.parameters.push({ path: 'solver_params.new_weight', kind: 'float', min: 0 }); h.schema.defaults.config.solver_params.new_weight = .7;
+    source.emit({ type: 'status', state: 'paused', settings_version: 1, generation: 2 });
+    source.emit({ type: 'solver_profile', state: 'active', profile_id: 'candidate', generation: 2 }); await flush(); await flush();
+    assert.equal(events.length, 1); assert.equal(live.history.generation, 2); assert.deepEqual(live.history.bounds, [.1, .1]);
+    assert.equal(live.settings.config.N, before.config.N); assert.equal(live.settings.config.solver_params.q_cost, 9.25); assert.deepEqual(live.settings.task, before.task); assert.equal(live.settings.config.solver_params.new_weight, .7);
+    const n = h.created.filter(input => input.dataset.path === 'N').at(-1); assert.deepEqual(n.children.map(option => option.textContent), ['32', '128']);
+    assert.equal(h.$('target-offset-0').handlers.input.length, 2); // one edit and one reset indicator listener
+    assert.equal(h.$('live-task').handlers.change.length, 2); assert.equal(h.commands.length, count);
+    assert.equal(h.$('live-preview').disabled, false);
+    // Repeat schema hydration without adding handlers or issuing a preview.
+    live.beginSolverProfileSwitch(); await live.finishSolverProfileSwitch({ state: 'active', profile_id: 'main', generation: 3 }); await flush();
+    assert.equal(h.$('target-offset-0').handlers.input.length, 2); assert.equal(h.$('live-task').handlers.change.length, 2); assert.equal(h.commands.length, count);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+test('failed solver switch leaves paused history and settings intact; unavailable N requires an explicit choice', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    for (const time of [0, .1, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+    h.$('live-history').value = '.1'; h.$('live-history').emit('input');
+    const retained = live.settings, beforeHistory = live.history, count = h.commands.length;
+    live.beginSolverProfileSwitch(); await live.finishSolverProfileSwitch({ state: 'failed', profile_id: 'bad', error: 'N=32 unavailable' });
+    assert.deepEqual(live.settings, retained); assert.deepEqual(live.history, beforeHistory); assert.equal(live.playing, false); assert.equal(h.$('live-preview').disabled, true); assert(h.$('live-message').textContent.includes('N=32 unavailable'));
+    // Defensive schema reconciliation also exposes a removed N rather than replacing it.
+    h.schema.available_N = [16, 128]; live.beginSolverProfileSwitch(); await live.finishSolverProfileSwitch({ state: 'active', profile_id: 'other' });
+    assert.equal(live.settings.config.N, 32); assert(h.$('live-message').textContent.includes('N=32')); assert.equal(h.$('live-preview').disabled, true);
+    const n = h.created.filter(input => input.dataset.path === 'N').at(-1); assert.equal(n.value, '-1'); n.value = '1'; n.emit('input');
+    assert.equal(live.settings.config.N, 128); assert.equal(h.$('live-preview').disabled, false); assert.equal(h.commands.length, count);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+test('solver activation from Replay fetches the paused segment on Live entry without initial reset or preview', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let downloads = 0;
+  h.setHistoryHandler(() => { downloads++; return { ok: true, json: async () => ({ generation: 7, complete: true, next_cursor: 1, records: [{ type: 'state', generation: 7, settings_version: 0, sim_time_s: 2.5, q: Array(7).fill(.2), qd: Array(7).fill(0), ee_xyz: [.2, 0, 1] }] }) }; });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    live.beginSolverProfileSwitch(); await live.finishSolverProfileSwitch({ state: 'active', profile_id: 'candidate', generation: 7 });
+    assert.equal(downloads, 0); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', generation: 7, settings_version: 0 }); await flush();
+    assert.equal(downloads, 1); assert.deepEqual(live.history.bounds, [2.5, 2.5]); assert.equal(h.commands.length, 0); assert.equal(live.playing, false);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });

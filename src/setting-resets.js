@@ -41,22 +41,29 @@ export function createSettingResets({ document: doc = document } = {}) {
       wrapper.classList.toggle('setting-modified', modified);
       return modified;
     };
-    button.addEventListener('click', eventObject => {
+    const onClick = eventObject => {
       eventObject.preventDefault(); eventObject.stopPropagation();
       if (button.disabled) return;
       const focused = doc.activeElement === button;
       reset(getDefault());
       update();
       if (focused) focusTarget?.focus?.({ preventScroll: true });
-    });
+    };
+    button.addEventListener('click', onClick);
     input?.addEventListener('input', update); input?.addEventListener('change', update);
-    const entry = { key, group, input, button, update }; entries.push(entry); update();
+    const dispose = () => {
+      input?.removeEventListener?.('input', update); input?.removeEventListener?.('change', update);
+      button.removeEventListener?.('click', onClick);
+      if (wrapper.parentElement && host) wrapper.replaceWith(host);
+    };
+    const entry = { key, group, input, button, update, dispose }; entries.push(entry); update();
     return entry;
   };
   return {
     bind,
     update() { for (const entry of entries) entry.update(); },
-    forget(group) { entries = entries.filter(entry => entry.group !== group); },
+    forget(group) { entries = entries.filter(entry => { if (entry.group !== group) return true; entry.dispose(); return false; }); },
+    clear() { entries.forEach(entry => entry.dispose()); entries = []; },
     get entries() { return [...entries]; },
   };
 }

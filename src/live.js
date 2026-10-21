@@ -70,6 +70,14 @@ export function restoreCompatibleSettings(schema, saved) {
   return settings;
 }
 
+export function solverProfileSettings(schema, saved) {
+  const restored = restoreCompatibleSettings(schema, saved);
+  // A profile switch must not silently replace the user's horizon. An
+  // unsupported N remains visible until the user explicitly chooses another.
+  if (Number.isInteger(saved?.config?.N)) restored.config.N = saved.config.N;
+  return restored;
+}
+
 export function parseParameter(parameter, input) {
   if (parameter.kind === 'bool') return input.checked;
   if (parameter.kind === 'choice') {
@@ -103,7 +111,7 @@ export function validPoints(points) {
     Array.isArray(point) && point.length === 3 && point.every(Number.isFinite));
 }
 
-export function setupLive({ onMode, onPlan, onState, onReset, onReference = () => {} }) {
+export function setupLive({ onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {} }) {
   const $ = id => document.getElementById(id);
   let schema, settings, defaultSettings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
@@ -114,13 +122,15 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   let inspectingPreview = false, inspectionPlan = null;
   let defaultTargetWorld, figure8BaseWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
   let desiredReference, referenceKey, renderedReference;
+  let profileSwitching = false, profileUnavailable = false, profileNError = false, schemaReload = 0, suppressInitialPreview = false;
+  let populationBindings = [];
   const latestServerEvents = new Map();
   const taskDrafts = new Map();
   const resetIndicators = createSettingResets();
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock(), inputs = [];
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
-  const connected = () => liveReady && source?.readyState === EventSource.OPEN && !needsInitialPreview;
+  const connected = () => liveReady && !profileSwitching && !profileUnavailable && !profileNError && source?.readyState === EventSource.OPEN && !needsInitialPreview;
   const continueAtEnd = () => settings.execution.calculation === 'on_play' || settings.execution.continue_at_end;
   const acceptTaskAnchors = item => {
     if (validPoints([item?.task_anchors?.reach])) defaultTargetWorld = [...item.task_anchors.reach];
@@ -132,12 +142,13 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       ? { sim_time_s: value.sim_time_s, q: [...value.q], qd: [...value.qd] } : undefined;
   };
   async function send(command) {
+    if ((profileSwitching || profileUnavailable || profileNError) && !['pause', 'cancel'].includes(command.type)) return false;
     try {
       const response = await fetch('/api/live/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) });
       const result = await response.json();
       if (!response.ok || !result.accepted) throw new Error(result.error || `HTTP ${response.status}`);
       return result;
-    } catch (error) { message(`Command failed: ${error.message}`, true); return false; }
+    } catch (error) { if (!profileSwitching) message(`Command failed: ${error.message}`, true); return false; }
   }
   function calculationControls() {
     const stop = $('live-stop-at-end'), continuous = settings?.execution?.calculation === 'on_play';
@@ -198,7 +209,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   }
   async function submitSettings() {
     clearTimeout(settingsTimer);
-    if (mode !== 'live' || !liveReady) return false;
+    if (mode !== 'live' || !liveReady || profileSwitching || profileUnavailable || profileNError) return false;
     const next = readSettings(true);
     if (!next) return false;
     settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); submittedSettings = cloneSettings(next); pending = true; dirty = false; inspectingPreview = false;
@@ -231,14 +242,19 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   function change() {
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
     const next = readSettings();
-    if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); }
+    if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); profileNError = false; }
     calculationControls();
     resetIndicators.update();
     dirty = true; renderDirty = true; clock.pause(); refreshPlanLabel();
-    message('Settings changed · replacing obsolete calculation…');
-    clearTimeout(settingsTimer); settingsTimer = setTimeout(submitSettings, 350);
+    controlsEnabled();
+    message(profileSwitching ? 'Solver switching · settings draft retained.' : profileUnavailable ? 'No solver is active · settings draft retained.' : 'Settings changed · replacing obsolete calculation…');
+    clearTimeout(settingsTimer); if (!profileSwitching && !profileUnavailable) settingsTimer = setTimeout(submitSettings, 350);
   }
   function populate() {
+    populationBindings.forEach(([input, type, callback]) => input.removeEventListener?.(type, callback)); populationBindings = [];
+    resetIndicators.clear(); inputs.length = 0;
+    $('live-settings').replaceChildren(); $('live-horizon-settings')?.replaceChildren();
+    const listen = (input, type, callback) => { input.addEventListener(type, callback); populationBindings.push([input, type, callback]); };
     const resetInput = (input, value, parameter = {}) => {
       input.setCustomValidity('');
       if (parameter.kind === 'bool') input.checked = value;
@@ -271,7 +287,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
         const input = document.createElement('input'); input.type = 'number'; input.step = 'any'; input.required = true;
         input.dataset.taskPath = parameter.path; input.min = parameter.min; input.max = parameter.max;
         input.value = settings.task.kind === descriptor.kind ? settings.task[parameter.path] : descriptor.defaults[parameter.path];
-        input.addEventListener('input', change); label.append(caption, input); $('live-task-parameters').append(label);
+        listen(input, 'input', change); label.append(caption, input); $('live-task-parameters').append(label);
         bindReset(input, { ...parameter, kind: parameter.kind || 'float' }, () => activeTaskDefaults()[parameter.path], { key: `task.${parameter.path}`, group: 'task-parameters' });
       }
       const poseCaption = document.createElement('span'); poseCaption.className = 'task-pose-reset-caption'; poseCaption.textContent = 'Task pose';
@@ -289,7 +305,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'G moves the path in world coordinates; R rotates and S scales width/height about its start. Period sets speed. Reset restarts phase.' : 'Offset from the default reaching target. Click the target to move it along an axis.';
     };
     taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
-    taskFields(); $('live-task').addEventListener('change', () => {
+    taskFields(); listen($('live-task'), 'change', () => {
       taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
       const kind = $('live-task').value, descriptor = tasks.find(task => task.kind === kind);
       const fallback = defaultSettings.task.kind === kind ? defaultSettings.task : {};
@@ -341,9 +357,18 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
           const item = document.createElement('option'), object = choice && typeof choice === 'object', typedValue = object && 'value' in choice ? choice.value : choice;
           item.value = String(i); item.textContent = object ? choice.label || String(typedValue ?? 'Default') : String(choice ?? 'Default'); item.selected = Object.is(typedValue, value); input.append(item);
         }
+        if (parameter.path === 'N' && !schema.available_N.includes(value)) {
+          const unavailable = document.createElement('option'); unavailable.value = '-1'; unavailable.textContent = `${value} · unavailable`; unavailable.disabled = true; unavailable.selected = true; input.append(unavailable); input.value = '-1';
+        }
       } else if (parameter.kind === 'bool') { input.type = 'checkbox'; input.checked = Boolean(value); }
       else { input.type = 'number'; input.step = parameter.kind === 'int' ? '1' : 'any'; if (parameter.min != null) input.min = parameter.min; if (parameter.max != null) input.max = parameter.max; input.value = value; input.required = true; }
-      input.disabled = Boolean(parameter.disabled); input.title = parameter.path; input.addEventListener('input', () => { if (isHorizon) syncHorizon(); change(); });
+      input.disabled = Boolean(parameter.disabled); input.title = parameter.path; listen(input, 'input', () => {
+        if (isHorizon) {
+          if (parameter.path === 'N' && input.value !== '-1') profileNError = false;
+          if (!profileNError) { if (horizonInput) horizonInput.disabled = false; syncHorizon(); }
+        }
+        change();
+      });
       if (isHorizon) { label.className = 'horizon-field'; text.textContent = parameter.path === 'N' ? 'N' : 'Δt (s)'; }
       label.append(text, input); (isHorizon ? horizonRow : groups.get(name)).append(label); inputs.push({ parameter, input });
       bindReset(input, parameter, () => readPath(defaultSettings.config, parameter.path), { key: `config.${parameter.path}` });
@@ -352,15 +377,16 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       const label = document.createElement('label'); label.className = 'horizon-field';
       const text = document.createElement('span'); text.textContent = 'Horizon (s)';
       horizonInput = document.createElement('input'); horizonInput.type = 'number'; horizonInput.step = 'any'; horizonInput.required = true;
+      horizonInput.disabled = profileNError;
       horizonInput.dataset.horizon = 'seconds'; horizonInput.title = 'Horizon = (N − 1) × Δt';
-      horizonInput.addEventListener('input', () => {
+      listen(horizonInput, 'input', () => {
         const n = inputs.find(item => item.parameter.path === 'N'), dt = inputs.find(item => item.parameter.path === 'dt_s');
         const count = parseParameter(n.parameter, n.input);
         dt.input.value = horizonInput.value.trim() ? String(Number((Number(horizonInput.value) / (count - 1)).toPrecision(12))) : '';
         change();
         horizonInput.setCustomValidity(dt.input.validationMessage || '');
       });
-      label.append(text, horizonInput); horizonRow.append(label); syncHorizon();
+      label.append(text, horizonInput); horizonRow.append(label); if (!profileNError) syncHorizon();
       resetIndicators.bind({ key: 'config.horizon_s', name: 'horizon', input: horizonInput,
         getValue: () => parseParameter({ kind: 'float', label: 'Horizon', min: Number(horizonInput.min), max: Number(horizonInput.max) }, horizonInput),
         getDefault: () => (parseParameter(inputs.find(item => item.parameter.path === 'N').parameter, inputs.find(item => item.parameter.path === 'N').input) - 1) * defaultSettings.config.dt_s,
@@ -368,19 +394,19 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
       });
     }
     settings.task.target_offset_m.forEach((value, i) => {
-      const input = $(`target-offset-${i}`); input.value = value; input.addEventListener('input', change);
+      const input = $(`target-offset-${i}`); input.value = value; listen(input, 'input', change);
       bindReset(input, { kind: 'float', path: `target_offset_m.${i}`, label: `target ${['X', 'Y', 'Z'][i]}`, min: -1, max: 1 }, () => activeTaskDefaults().target_offset_m[i], { key: `task.target_offset_m.${i}` });
     });
     settings.execution = validateExecution({ ...DEFAULT_EXECUTION, ...(settings.execution || schema.defaults.execution || {}) });
     for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration'], ['calculation', 'live-calculation']]) {
-      const input = $(id); input.value = settings.execution[key]; input.addEventListener('input', change);
+      const input = $(id); input.value = settings.execution[key]; listen(input, 'input', change);
       const baseline = { ...DEFAULT_EXECUTION, ...defaultSettings.execution };
       if (key === 'calculation') resetIndicators.bind({ key: `execution.${key}`, name: 'calculation mode', input,
         getValue: () => input.value, getDefault: () => baseline[key], reset: value => resetInput(input, value) });
       else bindReset(input, { kind: 'float', path: key, label: key.replaceAll('_', ' '), min: Number.MIN_VALUE }, () => baseline[key], { key: `execution.${key}` });
     }
     $('live-continue').checked = settings.execution.continue_at_end;
-    $('live-continue').addEventListener('change', () => { settings.execution.continue_at_end = $('live-continue').checked; });
+    listen($('live-continue'), 'change', () => { settings.execution.continue_at_end = $('live-continue').checked; });
     const commit = schema.source?.mpc_commit;
     $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · prebuilt N: ${schema.available_N.join(', ')}`;
     resetIndicators.update();
@@ -457,6 +483,8 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     receiveItem(item);
   }
   function receiveItem(item) {
+    if (item.type === 'solver_profile') { Promise.resolve(onSolverProfile(item)).catch(error => message(`Solver setup: ${error.message}`, true)); return; }
+    if (profileSwitching) return;
     if (!needsInitialPreview && generation != null && item.generation != null && item.generation < generation) return;
     if (!needsInitialPreview && item.type === 'status' && expectedVersion != null && item.settings_version < expectedVersion) return;
     acceptTaskAnchors(item);
@@ -625,10 +653,10 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     for (const name of ['replay', 'live']) { $(`${name}-mode`).classList.toggle('active', name === mode); $(`${name}-mode`).setAttribute('aria-pressed', name === mode); }
     $('mode-label').textContent = mode === 'live' ? 'LIVE MPC · SIMULATION' : 'TRAJECTORY REPLAY'; onMode(mode);
     if (mode === 'live') {
-      needsInitialPreview = true;
+      needsInitialPreview = !suppressInitialPreview && !profileSwitching && !profileUnavailable; suppressInitialPreview = false;
       const connection = new EventSource('/api/live/events'); source = connection; controlsEnabled(); refreshPlanLabel();
       connection.onmessage = event => { if (source === connection && mode === 'live') receive(event); };
-      connection.onopen = () => { latestServerEvents.clear(); controlsEnabled(); message('Connected · waiting for solver status…'); };
+      connection.onopen = () => { latestServerEvents.clear(); controlsEnabled(); message('Connected · waiting for solver status…'); if (!needsInitialPreview && generation != null) fetchHistory(); };
       connection.onerror = () => { controlsEnabled(); message('Live stream disconnected · reconnecting. Playback remains local.', true); };
       renderView();
     } else if (source) { const connection = source; source = null; connection.close(); pending = false; needsInitialPreview = false; await send({ type: 'pause' }); }
@@ -689,13 +717,65 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     event.target.title = `${number(time, 3)} s · ${interval ? intervalDescription(interval) : 'Recorded simulation time'}`;
   });
   $('live-history-latest').addEventListener('click', showLatest);
-  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings);
+  function beginSolverProfileSwitch() {
+    const anchor = displayedAnchor();
+    clearTimeout(settingsTimer); ++submission; ++schemaReload;
+    clock.pause(); profileSwitching = true; pending = false; extensionPending = false; needsInitialPreview = false;
+    expectedVersion = settingsVersion;
+    job = { ...job, job_active: false };
+    $('live-status').textContent = 'SWITCHING SOLVER';
+    message('Switching solver · calculation paused.'); controlsEnabled(); renderDirty = true;
+    return anchor;
+  }
+  async function finishSolverProfileSwitch(item) {
+    const reload = ++schemaReload;
+    clearTimeout(settingsTimer); clock.pause();
+    profileSwitching = true; controlsEnabled();
+    try {
+      const response = await fetch('/api/live/schema'), nextSchema = await response.json();
+      if (reload !== schemaReload) return;
+      if (item.state === 'failed') {
+        profileUnavailable = true;
+        message(`Solver switch failed: ${item.error || 'No solver is active.'}`, true);
+        return;
+      }
+      if (!response.ok) throw new Error(nextSchema.error || 'Live settings unavailable for the selected solver.');
+      const nextSettings = solverProfileSettings(nextSchema, settings);
+      const retainedDrafts = [...taskDrafts];
+      schema = nextSchema; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = nextSettings;
+      taskDrafts.clear();
+      for (const [kind, draft] of retainedDrafts) if (schema.tasks?.some(task => task.kind === kind)) taskDrafts.set(kind, restoreCompatibleSettings(schema, { ...settings, task: draft }).task);
+      profileNError = !schema.available_N.includes(settings.config.N);
+      liveReady = true; profileUnavailable = false; needsInitialPreview = false; initialResetPending = false;
+      suppressInitialPreview = mode !== 'live';
+      populate();
+      // Activation already retained backend settings and opened a paused
+      // segment at the supplied native anchor. Do not send set_settings here.
+      const notice = latestServerEvents.get('status');
+      if (notice?.generation === item.generation && Number.isInteger(notice.settings_version)) expectedVersion = settingsVersion = notice.settings_version;
+      if (item.generation != null) useGeneration(item.generation);
+      plan = undefined; inspectionPlan = null; inspectingPreview = false;
+      status = 'paused'; job = { ...job, job_active: false };
+      $('live-status').textContent = 'PAUSED'; $('live-status').classList.toggle('error', false);
+      $('live-availability').textContent = '';
+      message(profileNError ? `N=${settings.config.N} is unavailable in this solver profile. Choose an available knot count before calculating.` : 'Solver ready · simulation paused.', profileNError);
+    } catch (error) {
+      if (reload !== schemaReload) return;
+      profileUnavailable = true;
+      message(`Solver setup: ${error.message}`, true);
+      throw error;
+    } finally {
+      if (reload === schemaReload) { profileSwitching = false; controlsEnabled(); renderDirty = true; }
+    }
+  }
+  const initialSchemaRequest = schemaReload;
+  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (initialSchemaRequest !== schemaReload) return; if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings);
     try {
       const retained = sessionStorage.getItem('source-restart-live-settings');
       sessionStorage.removeItem('source-restart-live-settings');
       if (retained) { settings = restoreCompatibleSettings(schema, JSON.parse(retained)); dirty = !settingValuesEqual(settings, defaultSettings); }
     } catch {}
-    liveReady = true; populate(); }).catch(error => { liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
+    liveReady = true; populate(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
   return {
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
@@ -730,7 +810,8 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || plan?.task_path_xyz?.length); },
     get precomputedPath() { return !dirty && !pending && historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
     get settings() { return settings ? cloneSettings(settings) : null; }, get status() { return status; },
-    get pending() { return pending || (mode === 'live' && !connected()); }, get playing() { return clock.playing; },
+    get pending() { return profileSwitching || pending || (mode === 'live' && !connected()); }, get playing() { return clock.playing; },
+    beginSolverProfileSwitch, finishSolverProfileSwitch,
     frame, togglePlay: () => { if (mode === 'live' && !$('live-play').disabled) $('live-play').click(); },
   };
 }

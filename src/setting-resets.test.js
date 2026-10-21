@@ -53,3 +53,13 @@ test('invalid drafts expose recovery and passive updates never invoke reset or s
   entry.button.dispatchEvent(new Event('click', { cancelable: true })); assert.equal(draft, '100'); assert.equal(resets, 1);
   input.disabled = true; draft = '200'; registry.update(); assert.equal(entry.button.disabled, true); assert.equal(entry.button.style.visibility, 'hidden');
 });
+
+test('disposing settings controls unwraps hosts and removes obsolete edit/reset listeners', () => {
+  const { doc, parent, label, input } = dom(); let reads = 0, resets = 0;
+  const registry = createSettingResets({ document: doc });
+  const bind = () => registry.bind({ key: 'rate', name: 'rate', input, getValue: () => { reads++; return 2; }, getDefault: () => 1, reset: () => resets++ });
+  const old = bind(); registry.clear(); assert.equal(registry.entries.length, 0); assert.equal(parent.children[0], label);
+  reads = 0; input.dispatchEvent(new Event('input')); old.button.dispatchEvent(new Event('click')); assert.equal(reads, 0); assert.equal(resets, 0);
+  bind(); reads = 0; input.dispatchEvent(new Event('input')); assert.equal(reads, 1);
+  registry.forget('settings'); assert.equal(parent.children[0], label); assert.equal(registry.entries.length, 0);
+});
