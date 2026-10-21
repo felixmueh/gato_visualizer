@@ -36,6 +36,14 @@ def load_source(selection):
         raise ValueError("reach_sim imported from outside the selected checkout")
     if not Path(reach.gato.__file__).resolve().is_relative_to(root / "external/gato"):
         raise ValueError("GATO imported from outside the selected checkout")
+    # An ABI-compatible solver alone cannot make a checkout displayable. Check
+    # the same full model/assets and grasp-frame binding the restarted backend
+    # will construct, before persisting a selection or starting compilation.
+    from server import RobotKinematics, canonical_model_assets
+    canonical_model_assets(root)
+    RobotKinematics(root / "models/tiago_pro/tiago_pro.urdf",
+                    end_effector_frame=reach.EE_FRAME, reduced_urdf=reach.URDF)
+    importlib.import_module("reaching_config").load_configuration()
     return reach
 
 

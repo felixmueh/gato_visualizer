@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 _expr_data/
 .cache/

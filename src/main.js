@@ -2,6 +2,8 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
+import { setupSourceSettings } from "./source-settings.js";
+import "./floating-dialog.css";
 import { workbenchShell } from "./workbench-shell.js";
 import { setupExpandedTimeline } from "./expanded-timeline.js";
 import { setupMetrics, replayMetricSnapshot } from "./metrics.js";
@@ -37,6 +39,7 @@ const icons = {
   panelLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
   panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
   calculate: '<path d="M13 2 5 13h6l-1 9 9-13h-6l1-7Z"/>',
+  settings: '<path d="m10 3-.6 2.2-2 .9-2-.7-2 3.4 1.5 1.6v2.3L3.4 14l2 3.4 2-.7 2 .9.6 2.2h4l.6-2.2 2-.9 2 .7 2-3.4-1.5-1.6v-2.3L20.6 8l-2-3.4-2 .7-2-.9L14 3Z"/><circle cx="12" cy="11.4" r="3"/>',
   chevron: '<path d="m8 5 7 7-7 7"/>',
 };
 const icon = (name) =>
@@ -67,6 +70,9 @@ let scene;
 let robotBounds;
 let ready = false;
 let live;
+setupSourceSettings({ button: $('source-settings-open'), beforeApply: () => {
+  try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
+} });
 let liveGroup;
 let liveTrace;
 let liveMarker;

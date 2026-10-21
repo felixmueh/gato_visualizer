@@ -290,3 +290,23 @@ class BuilderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class DisplaySourceTests(unittest.TestCase):
+    def test_selected_model_assets_grasp_frame_and_configuration_validate_before_use(self):
+        spec = importlib.util.spec_from_file_location('source_probe_display_test', runtime.PROBE_SCRIPT)
+        script = importlib.util.module_from_spec(spec); spec.loader.exec_module(script)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            selection = dict(mpc_root=str(root), python=sys.executable, cache=str(root/'cache'))
+            reach = SimpleNamespace(ROOT=root, EE_FRAME='grasp', URDF=root/'reduced.urdf', gato=SimpleNamespace(__file__=str(root/'external/gato/python/gato/__init__.py')))
+            assets, kinematics, configuration = Mock(), Mock(), Mock()
+            def imported(name):
+                return reach if name == 'reach_sim' else configuration
+            with patch.object(script.importlib, 'import_module', side_effect=imported), patch.dict(sys.modules, {'server':SimpleNamespace(canonical_model_assets=assets, RobotKinematics=kinematics)}), patch.dict(os.environ), patch.object(sys, 'path', list(sys.path)):
+                self.assertIs(script.load_source(selection), reach)
+                assets.assert_called_once_with(root)
+                kinematics.assert_called_once_with(root/'models/tiago_pro/tiago_pro.urdf', end_effector_frame='grasp', reduced_urdf=root/'reduced.urdf')
+                configuration.load_configuration.assert_called_once()
+                assets.side_effect = ValueError('canonical mesh is missing')
+                with self.assertRaisesRegex(ValueError, 'canonical mesh is missing'):
+                    script.load_source(selection)
