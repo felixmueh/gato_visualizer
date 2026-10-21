@@ -102,7 +102,7 @@ class SourceSettingsTests(unittest.TestCase):
             service.serve_forever = request_restart
             return settings
         def execute(python, argv, environment):
-            self.assertEqual(events, ['server-close', 'sources-close'])
+            self.assertEqual(events, ['server-close', 'sources-close', 'plots-close'])
             self.assertEqual(python, '/new/env/bin/python')
             self.assertNotIn('--mpc-root', argv)
             self.assertIn('--replay-only', argv)
@@ -112,7 +112,7 @@ class SourceSettingsTests(unittest.TestCase):
             raise Restarted()
         config = SimpleNamespace(path=Path('/config/viewer.json'), ingest_directory=Path('/ingest'))
         scene = dict(trajectories=[], source=dict(bootstrap=True))
-        with patch.dict(os.environ, {'TIAGO_MPC_ROOT':'/launch', 'TIAGO_PYTHON':'/old/python', 'GATO_CACHE_DIR':'/old/cache'}), patch('server.load_visualizer_config', return_value=config), patch('visualizer_config.effective_source_selection', return_value=SELECTION), patch('server.load_scene', return_value=(scene, b'<robot/>', {})), patch('replay_library.ReplayLibrary', return_value=SimpleNamespace(upload_directory='/uploads')), patch('source_settings.SourceSettings', side_effect=source_factory), patch('server.make_server', return_value=service), patch('server.os.execve', side_effect=execute):
+        with patch.dict(os.environ, {'TIAGO_MPC_ROOT':'/launch', 'TIAGO_PYTHON':'/old/python', 'GATO_CACHE_DIR':'/old/cache'}), patch('server.load_visualizer_config', return_value=config), patch('visualizer_config.effective_source_selection', return_value=SELECTION), patch('server.load_scene', return_value=(scene, b'<robot/>', {})), patch('replay_library.ReplayLibrary', return_value=SimpleNamespace(upload_directory='/uploads')), patch('source_settings.SourceSettings', side_effect=source_factory), patch('server.make_server', return_value=service), patch('plot_service.PlotService', return_value=SimpleNamespace(close=lambda: events.append('plots-close'))), patch('server.os.execve', side_effect=execute):
             with self.assertRaises(Restarted):
                 main(['--mpc-root', '/launch', '--replay-only', '--port', '9001'])
 

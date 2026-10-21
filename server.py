@@ -417,7 +417,7 @@ def accepts_gzip(value):
 
 
 def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist=None, live=None,
-                replays=None, sources=None, live_error=None):
+                replays=None, sources=None, live_error=None, plots=None):
     dist = Path(dist or ROOT / "dist").resolve()
     scene_json = json.dumps(scene, allow_nan=False, separators=(",", ":")).encode()
     backend_id = uuid.uuid4().hex
@@ -447,6 +447,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             self.do_GET()
 
         def do_POST(self):
+            if urlsplit(self.path).path.startswith("/api/plots/") and plots is not None:
+                self.plot_command()
+                return
             if urlsplit(self.path).path.startswith("/api/source/") and sources is not None:
                 self.source_command()
                 return
@@ -472,6 +475,33 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 result, status = dict(accepted=True, settings_version=version), 200
             except (ValueError, TypeError) as exc:
                 result, status = dict(accepted=False, error=str(exc)), 400
+            self.send_payload(json.dumps(result, allow_nan=False).encode(),
+                              "application/json; charset=utf-8", status)
+
+        def plot_command(self):
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
+                self.send_error(403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 65536 or self.headers.get_content_type() != "application/json":
+                    raise ValueError("Expected JSON plot selectors/settings under 64 KiB")
+                body = json.loads(self.rfile.read(length))
+                action = urlsplit(self.path).path.removeprefix("/api/plots/")
+                if action in ("catalog", "evaluate"):
+                    result, status = plots.submit(body, catalog=action == "catalog"), 202
+                elif action == "settings":
+                    result, status = plots.update_settings(body), 200
+                elif action == "reload":
+                    if body != {}:
+                        raise ValueError("Reload requires an empty JSON object")
+                    result, status = plots.reload(), 200
+                else:
+                    self.send_error(404)
+                    return
+            except (ValueError, TypeError, OSError, RuntimeError) as exc:
+                result, status = dict(error=str(exc)), 400
             self.send_payload(json.dumps(result, allow_nan=False).encode(),
                               "application/json; charset=utf-8", status)
 
@@ -565,6 +595,22 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 return
             if path == "/api/scene":
                 self.send_payload(scene_json, "application/json; charset=utf-8")
+            elif path.startswith("/api/plots/") and plots is not None:
+                try:
+                    if path == "/api/plots/settings":
+                        result = plots.settings()
+                    elif path == "/api/plots/catalog":
+                        query = parse_qs(urlsplit(self.path).query)
+                        result = plots.static_catalog(query.get("context", [None])[0])
+                    elif path.startswith("/api/plots/jobs/"):
+                        result = plots.job(path.removeprefix("/api/plots/jobs/"))
+                    else:
+                        raise KeyError("Unknown plot endpoint")
+                    status = 200
+                except (KeyError, ValueError, OSError, RuntimeError) as exc:
+                    result, status = dict(error=str(exc)), 404 if isinstance(exc, KeyError) else 400
+                self.send_payload(json.dumps(result, allow_nan=False, separators=(",", ":")).encode(),
+                                  "application/json; charset=utf-8", status, compress=True)
             elif path == "/api/replays" and replays is not None:
                 self.send_payload(json.dumps(replays.catalog(), allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
@@ -686,8 +732,10 @@ def main(argv=None):
         restart_requested.set()
         server.shutdown()
     sources = SourceSettings(selection, visualizer_config.path, request_restart)
+    from plot_service import PlotService
+    plots = PlotService(args.mpc_root, visualizer_config.path, scene, live=live, replays=library)
     server = make_server(scene, robot_xml, meshes, args.host, args.port, live=live, replays=library,
-                         sources=sources, live_error=live_error)
+                         sources=sources, live_error=live_error, plots=plots)
     server.replay_library = library
     server.visualizer_config = visualizer_config
     print(f"TIAGo visualizer: http://{args.host}:{server.server_port}", flush=True)
@@ -706,6 +754,7 @@ def main(argv=None):
     finally:
         server.server_close()
         sources.close()
+        plots.close()
         if live is not None:
             live.close()
     if restart_requested.is_set():

@@ -15,6 +15,8 @@ import uuid
 from plot_sources import SourceReader, inspect_source
 
 ROOT = Path(__file__).resolve().parent
+MAX_RESULT_BYTES = 8*1024*1024
+MAX_CACHE_BYTES = 32*1024*1024
 
 
 def reduce_spec(spec, pixels=1200):
@@ -28,6 +30,12 @@ def reduce_spec(spec, pixels=1200):
         xs, ys = series.get("x", []), series.get("y", [])
         if len(xs) <= pixels*4 or len(xs) != len(ys):
             continue
+        if spec.get("x", {}).get("identity") == "category":
+            return dict(version=1, kind="unavailable", title=spec.get("title", "Plot"),
+                        message="Too many distinct categories for this display. Select fewer categories.")
+        if series.get("style") == "bar" or "bin_edges" in series:
+            return dict(version=1, kind="unavailable", title=spec.get("title", "Plot"),
+                        message="Too many distinct bars for this display. Reduce histogram bins or select a smaller range.")
         chosen = {0, len(xs)-1}
         for start in range(0, len(xs), max(1, len(xs)//pixels)):
             stop = min(len(xs), start+max(1, len(xs)//pixels))
@@ -43,6 +51,9 @@ def reduce_spec(spec, pixels=1200):
                     if i+1 < len(xs) and ys[i+1] is not None and xs[i+1] is not None:
                         chosen.update((i, i+1))
         indices = sorted(chosen)
+        if len(indices) > pixels*8:
+            return dict(version=1, kind="unavailable", title=spec.get("title", "Plot"),
+                        message="The requested display contains too many distinct gaps. Select a smaller visible range.")
         series["x"], series["y"] = [xs[i] for i in indices], [ys[i] for i in indices]
         spec.setdefault("notes", []).append(
             f"Display min/max reduction: {len(xs)} → {len(indices)} points; peaks and gaps retained. Aggregates use full requested data.")
@@ -60,6 +71,7 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
         results.put(dict(type="ready", catalog=catalog, errors=registry.errors))
         reader = SourceReader(mpc_root, default_scene)
         cache = OrderedDict()
+        cache_bytes = 0
         while True:
             job = commands.get()
             if job is None:
@@ -70,7 +82,7 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                 key = hashlib.sha256(json.dumps(dict(request=request, descriptor=descriptor),
                                                 sort_keys=True).encode()).hexdigest()
                 if key in cache:
-                    payload = cache[key]
+                    payload, payload_bytes = cache[key]
                     cache.move_to_end(key)
                 else:
                     raw = reader.read(descriptor)
@@ -82,11 +94,15 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                     analysis = request.get("range") or {}
                     selected, inspection = inspect_source(raw, selection, analysis)
                     iteration = selection.get("iteration", selection.get("iteration_index"))
+                    source = request["source"]
+                    clock = (f"live:{source['generation']}" if source["kind"] == "live" else
+                             f"replay:{source.get('id', 'default')}:{source.get('trajectory_index', 0)}")
                     context = InspectionContext(episode_cursor_s=analysis.get("cursor_s"),
                         analysis_range=analysis.get("mode", "entire"),
                         visible_window=((analysis.get("start_s"), analysis.get("end_s"))
                                         if analysis.get("mode") == "visible" else None),
-                        selected_solve_id=None if selected is None else selected["id"], sqp_iteration=iteration)
+                        selected_solve_id=None if selected is None else selected.get("seq", selected["id"]), sqp_iteration=iteration,
+                        clock=clock)
                     scope = request["context"]
                     view = (EpisodeView(raw, context=context) if scope == "episode" else
                             SolveView(selected or {}, context=context))
@@ -98,7 +114,8 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                     states = raw.get("states", [])
                     payload = dict(catalog=registry.catalog(scope, view), errors=registry.errors,
                         inspection=inspection, context=dict(inspection,
-                            clock="episode_time", joint_names=[f"arm_right_{i}_joint" for i in range(1, 8)],
+                            clock=clock, time_origin_s=raw.get("time_origin_s", 0),
+                            joint_names=list(raw.get("joint_names", [f"arm_right_{i}_joint" for i in range(1, 8)])),
                             bounds=([states[0]["sim_time_s"], states[-1]["sim_time_s"]] if states else None)),
                         results=[])
                     for plot in request.get("plots", []):
@@ -111,11 +128,15 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                                 spec=reduce_spec(spec, request.get("pixels", 1200))))
                         except Exception as exc:
                             payload["results"].append(dict(instance_id=plot["instance_id"], error=str(exc)))
-                    json.dumps(payload, allow_nan=False)
-                    cache[key] = payload
-                    if len(cache) > 16:
-                        cache.popitem(last=False)
-                results.put(dict(type="result", job_id=job["job_id"], payload=payload))
+                    payload_bytes = len(json.dumps(payload, allow_nan=False, separators=(",", ":")).encode())
+                    if payload_bytes > MAX_RESULT_BYTES:
+                        raise ValueError("Plot payload exceeds 8 MiB; reduce the requested range, pixels or number of cards")
+                    cache[key] = payload, payload_bytes
+                    cache_bytes += payload_bytes
+                    while len(cache) > 16 or cache_bytes > MAX_CACHE_BYTES:
+                        _, (_, removed_bytes) = cache.popitem(last=False)
+                        cache_bytes -= removed_bytes
+                results.put(dict(type="result", job_id=job["job_id"], payload=payload, payload_bytes=payload_bytes))
             except Exception as exc:
                 results.put(dict(type="result", job_id=job["job_id"], error=str(exc)))
     except BaseException as exc:
@@ -153,6 +174,7 @@ class PlotService:
             args=(self.commands, self.results, [str(ROOT/"plotters"), str(self.directory)],
                   str(self.mpc_root), self.default_scene), name="plot-cpu-compute", daemon=True)
         self.process.start()
+        self.worker_available = True
         self.registry_revision += 1
         self.ready = False
         self.started_at = time.monotonic()
@@ -186,6 +208,7 @@ class PlotService:
             return self.settings()
 
     def _stop_worker(self):
+        self.worker_available = False
         if self.process.is_alive():
             self.process.terminate()
         self.process.join(timeout=2)
@@ -224,11 +247,13 @@ class PlotService:
             if self.live is None:
                 raise ValueError("Live history is unavailable")
             descriptor = self.live.history_store.plot_source(source.get("generation"))
+            if hasattr(self.live, "inspection_store"):
+                descriptor["preview_source"] = self.live.inspection_store.plot_source(source.get("generation"))
             # A preview is a detached already-rendered record, never the active
             # native solver. Copy under the short latest-event lock only.
             with self.live.condition:
                 preview = self.live.latest.get("plan")
-                if preview and preview.get("origin") == "preview":
+                if "preview_source" not in descriptor and preview and preview.get("origin") == "preview":
                     descriptor["preview"] = deepcopy(preview)
             return descriptor
         if source.get("kind") != "replay":
@@ -241,8 +266,9 @@ class PlotService:
         # The watched catalog already validated this path. Do not scan/reload
         # NPZs or derive robot FK in an HTTP plotting request.
         with self.replays.lock:
-            path = self.replays.paths.get(identifier)
-            cached = self.replays.cache.get(identifier)
+            loaded = getattr(self.replays, "loaded", {}).get(identifier)
+            path = loaded[2] if loaded is not None else self.replays.paths.get(identifier)
+            cached = loaded[:2] if loaded is not None else self.replays.cache.get(identifier)
             if path is None or cached is None:
                 raise ValueError("Recording was not found; refresh the replay library")
             signature, item = cached
@@ -263,6 +289,10 @@ class PlotService:
             raise ValueError("Unknown plot request fields")
         if not isinstance(request.get("selection", {}), dict) or not isinstance(request.get("range", {}), dict):
             raise ValueError("selection and range must be objects")
+        selected = request.get("selection", {})
+        iteration = selected.get("iteration", selected.get("iteration_index"))
+        if iteration is not None and iteration != "seed" and (type(iteration) is not int or iteration < 0):
+            raise ValueError("SQP iteration must be null, seed, or an actual nonnegative integer index")
         analysis = request.get("range", {})
         if analysis.get("mode", "entire") not in ("entire", "through_cursor", "visible"):
             raise ValueError("Unknown episode analysis range")
@@ -296,7 +326,9 @@ class PlotService:
                 self.jobs[displaced]["state"] = "superseded"
             identifier = uuid.uuid4().hex
             self.jobs[identifier] = dict(job_id=identifier, id=identifier, state="pending", channel=channel,
-                request=request, descriptor=descriptor, registry_revision=self.registry_revision)
+                request=request, descriptor=descriptor, registry_revision=self.registry_revision,
+                data_revision=descriptor.get("cursor", descriptor.get("revision")),
+                generation=descriptor.get("generation"))
             self.pending[channel] = identifier
             while len(self.jobs) > 128:
                 oldest = next((key for key, job in self.jobs.items() if job["state"] not in ("pending", "running")), None)
@@ -312,7 +344,7 @@ class PlotService:
                 raise KeyError("Plot job expired or was not found")
             if job["descriptor"]["kind"] == "live" and self.live is not None and job["descriptor"]["generation"] != self.live.generation:
                 job["state"] = "superseded"
-            return deepcopy({key: value for key, value in job.items() if key not in ("channel", "request", "descriptor", "started_at")})
+            return deepcopy({key: value for key, value in job.items() if key not in ("channel", "request", "descriptor", "started_at", "payload_bytes")})
 
     def _pump(self):
         while True:
@@ -320,8 +352,8 @@ class PlotService:
                 if self.closed:
                     return
                 try:
-                    packet = self.results.get_nowait()
-                except queue.Empty:
+                    packet = self.results.get_nowait() if self.worker_available else None
+                except (queue.Empty, EOFError, OSError, ValueError):
                     packet = None
                 if packet:
                     if packet["type"] == "ready":
@@ -333,20 +365,41 @@ class PlotService:
                                 job.update(state="failed", error=packet["error"])
                         self.pending.clear()
                         self.active = None
+                        self.ready = False
+                        self._stop_worker()
+                        self.started_at = float("inf")
                     elif packet["type"] == "result":
                         job = self.jobs.get(packet["job_id"])
                         if job and job["state"] == "running":
                             if "error" in packet:
                                 job.update(state="failed", error=packet["error"])
                             else:
-                                job.update(state="complete", **packet["payload"])
+                                job.update(state="complete", payload_bytes=packet.get("payload_bytes", 0), **packet["payload"])
+                                retained_bytes = sum(j.get("payload_bytes", 0) for j in self.jobs.values())
+                                for old_id in list(self.jobs):
+                                    if retained_bytes <= MAX_CACHE_BYTES:
+                                        break
+                                    old = self.jobs[old_id]
+                                    if old_id != packet["job_id"] and old["state"] not in ("pending", "running"):
+                                        retained_bytes -= old.get("payload_bytes", 0)
+                                        del self.jobs[old_id]
                         if self.active == packet["job_id"]:
                             self.active = None
                 if self.active:
                     job = self.jobs.get(self.active)
                     if not self.process.is_alive() or time.monotonic()-job["started_at"] > self.timeout_s:
+                        if job["state"] == "running":
+                            job.update(state="failed", error="Plot worker stopped or exceeded the CPU evaluation timeout")
                         self._restart_locked("Plot worker stopped or exceeded the CPU evaluation timeout")
-                elif not self.ready and time.monotonic()-self.started_at > self.timeout_s:
+                elif self.worker_available and not self.process.is_alive():
+                    self.errors = ["Plot worker exited; reload the plot registry"]
+                    self.ready = False
+                    self._stop_worker()
+                    for identifier in self.pending.values():
+                        self.jobs[identifier].update(state="failed", error=self.errors[0])
+                    self.pending.clear()
+                    self.started_at = float("inf")
+                elif self.worker_available and not self.ready and time.monotonic()-self.started_at > self.timeout_s:
                     self.errors = ["Plot registry initialization timed out; reload after fixing the plot module"]
                     self._stop_worker()
                     for identifier in self.pending.values():

@@ -2,13 +2,23 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from collections.abc import Mapping
 import json
 from pathlib import Path
+from gato_visualizer.plotting.views import freeze
 
 
 CONTINUE_REASON = ("Exact Continue SQP is unavailable: the current GATO public API does not expose "
                    "optimizer checkpoint/restore/resume or per-SQP trajectory snapshots. "
                    "A new warm-seeded invocation is a different solve.")
+
+
+def serializable(value):
+    if isinstance(value, Mapping):
+        return {key: serializable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [serializable(item) for item in value]
+    return value
 
 
 class SourceReader:
@@ -22,35 +32,50 @@ class SourceReader:
         self.default_scene = default_scene
         self.identity = None
         self.records = []
+        self.buckets = {name: [] for name in ("states", "plans", "intervals", "controls")}
+        self.raw_cache = None
         self.cursor = self.offset = 0
         self.replay_cache = {}
+        self.preview_reader = None
 
     def read(self, descriptor):
         if descriptor["kind"] == "live":
             identity = (descriptor["path"], descriptor["generation"])
             if identity != self.identity or descriptor["cursor"] < self.cursor:
                 self.identity, self.records, self.cursor, self.offset = identity, [], 0, 0
+                self.buckets = {name: [] for name in ("states", "plans", "intervals", "controls")}
+                self.raw_cache = None
             with Path(descriptor["path"]).open("rb") as stream:
                 stream.seek(self.offset)
                 while self.cursor < descriptor["cursor"]:
                     line = stream.readline()
                     if not line or stream.tell() > descriptor["byte_end"]:
                         raise ValueError("Committed Live history prefix is incomplete")
-                    self.records.append(json.loads(line))
+                    record = freeze(json.loads(line))
+                    self.records.append(record)
+                    bucket = {"state": "states", "plan": "plans", "interval": "intervals", "control": "controls"}.get(record.get("type"))
+                    if bucket:
+                        self.buckets[bucket].append(record)
+                    self.raw_cache = None
                     self.cursor += 1
                 self.offset = stream.tell()
-            records = self.records
-            raw = dict(records=records, states=[r for r in records if r.get("type") == "state"],
-                       plans=[r for r in records if r.get("type") == "plan"],
-                       intervals=[r for r in records if r.get("type") == "interval"],
-                       controls=[r for r in records if r.get("type") == "control"],
-                       source=descriptor)
+            if self.raw_cache is None:
+                self.raw_cache = freeze(dict(records=tuple(self.records), **self.buckets))
+            # Nested records are immutable shared snapshots. Only cheap outer
+            # cursor/preview metadata changes between repeated evaluations.
+            raw = dict(self.raw_cache, source=descriptor)
             if raw["plans"]:
                 raw["joint_limits"] = raw["plans"][0].get("joint_limits")
+            if raw["controls"]:
+                raw["torque_samples"] = raw["controls"]
             # Preview is retained separately from executed episode history.
+            if descriptor.get("preview_source"):
+                if self.preview_reader is None:
+                    self.preview_reader = SourceReader()
+                raw["previews"] = self.preview_reader.read(descriptor["preview_source"])["plans"]
             if descriptor.get("preview"):
                 raw["previews"] = [descriptor["preview"]]
-            return raw
+            return freeze(raw)
         key = (descriptor.get("path"), descriptor.get("revision", "default"))
         if key not in self.replay_cache:
             if descriptor.get("path"):
@@ -69,28 +94,44 @@ class SourceReader:
                     reference=(None if replay.reference is None else dict(
                         xyz=replay.reference.xyz.tolist(), frame=replay.reference.frame,
                         time_s=None if replay.reference.time_s is None else replay.reference.time_s.tolist())))
+                # Scene rendering can use canonical fallback bounds. Analysis
+                # must distinguish those from actual historical bounds.
+                scene["plot_recorded_joint_limits"] = replay.joint_limits or {}
             else:
                 scene = self.default_scene
             raw = scene_records(scene)
-            self.replay_cache = {key: raw}  # bounded to the selected recording
+            self.replay_cache = {key: freeze(raw)}  # bounded to the selected recording
         return self.replay_cache[key]
 
 
 def scene_records(scene):
     """Normalize the existing scene contract while preserving original fields."""
-    raw = dict(scene=scene, source=scene.get("source", {}), joint_limits=scene.get("joint_limits"),
+    raw = dict(scene=scene, source=scene.get("source", {}),
+               joint_names=scene.get("joint_names", [f"arm_right_{i}_joint" for i in range(1, 8)]),
+               joint_limits=scene.get("plot_recorded_joint_limits", scene.get("joint_limits")) or {},
                states=[], plans=[], intervals=[], records=[], trajectories=scene.get("trajectories", []))
+    recorded = next((t for t in raw["trajectories"] if t.get("kind") == "recorded"), None)
+    origin = recorded["time_s"][0] if recorded and recorded.get("time_s") else 0
+    raw["time_origin_s"] = origin
     for trajectory_index, trajectory in enumerate(raw["trajectories"]):
         if trajectory.get("kind") == "prediction":
             plan = dict(trajectory)
             metadata = plan.get("metadata", {})
+            original_time = metadata.get("origin_time_s", metadata.get("recorded_start_s"))
             plan.update(id=plan.get("id", str(trajectory_index)), trajectory_index=trajectory_index,
-                        sim_time_s=metadata.get("origin_time_s", metadata.get("recorded_start_s")),
+                        recorded_origin_time_s=original_time,
+                        sim_time_s=None if original_time is None else original_time-origin,
                         knot_time_s=plan.get("time_s", []), stats=metadata.get("stats", {}))
+            if "diagnostics" in plan["stats"]:
+                plan["diagnostics"] = plan["stats"]["diagnostics"]
+            if "iterations" in plan["stats"]:
+                plan["iterations"] = plan["stats"]["iterations"]
             raw["plans"].append(plan)
+            plan["joint_limits"] = raw["joint_limits"]
         elif trajectory.get("kind") == "recorded":
             for i, time_s in enumerate(trajectory.get("time_s", [])):
-                state = dict(type="state", sim_time_s=time_s, trajectory_index=trajectory_index)
+                state = dict(type="state", sim_time_s=time_s-origin, recorded_time_s=time_s,
+                             trajectory_index=trajectory_index)
                 for field in ("q", "qd_rad_s", "ee_xyz"):
                     values = trajectory.get(field)
                     if values is not None and i < len(values):
@@ -104,7 +145,7 @@ def scene_records(scene):
                 raw["states"].append(state)
             if trajectory.get("torque_nm") is not None:
                 raw.setdefault("torque_samples", []).extend(
-                    dict(sim_time_s=t, torque_nm=u) for t, u in
+                    dict(sim_time_s=t-origin, recorded_time_s=t, torque_nm=u) for t, u in
                     zip(trajectory.get("torque_time_s", trajectory.get("time_s", [])), trajectory["torque_nm"]))
     raw["records"] = [*raw["states"], *raw["plans"]]
     return raw
@@ -118,7 +159,7 @@ def _column(value):
 
 def solve_iterations(plan):
     if "iterations" in plan:
-        return deepcopy(plan["iterations"])
+        return [dict(item) for item in plan["iterations"]]
     diagnostics = plan.get("diagnostics", {})
     pcg = _column(diagnostics.get("pcg_iters"))
     merit = _column(diagnostics.get("min_merit"))
@@ -144,14 +185,16 @@ def inspect_source(raw, selection=None, analysis=None):
     selected = None
     association = None
     def identity(plan):
-        return str(plan.get("id", plan.get("seq")))
+        value = str(plan.get("id", plan.get("seq")))
+        return f"preview:{value}" if plan.get("origin") == "preview" else value
     if selection.get("solve_id") is not None:
         selected = next((p for p in [*plans, *raw.get("previews", [])]
                          if identity(p) == str(selection["solve_id"])), None)
         if selected is None:
             raise ValueError("Selected solve is not retained in this source")
         association = "explicit"
-    elif selection.get("trajectory_index") is not None:
+    elif selection.get("trajectory_index") is not None and any(
+            p.get("trajectory_index") == selection["trajectory_index"] for p in plans):
         selected = next((p for p in plans if p.get("trajectory_index") == selection["trajectory_index"]), None)
         association = "explicit trajectory"
     elif plans:
@@ -179,4 +222,4 @@ def inspect_source(raw, selection=None, analysis=None):
             final_prediction={k: selected[k] for k in ("q", "ee_xyz", "knot_time_s", "reference_xyz") if k in selected},
             stats=selected.get("stats", {}), capabilities=dict(continue_sqp=False, continue_reason=CONTINUE_REASON,
                 iteration_predictions=any(i.get("prediction") is not None for i in selected["iterations"])))
-    return selected, info
+    return selected, serializable(info)

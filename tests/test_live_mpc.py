@@ -201,6 +201,32 @@ class AdapterTelemetryTests(unittest.TestCase):
         self.assertEqual(plan["torque_end_time_s"], .01)
         self.assertEqual(plan["torque_kind"], "predicted")
 
+    def test_capture_retains_problem_inputs_and_only_exposed_sqp_metrics(self):
+        adapter = self.adapter()
+        step = adapter.controller.step(None, None)
+        step.solve.stats.initial_merit = np.array([12.])
+        step.solve.stats.final_merit = np.array([8.])
+        step.solve.stats.min_merit = np.array([[8.], [float("nan")]])
+        step.solve.stats.step_size = np.array([[1.], [-1.]])
+        adapter.problem_configuration = dict(N=2, solver_params=dict(max_sqp_iters=3))
+        adapter.x[:] = np.arange(14)
+        adapter.reference[:] = 3.
+        captured = adapter.solve_snapshot("play", 7)
+        adapter.x[:] = 0
+        adapter.reference[:] = 9
+        adapter.problem_configuration["solver_params"]["max_sqp_iters"] = 99
+        step.solve.stats.initial_merit[:] = 99
+        rendered = render_plan(captured, adapter.kinematics)
+        self.assertEqual(rendered["initial_state"]["q"], list(range(7)))
+        self.assertEqual(rendered["initial_state"]["qd"], list(range(7,14)))
+        self.assertEqual(rendered["problem_configuration"]["solver_params"]["max_sqp_iters"], 3)
+        self.assertEqual(rendered["reference_native"][0], [3.]*6)
+        self.assertEqual(rendered["diagnostics"]["initial_merit"], [12.])
+        self.assertIsNone(rendered["diagnostics"]["min_merit"][1][0])
+        self.assertNotIn("iterations", rendered)
+        self.assertNotIn("checkpoint", rendered)
+        json.dumps(rendered, allow_nan=False)
+
     def test_presentation_snapshots_survive_control_progress_and_settings_mutation(self):
         adapter = self.adapter()
         plan = adapter.solve_snapshot("play", 3)

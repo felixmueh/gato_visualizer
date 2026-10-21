@@ -48,6 +48,7 @@ class ReplayLibrary:
         self.paths = {}
         self.items = []
         self.revision = 0
+        self.loaded = {}
 
     @staticmethod
     def identifier(source, relative):
@@ -129,6 +130,8 @@ class ReplayLibrary:
             scene = self.scene_builder(replay, path)
             if before != _signature(path):
                 raise ReplayError("Recording changed while loading; select it again after the write completes")
+            scene["source"]["plot_revision"] = item["revision"]
+            self.loaded[identifier] = (before, dict(item), path)
             return scene
 
     def _upload_parent(self, parts):

@@ -143,6 +143,7 @@ class ProcessLiveService:
             max_duration_s=120, max_states=MAX_STATES,
             rates_order=["simulation_hz", "control_hz", "to_hz"])
         self.history_store = HistoryStore(Path(__file__).resolve().parent / "_expr_data/live/history")
+        self.inspection_store = HistoryStore(Path(__file__).resolve().parent / "_expr_data/live/solves")
         if render_factory is None:
             from live_presentation import LiveRenderer
             render_factory = LiveRenderer
@@ -252,6 +253,7 @@ class ProcessLiveService:
                                               if tip and all(key in tip for key in ("sim_time_s", "q", "qd")) else dict(kind="current"))
                 self.generation += 1
                 self.history_store.reset(self.generation)
+                self.inspection_store.reset(self.generation)
                 self.history_store.complete = False
                 self.latest.pop("plan", None)
                 self.latest.pop("state", None)
@@ -325,13 +327,18 @@ class ProcessLiveService:
                         if packet.get("generation") != self.generation or packet.get("token") != self.revision.value:
                             continue
                         rendered_events = []
+                        inspection_records = []
                         for event in packet["events"]:
                             if event.get("type") == "plan" and "_xu" in event:
                                 event = self.renderer((event, None, ()))[0]
                                 event["generation"] = self.generation
+                                if event.get("origin") == "preview":
+                                    inspection_records.append(event)
                             rendered_events.append(event)
                             if "complete" in event:
                                 self.history_store.complete = bool(event["complete"])
+                        if inspection_records:
+                            self.inspection_store.append(inspection_records)
                         self.publish_events([*rendered_events, self._history_metadata()])
                 elif kind == "complete":
                     with self.condition:
@@ -361,5 +368,6 @@ class ProcessLiveService:
         self._process.join()
         self.thread.join(timeout=2)
         self.history_store.close()
+        self.inspection_store.close()
         self.commands.close()
         self.results.close()

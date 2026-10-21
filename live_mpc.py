@@ -232,6 +232,10 @@ class MPCAdapter:
         self.kinematics = RobotKinematics(Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf",
                                          end_effector_frame=self.reach.EE_FRAME)
         path, self.gpu_path, self.signs = self.reach.runtime_urdf()
+        self.model_identity = dict(full_urdf_sha256=hashlib.sha256(
+            (Path(mpc_root)/"models/tiago_pro/tiago_pro.urdf").read_bytes()).hexdigest(),
+            gpu_urdf_sha256=hashlib.sha256(self.gpu_path.read_bytes()).hexdigest(),
+            end_effector_frame=self.reach.EE_FRAME)
         self.state_signs = np.tile(self.signs, 2)
         self.model = self.pin.buildModelFromUrdf(str(path))
         self.data = self.model.createData()
@@ -344,6 +348,7 @@ class MPCAdapter:
         event = dict(type="plan", seq=self.sequence, origin=origin, settings_version=settings_version,
                      initial_state=dict(q=self.x[:7].tolist(), qd=self.x[7:].tolist(), time_s=self.t),
                      problem_configuration=deepcopy(getattr(self, "problem_configuration", {})),
+                     model_identity=deepcopy(getattr(self, "model_identity", {})),
                      task=deepcopy(self.task),
                      end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
                      sim_time_s=self.t, N=self.N, dt_s=self.dt, task_kind=self.task["kind"],

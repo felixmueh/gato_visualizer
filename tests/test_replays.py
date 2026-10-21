@@ -94,6 +94,31 @@ class ReplayTests(unittest.TestCase):
         self.assertNotIn("import pinocchio", source)
         self.assertNotIn("import gato", source)
 
+    def test_plot_reader_real_npz_preserves_optional_data_and_elapsed_clock(self):
+        from plot_sources import SourceReader, inspect_source
+        from replay_library import _signature
+        limits = dict(lower_position_rad=[-2]*7, upper_position_rad=[2]*7,
+                      velocity_rad_s=[1]*7, effort_nm=[12]*7, source="Recorded limits")
+        for telemetry in (False, True):
+            extra = dict(qd_rad_s=np.ones((2,7)), torque_nm=np.ones((1,7)),
+                         torque_time_s=[20.], joint_limits=limits) if telemetry else {}
+            path = self.export(self.path, time_s=[20., 20.03], reference_xyz_m=[.3,-.2,.5], reference_frame="base_footprint",
+                plans=[dict(id="saved", origin_time_s=20.02, time_s=[0,.01], q=self.q,
+                            stats=dict(sqp_iters=3))], **extra)
+            descriptor = dict(kind="replay", path=str(path), signature=list(_signature(path)),
+                              revision=str(telemetry))
+            raw = SourceReader(MPC_ROOT, self.base_scene).read(descriptor)
+            self.assertAlmostEqual(raw["states"][1]["sim_time_s"], .03)
+            self.assertEqual(raw["states"][0]["recorded_time_s"], 20)
+            self.assertEqual("qd_rad_s" in raw["states"][0], telemetry)
+            self.assertEqual(bool(raw["joint_limits"]), telemetry)
+            if telemetry:
+                self.assertEqual(raw["torque_samples"][0]["sim_time_s"], 0)
+            plan, info = inspect_source(raw, dict(trajectory_index=1), dict(cursor_s=0))
+            self.assertAlmostEqual(plan["sim_time_s"], .02)
+            self.assertEqual(plan["stats"]["sqp_iters"], 3)
+            self.assertEqual(info["selected_solve"]["iterations"], [])
+
     def test_optional_telemetry_ordering_interval_timing_and_historical_limits(self):
         order = np.arange(7)[::-1]
         velocity = np.arange(14).reshape(2, 7) / 10
