@@ -382,3 +382,94 @@ test('Play at an idle recorded end restarts history locally; an active growing t
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
 });
+
+test('first Live connection requests atomic comfortable reset and rejects prior server episode snapshots', async () => {
+  const h = harness(); h.setVersion(7);
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); let source = h.sources.at(-1); source.open();
+    source.emit({ type: 'state', settings_version: 7, sim_time_s: 99, q: Array(7).fill(1), qd: Array(7).fill(.3), ee_xyz: [1, 0, 1] });
+    source.emit({ type: 'status', state: 'paused', settings_version: 7 });
+    source.emit(plan(7, 999));
+    await flush();
+    assert.equal(h.commands[0].reset, true);
+    assert.equal(h.commands[0].anchor, undefined);
+    assert.equal(live.plan, undefined);
+    assert.equal(live.history.length, 0);
+    source.emit(plan(8, 1));
+    source.emit({ type: 'state', settings_version: 8, sim_time_s: 0, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [0, 0, 1] });
+    h.$('replay-mode').emit('click'); await flush(); h.$('live-mode').emit('click');
+    source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 8 });
+    await flush();
+    assert.equal(h.commands.filter(command => command.reset).length, 1);
+    assert.equal(live.history.length, 1);
+    h.edit('solver_params.q_cost', 8); h.$('live-preview').emit('click'); await flush();
+    assert.equal(h.commands.filter(command => command.type === 'set_settings').at(-1).reset, undefined);
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('N stays an available choice while dt and horizon edit the same prediction interval', async () => {
+  const h = harness();
+  h.schema.defaults.config.dt_s = .03;
+  h.schema.parameters.push({ path: 'dt_s', kind: 'float', label: 'Knot interval', min: .001, max: .1 });
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    const horizon = h.created.find(el => el.dataset.horizon === 'seconds');
+    assert.equal(Number(horizon.value), .93);
+    horizon.value = '1.55'; horizon.emit('input');
+    assert.equal(live.settings.config.N, 32); assert.equal(live.settings.config.dt_s, .05);
+    h.edit('N', 2); assert.equal(live.settings.config.N, 64); assert.equal(Number(horizon.value), 3.15);
+    h.edit('dt_s', .02); assert.equal(Number(horizon.value), 1.26);
+    horizon.value = ''; horizon.emit('input'); assert.equal(live.settings.config.dt_s, .02);
+    horizon.value = '999'; horizon.emit('input'); assert.equal(live.settings.config.dt_s, .02);
+    horizon.value = '3.15'; horizon.emit('input'); assert.equal(live.settings.config.dt_s, .05);
+    assert.equal('horizon' in live.settings.config, false);
+    assert.equal(h.created.filter(el => el.dataset.path === 'N').length, 1);
+    assert.equal(h.created.filter(el => el.dataset.path === 'dt_s').length, 1);
+  } finally {
+    h.$('live-mode').emit('click'); h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('figure-eight transforms use static start anchor, preserve period and reach, and clamp dimensions', async () => {
+  const h = harness();
+  h.schema.tasks[1].defaults.orientation_xyzw = [0, 0, 0, 1];
+  h.schema.tasks[1].parameters.forEach(parameter => { parameter.max = parameter.path === 'period_s' ? 120 : .6; });
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    assert.equal(live.targetInteraction.available, true);
+    assert.equal(live.setTaskTransform({size_m: [.3, .2]}), null);
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    h.$('live-preview').emit('click'); await flush();
+    source.emit({...plan(2, 2, 'figure8'), task_path_xyz: [[.4, -.3, 1.2], [.64, -.3, 1.2]], reference_xyz: [[.5, -.22, 1.2], [.51, -.21, 1.2]]});
+    assert.deepEqual(live.targetInteraction.position_world, [.4, -.3, 1.2]);
+    assert.equal(live.targetInteraction.available, true);
+    live.setTargetWorld([.5, -.2, 1.3]);
+    assert.deepEqual(live.settings.task.target_offset_m, [.1, .1, .1]);
+    const transformed = live.setTaskTransform({quaternion_xyzw: [1, 0, 0, 1], size_m: [2, -.1]});
+    assert.deepEqual(transformed.size_m, [.6, .01]);
+    assert.equal(live.settings.task.period_s, 8);
+    assert(Math.abs(Math.hypot(...live.settings.task.orientation_xyzw) - 1) < 1e-15);
+    assert.deepEqual(live.targetInteraction.position_world, [.5, -.19999999999999998, 1.3]);
+    const retained = live.settings;
+    assert.equal(live.setTaskTransform({quaternion_xyzw: [NaN, 0, 0, 1]}), null);
+    assert.deepEqual(live.settings, retained);
+    const width = h.document.querySelector('[data-task-path="width_m"]'); width.value = '99'; width.emit('input');
+    assert.equal(live.targetInteraction.available, false);
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});

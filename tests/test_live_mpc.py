@@ -77,9 +77,33 @@ class Figure8Tests(SettingsTests):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate_settings(self.config, {**task, **changes}, self.schema)
 
+    def test_rotation_moves_geometry_in_world_frame_about_static_start(self):
+        start = np.array([.4, -.3, 1.2])
+        task = deepcopy(FIGURE8_DEFAULT_TASK)
+        task["target_offset_m"] = [.1, .2, .3]
+        times = np.linspace(0, task["period_s"], 257)
+        original = figure8_reference(times, start, task)
+        # 90 degrees around world X rotates the local Y height into world Z.
+        task["orientation_xyzw"] = [np.sqrt(.5), 0., 0., np.sqrt(.5)]
+        rotated = figure8_reference(times, start, task)
+        pivot = start + task["target_offset_m"]
+        delta = original - pivot
+        expected = pivot + np.column_stack((delta[:, 0], -delta[:, 2], delta[:, 1]))
+        np.testing.assert_allclose(rotated, expected, atol=1e-14)
+        np.testing.assert_allclose(rotated[0], pivot, atol=1e-15)
+        np.testing.assert_allclose(np.ptp(rotated, axis=0), [.24, 0., .16], atol=1e-14)
+        legacy = deepcopy(FIGURE8_DEFAULT_TASK)
+        del legacy["orientation_xyzw"]
+        validate_settings(self.config, legacy, self.schema)
+        np.testing.assert_array_equal(figure8_reference(times, start, legacy),
+                                      figure8_reference(times, start, FIGURE8_DEFAULT_TASK))
+        for invalid in ([0, 0, 0, 0], [0, 0, 0, 2], [True, 0, 0, 0], [0, 0, float("nan"), 1], [0, 0, 1]):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "unit quaternion"):
+                validate_settings(self.config, {**task, "orientation_xyzw": invalid}, self.schema)
+
     def test_tracking_horizon_offsets_and_terminal_reference_remain_aligned(self):
         adapter = MPCAdapter.__new__(MPCAdapter)
-        adapter.task = deepcopy(FIGURE8_DEFAULT_TASK)
+        adapter.task = {**deepcopy(FIGURE8_DEFAULT_TASK), "orientation_xyzw": [0., np.sqrt(.5), 0., np.sqrt(.5)]}
         adapter.figure8_start_world = np.array([.4, -.3, 1.2])
         adapter.t, adapter.N, adapter.dt = 7.2, 4, .03
         translation = np.array([.1, .2, .5])

@@ -10,7 +10,24 @@ export function targetWorldOffset(base, position) {
   return position.map((value, i) => Math.max(-1, Math.min(1, value - base[i])));
 }
 
-export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, moveTarget, button, note }) {
+export function normalizeQuaternion(value) {
+  if (!Array.isArray(value) || value.length !== 4 || !value.every(Number.isFinite)) return null;
+  const norm = Math.hypot(...value);
+  return Number.isFinite(norm) && norm > 1e-12 ? value.map(x => x / norm) : null;
+}
+
+export function taskGizmoShortcut(event, kind) {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.target?.isContentEditable ||
+      /^(INPUT|SELECT|TEXTAREA)$/i.test(event.target?.tagName || '')) return null;
+  const key = event.key.toLowerCase();
+  if (key === 'escape') return 'deselect';
+  if (key === 'g') return 'translate';
+  if (kind === 'figure8' && key === 'r') return 'rotate';
+  if (kind === 'figure8' && key === 's') return 'scale';
+  return null;
+}
+
+export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, moveTarget, transformTarget, button, note }) {
   const canvas = renderer.domElement;
   const anchor = new Group();
   const marker = new Mesh(new SphereGeometry(.022, 20, 14), new MeshBasicMaterial({
@@ -30,7 +47,8 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
   let selected = false;
   let active = false;
   let orbitWasEnabled = true;
-  let pointerId;
+  let pointerId, dragSize;
+  let toolMode = 'translate';
 
   const cancelDrag = () => {
     const capturedPointer = pointerId;
@@ -42,17 +60,24 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     selected = Boolean(next && active);
     if (selected) transform.attach(anchor);
     else { cancelDrag(); transform.detach(); }
-    if (button) button.textContent = selected ? 'Hide target handles' : 'Move target in 3D';
+    if (button) button.textContent = selected ? 'Hide task handles' : 'Edit task in 3D';
     marker.material.wireframe = !selected;
   };
   transform.addEventListener('dragging-changed', (event) => {
-    if (event.value) { orbitWasEnabled = orbit.enabled; orbit.enabled = false; }
+    if (event.value) { orbitWasEnabled = orbit.enabled; orbit.enabled = false; dragSize = getTarget()?.size_m; }
     else orbit.enabled = orbitWasEnabled;
   });
   transform.addEventListener('objectChange', () => {
     if (!active) return;
-    const applied = moveTarget(anchor.position.toArray());
-    if (applied) anchor.position.fromArray(applied);
+    if (toolMode === 'translate') {
+      const applied = moveTarget(anchor.position.toArray());
+      if (applied) anchor.position.fromArray(applied);
+    } else if (transformTarget) {
+      const applied = transformTarget({ quaternion_xyzw: anchor.quaternion.toArray(),
+        ...(toolMode === 'scale' && dragSize ? { size_m: dragSize.map((value, i) => value * anchor.scale.getComponent(i)) } : {}) });
+      if (applied?.quaternion_xyzw) anchor.quaternion.fromArray(applied.quaternion_xyzw);
+      if (applied?.size_m && dragSize && toolMode === 'scale') anchor.scale.set(applied.size_m[0] / dragSize[0], applied.size_m[1] / dragSize[1], 1);
+    }
   });
   const pickTarget = (event) => {
     if (!active || event.button !== 0) return;
@@ -71,7 +96,20 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
   canvas.addEventListener('pointerdown', pickTarget, true);
   canvas.addEventListener('pointercancel', cancelDrag);
   canvas.addEventListener('lostpointercapture', cancelDrag);
-  const escape = (event) => { if (event.key === 'Escape') select(false); };
+  const setToolMode = (next) => {
+    cancelDrag(); toolMode = next;
+    transform.setMode(next); transform.setSpace(next === 'scale' ? 'local' : 'world');
+    transform.showZ = next !== 'scale';
+    anchor.scale.set(1, 1, 1);
+  };
+  const escape = (event) => {
+    if (!active) return;
+    const action = taskGizmoShortcut(event, getTarget()?.kind);
+    if (!action) return;
+    event.preventDefault();
+    if (action === 'deselect') select(false);
+    else { setToolMode(action); select(true); }
+  };
   document.addEventListener('keydown', escape);
   const toggle = () => select(!selected);
   button?.addEventListener('click', toggle);
@@ -82,13 +120,18 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     anchor.visible = active;
     transform.enabled = active && selected;
     if (!active) select(false);
-    else if (!transform.dragging) anchor.position.fromArray(target.position_world);
+    else if (!transform.dragging) {
+      if (target.kind !== 'figure8' && toolMode !== 'translate') setToolMode('translate');
+      anchor.position.fromArray(target.position_world);
+      anchor.quaternion.fromArray(target.quaternion_xyzw || [0, 0, 0, 1]);
+      anchor.scale.set(1, 1, 1);
+    }
     helper.visible = active && selected;
     if (button) button.disabled = !active;
     if (note) note.textContent = !active
-      ? 'Target handles become available after the live preview is ready.'
-      : selected ? `Drag X (red), Y (green), or Z (blue) in world coordinates.${target.pending ? ' Preview updating…' : ''} Esc hides handles.`
-        : 'Click the gold target in the workspace to show X / Y / Z handles.';
+      ? 'Task handles become available at the latest live state after preview.'
+      : selected ? `${toolMode === 'scale' ? 'Scale local X width / Y height' : toolMode === 'rotate' ? 'Rotate path around its start point in world coordinates' : 'Move task in world coordinates'}. G move${target.kind === 'figure8' ? ' · R rotate · S scale' : ''} · Esc deselect.${target.pending ? ' Preview updating…' : ''}`
+        : `Click the gold task anchor or press G to move${target.kind === 'figure8' ? ', R to rotate, S to scale' : ''}.`;
   };
   const project = (point) => {
     const position = point.clone().project(camera);
@@ -107,7 +150,7 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
           handles[object.name] = project(new Box3().setFromObject(object).getCenter(new Vector3()));
         }
       });
-      return { active, selected, dragging: transform.dragging, position_world: anchor.position.toArray(),
+      return { active, selected, mode: toolMode, quaternion_xyzw: anchor.quaternion.toArray(), dragging: transform.dragging, position_world: anchor.position.toArray(),
         target_screen: project(anchor.position), handles_screen: handles, orbit_enabled: orbit.enabled };
     },
     dispose() {

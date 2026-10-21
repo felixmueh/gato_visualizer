@@ -99,11 +99,14 @@ def parameter_specs(config, available_n):
 
 
 FIGURE8_DEFAULT_TASK = dict(kind="figure8", target_offset_m=[0, 0, 0],
-                            width_m=.24, height_m=.16, period_s=24.)
+                            width_m=.24, height_m=.16, period_s=24., orientation_xyzw=[0., 0., 0., 1.])
 
 
 def figure8_reference(times, start_xyz, task):
-    """World-XY loop, starting at its back edge without a position jump.
+    """Rotatable loop anchored at its static phase-zero back edge.
+
+    orientation_xyzw rotates local XY geometry into the world frame; translation
+    remains in world coordinates. Identity preserves the historical XY path.
 
     Geometry follows the retained tracking examples: x=(w/2)(1-cos phase),
     y=(h/2)sin(2 phase). Unlike their experiment-specific 20 mm edge offset,
@@ -112,8 +115,14 @@ def figure8_reference(times, start_xyz, task):
     phase = 2*np.pi*np.asarray(times, dtype=float)/task["period_s"]
     xyz = np.broadcast_to(np.asarray(start_xyz, dtype=float), (len(phase), 3)).copy()
     xyz += np.asarray(task["target_offset_m"])
-    xyz[:, 0] += .5*task["width_m"]*(1-np.cos(phase))
-    xyz[:, 1] += .5*task["height_m"]*np.sin(2*phase)
+    local = np.zeros_like(xyz)
+    local[:, 0] = .5*task["width_m"]*(1-np.cos(phase))
+    local[:, 1] = .5*task["height_m"]*np.sin(2*phase)
+    x, y, z, w = task.get("orientation_xyzw", [0., 0., 0., 1.])
+    rotation = np.array([[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
+                         [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
+                         [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
+    xyz += local @ rotation.T
     return xyz
 
 
@@ -153,10 +162,18 @@ def validate_settings(config, task, schema):
             raise ValueError(f"Invalid {path}: {value!r}")
     task_kind = task.get("kind")
     required_task_fields = ({"kind", "target_offset_m"} if task_kind == "reach" else
-                            set(FIGURE8_DEFAULT_TASK) if task_kind == "figure8" else None)
-    if required_task_fields is None or set(task) != required_task_fields:
+                            (set(FIGURE8_DEFAULT_TASK) - {"orientation_xyzw"}) if task_kind == "figure8" else None)
+    supplied_task_fields = set(task)
+    if task_kind == "figure8":
+        supplied_task_fields.discard("orientation_xyzw")  # Legacy unrotated tasks remain valid.
+    if required_task_fields is None or supplied_task_fields != required_task_fields:
         raise ValueError("task requires a complete reach or figure8 object")
     if task_kind == "figure8":
+        quaternion = task.get("orientation_xyzw", [0., 0., 0., 1.])
+        if (not isinstance(quaternion, list) or len(quaternion) != 4 or
+                any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in quaternion) or
+                abs(sum(x*x for x in quaternion) - 1.) > 1e-6):
+            raise ValueError("orientation_xyzw must be a finite unit quaternion [x, y, z, w]")
         for field, lo, hi in (("width_m", .01, .6), ("height_m", .01, .6), ("period_s", 1., 120.)):
             value = task[field]
             if (isinstance(value, bool) or not isinstance(value, (int, float)) or

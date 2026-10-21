@@ -1,4 +1,4 @@
-import { targetWorldPosition, targetWorldOffset } from './target-gizmo.js';
+import { targetWorldPosition, targetWorldOffset, normalizeQuaternion } from './target-gizmo.js';
 
 // The API uses native joint values and full robot-root coordinates. No sign or
 // frame conversions belong in the browser.
@@ -70,11 +70,11 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   let schema, settings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
   let settingsVersion, expectedVersion, needsInitialPreview = false, settingsTimer, submission = 0;
-  let historyEpoch = 0;
+  let historyEpoch = 0, initialResetPending = true;
   let generation = null, cursor = 0, historyComplete = false, fetching = false, fetchAgain = false;
   let historyRevision = 0, paintedRevision = -1, job = {}, extensionPending = false, extensionStartTime = null, frozenAnchor;
   let inspectingPreview = false, inspectionPlan = null;
-  let defaultTargetWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
+  let defaultTargetWorld, figure8BaseWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
   const latestServerEvents = new Map();
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock(), inputs = [];
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
@@ -114,11 +114,20 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       }
       if (!schema.available_N.includes(next.config.N)) throw new Error('Choose an available knot count.');
       const kind = $('live-task').value, descriptor = schema.tasks?.find(task => task.kind === kind);
-      next.task = { ...(descriptor?.defaults || { kind: 'reach' }), kind };
-      for (const parameter of descriptor?.parameters || []) next.task[parameter.path] = parseParameter(parameter, document.querySelector(`[data-task-path="${parameter.path}"]`));
+      next.task = { ...(descriptor?.defaults || { kind: 'reach' }), ...(settings.task.kind === kind ? settings.task : {}), kind };
+      for (const parameter of descriptor?.parameters || []) {
+        const input = document.querySelector(`[data-task-path="${parameter.path}"]`);
+        input.setCustomValidity('');
+        try { next.task[parameter.path] = parseParameter(parameter, input); }
+        catch (error) { input.setCustomValidity(error.message); if (reportErrors) input.reportValidity(); throw error; }
+      }
       next.task.target_offset_m = [0, 1, 2].map(i => {
         const input = $(`target-offset-${i}`), value = Number(input.value);
-        if (!input.value.trim() || !Number.isFinite(value)) throw new Error('Target offsets need finite values in metres.');
+        input.setCustomValidity('');
+        if (!input.value.trim() || !Number.isFinite(value) || Math.abs(value) > 1) {
+          const error = 'Target offsets must be finite within −1 to 1 m.';
+          input.setCustomValidity(error); if (reportErrors) input.reportValidity(); throw new Error(error);
+        }
         return value;
       });
       const execution = { ...DEFAULT_EXECUTION, ...next.execution };
@@ -141,13 +150,15 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     const previousExpectedVersion = expectedVersion;
     expectedVersion = Math.max(expectedVersion ?? 0, settingsVersion ?? 0) + 1;
     const request = ++submission;
-    const anchor = frozenAnchor || displayedAnchor();
+    const resetting = initialResetPending;
+    const anchor = resetting ? undefined : frozenAnchor || displayedAnchor();
     clock.pause(); controlsEnabled(); refreshPlanLabel();
     message(next.execution.calculation === 'automatic' ? 'Replacing calculation from the displayed starting state…' : 'Updating one-horizon preview…');
-    const accepted = await send({ type: 'set_settings', ...next, ...(anchor ? { anchor } : {}) });
+    const accepted = await send({ type: 'set_settings', ...next, ...(resetting ? { reset: true } : anchor ? { anchor } : {}) });
     if (request !== submission) return Boolean(accepted);
     if (!accepted) { pending = false; dirty = true; expectedVersion = previousExpectedVersion; }
     else {
+      if (resetting) { initialResetPending = false; onReset(); }
       if (Number.isInteger(accepted.settings_version)) expectedVersion = settingsVersion = accepted.settings_version;
       if (accepted.generation != null) useGeneration(accepted.generation, true);
       pending = !plan || plan.settings_version < expectedVersion;
@@ -184,17 +195,30 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
         input.value = settings.task.kind === descriptor.kind ? settings.task[parameter.path] : descriptor.defaults[parameter.path];
         input.addEventListener('input', change); label.append(caption, input); $('live-task-parameters').append(label);
       }
-      $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'Horizontal figure eight in world XY. Offsets move the path; Reset restarts its phase.' : 'Offset from the default reaching target. Click the target to move it along an axis.';
+      $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'G moves the path in world coordinates; R rotates and S scales width/height about its start. Period sets speed. Reset restarts phase.' : 'Offset from the default reaching target. Click the target to move it along an axis.';
     };
     taskFields(); $('live-task').addEventListener('change', () => { taskFields(); change(); });
     const groups = new Map();
+    const horizonRow = document.createElement('div'); horizonRow.className = 'horizon-row';
+    ($('live-horizon-settings') || $('live-settings')).append(horizonRow);
+    let horizonInput;
+    const syncHorizon = () => {
+      const n = inputs.find(item => item.parameter.path === 'N');
+      const dt = inputs.find(item => item.parameter.path === 'dt_s');
+      if (!n || !dt || !horizonInput) return;
+      const count = parseParameter(n.parameter, n.input), seconds = Number(dt.input.value);
+      horizonInput.min = (count - 1) * dt.parameter.min; horizonInput.max = (count - 1) * dt.parameter.max;
+      horizonInput.value = dt.input.value.trim() && Number.isFinite(seconds) ? String(Number(((count - 1) * seconds).toPrecision(12))) : '';
+      horizonInput.setCustomValidity('');
+    };
     for (const supplied of schema.parameters) {
       const parameter = { ...supplied, path: supplied.path.replace(/^config\./, '') };
       // Retain this upstream value in the complete config, without a timing UI.
       if (parameter.path.endsWith('warm_start')) continue;
       if (parameter.path === 'N') { parameter.kind = 'choice'; parameter.choices = schema.available_N; }
       const name = parameter.group || 'Settings';
-      if (!groups.has(name)) {
+      const isHorizon = ['N', 'dt_s'].includes(parameter.path);
+      if (!isHorizon && !groups.has(name)) {
         const details = document.createElement('details'); details.className = 'settings-group'; details.open = groups.size === 0;
         const summary = document.createElement('summary'); summary.textContent = name;
         const fields = document.createElement('div'); fields.className = 'settings-fields'; details.append(summary, fields); $('live-settings').append(details); groups.set(name, fields);
@@ -210,8 +234,23 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
         }
       } else if (parameter.kind === 'bool') { input.type = 'checkbox'; input.checked = Boolean(value); }
       else { input.type = 'number'; input.step = parameter.kind === 'int' ? '1' : 'any'; if (parameter.min != null) input.min = parameter.min; if (parameter.max != null) input.max = parameter.max; input.value = value; input.required = true; }
-      input.disabled = Boolean(parameter.disabled); input.title = parameter.path; input.addEventListener('input', change);
-      label.append(text, input); groups.get(name).append(label); inputs.push({ parameter, input });
+      input.disabled = Boolean(parameter.disabled); input.title = parameter.path; input.addEventListener('input', () => { if (isHorizon) syncHorizon(); change(); });
+      if (isHorizon) { label.className = 'horizon-field'; text.textContent = parameter.path === 'N' ? 'N' : 'Δt (s)'; }
+      label.append(text, input); (isHorizon ? horizonRow : groups.get(name)).append(label); inputs.push({ parameter, input });
+    }
+    if (inputs.some(item => item.parameter.path === 'dt_s')) {
+      const label = document.createElement('label'); label.className = 'horizon-field';
+      const text = document.createElement('span'); text.textContent = 'Horizon (s)';
+      horizonInput = document.createElement('input'); horizonInput.type = 'number'; horizonInput.step = 'any'; horizonInput.required = true;
+      horizonInput.dataset.horizon = 'seconds'; horizonInput.title = 'Horizon = (N − 1) × Δt';
+      horizonInput.addEventListener('input', () => {
+        const n = inputs.find(item => item.parameter.path === 'N'), dt = inputs.find(item => item.parameter.path === 'dt_s');
+        const count = parseParameter(n.parameter, n.input);
+        dt.input.value = horizonInput.value.trim() ? String(Number((Number(horizonInput.value) / (count - 1)).toPrecision(12))) : '';
+        change();
+        horizonInput.setCustomValidity(dt.input.validationMessage || '');
+      });
+      label.append(text, horizonInput); horizonRow.append(label); syncHorizon();
     }
     settings.task.target_offset_m.forEach((value, i) => { $(`target-offset-${i}`).value = value; $(`target-offset-${i}`).addEventListener('input', change); });
     settings.execution = validateExecution({ ...DEFAULT_EXECUTION, ...(schema.defaults.execution || {}) });
@@ -278,6 +317,9 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     }
     if (!defaultTargetWorld && (item.task_kind || submittedSettings?.task.kind) === 'reach' && submittedSettings?.task.kind === 'reach') {
       defaultTargetWorld = item.reference_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
+    }
+    if (!figure8BaseWorld && item.task_kind === 'figure8' && submittedSettings?.task.kind === 'figure8' && validPoints(item.task_path_xyz)) {
+      figure8BaseWorld = item.task_path_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
     }
     return true;
   }
@@ -500,10 +542,30 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   return {
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
-      const available = mode === 'live' && (clock.time == null || clock.time >= history.bounds[1] - 1e-7) && $('live-task').value === 'reach' && connected() && Boolean(defaultTargetWorld) && settings.task.kind === 'reach' && offset.every(value => Number.isFinite(value) && Math.abs(value) <= 1) && [0, 1, 2].every(i => $(`target-offset-${i}`).value.trim() !== '') && status !== 'gpu_busy' && status !== 'error';
-      return { available, position_world: defaultTargetWorld ? targetWorldPosition(defaultTargetWorld, offset) : null, pending: dirty || pending, offset_m: offset };
+      const kind = $('live-task').value, base = kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
+      const available = mode === 'live' && (clock.time == null || clock.time >= history.bounds[1] - 1e-7) && connected() && Boolean(base) && settings.task.kind === kind && Boolean(readSettings()) && status !== 'gpu_busy' && status !== 'error';
+      return { available, kind, position_world: base ? targetWorldPosition(base, offset) : null,
+        quaternion_xyzw: settings?.task.orientation_xyzw || [0, 0, 0, 1],
+        size_m: kind === 'figure8' ? [settings?.task.width_m, settings?.task.height_m] : null,
+        pending: dirty || pending, offset_m: offset };
     },
-    setTargetWorld(position) { if (!this.targetInteraction.available) return null; const offset = targetWorldOffset(defaultTargetWorld, position); if (!offset) return null; offset.forEach((value, i) => { $(`target-offset-${i}`).value = String(Number(value.toFixed(6))); }); change(); return this.targetInteraction.position_world; },
+    setTargetWorld(position) {
+      if (!this.targetInteraction.available) return null;
+      const base = settings.task.kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
+      const offset = targetWorldOffset(base, position); if (!offset) return null;
+      offset.forEach((value, i) => { $(`target-offset-${i}`).value = String(Number(value.toFixed(6))); });
+      change(); return this.targetInteraction.position_world;
+    },
+    setTaskTransform(pose) {
+      if (!this.targetInteraction.available || settings.task.kind !== 'figure8') return null;
+      const quaternion = normalizeQuaternion(pose.quaternion_xyzw || settings.task.orientation_xyzw || [0, 0, 0, 1]);
+      if (!quaternion || (pose.size_m && (!Array.isArray(pose.size_m) || pose.size_m.length !== 2 || !pose.size_m.every(Number.isFinite)))) return null;
+      settings.task.orientation_xyzw = quaternion;
+      if (pose.size_m) ['width_m', 'height_m'].forEach((path, i) => {
+        document.querySelector(`[data-task-path="${path}"]`).value = String(Number(Math.max(.01, Math.min(.6, pose.size_m[i])).toFixed(6)));
+      });
+      change(); return this.targetInteraction;
+    },
     get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
     get history() { return { length: history.length, bounds: history.bounds, selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || plan?.task_path_xyz?.length); },
