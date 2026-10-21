@@ -250,6 +250,9 @@ def load_replay(source, *, model_urdf):
                 raise ReplayError("time_basis must explicitly be 'simulation' or 'wall'")
             if "label" in metadata and (not isinstance(metadata["label"], str) or not metadata["label"].strip()):
                 raise ReplayError("label must be a nonempty string")
+            if "end_effector_frame" in metadata and (not isinstance(metadata["end_effector_frame"], str)
+                    or not metadata["end_effector_frame"].strip()):
+                raise ReplayError("end_effector_frame must be a nonempty fixed-joint name")
             _fixed_joints(metadata.get("fixed_joints", {}), model_urdf)
             times = _times(archive, "time_s")
             q = _numeric(archive, "q", (len(times), 7))[:, order]

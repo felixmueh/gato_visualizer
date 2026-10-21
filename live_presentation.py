@@ -130,9 +130,14 @@ class LiveRenderer:
 
     def __call__(self, frame):
         plan, state, events = frame
-        if (plan is not None or state is not None) and self.kinematics is None:
+        captured = plan if plan is not None else state
+        end_effector_frame = (captured.get("end_effector_frame", "arm_right_tool_joint")
+                              if captured is not None else None)
+        if captured is not None and (self.kinematics is None or
+                self.kinematics.end_effector_frame != end_effector_frame):
             from server import RobotKinematics
-            self.kinematics = RobotKinematics(self.mpc_root / "models/tiago_pro/tiago_pro.urdf")
+            self.kinematics = RobotKinematics(self.mpc_root / "models/tiago_pro/tiago_pro.urdf",
+                                             end_effector_frame=end_effector_frame)
         result = []
         if plan is not None:
             result.append(render_plan(plan, self.kinematics))

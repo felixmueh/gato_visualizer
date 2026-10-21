@@ -28,6 +28,7 @@ save_replay(
     model_urdf=Path("models/tiago_pro/tiago_pro.urdf"),
     time_basis="simulation",              # use "wall" for wall-clock samples
     label="My reaching run",
+    end_effector_frame="arm_right_grasp_joint",  # position between the fingers
     reference_xyz_m=target_xyz,            # optional static position
     reference_frame="torso_lift_link",    # frame of target_xyz
 )
@@ -39,6 +40,13 @@ its SHA-256 is computed by the helper. Omitting this argument uses the main
 writes a temporary file and atomically replaces its destination on success.
 The viewer refuses a different model identity, rather than substituting a model.
 Exporting does not alter the experiment or existing recordings.
+
+`end_effector_frame` identifies the point followed by recorded paths and
+references. New grasp-center recordings use `arm_right_grasp_joint`; historical
+recordings without the field retain `arm_right_tool_joint` (the flange).
+The viewer reads application-only fixed TCP offsets from the selected
+`tiago_mpc` reduced URDF without changing the canonical full model or its hash.
+Live MPC uses that checkout's `reach_sim.EE_FRAME` for its solve and display.
 
 For retained historical runs, establish native joint/frame compatibility
 before selecting a newer display model. Preserve original full/reduced model

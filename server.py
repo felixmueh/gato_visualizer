@@ -106,7 +106,10 @@ def discover_run(mpc_root):
 
 
 class RobotKinematics:
-    def __init__(self, urdf, fixed_joints=None):
+    def __init__(self, urdf, fixed_joints=None, *, end_effector_frame="arm_right_tool_joint",
+                 reduced_urdf=None):
+        if not isinstance(end_effector_frame, str) or not end_effector_frame.strip():
+            raise SourceError("end_effector_frame must be a nonempty fixed-joint name")
         self.model = pin.buildModelFromUrdf(str(urdf))
         self.data = self.model.createData()
         self.neutral = pin.neutral(self.model)
@@ -137,7 +140,23 @@ class RobotKinematics:
             if jid == self.model.njoints or self.model.joints[jid].nq != 1:
                 raise SourceError(f"Expected one-axis native arm joint: {name}")
             self.arm_indices.append(self.model.joints[jid].idx_q)
-        self.ee_frame = self.model.getFrameId("arm_right_tool_joint")
+        self.end_effector_frame = end_effector_frame
+        self.ee_frame = self.model.getFrameId(end_effector_frame)
+        self.ee_offset = pin.SE3.Identity()
+        if self.ee_frame >= self.model.nframes:
+            # Application TCP frames live in the reduced model, leaving the
+            # canonical display URDF and historical replay hashes unchanged.
+            reduced_urdf = reduced_urdf or Path(urdf).parents[1] / "tiago_right/tiago_right_arm.urdf"
+            joint = next((j for j in ET.parse(reduced_urdf).getroot().findall("joint")
+                          if j.get("name") == end_effector_frame), None)
+            if joint is None or joint.get("type") != "fixed":
+                raise SourceError(f"Missing fixed end-effector frame: {end_effector_frame}")
+            self.ee_frame = self.model.getFrameId(joint.find("parent").get("link"))
+            origin = joint.find("origin")
+            attributes = {} if origin is None else origin.attrib
+            xyz = finite_array([float(x) for x in attributes.get("xyz", "0 0 0").split()], "TCP xyz", (3,))
+            rpy = finite_array([float(x) for x in attributes.get("rpy", "0 0 0").split()], "TCP rpy", (3,))
+            self.ee_offset = pin.SE3(pin.rpy.rpyToMatrix(rpy), xyz)
         self.torso_frame = self.model.getFrameId("torso_lift_link")
         if max(self.ee_frame, self.torso_frame) >= self.model.nframes:
             raise SourceError("Canonical URDF is missing end-effector or torso frame")
@@ -152,7 +171,7 @@ class RobotKinematics:
             q[self.arm_indices] = row
             pin.forwardKinematics(self.model, self.data, q)
             pin.updateFramePlacements(self.model, self.data)
-            positions.append(self.data.oMf[self.ee_frame].translation.copy())
+            positions.append((self.data.oMf[self.ee_frame] * self.ee_offset).translation.copy())
         return finite_array(positions, "world end-effector positions", (len(arm_q), 3))
 
     def target_to_world(self, target):
@@ -238,7 +257,8 @@ def load_scene(mpc_root, run_dir=None):
     knots = summary.get("N", 0)
     if not np.isfinite(dt) or dt <= 0:
         raise SourceError("Recording dt_s must be finite and positive")
-    kinematics = RobotKinematics(urdf)
+    end_effector_frame = summary.get("end_effector_frame", "arm_right_tool_joint")
+    kinematics = RobotKinematics(urdf, end_effector_frame=end_effector_frame)
     target_world = kinematics.target_to_world(target).tolist()
     try:
         with np.load(run_dir / "trajectory.npz", allow_pickle=False) as data:
@@ -295,7 +315,7 @@ def load_scene(mpc_root, run_dir=None):
                  joint_limits=(normalize_joint_limits(summary.get("raw_limits"), list(range(7)))
                                or canonical_joint_limits(urdf)),
                  fixed_joints=fixed_joints, world_frame=world_frame,
-                 up_axis="Z", end_effector_frame="arm_right_tool_joint",
+                 up_axis="Z", end_effector_frame=end_effector_frame,
                  source=dict(mpc_root=str(mpc_root), run_dir=str(run_dir),
                              repository_commit=summary.get("repository_commit"),
                              gato_commit=summary.get("gato_commit"),
@@ -315,7 +335,9 @@ def replay_scene(replay, path, mpc_root, base_scene):
     """Convert a portable native replay into the existing browser scene shape."""
     fixed = {name: value for name, value in base_scene["fixed_joints"].items() if name not in JOINT_NAMES}
     fixed.update(replay.metadata.get("fixed_joints", {}))
-    kinematics = RobotKinematics(Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf", fixed_joints=fixed)
+    end_effector_frame = replay.metadata.get("end_effector_frame", "arm_right_tool_joint")
+    kinematics = RobotKinematics(Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf", fixed_joints=fixed,
+                                 end_effector_frame=end_effector_frame)
 
     def world_points(reference):
         points = np.atleast_2d(reference.xyz)
@@ -358,7 +380,7 @@ def replay_scene(replay, path, mpc_root, base_scene):
     for item, plan in zip(trajectories[1:], replay.predictions):
         add_telemetry(item, plan.qd_rad_s, plan.torque_nm, plan.torque_time_s, kind="predicted")
     result = deepcopy(base_scene)
-    result.update(fixed_joints=fixed, trajectories=trajectories,
+    result.update(fixed_joints=fixed, trajectories=trajectories, end_effector_frame=end_effector_frame,
                   joint_limits=(replay.joint_limits or canonical_joint_limits(
                       Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf")))
     result["source"] = dict(mpc_root=str(Path(mpc_root).resolve()), replay_file=str(path),

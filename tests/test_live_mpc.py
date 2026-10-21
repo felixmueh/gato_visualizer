@@ -137,6 +137,7 @@ class AdapterTelemetryTests(unittest.TestCase):
     def adapter(self):
         adapter = MPCAdapter.__new__(MPCAdapter)
         adapter.reach = SimpleNamespace(Q_START_RAD=np.zeros(7), POSITION_TOL_M=.05,
+                                        EE_FRAME="arm_right_tool_joint",
                                         SPEED_L1_TOL_RAD_S=1, SIM_DT_S=.005,
                                         rk4=lambda model, data, q, v, u, h: (q+v*h, v+u*h))
         adapter.kinematics = SimpleNamespace(ee_positions=lambda q: np.zeros((len(q), 3)),

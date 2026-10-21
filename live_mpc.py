@@ -227,7 +227,8 @@ class MPCAdapter:
         self.gato = self.reach.gato
         self.pin = self.reach.pin
         from server import RobotKinematics
-        self.kinematics = RobotKinematics(Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf")
+        self.kinematics = RobotKinematics(Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf",
+                                         end_effector_frame=self.reach.EE_FRAME)
         path, self.gpu_path, self.signs = self.reach.runtime_urdf()
         self.state_signs = np.tile(self.signs, 2)
         self.model = self.pin.buildModelFromUrdf(str(path))
@@ -335,6 +336,7 @@ class MPCAdapter:
         stats = step.solve.stats
         self.sequence += 1
         event = dict(type="plan", seq=self.sequence, origin=origin, settings_version=settings_version,
+                     end_effector_frame=self.reach.EE_FRAME,
                      sim_time_s=self.t, N=self.N, dt_s=self.dt, task_kind=self.task["kind"],
                      target_xyz=self.target_world_at(self.t).tolist(),
                      task_path_xyz=getattr(self, "task_path_xyz", None),
@@ -377,6 +379,7 @@ class MPCAdapter:
 
     def state_snapshot(self, rtf=0, settings_version=0):
         return snapshot(dict(type="state", sim_time_s=self.t, _x=self.x,
+                    end_effector_frame=self.reach.EE_FRAME,
                     settings_version=settings_version,
                     torque_nm=None if self.applied_torque is None else self.applied_torque.tolist(),
                     torque_kind="applied", joint_limits=self.joint_limits,
