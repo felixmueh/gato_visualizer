@@ -101,14 +101,20 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     identity.textContent = selected ? `${state.pinned ? 'Pinned · ' : ''}${selected.origin === 'preview' ? 'Preview' : 'Solve'} ${selected.seq ?? selected.id}${Number.isFinite(selected.sim_time_s ?? selected.time_s) ? ` · ${(selected.sim_time_s ?? selected.time_s).toFixed(3)} s` : ''}${metadata.solve?.context?.association ? ` · ${metadata.solve.context.association}` : ''}` : 'No recorded solve associated with the episode cursor.';
     strip.hidden = !records.length; slider.max = String(Math.max(0, records.length - 1)); slider.value = String(Math.max(0, index)); slider.disabled = !records.length; previous.disabled = index <= 0; next.disabled = index >= records.length - 1; final.disabled = state.iteration == null;
     const current = records[index]; iterationLabel.textContent = current ? `${current.index === 0 ? 'Seed' : `SQP ${current.index}`} · ${index + 1} of ${records.length} recorded${current.status ? ` · ${current.status}` : ''}` : 'Final result';
-    capability.textContent = !records.length ? 'Only the final result is retained; no intermediate SQP records are available.' : state.iteration != null && !current?.prediction ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : 'Recorded SQP inspection leaves the episode clock unchanged.';
+    // A metrics-only iteration has no trajectory snapshot. Keep the selected
+    // solve's final plan visible as explicitly labelled display context, without
+    // attaching it to the iteration record or changing the Python plot inputs.
+    const iterationMissing = state.iteration != null && !current?.prediction;
+    const finalContext = iterationMissing && Boolean(selected?.final_prediction);
+    const prediction = state.iteration == null || finalContext ? selected?.final_prediction : current?.prediction;
+    const predictionSource = finalContext ? 'final-context' : prediction ? state.iteration == null ? 'final' : 'iteration' : null;
+    capability.textContent = finalContext ? 'Final prediction shown; iteration trajectory not recorded.' : !records.length ? 'Only the final result is retained; no intermediate SQP records are available.' : iterationMissing ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : 'Recorded SQP inspection leaves the episode clock unchanged.';
     continuation.title = selected?.reason || selected?.capabilities?.continue_reason || 'Exact continuation needs a retained optimizer checkpoint, which this source does not provide.';
     continuationReason.textContent = `Continue SQP unavailable: ${continuation.title}`;
     continuation.setAttribute('aria-label', `Continue SQP unavailable: ${continuation.title}`);
-    const prediction = state.iteration == null ? selected?.final_prediction : current?.prediction;
     const active = Boolean(selected) && (getView().inspectSolve !== false || state.pinned);
-    const key = JSON.stringify([getSource()?.source, selected?.id, state.iteration, prediction, active, state.pinned]);
-    if (key !== lastPrediction) { lastPrediction = key; onPrediction({ active, prediction: prediction || null, pinned: state.pinned, solve: selected, iteration: state.iteration }); }
+    const key = JSON.stringify([getSource()?.source, selected?.id, state.iteration, prediction, predictionSource, active, state.pinned]);
+    if (key !== lastPrediction) { lastPrediction = key; onPrediction({ active, prediction: prediction || null, predictionSource, pinned: state.pinned, solve: selected, iteration: state.iteration }); }
   }
   function selectIteration(position) { const selected = state.selected?.iterations?.[position]; if (!selected) return; state.selectIteration(selected.index); invalidate(); }
   function selectIterationByIndex(value) { const records = state.selected?.iterations || []; const nearest = records.reduce((best, item, i) => !best || Math.abs(item.index - value) < best.delta ? { i, delta: Math.abs(item.index - value) } : best, null); if (nearest) selectIteration(nearest.i); }
