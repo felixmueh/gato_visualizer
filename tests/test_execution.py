@@ -335,32 +335,53 @@ class SpawnTests(unittest.TestCase):
             self.assertEqual(self.records()[0]['q'],[.3]*7)
         finally:
             server.shutdown();server.server_close();thread.join()
-    def test_on_play_stops_at_duration_and_pause_during_solve_is_reported(self):
+    def test_on_play_runs_past_duration_without_controller_reset_until_paused(self):
         request=self.settings(simulation_hz=100.,control_hz=25.,to_hz=10.)
         request['execution']['calculation']='on_play'
         request['execution']['duration_s']=.125
         self.service.command(request)
         self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
-        self.service.command(dict(type='play'))
-        self.wait(lambda:self.service.latest.get('status',{}).get('message')=='Precalculation complete')
-        self.assertAlmostEqual(self.service.latest['history']['history_end_s'],.125)
-        self.assertFalse(self.service.latest['status']['job_active'])
-        self.service.command(dict(type='pause'))
-        self.wait(lambda:self.service.latest.get('status',{}).get('message')=='Calculation paused; existing history retained')
-        self.assertTrue(self.service.latest['history']['complete'])
         generation=self.service.generation
+        self.service.command(dict(type='play'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('history_end_s',0)>=.35)
+        self.assertTrue(self.service.latest['status']['job_active'])
+        self.assertIsNone(self.service.latest['status']['requested_end_s'])
+        self.assertFalse(self.service.latest['history']['complete'])
+        first_tip=self.service.latest['history']['history_end_s']
+        self.service.command(dict(type='play'))  # Idempotent while already running.
+        self.wait(lambda:self.service.latest.get('status',{}).get('history_end_s',0)>=first_tip+.15)
+        plans=[r for r in self.records() if r['type']=='plan' and r['origin']=='play']
+        self.assertGreaterEqual(len(plans),5)
+        self.assertTrue(plans[0]['stats']['controller_restarted'])
+        self.assertTrue(all(not plan['stats']['controller_restarted'] for plan in plans[1:]))
+        self.service.command(dict(type='pause'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('state')=='paused')
+        self.assertFalse(self.service.latest['status']['job_active'])
+        self.assertFalse(self.service.latest['history']['complete'])
+        self.assertEqual(self.service.generation,generation)
+        paused_tip=self.service.latest['history']['history_end_s']
+        self.service.command(dict(type='play'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('history_end_s',0)>paused_tip)
+        self.service.command(dict(type='pause'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('state')=='paused')
+        self.assertEqual(self.service.generation,generation)
+        times=[r['sim_time_s'] for r in self.records() if r['type']=='state']
+        self.assertTrue(all(left<right for left,right in zip(times,times[1:])))
+
+    def test_on_play_pause_during_native_solve_is_reported(self):
         request=self.settings()
         request['execution']['calculation']='on_play'
         request['config']['solver_params']['max_sqp_iters']=9000
         self.service.command(request)
-        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==2)
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
+        generation=self.service.generation
         self.service.command(dict(type='play'))
         self.wait(lambda:self.service.latest.get('status',{}).get('job_active'))
         self.service.command(dict(type='pause'))
         self.wait(lambda:self.service.latest.get('status',{}).get('state')=='paused')
         self.assertFalse(self.service.latest['status']['job_active'])
         self.assertFalse(self.service.latest['history']['complete'])
-        self.assertEqual(self.service.generation,generation+1)
+        self.assertEqual(self.service.generation,generation)
         self.service.command(dict(type='preview',anchor=dict(sim_time_s=0.,q=[0.]*7,qd=[0.]*7)))
         self.wait(lambda:self.service.latest.get('status',{}).get('message')=='Prediction inspected at displayed state; history retained')
         self.assertFalse(self.service.latest['history']['complete'])
@@ -380,12 +401,14 @@ class SpawnTests(unittest.TestCase):
         self.service.command(dict(type='cancel'))
         self.wait(lambda:self.service.latest.get('status',{}).get('settings_version')==2 and not self.service.latest['status']['job_active'])
         self.service.command(dict(type='play'))
-        self.wait(lambda:self.service.latest.get('status',{}).get('message')=='Precalculation complete')
+        self.wait(lambda:self.service.latest.get('status',{}).get('history_end_s',0)>=3.125)
+        self.service.command(dict(type='pause'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('state')=='paused')
         initial=[r for r in self.records() if r['type']=='state'][0]
         self.assertEqual(initial['sim_time_s'],3.)
         self.assertEqual(initial['q'],[.7]*7)
         self.assertEqual(initial['qd'],[.2]*7)
-        self.assertAlmostEqual(self.service.latest['history']['history_end_s'],3.125)
+        self.assertGreaterEqual(self.service.latest['history']['history_end_s'],3.125)
     def test_anchored_preview_preserves_authoritative_history_and_tip(self):
         self.service.command(self.settings())
         self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)

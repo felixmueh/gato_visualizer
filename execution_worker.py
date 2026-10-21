@@ -217,12 +217,17 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             status("paused", "Preview ready; history uses simulation timestamps", complete=history_complete)
                             locks.release()
                     elif kind in ("play", "precalculate"):
+                        if kind == "play" and job is not None:
+                            # A repeated Play request must not restart pacing,
+                            # controller state or the active recording.
+                            status("playing" if job["paced"] else "calculating", "Calculation is already running", complete=False)
+                            continue
                         if session is None:
                             adapter.controller.reset(adapter.x*adapter.state_signs)
                             adapter.restarted = True
                             session = MultirateSession(adapter, execution, version)
                         paced = kind == "play" and execution["calculation"] == "on_play"
-                        job = dict(paced=paced, end=adapter.t+execution["duration_s"],
+                        job = dict(paced=paced, end=None if paced else adapter.t+execution["duration_s"],
                                    wall=time.monotonic(), sim=adapter.t, solves=0, controls=0, steps=0)
                     if job:
                         history_complete = False
@@ -266,7 +271,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     continue
                 state_count += sum(record["type"] == "state" for record in batch)
                 complete = (job["end"] is not None and adapter.t >= job["end"]-1e-12)
-                capacity = state_count >= MAX_STATES
+                capacity = not job["paced"] and state_count >= MAX_STATES
                 # The numerical interval is committed now. Finish delivering
                 # all bounded chunks even if Pause arrives during IPC; a newer
                 # generation discards them at the receiver. This prevents a

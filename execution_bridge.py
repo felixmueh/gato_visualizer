@@ -214,7 +214,7 @@ class ProcessLiveService:
                 raise ValueError("Live service is closed")
             if not self._process.is_alive():
                 raise ValueError("Numerical worker stopped; restart the server")
-            if kind in ("precalculate", "play"):
+            if kind == "precalculate" or (kind == "play" and self.execution["calculation"] != "on_play"):
                 retained = self.history_store.state_count if kind == "play" else 0
                 if retained+estimated_states(self.execution) > MAX_STATES:
                     raise ValueError(f"Requested calculation exceeds {MAX_STATES} stored states; reduce rates/duration or reset")

@@ -27,7 +27,9 @@ all settings before acceptance. Static previews accept large positive SQP/PCG
 budgets within the native integer range; the prior small MVP caps no longer
 define their intended scope. Reject an unsupported history capacity before
 starting a job with an explanatory error; never silently truncate duration or
-samples. The implementation supplies explicit duration/rate/sample limits.
+samples. Explicit precalculations have duration/rate/sample limits. Continuous
+On Play retains its growing recording in disk-backed history until paused;
+IPC chunks remain bounded and no recorded samples are silently dropped.
 The UI hides `controller.warm_start` while retaining its complete config value.
 
 `POST /api/live/command` retains its accepted/settings-version response.
@@ -43,8 +45,9 @@ The UI hides `controller.warm_start` while retaining its complete config value.
 - `preview`: compute one prediction at the optional displayed-state `anchor`
   without replacing existing motion history or moving its authoritative tip.
 - `play`: produce motion from the authoritative history tip, paced at at most
-  one simulated second per wall second in On Play mode. Each request extends
-  by at most `duration_s`; it never branches from a scrubbed frame.
+  one simulated second per wall second in On Play mode, continuously until
+  Pause or Cancel. `duration_s` limits only explicit Manual/Automatic
+  precalculation; it never branches from a scrubbed frame.
 - `pause`: stop On Play generation cooperatively. In Manual/Automatic mode it
   pauses browser playback while explicit precalculation continues.
 - `cancel`: invalidate the current job cooperatively.
@@ -65,7 +68,9 @@ prediction remains one solve at the current state. Play with empty history
 starts computation even when Continue is disabled; in Manual mode it may
 precalculate the requested duration and autoplay when ready. Play with existing
 history is local playback. Continue simulation at end governs extending the
-existing tip; without it, playback stops at the end of its requested duration.
+existing tip for Manual/Automatic recorded playback; without it, that playback
+stops at the end of its requested duration. On Play keeps generating and waits
+at a growing tip regardless of this toggle, until the user pauses.
 
 ## Process and cancellation boundaries
 
@@ -146,7 +151,8 @@ solve latency. Physics uses the unchanged RK4 function. Integer tick counters
 and exact event boundaries avoid accumulating floating-point scheduling drift.
 Noncommensurate rates require splitting an integration step at a control or TO
 boundary. At a coincident boundary, solve first, select control next, then
-integrate. The final state lands on the requested duration endpoint.
+integrate. A bounded precalculation lands exactly on its requested duration
+endpoint; continuous On Play has no duration endpoint.
 
 Decode each new GPU plan once to native coordinates. At every control tick,
 choose the nonterminal torque for elapsed plan time using zero-order hold and
