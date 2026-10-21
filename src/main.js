@@ -6,6 +6,7 @@ import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-tel
 import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartingScene } from "./replay-library.js";
 import { setupTargetGizmo } from "./target-gizmo.js";
 import { setupViewCube } from "./view-cube.js";
+import { fitPerspectivePoints, objectWorldPoints, trajectoryFitPoints } from "./camera-fit.js";
 import { createPathLine, setPathPoints, setPathPointCount, pathLineInfo } from "./path-lines.js";
 import {
   sampleTrajectory,
@@ -89,7 +90,7 @@ document.querySelector("#app").innerHTML = `
     </aside>
     <main class="main">
       <section class="viewport" id="viewport" aria-label="Interactive 3D robot workspace">
-        <div class="viewport-top"><div class="scene-title"><span class="live-dot"></span><span>3D WORKSPACE</span><span class="scene-slash">/</span><span id="scene-title">TIAGo Pro</span></div><div class="camera-controls"><button id="camera-home" title="Show full robot" aria-label="Show full robot">${icon("home")}<span>Home</span></button><button id="camera-arm" title="Focus right arm" aria-label="Focus right arm">${icon("focus")}<span>Arm</span></button></div></div>
+        <div class="viewport-top"><div class="scene-title"><span class="live-dot"></span><span>3D WORKSPACE</span><span class="scene-slash">/</span><span id="scene-title">TIAGo Pro</span></div><div class="camera-controls"><button id="camera-home" title="Fit the full robot in its current pose" aria-label="Fit robot">${icon("robot")}<span>Fit robot</span></button><button id="camera-arm" title="Fit the selected trajectory or full task reference" aria-label="Fit trajectory">${icon("focus")}<span>Fit trajectory</span></button></div></div>
         <div class="viewport-legend" id="path-legend"><span><i class="legend-line"></i>Tool path</span><span><i class="legend-start"></i>Start</span><span><i class="legend-target"></i>Target</span></div>
         <div class="viewport-help">Drag to orbit <span>·</span> Right-drag to pan <span>·</span> Scroll to zoom</div>
         <div class="axis-label"><span class="axis-x">X</span><span class="axis-y">Y</span><span class="axis-z">Z ↑</span><span>WORLD · METERS</span></div>
@@ -144,6 +145,9 @@ let tracePoints = [];
 let lastLiveTime;
 let livePrediction;
 let liveReference;
+let displayedLivePlan;
+let liveTaskStart;
+let lastCameraFit;
 let jointCells = [];
 
 function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_limits, torqueKind = "applied") {
@@ -172,6 +176,9 @@ function setupScene() {
   );
   $("viewport").prepend(renderer.domElement);
   controls = new OrbitControls(camera, renderer.domElement);
+  camera.position.set(2.5, -3, 2.3);
+  controls.target.set(0, 0, .8);
+  controls.update();
   controls.enableDamping = true;
   controls.minDistance = 0.3;
   controls.maxDistance = 12;
@@ -249,28 +256,45 @@ async function loadRobot(url) {
   });
 }
 
-function setCamera(mode = "home") {
-  if (!robotBounds) return;
+function fitTaskPoints(options = {}) {
+  return trajectoryFitPoints({
+    replay: trajectory,
+    live: live?.mode === 'live',
+    taskKind: displayedLivePlan?.task_kind || live?.settings?.task?.kind || 'reach',
+    plan: displayedLivePlan,
+    state: live?.displayedState || live?.state,
+    taskStart: liveTaskStart,
+    ...options,
+  });
+}
+
+function refreshFitAvailability() {
+  $('camera-arm').disabled = !fitTaskPoints().points.length;
+}
+
+function setCamera(mode = "robot", options = {}) {
+  if (!robot) return;
   viewCube?.cancel();
-  if (mode === "arm" && (live?.mode === "live" ? live.plan?.ee_xyz : trajectory?.ee_xyz)) {
-    const bounds = new THREE.Box3().setFromPoints(
-      (live?.mode === "live" ? live.plan.ee_xyz : trajectory.ee_xyz).map((p) => new THREE.Vector3(...p)),
-    );
-    const center = bounds.getCenter(new THREE.Vector3());
-    center.lerp(robotBounds.getCenter(new THREE.Vector3()).setZ(center.z), 0.2);
-    controls.target.copy(center);
-    camera.position.copy(center).add(new THREE.Vector3(1.25, -1.45, 0.85));
-  } else {
-    const center = robotBounds.getCenter(new THREE.Vector3());
-    const size = robotBounds.getSize(new THREE.Vector3());
-    center.x += 0.1;
-    controls.target.copy(center);
-    const distance = Math.max(size.z, size.x, size.y, 1.4) * 1.65;
-    camera.position
-      .copy(center)
-      .add(new THREE.Vector3(distance * 0.85, -distance, distance * 0.62));
-  }
+  const isTask = mode === 'trajectory' || mode === 'arm';
+  const selection = isTask ? fitTaskPoints(options) : { points: objectWorldPoints(robot), source: 'Full robot in current pose' };
+  const fit = fitPerspectivePoints(camera, selection.points, { minDistance: controls.minDistance });
+  if (!fit) return;
+  // Clear residual orbit/pan damping, then restore the existing orientation.
+  const orientation = camera.quaternion.clone();
+  const damping = controls.enableDamping;
+  controls.enableDamping = false;
   controls.update();
+  camera.quaternion.copy(orientation);
+  camera.position.copy(fit.position);
+  controls.target.copy(fit.center);
+  camera.near = fit.near;
+  camera.far = fit.far;
+  camera.updateProjectionMatrix();
+  controls.maxDistance = Math.max(controls.maxDistance, fit.distance * 2);
+  controls.update();
+  controls.enableDamping = damping;
+  lastCameraFit = { source: selection.source, points: fit.points.map(point => point.toArray()), padding: 1.15 };
+  $(isTask ? 'camera-arm' : 'camera-home').title = `${isTask ? 'Fit trajectory' : 'Fit robot'}: ${selection.source}`;
 }
 
 function makeMarker(position, color, radius, wireframe = false) {
@@ -365,6 +389,7 @@ function selectTrajectory(id) {
     : trajectory.label;
   updatePose();
   updatePlaybackState();
+  refreshFitAvailability();
 }
 
 function updatePose() {
@@ -454,8 +479,8 @@ $("timeline").addEventListener("input", (event) => {
 $("trajectory-select").addEventListener("change", (event) =>
   selectTrajectory(event.target.value),
 );
-$("camera-home").addEventListener("click", () => setCamera("home"));
-$("camera-arm").addEventListener("click", () => setCamera("arm"));
+$("camera-home").addEventListener("click", () => setCamera("robot"));
+$("camera-arm").addEventListener("click", () => setCamera("trajectory"));
 document.addEventListener("keydown", (event) => {
   if (
     event.code !== "Space" ||
@@ -539,8 +564,10 @@ async function start() {
           target: controls.target.toArray(),
           up: camera.up.toArray(),
           quaternion: camera.quaternion.toArray(),
+          fov: camera.fov, aspect: camera.aspect, near: camera.near, far: camera.far,
         };
       },
+      get cameraFit() { return lastCameraFit; },
       get trajectory() {
         return trajectory;
       },
@@ -590,6 +617,7 @@ function changeMode(mode) {
       liveGroup.add(liveTrace);
     }
   }
+  refreshFitAvailability();
 }
 
 function makeLiveLine(points, color, dashed) {
@@ -605,20 +633,23 @@ function disposeLiveObject(object) {
 
 function showLivePlan(plan) {
   if (!liveGroup) return;
+  displayedLivePlan = plan;
   disposeLiveObject(livePrediction);
   disposeLiveObject(liveReference);
   if (liveGroup.userData.target) disposeLiveObject(liveGroup.userData.target);
   livePrediction = liveReference = liveGroup.userData.target = undefined;
-  if (!plan) return;
+  if (!plan) { refreshFitAvailability(); return; }
   livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false);
   liveReference = makeLiveLine(plan.task_path_xyz || plan.reference_xyz, targetColor, true);
   // A reaching reference is a repeated point; keep a visible target marker.
   const target = makeMarker(plan.target_xyz || plan.reference_xyz[0], targetColor, 0.022, true);
   liveGroup.userData.target = target;
   liveGroup.add(livePrediction, liveReference, target);
+  refreshFitAvailability();
 }
 
 function resetLiveTrace() {
+  liveTaskStart = undefined;
   tracePoints = [];
   lastLiveTime = undefined;
   if (liveTrace) setPathPoints(liveTrace, []);
@@ -626,6 +657,10 @@ function resetLiveTrace() {
 
 function showLiveState(state, context = {}) {
   if (!robot || !liveGroup) return;
+  if (!context.historical && !context.interpolated) {
+    if (lastLiveTime !== undefined && state.sim_time_s < lastLiveTime) liveTaskStart = undefined;
+    if (!liveTaskStart) liveTaskStart = [...state.ee_xyz];
+  }
   defaultData.joint_names.forEach((name, i) => {
     robot.setJointValue(name, state.q[i]);
   });
@@ -646,6 +681,7 @@ function showLiveState(state, context = {}) {
     liveGroup.add(liveMarker);
   }
   liveMarker.position.fromArray(state.ee_xyz);
+  refreshFitAvailability();
 }
 
 function replayLegend() {
@@ -740,4 +776,5 @@ function showStartingPose() {
   }
   updateReplayLegend();
   updatePlaybackState();
+  refreshFitAvailability();
 }

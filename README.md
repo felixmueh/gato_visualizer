@@ -112,6 +112,12 @@ and Bottom while preserving the current pan target and zoom distance.
 Top places the robot's forward direction toward screen right. Cube corners
 select the eight equal-angle diagonal views.
 
+**Fit robot** frames the full robot in its current pose. **Fit trajectory**
+frames the selected Replay motion and reference. In Live, it frames the full
+tracking reference, or the available task start and reaching target. Both
+commands retain the viewing direction and adjust the center and distance with
+margin for the viewport's current shape. They do not run the solver.
+
 The right-arm table shows native position (rad), velocity (rad/s), and actuator
 torque (Nm). Missing telemetry displays “—”. Position values turn yellow within
 10% of either position bound; velocity/torque turn yellow at 90% of their

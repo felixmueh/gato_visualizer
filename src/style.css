@@ -1165,3 +1165,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .library-errors summary { cursor: pointer; }
 .library-errors ul { padding-left: 15px; overflow-wrap: anywhere; }
 .trajectory-label { margin-top: 23px; }
+.camera-controls { flex-shrink: 0; }
+.camera-controls button span { display: inline; }
+.camera-controls button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 480px) {
+  .viewport-top .scene-title { display: none; }
+  .viewport-top { justify-content: flex-end; }
+}
