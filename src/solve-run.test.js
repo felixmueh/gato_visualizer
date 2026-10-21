@@ -59,3 +59,18 @@ test('missing exact inputs disable Run again with the backend reason and never p
   h.ui.update(context('legacy')); await flush(); assert.equal(h.ui.run.disabled, true); assert(h.ui.reason.textContent.includes('constraint bounds'));
   await h.ui.run.emit('click'); assert.equal(h.requests.length, 1); h.ui.destroy();
 });
+
+test('hiding the inspector cancels capability work but an active job keeps polling and can be stopped', async () => {
+  const h = fixture(path => path.endsWith('/capability') ? { available: true } : path.endsWith('/stop') ? { id: 'j', state: 'cancelled' } : { id: 'j', job_id: 'j', state: 'running' });
+  h.ui.update(context('s1')); await flush(); await h.ui.run.emit('click');
+  h.ui.update(context('s2')); // A new capability check is waiting for its throttle.
+  h.ui.update(null); // Hidden inspector: cancel only that check.
+  assert.equal(h.timers.size, 1); assert.equal(h.ui.snapshot.active, true);
+  assert.equal(h.ui.run.disabled, true); assert.equal(h.ui.stop.disabled, false);
+  await h.tick();
+  assert.equal(h.requests.at(-1).path, '/api/solve-inspections/jobs/j');
+  assert.equal(h.requests.filter(item => item.path.endsWith('/capability')).length, 1);
+  await h.ui.stop.emit('click');
+  assert.equal(h.requests.at(-1).path, '/api/solve-inspections/jobs/j/stop');
+  assert.equal(h.ui.snapshot.active, false); assert.equal(h.timers.size, 0); h.ui.destroy();
+});

@@ -17,6 +17,16 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   const presentations = new Map();
   let solveOverride = null, lastSolveSourceKey;
   let finalContextKey, finalContextPrediction;
+  let cardsPending = false, lastCardsAt = -Infinity, immediateView = false, placementKey = '', receivedData = false;
+  const visible = container => { for (let node = container; node; node = node.parentElement) if (node.hidden) return false; return true; };
+  const solveVisible = () => getView().inspectSolve !== false && visible(solveContainer);
+  const solveNeeded = () => solveVisible() || state.pinned || Boolean(solveOverride) || catalogDialog.isOpen && catalogScope === 'solve';
+  const episodeNeeded = () => visible(episodeContainer) || visible(bottomContainer) && state.instances.some(item => item.context === 'episode' && item.timeline) || catalogDialog.isOpen && catalogScope === 'episode';
+  // Finish an explicit scrub/keyboard/zoom gesture at its exact final range.
+  // Ordinary playback only moves markers at RAF; expensive SVG rebuilds run at 5 Hz.
+  const finishViewGesture = () => { immediateView = true; };
+  const viewGestureEvents = ['pointerup', 'change', 'keyup', 'wheel'];
+  for (const event of viewGestureEvents) doc.addEventListener(event, finishViewGesture);
   const sourceKey = source => source ? JSON.stringify([source.kind, source.generation, source.id, source.trajectory_index, source.revision]) : '';
   const solveSource = () => solveOverride || (state.pinned && pinnedSource ? { source: pinnedSource, solveSeq: state.selected?.seq ?? state.selected?.id } : getSource());
   const heading = el('div', null, 'plot-inspector-heading'), rangeLabel = el('label', 'Analyze '), range = el('select');
@@ -80,12 +90,16 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     const dialog = createFloatingDialog({ id: `config-${item.id}`, title: definition?.title || item.plot_id, content: body, onClose: () => { dialog.destroy(); if (activeConfig === dialog) activeConfig = null; } }); activeConfig = dialog;
     body.addEventListener('submit', event => { event.preventDefault(); const parameters = {}; for (const { name, schema, input } of fields) parameters[name] = schema.type === 'boolean' ? input.checked : schema.type === 'number' ? Number(input.value) : input.value; state.configure(item.id, parameters); dialog.close(); invalidate(); }); dialog.open();
   }
-  function renderCards() {
+  function renderCards(immediate = true) {
+    if (!immediate && Date.now() - lastCardsAt < 200) { cardsPending = true; return; }
+    cardsPending = false; lastCardsAt = Date.now();
     handles.forEach(handle => handle.destroy({ preserveInteraction: true })); handles = []; episodeCards.replaceChildren(); solveCards.replaceChildren(); bottomCards.replaceChildren();
     const usedPresentations = new Set();
     for (const item of state.instances) {
       const definition = definitionFor(item), spec = specs.get(item.id);
       for (const placement of ['sidebar', ...(item.timeline && eligible(item.id) ? ['timeline'] : [])]) {
+        const sidebarVisible = item.context === 'solve' ? solveVisible() : visible(episodeContainer);
+        if (placement === 'sidebar' && !sidebarVisible || placement === 'timeline' && !visible(bottomContainer)) continue;
         const card = el('section', null, 'plot-card'); card.dataset.instance = item.id;
         const title = el('header', null, 'plot-card-heading'), grip = el('span', spec?.title || definition?.title || item.plot_id, 'plot-card-grip'); grip.draggable = true; grip.title = 'Drag to reorder or show on timeline';
         grip.addEventListener('dragstart', event => { drag = { id: item.id, from: placement, accepted: false }; event.dataTransfer.setData('text/plain', item.id); event.dataTransfer.effectAllowed = 'move'; });
@@ -158,7 +172,9 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   }
   function runContext() {
     const selected = state.selected, source = solveSource()?.source, profile = getSolverProfile();
-    if (!selected || !source) return null;
+    // Hiding this inspector cancels only capability checks. setupSolveRun's
+    // independent active-job polling and Stop remain available on return.
+    if (!solveVisible() || !selected || !source) return null;
     return { source, selection: { solve_id: selected.id ?? selected.seq }, profile_id: typeof profile === 'string' ? profile : profile?.id, switching: Boolean(profile?.switching) };
   }
   function syncSolveSource() {
@@ -199,7 +215,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       const inspectPayload = payload('solve'), inspectKey = structuredClone(inspectPayload);
       if (state.pinned) delete inspectKey.range;
       const inspectSignature = JSON.stringify([inspectKey, solveSource()?.revision]);
-      if (inspectedKey !== inspectSignature) {
+      if (solveNeeded() && inspectedKey !== inspectSignature) {
         const response = await awaitPlotJob(request, '/api/plots/catalog', inspectPayload, { alive });
         if (!response || !alive()) return;
         metadata.solve = response; catalogs.solve = response.catalog || response.plots || [];
@@ -207,6 +223,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         inspectedKey = inspectSignature;
       }
       for (const scope of ['episode', 'solve']) {
+        if (scope === 'solve' && !solveNeeded()) continue;
+        if (scope === 'episode' && !episodeNeeded()) continue;
         const body = payload(scope, true);
         const keyBody = structuredClone(body);
         if (scope === 'episode' && state.rangeMode !== 'through_cursor') delete keyBody.range.cursor_s;
@@ -225,7 +243,10 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       }
       range.disabled = getView().episodeClock === false || metadata.episode?.context?.episode_available === false;
       episodeNote.textContent = metadata.episode?.context?.episode_available === false ? 'No MPC episode accompanies this standalone solve.' : getView().episodeClock === false ? 'Companion episode · all available history. The active timeline is a prediction horizon; episode plots stay in this inspector.' : `${getSource()?.label || 'Active episode'} · ${state.rangeMode === 'entire' ? 'All available history' : state.rangeMode === 'through_cursor' ? 'Segment start through cursor' : 'Visible timeline window'}`;
-      renderCards(); if (catalogDialog.isOpen) renderCatalog();
+      // Initial data should appear immediately; subsequent streaming data and
+      // changing ranges share the same bounded redraw cadence.
+      renderSolve();
+      renderCards(force || !receivedData); receivedData = true; if (catalogDialog.isOpen) renderCatalog();
     } catch (error) { if (alive()) { episodeNote.textContent = error.message; capability.textContent = error.message; } }
     finally { busy = false; if (pending && !destroyed) lastPoll = -Infinity; }
   }
@@ -239,20 +260,22 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       lastSourceKey = episodeSourceKey;
       if (!solveOverride) { runAgain.invalidateAdoption(); state.pin(false); pinnedSource = null; }
       for (const item of state.instances) if (item.context === 'episode') specs.delete(item.id);
-      metadata.episode = {}; evaluatedKeys.episode = undefined; revision++;
+      metadata.episode = {}; evaluatedKeys.episode = undefined; receivedData = false; revision++;
       syncSolveSource();
       episodeNote.textContent = current ? 'Loading active source…' : 'No episode selected.';
       renderCards();
     }
     syncSolveSource();
-    const key = JSON.stringify([current?.source, current?.revision, lastSolveSourceKey, state.rangeMode, state.rangeMode === 'visible' ? view.window : null, state.rangeMode === 'through_cursor' ? view.cursor : null, state.pinned ? state.selected?.id : view.cursor, state.iteration, state.instances]);
+    const nextPlacement = JSON.stringify([visible(episodeContainer), solveVisible(), visible(bottomContainer), solveNeeded()]);
+    if (nextPlacement !== placementKey) { placementKey = nextPlacement; immediateView = true; pending = true; lastPoll = -Infinity; }
+    const key = JSON.stringify([current?.source, current?.revision, lastSolveSourceKey, placementKey, state.rangeMode, state.rangeMode === 'visible' ? view.window : null, state.rangeMode === 'through_cursor' ? view.cursor : null, state.pinned ? state.selected?.id : view.cursor, state.iteration, state.instances]);
     if (key !== lastRequest) { lastRequest = key; pending = true; }
     if (lastInspectActive !== view.inspectSolve) { lastInspectActive = view.inspectSolve; renderSolve(); }
     // Presentation markers update cheaply at RAF; Python is capped at 5 Hz.
     handles.forEach(handle => handle.updateCursor?.(handle.axisIdentity === 'sqp_iteration' ? state.iteration : handle.axisIdentity === 'episode_time' && view.episodeClock !== false && (handle.linked || state.rangeMode !== 'through_cursor') ? view.cursor : undefined));
-    if (lastRender !== JSON.stringify([view.window, state.rangeMode === 'through_cursor' ? view.cursor : null])) renderCards();
+    if (immediateView || cardsPending || lastRender !== JSON.stringify([view.window, state.rangeMode === 'through_cursor' ? view.cursor : null])) { renderCards(immediateView); immediateView = false; }
     runAgain.update(runContext());
     const now = Date.now(); if ((pending || now - lastPoll > 1500 && current?.source?.kind === 'live') && now - lastPoll >= 200) { lastPoll = now; refresh(); }
   }
-  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, rangeMode: state.rangeMode, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; runAgain.destroy(); handles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
+  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, rangeMode: state.rangeMode, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); runAgain.destroy(); handles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
 }

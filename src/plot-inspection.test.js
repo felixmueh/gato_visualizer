@@ -8,6 +8,77 @@ const summaryDef = { id: 'episode.summary', scope: 'episode', title: 'Episode su
 const solveDef = { id: 'solve.trace', scope: 'solve', title: 'SQP trace', inputs: {} };
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
 
+test('hidden Solve inspector does not probe capabilities or evaluate Solve plots; reopening checks the current selection', async () => {
+  const { document } = plotDOM(), original = { document: globalThis.document, now: Date.now }; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  let now = 1000; Date.now = () => now;
+  const view = { window: [0, 10], cursor: 0, inspectSolve: false }, requests = [];
+  const request = async (path, body) => {
+    requests.push({ path, body });
+    if (path.endsWith('/capability')) return { available: true };
+    return { state: 'complete', catalog: [], context: { selected_solve: { id: `s${view.cursor}`, seq: view.cursor, iterations: [] } }, results: [] };
+  };
+  const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'live', generation: 1 }, revision: view.cursor }), getView: () => view, getSolverProfile: () => ({ id: 'candidate' }), request, storage: null });
+  try {
+    for (let i = 0; i < 12; i++) { view.cursor = i; now += 250; ui.update(); await flush(); }
+    assert.equal(requests.filter(item => item.path.endsWith('/capability')).length, 0);
+    assert.equal(requests.filter(item => item.body.context === 'solve').length, 0);
+    view.inspectSolve = true; ui.update(); await flush();
+    assert.equal(requests.filter(item => item.path.endsWith('/capability')).length, 1);
+    assert.equal(ui.runAgain.run.disabled, false); assert.equal(ui.snapshot.selectedSolve.id, 's11');
+    // The tab can remain selected while its whole sidebar is hidden.
+    solve.hidden = true;
+    for (let i = 12; i < 20; i++) { view.cursor = i; now += 250; ui.update(); await flush(); }
+    assert.equal(requests.filter(item => item.path.endsWith('/capability')).length, 1);
+    solve.hidden = false; ui.update(); await flush();
+    assert.equal(requests.filter(item => item.path.endsWith('/capability')).length, 2);
+    assert.equal(ui.snapshot.selectedSolve.id, 's19');
+  } finally { ui.destroy(); globalThis.document = original.document; Date.now = original.now; }
+});
+
+test('streaming ranges redraw graphs at most five times a second while timeline cursors update every frame', async () => {
+  const { document } = plotDOM(), original = { document: globalThis.document, now: Date.now }; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  let now = 1000; Date.now = () => now;
+  const view = { window: [0, 10], cursor: 2, inspectSolve: false }, source = { source: { kind: 'replay', id: 'r' } };
+  const request = async (_path, body) => ({ state: 'complete', catalog: [jointDef], context: { clock: 'replay:r', bounds: [0, 20] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'Recorded data', x: { identity: 'episode_time', clock: 'replay:r' }, y: {}, series: [{ x: [0, 20], y: [0, 1] }] } })) });
+  const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => view, request, storage: null });
+  try {
+    ui.update(); await flush(); const item = ui.state.add(jointDef, 'episode'); item.timeline = true; ui.state.rangeMode = 'through_cursor'; await ui.refresh();
+    const graphs = new Set([episode.querySelector('svg')]), markers = new Set();
+    for (let i = 1; i <= 60; i++) {
+      now = 1000 + i * 16; view.cursor = 2 + i * .01; view.window = [i * .001, 10 + i * .001];
+      ui.update(); await flush(); graphs.add(episode.querySelector('svg'));
+      markers.add(bottom.querySelectorAll('line').at(-1).getAttribute('x1'));
+    }
+    assert(graphs.size >= 4); assert(graphs.size <= 6, `Expected at most 5 redraws, saw ${graphs.size - 1}`);
+    assert.equal(markers.size, 60);
+    const beforeGesture = episode.querySelector('svg'); view.cursor = 1.234;
+    await document.emit('pointerup'); ui.update();
+    assert.notEqual(episode.querySelector('svg'), beforeGesture);
+    assert.deepEqual(episode.querySelectorAll('text').slice(5, 7).map(item => Number(item.textContent)), [0, 1.234]);
+    // Hidden placements do not retain graph DOM; showing them restores cached data immediately.
+    episode.hidden = true; ui.update(); assert.equal(episode.querySelector('svg'), undefined);
+    episode.hidden = false; ui.update(); assert(episode.querySelector('svg'));
+  } finally { ui.destroy(); globalThis.document = original.document; Date.now = original.now; }
+});
+
+test('ordinary robot views do not request unused Episode data; a visible docked plot still evaluates', async () => {
+  const { document } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  episode.hidden = solve.hidden = bottom.hidden = true;
+  const calls = [], view = { window: [0, 10], cursor: 2, inspectSolve: false };
+  const request = async (path, body) => { calls.push({ path, body }); return { state: 'complete', catalog: [jointDef], context: { clock: 'live:1', bounds: [0, 10] }, results: [] }; };
+  const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'live', generation: 1 } }), getView: () => view, request, storage: null });
+  try {
+    ui.update(); await flush(); assert.equal(calls.length, 0);
+    const item = ui.state.add(jointDef, 'episode'); item.timeline = true; bottom.hidden = false;
+    ui.update(); await flush();
+    assert.equal(calls.length, 1); assert.equal(calls[0].body.context, 'episode');
+    assert.equal(calls[0].body.plots[0].plot_id, jointDef.id);
+  } finally { ui.destroy(); globalThis.document = original; }
+});
+
 test('mock browser catalog keeps open for multi-add, config duplicates differ, timeline shares instance and drag-out preserves card', async () => {
   const { document, find } = plotDOM(), original = globalThis.document; globalThis.document = document;
   const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
@@ -135,7 +206,7 @@ test('ordinary views retain immediate Live prediction; Solve tab or explicit pin
   try {
     const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'live', generation: 1 }, revision: [3], solveSeq: 'preview:3' }), getView: () => view, onPrediction: p => callbacks.push(p), request, storage: null });
     ui.update(); await flush(); assert.equal(callbacks.at(-1).active, false);
-    view.inspectSolve = true; ui.update(); assert.equal(callbacks.at(-1).active, true);
+    view.inspectSolve = true; ui.update(); await flush(); assert.equal(callbacks.at(-1).active, true);
     view.inspectSolve = false; ui.update(); assert.equal(callbacks.at(-1).active, false);
     await find(solve, 'button', 'Pin solve').emit('click'); assert.equal(callbacks.at(-1).active, true);
     await find(solve, 'button', 'Follow cursor').emit('click'); assert.equal(callbacks.at(-1).active, false); ui.destroy();
@@ -155,10 +226,10 @@ test('sidebar episode scopes have distinct domains and cursor rules; docked copi
     assert.deepEqual(domain(episode), [0, 20]); assert.equal(cursor(episode).getAttribute('visibility'), 'visible');
     const timelineCursor = () => Number(cursor(bottom).getAttribute('x1')); assert.equal(timelineCursor(), 300);
     const evaluationCount = () => requests.filter(item => item.path === '/api/plots/evaluate').length;
-    const beforeZoom = evaluationCount(); view.window = [5, 9]; ui.update(); await flush(); assert.deepEqual(domain(episode), [0, 20]); assert.equal(evaluationCount(), beforeZoom); assert.equal(timelineCursor(), 150);
+    const beforeZoom = evaluationCount(); view.window = [5, 9]; await document.emit('wheel'); ui.update(); await flush(); assert.deepEqual(domain(episode), [0, 20]); assert.equal(evaluationCount(), beforeZoom); assert.equal(timelineCursor(), 150);
     const scope = episode.querySelector('select'); scope.value = 'through_cursor'; await scope.emit('change'); await ui.refresh();
     assert.deepEqual(domain(episode), [0, 6]); assert.equal(cursor(episode).getAttribute('visibility'), 'hidden'); assert.equal(cursor(bottom).getAttribute('visibility'), 'visible'); assert.equal(timelineCursor(), 150);
-    view.cursor = 0; ui.update(); assert.deepEqual(domain(episode), [0, .001]); assert.equal(cursor(episode).getAttribute('visibility'), 'hidden');
+    view.cursor = 0; await document.emit('change'); ui.update(); assert.deepEqual(domain(episode), [0, .001]); assert.equal(cursor(episode).getAttribute('visibility'), 'hidden');
     scope.value = 'visible'; await scope.emit('change'); await ui.refresh(); assert.deepEqual(domain(episode), [5, 9]);
     // The async rebuild replaces SVGs, while the active scrub keeps its original domain.
     await episode.querySelector('svg').emit('pointerdown', { pointerId: 12, button: 0, clientX: 62 }); assert.equal(seeks.at(-1), 5);
