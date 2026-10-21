@@ -794,3 +794,66 @@ test('fresh inspection holds local playback and pending edits without sending Li
     assert.deepEqual(live.settings, draft); assert.equal(h.commands.length, count); assert.equal(live.history.selectedTime, before);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
+
+test('Live batches keep a right-edge cursor with smooth recorded motion, and scrubbing holds history', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const records = [];
+  const append = time => records.push({ type: 'state', generation: 1, settings_version: 1, sim_time_s: time,
+    q: Array(7).fill(time), qd: Array(7).fill(1), torque_nm: [time], ee_xyz: [time, 0, 1] });
+  h.setHistoryHandler(url => {
+    const after = Number(new URL(url, 'http://local').searchParams.get('after'));
+    return { ok: true, json: async () => ({ generation: 1, records: records.slice(after), next_cursor: records.length, complete: false }) };
+  });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    append(0); append(.2);
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length }); await flush();
+    h.$('live-history-latest').emit('click'); h.$('live-play').emit('click'); await flush();
+    source.emit({ type: 'status', state: 'playing', generation: 1, settings_version: 1, job_active: true });
+    live.frame(0);
+    append(.3); append(.4);
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length }); await flush();
+    // Receiving a batch neither snaps the pose nor moves the thumb left.
+    assert.equal(live.history.following, true);
+    assert.equal(live.history.selectedTime, .2);
+    assert.equal(h.$('live-history').value, h.$('live-history').max.toString());
+    live.frame(10);
+    assert(Math.abs(live.history.selectedTime - .21) < 1e-12);
+    assert.deepEqual(live.history.presentationBounds, [0, live.history.selectedTime]);
+    assert.deepEqual(live.history.bounds, [0, .4]);
+    assert(Math.abs(live.displayedState.q[0] - .21) < 1e-12);
+    assert.deepEqual(live.displayedState.torque_nm, [.2]);
+    assert.equal(h.$('live-history').value, h.$('live-history').max.toString());
+    assert.match(h.$('live-history-note').textContent, /recorded through 0.40/);
+    assert(Math.abs(parseFloat(h.$('live-history-intervals').style.width) - 100 * .4 / .21) < 1e-10);
+    const commands = h.commands.length;
+    h.$('live-history').value = '.1'; h.$('live-history').emit('input');
+    assert.equal(live.playing, false);
+    assert.equal(live.history.following, false);
+    assert.deepEqual(live.history.presentationBounds, [0, .4]);
+    assert.equal(h.$('live-history-intervals').style.width, '100%');
+    assert.equal(h.$('live-history-intervals').style.clipPath, 'inset(0 0% 0 0)');
+    append(.5);
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length }); await flush();
+    live.frame(1000);
+    assert.equal(live.history.selectedTime, .1);
+    assert.deepEqual(live.history.presentationBounds, [0, .5]);
+    assert.equal(h.commands.length, commands); // Inspecting history does not restart numerical work.
+    h.$('live-play').emit('click'); await flush(); live.frame(0); live.frame(100);
+    assert.equal(live.history.selectedTime, .2);
+    assert.equal(live.history.following, false); // Historical playback keeps the full range.
+    live.frame(1000);
+    assert.equal(live.history.selectedTime, .5);
+    assert.equal(live.history.following, true); // Rejoins Live only on reaching its end.
+    h.$('live-play').emit('click'); await flush();
+    assert.equal(live.history.following, false);
+    assert.deepEqual(live.history.presentationBounds, live.history.bounds);
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});

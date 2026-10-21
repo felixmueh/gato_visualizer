@@ -30,20 +30,26 @@ export function intervalDescription(interval) {
 // One simulated-time clock for recorded and growing histories. Catching up to
 // new data never speeds up playback; a stalled tip holds until data arrives.
 export function createHistoryClock() {
-  let time = null, playing = false, previousMs = null;
+  let time = null, playing = false, following = false, previousMs = null;
   return {
-    play(nowMs) { playing = true; previousMs = nowMs; },
-    pause() { playing = false; previousMs = null; },
-    seek(value) { time = value; previousMs = null; },
-    tick(nowMs, [start, end]) {
+    play(nowMs, { follow = false } = {}) { playing = true; following = follow; previousMs = nowMs; },
+    pause() { playing = false; following = false; previousMs = null; },
+    seek(value) { time = value; following = false; previousMs = null; },
+    follow() { following = playing; },
+    // Following changes the visible timeline end, never the playback speed or
+    // recorded data. Arriving batches are still interpolated at 1×.
+    presentationBounds([start, end]) { return [start, following && time != null ? Math.max(start, Math.min(end, time)) : end]; },
+    tick(nowMs, [start, end], { followAtEnd = false } = {}) {
       if (time == null) time = start;
       time = Math.max(start, Math.min(end, time));
       const delta = playing && previousMs != null ? Math.max(0, (nowMs - previousMs) / 1000) : 0;
       if (playing) previousMs = nowMs;
       time = Math.min(end, time + delta);
+      if (playing && followAtEnd && time >= end - 1e-8) following = true;
       return { time, atEnd: time >= end - 1e-8, limited: playing && delta > 0 && time >= end - 1e-8 };
     },
     get time() { return time; },
     get playing() { return playing; },
+    get following() { return following; },
   };
 }

@@ -418,7 +418,9 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     if (!force && next === generation) return true;
     historyEpoch++;
     generation = next; cursor = 0; historyComplete = false; history.clear(); historyRevision++; paintedRevision = -1;
-    state = undefined; clock.seek(null); extensionPending = false; renderedPlan = undefined; renderDirty = true;
+    const following = clock.following;
+    state = undefined; clock.seek(null); if (following) clock.follow();
+    extensionPending = false; renderedPlan = undefined; renderDirty = true;
     fetchHistory();
     return true;
   }
@@ -552,17 +554,24 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     }));
   }
   function refreshHistoryControls() {
-    const [start, end] = history.bounds, timeline = $('live-history'), time = clock.time ?? end;
+    const [start, end] = clock.presentationBounds(history.bounds), timeline = $('live-history'), time = clock.time ?? end;
+    const recordedEnd = history.bounds[1];
     timeline.min = start; timeline.max = end; timeline.value = Math.max(start, Math.min(end, time)); timeline.disabled = history.length < 2;
     timeline.style.setProperty('--progress', `${end > start ? 100 * (time - start) / (end - start) : 0}%`);
-    $('live-history-latest').disabled = !history.length || Math.abs(time - end) < 1e-8;
-    $('live-history-position').textContent = history.length ? `${number(time, 2)} / ${number(end, 2)} s` : 'No state history yet';
+    $('live-history-latest').disabled = !history.length || Math.abs(time - recordedEnd) < 1e-8;
+    $('live-history-position').textContent = history.length ? clock.following ? `${number(time, 2)} s · Live` : `${number(time, 2)} / ${number(end, 2)} s` : 'No state history yet';
     const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time) || history.intervals.at(-1);
     if (!timeline.matches?.(':hover')) timeline.title = interval ? intervalDescription(interval) : 'Recorded simulation time';
     timeline.setAttribute('aria-valuetext', `${number(time, 3)} seconds${interval ? ` · ${intervalDescription(interval)}` : ''}`);
-    $('live-history-window').textContent = `Retained ${number(start, 2)}–${number(end, 2)} s · ${history.length} states · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
-    $('live-history-note').textContent = clock.playing ? 'History playback at 1×. At the recorded end, calculation may limit progress.' : 'Scrub or Play recorded history. Go latest only moves the view; Continue controls new motion at the end.';
+    $('live-history-window').textContent = `Recorded ${number(start, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
+    $('live-history-note').textContent = clock.following ? `Following Live at 1× · recorded through ${number(recordedEnd, 2)} s. Calculation may limit progress. Pause or scrub to inspect the full recording.` : clock.playing ? 'History playback at 1×. At the recorded end, calculation may limit progress.' : 'Scrub or Play recorded history. Go latest only moves the view; Continue controls new motion at the end.';
     paintIntervals();
+    // Paint only on recorded changes, then rescale its full-history coordinates
+    // to the presented end without rebuilding interval DOM on animation frames.
+    const span = recordedEnd - start, visibleFraction = span > 0 ? (end - start) / span : 1;
+    const intervals = $('live-history-intervals');
+    intervals.style.width = `${100 / (visibleFraction || 1)}%`;
+    intervals.style.clipPath = `inset(0 ${100 * (1 - visibleFraction)}% 0 0)`;
   }
   function renderView() {
     const selected = history.interpolateAt(clock.time, { trace: false });
@@ -634,7 +643,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
   function frame(timestamp) {
     if (mode !== 'live') return;
     if (clock.playing) {
-      const tick = clock.tick(timestamp, history.bounds);
+      const tick = clock.tick(timestamp, history.bounds, { followAtEnd: continueAtEnd() });
       if (tick.atEnd && !job.job_active && !fetching) {
         if (continueAtEnd()) extendHistory();
         else if (!extensionPending) { clock.pause(); controlsEnabled(); }
@@ -643,7 +652,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     }
     if (renderDirty) renderView();
   }
-  function showLatest() { inspectingPreview = false; clock.seek(history.bounds[1]); renderView(); }
+  function showLatest() { inspectingPreview = false; clock.seek(history.bounds[1]); if (clock.playing && continueAtEnd()) clock.follow(); renderView(); }
   async function switchMode(next) {
     if (next === mode || (next === 'live' && !liveReady)) return;
     clearTimeout(settingsTimer); submission++; mode = next; clock.pause();
@@ -701,7 +710,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     // On Play resumes continuous computation from the existing recording tip.
     if (!noMotion && !job.job_active && !extensionPending && !continueAtEnd() && clock.time >= history.bounds[1] - 1e-7) clock.seek(history.bounds[0]);
     if (noMotion || (clock.time >= history.bounds[1] - 1e-7 && continueAtEnd())) { if (!await extendHistory()) return; }
-    clock.play(performance.now()); controlsEnabled(); renderView();
+    clock.play(performance.now(), { follow: continueAtEnd() && (noMotion || clock.time >= history.bounds[1] - 1e-7) }); controlsEnabled(); renderView();
   });
   $('live-reset').addEventListener('click', async () => {
     clearTimeout(settingsTimer); clock.pause(); frozenAnchor = undefined;
@@ -709,9 +718,9 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     history.clear(); historyRevision++; plan = null; state = undefined; presentedState = undefined; clock.seek(null); onReset();
     const result = await send({ type: 'reset' }); if (result?.generation != null) useGeneration(result.generation); renderView();
   });
-  $('live-history').addEventListener('input', event => { if (!event.target.disabled) { inspectingPreview = false; clock.seek(Number(event.target.value)); renderView(); } });
+  $('live-history').addEventListener('input', event => { if (!event.target.disabled) { inspectingPreview = false; clock.pause(); clock.seek(Number(event.target.value)); controlsEnabled(); renderView(); } });
   $('live-history').addEventListener('pointermove', event => {
-    const bounds = event.target.getBoundingClientRect(), [start, end] = history.bounds;
+    const bounds = event.target.getBoundingClientRect(), [start, end] = clock.presentationBounds(history.bounds);
     const time = start + Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * (end - start);
     const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time);
     event.target.title = `${number(time, 3)} s · ${interval ? intervalDescription(interval) : 'Recorded simulation time'}`;
@@ -808,7 +817,7 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     get reference() { return desiredReference; },
     get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
     get metricHistory() { return history.metricSnapshot; },
-    get history() { return { length: history.length, bounds: history.bounds, selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
+    get history() { return { length: history.length, bounds: history.bounds, presentationBounds: clock.presentationBounds(history.bounds), following: clock.following, selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || plan?.task_path_xyz?.length); },
     get precomputedPath() { return !dirty && !pending && historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
     get settings() { return settings ? cloneSettings(settings) : null; }, get status() { return status; },

@@ -38,3 +38,31 @@ test('authoritative chunks interpolate native motion at recorded timestamps and 
   assert.equal(selected.plan.seq, 1); assert.equal(history.intervals.length, 1);
   assert.deepEqual(history.pathPoints, [[0, 0, 1], [2, 0, 1]]);
 });
+
+test('live following pins the presented end without skipping a recorded batch or advancing through a stall', () => {
+  const clock = createHistoryClock(); clock.seek(.2); clock.play(0, { follow: true });
+  const recorded = [0, .4];
+  assert(Math.abs(clock.tick(10, recorded).time - .21) < 1e-12);
+  assert.deepEqual(clock.presentationBounds(recorded), [0, clock.time]);
+  assert.deepEqual(recorded, [0, .4]); // Full recording is independent of its presented range.
+  assert.equal(clock.tick(1000, recorded).time, .4);
+  assert.equal(clock.tick(2000, recorded).time, .4); // No extrapolation at a blocked producer.
+  assert(Math.abs(clock.tick(2010, [0, .8]).time - .41) < 1e-12);
+  clock.pause();
+  assert.equal(clock.following, false);
+  assert.deepEqual(clock.presentationBounds([0, .8]), [0, .8]);
+});
+
+test('historical playback follows only when it reaches the end and continuation is enabled', () => {
+  for (const followAtEnd of [false, true]) {
+    const clock = createHistoryClock(); clock.seek(.1); clock.play(0);
+    clock.tick(100, [0, .4], { followAtEnd });
+    assert.equal(clock.following, false);
+    assert.deepEqual(clock.presentationBounds([0, .4]), [0, .4]);
+    clock.tick(1000, [0, .4], { followAtEnd });
+    assert.equal(clock.following, followAtEnd);
+    clock.seek(.15);
+    assert.equal(clock.following, false);
+    assert.deepEqual(clock.presentationBounds([0, .5]), [0, .5]);
+  }
+});

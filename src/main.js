@@ -124,7 +124,7 @@ const plotInspection = setupPlotInspection({
 function updateExpandedTimeline() {
   if (live?.mode === 'live') {
     const history = live.history;
-    expandedTimeline.update({ mode: 'live', identity: history.generation, bounds: history.bounds, time: history.selectedTime, intervals: history.intervals });
+    expandedTimeline.update({ mode: 'live', identity: history.generation, bounds: history.presentationBounds, time: history.selectedTime, intervals: history.intervals });
   } else {
     const duration = trajectory ? trajectory.time_s.at(-1) - trajectory.time_s[0] : 0;
     expandedTimeline.update({ mode: 'replay', identity: trajectory, bounds: [0, duration], time: elapsed, clockLabel: `${trajectory ? playbackClock(trajectory) : 'recorded'} time`.replace(/^./, letter => letter.toUpperCase()), intervals: emptyTimingIntervals });
