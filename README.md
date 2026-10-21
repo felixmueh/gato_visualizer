@@ -119,7 +119,11 @@ remove that placement. Docked graphs share the episode window and scrub cursor.
 Aggregates and prediction-horizon/SQP plots stay in the sidebar.
 
 Episode analysis defaults to **Entire episode**; select **Through cursor** or
-**Visible window** to change the scope. The Solve inspector follows the recorded
+**Visible window** to change the scope. Sidebar plots fit that selected range:
+Entire ignores timeline zoom, Through cursor ends at the cursor without its
+marker, and Visible follows zoom. Docked plots retain the timeline window and
+cursor. Drag in a plot to scrub; Y scales hold headroom and expand smoothly as
+new values arrive. The Solve inspector follows the recorded
 plan association. **Pin solve** retains its identity and SQP selection with a
 muted red indicator. Its separate SQP strip selects recorded iterations without
 moving the episode clock. A missing intermediate prediction remains unavailable;
