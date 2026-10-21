@@ -190,13 +190,17 @@ class ProcessLiveService:
         if not isinstance(command, dict):
             raise ValueError("Live command must be a JSON object")
         kind = command.get("type")
-        allowed = {"set_settings": {"type", "config", "task", "execution", "anchor"},
+        allowed = {"set_settings": {"type", "config", "task", "execution", "anchor", "reset"},
                    "precalculate": {"type", "anchor"}, "preview": {"type", "anchor"}, "play": {"type"},
                    "pause": {"type"}, "cancel": {"type"}, "reset": {"type"}}
         if kind not in allowed or not set(command) <= allowed[kind]:
             raise ValueError("Unknown live command or unexpected command fields")
         request = deepcopy(command)
         if kind == "set_settings":
+            if "reset" in command and not isinstance(command["reset"], bool):
+                raise ValueError("reset must be a boolean")
+            if command.get("reset") and command.get("anchor") is not None:
+                raise ValueError("Choose reset or an anchor, not both")
             if not {"config", "task"} <= set(command):
                 raise ValueError("set_settings requires config and task")
             request["config"], request["task"] = validate_settings(command["config"], command["task"], self.schema)
@@ -229,7 +233,7 @@ class ProcessLiveService:
                 with self.revision.get_lock():
                     self.revision.value += 1
             if kind in ("set_settings", "reset", "precalculate"):
-                if kind == "reset":
+                if kind == "reset" or (kind == "set_settings" and request.get("reset")):
                     self._generation_start = dict(kind="reset")
                 elif request.get("anchor") is not None:
                     self._generation_start = dict(kind="anchor", anchor=deepcopy(request["anchor"]))

@@ -33,7 +33,11 @@ The UI hides `controller.warm_start` while retaining its complete config value.
 `POST /api/live/command` retains its accepted/settings-version response.
 
 - `set_settings`: existing complete `config` and `task`, plus `execution` and
-  optional `anchor`.
+  optional `anchor`. The first browser Live session sends `reset: true` instead
+  of an anchor: settings and the comfortable zero-time state are applied
+  atomically before preview or Automatic calculation. Later mode switches and
+  reconnects preserve the session. `reset` must be boolean; a true reset cannot
+  be combined with an anchor.
 - `precalculate`: generate `duration_s` of closed-loop motion without pacing;
   optional `anchor` chooses its initial state.
 - `preview`: compute one prediction at the optional displayed-state `anchor`

@@ -290,6 +290,29 @@ class SpawnTests(unittest.TestCase):
         self.wait(lambda:self.service.latest.get('plan',{}).get('generation')==oldgen+1)
         self.assertEqual(self.service.latest['plan']['seq'],1)
         self.assertEqual([r for r in self.records() if r['type']=='state'][0]['sim_time_s'],0)
+
+    def test_atomic_settings_reset_starts_automatic_calculation_at_comfortable_state(self):
+        old = self.settings()
+        old['anchor'] = dict(sim_time_s=3., q=[.7]*7, qd=[.2]*7)
+        self.service.command(old)
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
+        request = self.settings()
+        request['execution']['calculation'] = 'automatic'
+        request['reset'] = True
+        self.service.command(request)
+        self.wait(lambda:self.service.latest.get('status',{}).get('settings_version')==2 and
+                  self.service.latest['status'].get('message')=='Precalculation complete')
+        states = [r for r in self.records() if r['type']=='state']
+        self.assertEqual(states[0]['sim_time_s'], 0.)
+        self.assertEqual(states[0]['q'], [0.]*7)
+        self.assertEqual(states[0]['qd'], [0.]*7)
+        self.assertAlmostEqual(states[-1]['sim_time_s'], .125)
+        self.assertEqual([r for r in self.records() if r['type']=='plan'][0]['seq'], 1)
+        for invalid in (1, 'true', None):
+            with self.assertRaisesRegex(ValueError, 'boolean'):
+                self.service.command(dict(request, reset=invalid))
+        with self.assertRaisesRegex(ValueError, 'anchor'):
+            self.service.command(dict(request, anchor=old['anchor']))
     def test_native_solve_cannot_block_http_and_rapid_obsolete_settings_discarded(self):
         request=self.settings();request['config']['solver_params']['max_sqp_iters']=9000
         self.service.command(request)

@@ -1,5 +1,7 @@
 import { Box3, Vector3 } from 'three';
 
+export const TRAJECTORY_FIT_PADDING = 1.4;
+
 const validPoint = (point) => (Array.isArray(point) && point.length === 3 && point.every(Number.isFinite)) || (point?.isVector3 && [point.x, point.y, point.z].every(Number.isFinite));
 const vectors = (points) => (points || []).filter(validPoint).map((point) => point.isVector3 ? point.clone() : new Vector3(...point));
 

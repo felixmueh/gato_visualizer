@@ -84,7 +84,8 @@ class ReplayLibrary:
                 else:
                     revision = hashlib.sha256(repr(signature).encode()).hexdigest()[:16]
                     item = dict(id=identifier, name=str(PurePosixPath(relative).with_suffix("")),
-                                path=relative, source=source, revision=revision, status="ready")
+                                path=relative, source=source, revision=revision, status="ready",
+                                modified_time_s=signature[3]/1e9)
                     try:
                         load_replay(path, model_urdf=self.model_urdf)
                         if signature != _signature(path):
@@ -94,6 +95,12 @@ class ReplayLibrary:
                 retained[identifier] = (signature, item)
                 paths[identifier] = path
                 items.append(item)
+        # The default is a fallback, while recently written uploads and ingest
+        # exports are the most useful library entries. Preserve path identity
+        # and stable ordering for equal timestamps across both roots.
+        default = items.pop(0)
+        items.sort(key=lambda item: (-retained[item["id"]][0][3], item["name"], item["source"]))
+        items.append(default)
         if items != self.items:
             self.revision += 1
             self.items = items

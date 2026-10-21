@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -216,6 +217,25 @@ class ReplayTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "ready" for item in second["items"]))
         np.testing.assert_array_equal(snapshot["trajectories"][0]["q"], self.q)
         np.testing.assert_array_equal(library.scene(ready["id"])["trajectories"][0]["q"], self.q+.01)
+
+    def test_catalog_newest_first_across_ingest_and_upload_without_changing_identity(self):
+        library = self.library()
+        library.ingest_directory.mkdir()
+        library.upload_directory.mkdir()
+        older = library.ingest_directory / "z-older.npz"
+        newer = library.upload_directory / "a-newer.npz"
+        shutil.copyfile(self.path, older)
+        shutil.copyfile(self.path, newer)
+        os.utime(older, ns=(1_700_000_000_000_000_000,)*2)
+        os.utime(newer, ns=(1_700_000_001_000_000_000,)*2)
+        first = library.catalog()
+        self.assertEqual([item["name"] for item in first["items"][:2]], ["a-newer", "z-older"])
+        self.assertEqual(first["items"][-1]["id"], "default")
+        older_id = first["items"][1]["id"]
+        os.utime(older, ns=(1_700_000_002_000_000_000,)*2)
+        second = library.catalog()
+        self.assertEqual(second["items"][0]["id"], older_id)
+        self.assertGreater(second["revision"], first["revision"])
 
     def test_upload_preserves_bytes_refuses_collisions_invalid_paths_and_symlinks(self):
         library = self.library()
