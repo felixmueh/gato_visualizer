@@ -13,6 +13,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   const client = `plots-${Date.now().toString(36)}`;
   let lastSourceKey, evaluatedKeys = {}, inspectedKey, lastInspectActive, activeConfig;
   let catalogs = { episode: [], solve: [] }, metadata = {}, specs = new Map(), handles = [], revision = 0, busy = false, pending = false, lastRequest = '', lastPoll = -Infinity, lastRender = '', lastPrediction = '', pinnedSource, drag, destroyed = false;
+  const presentations = new Map();
   const heading = el('div', null, 'plot-inspector-heading'), rangeLabel = el('label', 'Analyze '), range = el('select');
   for (const [value, text] of [['entire', 'Entire episode'], ['through_cursor', 'Through cursor'], ['visible', 'Visible window']]) { const option = el('option', text); option.value = value; range.append(option); }
   range.value = state.rangeMode; range.setAttribute('aria-label', 'Episode analysis range'); range.addEventListener('change', () => { state.rangeMode = range.value; invalidate(); }); rangeLabel.append(range); heading.append(rangeLabel, button('+', () => openCatalog('episode'), 'Add episode plot'));
@@ -72,7 +73,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     body.addEventListener('submit', event => { event.preventDefault(); const parameters = {}; for (const { name, schema, input } of fields) parameters[name] = schema.type === 'boolean' ? input.checked : schema.type === 'number' ? Number(input.value) : input.value; state.configure(item.id, parameters); dialog.close(); invalidate(); }); dialog.open();
   }
   function renderCards() {
-    handles.forEach(handle => handle.destroy()); handles = []; episodeCards.replaceChildren(); solveCards.replaceChildren(); bottomCards.replaceChildren();
+    handles.forEach(handle => handle.destroy({ preserveInteraction: true })); handles = []; episodeCards.replaceChildren(); solveCards.replaceChildren(); bottomCards.replaceChildren();
+    const usedPresentations = new Set();
     for (const item of state.instances) {
       const definition = definitionFor(item), spec = specs.get(item.id);
       for (const placement of ['sidebar', ...(item.timeline && eligible(item.id) ? ['timeline'] : [])]) {
@@ -81,19 +83,36 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         grip.addEventListener('dragstart', event => { drag = { id: item.id, from: placement, accepted: false }; event.dataTransfer.setData('text/plain', item.id); event.dataTransfer.effectAllowed = 'move'; });
         grip.addEventListener('dragend', () => { if (drag?.from === 'timeline' && !drag.accepted) { state.place(item.id, false); renderCards(); } drag = null; }); title.append(grip);
         if (placement === 'sidebar') {
+          if (eligible(item.id)) { const show = button('↧', () => { state.place(item.id, !item.timeline); renderCards(); }, item.timeline ? 'Hide from timeline' : 'Show on timeline'); show.className = 'plot-timeline-toggle'; show.setAttribute('aria-pressed', String(item.timeline)); title.append(show); }
           title.append(button('⚙', () => configure(item), 'Configure plot'), button('⧉', () => { state.duplicate(item.id); invalidate(); }, 'Duplicate plot'), button('×', () => { state.remove(item.id); specs.delete(item.id); invalidate(); }, 'Remove plot'));
         } else title.append(button('×', () => { state.place(item.id, false); renderCards(); }, 'Remove timeline placement'));
         card.append(title);
-        if (placement === 'sidebar' && eligible(item.id)) { const show = button(item.timeline ? 'Hide from timeline' : 'Show on timeline', () => { state.place(item.id, !item.timeline); renderCards(); }); show.setAttribute('aria-pressed', String(item.timeline)); card.append(show); }
         const graph = el('div', null, 'plot-card-body'); card.append(graph);
-        if (spec) { const view = getView(); handles.push(renderPlot(graph, spec, { compact: placement === 'timeline', linked: placement === 'timeline', window: spec.x?.identity === 'episode_time' ? view.episodeClock === false ? metadata.episode?.context?.bounds || undefined : view.window : undefined, cursor: spec.x?.identity === 'sqp_iteration' ? state.iteration : spec.x?.identity === 'episode_time' && view.episodeClock !== false ? view.cursor : undefined, onSeek: spec.x?.identity === 'episode_time' && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined })); }
+        if (spec) {
+          const view = getView(), linked = placement === 'timeline', episodeTime = spec.x?.identity === 'episode_time';
+          const bounds = metadata.episode?.context?.bounds;
+          let window;
+          if (episodeTime) {
+            if (linked || view.episodeClock !== false && state.rangeMode === 'visible') window = view.window;
+            else if (view.episodeClock === false || state.rangeMode === 'entire') window = bounds;
+            else if (bounds) window = [bounds[0], Math.max(bounds[0], Math.min(bounds[1], view.cursor))];
+          }
+          const cursor = spec.x?.identity === 'sqp_iteration' ? state.iteration : episodeTime && view.episodeClock !== false && (linked || state.rangeMode !== 'through_cursor') ? view.cursor : undefined;
+          const key = `${item.id}:${placement}`; usedPresentations.add(key);
+          if (!presentations.has(key)) presentations.set(key, {});
+          // A following window can move while Live grows. Only a duration
+          // change (zoom), source, scope or plot configuration resets the fit.
+          const fitKey = [lastSourceKey, item.parameters, episodeTime ? [linked ? 'timeline' : state.rangeMode, linked || state.rangeMode === 'visible' ? view.window?.[1] - view.window?.[0] : null] : state.selected?.id];
+          handles.push(renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, presentation: presentations.get(key), fitKey, window, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined }));
+        }
         else graph.append(el('p', 'Waiting for plot data…', 'plot-message'));
         (placement === 'timeline' ? bottomCards : item.context === 'episode' ? episodeCards : solveCards).append(card);
       }
     }
+    for (const [key, presentation] of presentations) if (!usedPresentations.has(key)) { presentation.cancelScrub?.(); presentations.delete(key); }
     if (!state.instances.some(item => item.context === 'episode')) episodeCards.append(el('p', 'Add episode plots and aggregates with +.', 'plot-message'));
     if (!state.instances.some(item => item.context === 'solve')) solveCards.append(el('p', 'Add solve plots with +.', 'plot-message'));
-    renderSolve(); lastRender = JSON.stringify(getView().window);
+    renderSolve(); lastRender = JSON.stringify([getView().window, state.rangeMode === 'through_cursor' ? getView().cursor : null]);
   }
   function renderSolve() {
     const selected = state.selected, records = selected?.iterations || [], index = records.findIndex(item => item.index === state.iteration);
@@ -167,6 +186,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     const current = getSource(), view = getView();
     const sourceKey = current?.source ? JSON.stringify([current.source.kind, current.source.generation, current.source.id, current.source.trajectory_index, current.source.revision]) : '';
     if (lastSourceKey !== sourceKey) {
+      for (const presentation of presentations.values()) presentation.cancelScrub?.();
+      presentations.clear();
       lastSourceKey = sourceKey; state.setSource(sourceKey); pinnedSource = null; specs.clear(); metadata = {}; evaluatedKeys = {}; inspectedKey = undefined; revision++;
       episodeNote.textContent = current ? 'Loading active source…' : 'No episode selected.';
       renderCards();
@@ -175,8 +196,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     if (key !== lastRequest) { lastRequest = key; pending = true; }
     if (lastInspectActive !== view.inspectSolve) { lastInspectActive = view.inspectSolve; renderSolve(); }
     // Presentation markers update cheaply at RAF; Python is capped at 5 Hz.
-    handles.forEach(handle => handle.updateCursor?.(handle.axisIdentity === 'sqp_iteration' ? state.iteration : handle.axisIdentity === 'episode_time' && view.episodeClock !== false ? view.cursor : undefined));
-    if (lastRender !== JSON.stringify(view.window)) renderCards();
+    handles.forEach(handle => handle.updateCursor?.(handle.axisIdentity === 'sqp_iteration' ? state.iteration : handle.axisIdentity === 'episode_time' && view.episodeClock !== false && (handle.linked || state.rangeMode !== 'through_cursor') ? view.cursor : undefined));
+    if (lastRender !== JSON.stringify([view.window, state.rangeMode === 'through_cursor' ? view.cursor : null])) renderCards();
     const now = Date.now(); if ((pending || now - lastPoll > 1500 && current?.source?.kind === 'live') && now - lastPoll >= 200) { lastPoll = now; refresh(); }
   }
   return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; invalidate(); return refresh(true); }, state, catalogDialog, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, rangeMode: state.rangeMode }; }, destroy() { destroyed = true; handles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };

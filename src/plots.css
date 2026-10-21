@@ -10,6 +10,8 @@
 .plot-card-grip { flex: 1; min-width: 0; font-size: 11px; font-weight: 600; cursor: grab; color: #d5e2eb; padding: 3px 0; }
 .plot-card-grip:active { cursor: grabbing; }
 .plot-card-grip::before { content: '⠿ '; color: #7b91a6; }
+.plot-card-heading button { flex: 0 0 24px; padding: 3px 4px; }
+.plot-timeline-toggle[aria-pressed='true'] { color: #c9f6ff; border-color: #57c7dc; background: #294a5a; }
 .plot-card-body { min-width: 0; overflow: hidden; }
 .plot-renderer { color: #b8cad8; font-size: 11px; }
 .plot-renderer h3 { font-size: 12px; }

@@ -32,7 +32,7 @@ test('mock browser catalog keeps open for multi-add, config duplicates differ, t
     const config = document.body.children.find(item => item.id?.startsWith('config-'));
     const selects = config.querySelectorAll('select'); selects[0].value = 'arm_right_2_joint'; selects[1].value = 'qd'; await config.querySelector('form').emit('submit');
     assert.equal(ui.state.instances[0].parameters.joint, 'arm_right_1_joint'); assert.equal(ui.state.instances[1].parameters.joint, 'arm_right_2_joint');
-    await ui.refresh(); cards = episode.querySelectorAll('.plot-card'); await find(cards[0], 'button', 'Show on timeline').emit('click');
+    await ui.refresh(); cards = episode.querySelectorAll('.plot-card'); const timelineToggle = cards[0].querySelector('.plot-timeline-toggle'); assert.equal(timelineToggle.getAttribute('aria-label'), 'Show on timeline'); assert.equal(timelineToggle.parentElement, cards[0].querySelector('header')); assert.equal(cards[0].querySelectorAll('h3').length, 0); await timelineToggle.emit('click');
     assert.equal(bottom.querySelectorAll('.plot-card').length, 1); const id = bottom.querySelector('.plot-card').dataset.instance; assert.equal(id, ui.state.instances[0].id);
     const transfer = { setData() {}, dropEffect: 'none' };
     let grip = bottom.querySelector('.plot-card-grip'); await grip.emit('dragstart', { dataTransfer: transfer }); await grip.emit('dragend');
@@ -136,4 +136,43 @@ test('ordinary views retain immediate Live prediction; Solve tab or explicit pin
     await find(solve, 'button', 'Pin solve').emit('click'); assert.equal(callbacks.at(-1).active, true);
     await find(solve, 'button', 'Follow cursor').emit('click'); assert.equal(callbacks.at(-1).active, false); ui.destroy();
   } finally { globalThis.document = original.document; Date.now = original.now; }
+});
+
+test('sidebar episode scopes have distinct domains and cursor rules; docked copies retain viewport and clock', async () => {
+  const { document } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  const view = { window: [4, 8], cursor: 6, episodeClock: true }, seeks = [], requests = [];
+  const request = async (path, body) => { requests.push({ path, body }); return { state: 'complete', catalog: [jointDef], context: { episode_available: true, clock: 'replay:r:0', bounds: [0, 20] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'Recorded motion', x: { identity: 'episode_time', clock: 'replay:r:0' }, y: {}, series: [{ x: [0, 20], y: [0, 1] }] } })) }; };
+  const domain = root => root.querySelectorAll('text').slice(5, 7).map(item => Number(item.textContent));
+  const cursor = root => root.querySelectorAll('line').at(-1);
+  try {
+    const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'replay', id: 'r', trajectory_index: 0 } }), getView: () => view, onSeek: x => { seeks.push(x); view.cursor = x; }, request, storage: null });
+    ui.update(); await flush(); const item = ui.state.add(jointDef, 'episode'); item.timeline = true; await ui.refresh();
+    assert.deepEqual(domain(episode), [0, 20]); assert.equal(cursor(episode).getAttribute('visibility'), 'visible');
+    const timelineCursor = () => Number(cursor(bottom).getAttribute('x1')); assert.equal(timelineCursor(), 300);
+    const evaluationCount = () => requests.filter(item => item.path === '/api/plots/evaluate').length;
+    const beforeZoom = evaluationCount(); view.window = [5, 9]; ui.update(); await flush(); assert.deepEqual(domain(episode), [0, 20]); assert.equal(evaluationCount(), beforeZoom); assert.equal(timelineCursor(), 150);
+    const scope = episode.querySelector('select'); scope.value = 'through_cursor'; await scope.emit('change'); await ui.refresh();
+    assert.deepEqual(domain(episode), [0, 6]); assert.equal(cursor(episode).getAttribute('visibility'), 'hidden'); assert.equal(cursor(bottom).getAttribute('visibility'), 'visible'); assert.equal(timelineCursor(), 150);
+    view.cursor = 0; ui.update(); assert.deepEqual(domain(episode), [0, .001]); assert.equal(cursor(episode).getAttribute('visibility'), 'hidden');
+    scope.value = 'visible'; await scope.emit('change'); await ui.refresh(); assert.deepEqual(domain(episode), [5, 9]);
+    // The async rebuild replaces SVGs, while the active scrub keeps its original domain.
+    await episode.querySelector('svg').emit('pointerdown', { pointerId: 12, button: 0, clientX: 62 }); assert.equal(seeks.at(-1), 5);
+    await ui.refresh(); await document.emit('pointermove', { pointerId: 12, clientX: 588 }); assert.equal(seeks.at(-1), 9);
+    await document.emit('pointerup', { pointerId: 12 }); ui.destroy();
+  } finally { globalThis.document = original; }
+});
+
+test('SQP plot drag selects recorded iterations across card rebuilds without seeking episode time', async () => {
+  const { document } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section'); let seeks = 0;
+  const request = async (_path, body) => ({ state: 'complete', catalog: [solveDef], context: { selected_solve: { id: 's1', seq: 1, iterations: [{ index: 1 }, { index: 7 }] } }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'SQP', x: { identity: 'sqp_iteration' }, y: {}, series: [{ x: [1, 7], y: [3, 1] }] } })) });
+  try {
+    const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'replay', id: 'r', trajectory_index: 0 } }), getView: () => ({ window: [0, 5], cursor: 2 }), onSeek: () => seeks++, request, storage: null });
+    ui.update(); await flush(); ui.state.add(solveDef, 'solve'); await ui.refresh();
+    await solve.querySelector('svg').emit('pointerdown', { pointerId: 2, button: 0, clientX: 62 }); assert.equal(ui.snapshot.iteration, 1);
+    await ui.refresh(); await document.emit('pointermove', { pointerId: 2, clientX: 588 }); assert.equal(ui.snapshot.iteration, 7); assert.equal(seeks, 0);
+    await document.emit('pointercancel', { pointerId: 2 }); await document.emit('pointermove', { pointerId: 2, clientX: 62 }); assert.equal(ui.snapshot.iteration, 7);
+    ui.destroy();
+  } finally { globalThis.document = original; }
 });

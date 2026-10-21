@@ -40,3 +40,52 @@ test('category labels render their actual measured values rather than dropping s
   assert(container.querySelectorAll('text').some(item => item.textContent === 'Joint B'));
   assert(!container.querySelectorAll('p').some(item => item.textContent.includes('No recorded')));
 });
+
+test('sidebar pointer scrubbing survives replacement, stops on release, and leaves linked timeline input alone', async () => {
+  const { document } = plotDOM(), container = document.createElement('div'), seeks = [];
+  const spec = { ...base, kind: 'lines', series: [{ x: [0, 10], y: [0, 1] }] };
+  const handle = renderPlot(container, spec, { onSeek: x => seeks.push(x) });
+  await container.querySelector('svg').emit('pointerdown', { pointerId: 4, button: 0, clientX: 62 });
+  assert.deepEqual(seeks, [0]);
+  handle.update(spec);
+  await document.emit('pointermove', { pointerId: 9, clientX: 588 }); assert.deepEqual(seeks, [0]);
+  await document.emit('pointermove', { pointerId: 4, clientX: 325 }); assert.equal(seeks.at(-1), 5);
+  await document.emit('pointermove', { pointerId: 4, clientX: 700 }); assert.equal(seeks.at(-1), 10);
+  await document.emit('pointerup', { pointerId: 4 });
+  const count = seeks.length; await document.emit('pointermove', { pointerId: 4, clientX: 62 }); assert.equal(seeks.length, count);
+  handle.update(spec, { linked: true, onSeek: x => seeks.push(x) });
+  await container.querySelector('svg').emit('pointerdown', { pointerId: 5, button: 0, clientX: 62 });
+  await document.emit('pointermove', { pointerId: 5, clientX: 588 }); assert.equal(seeks.length, count);
+  handle.destroy();
+});
+
+test('automatic y scaling holds headroom, expands smoothly, and refits only on explicit scope changes', () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  const original = { request: globalThis.requestAnimationFrame, cancel: globalThis.cancelAnimationFrame }, frames = new Map(); let seq = 0;
+  globalThis.requestAnimationFrame = callback => { frames.set(++seq, callback); return seq; };
+  globalThis.cancelAnimationFrame = id => frames.delete(id);
+  const frame = time => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(time)); };
+  const spec = y => ({ ...base, kind: 'lines', series: [{ x: [0, 1], y }] });
+  const ticks = () => container.querySelectorAll('text').slice(0, 5).map(item => Number(item.textContent));
+  try {
+    const handle = renderPlot(container, spec([0, 1]), { fitKey: 'entire' }), initial = ticks();
+    assert(initial[0] < 0 && initial[4] > 1);
+    handle.update(spec([.1, 1.01])); assert.deepEqual(ticks(), initial); assert.equal(frames.size, 0);
+    const path = container.querySelector('path').getAttribute('d');
+    handle.update(spec([0, 4])); assert.deepEqual(ticks(), initial);
+    frame(0); frame(90); const halfway = ticks(); assert(halfway[4] > initial[4] && halfway[4] < 5);
+    assert.notEqual(container.querySelector('path').getAttribute('d'), path);
+    frame(180); const expanded = ticks(); assert(expanded[4] > 4);
+    handle.update(spec([.1, .2])); assert.deepEqual(ticks(), expanded); assert.equal(frames.size, 0);
+    handle.update(spec([.1, .2]), { fitKey: 'visible' }); assert(ticks()[4] < 1);
+    handle.update({ ...spec([0, 4]), y: { ...base.y, range: [-2, 6] } }); assert.deepEqual(ticks(), [-2, 0, 2, 4, 6]); assert.equal(frames.size, 0);
+    handle.destroy();
+  } finally { globalThis.requestAnimationFrame = original.request; globalThis.cancelAnimationFrame = original.cancel; }
+});
+
+test('embedded titles can be suppressed while standalone preview titles remain', () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  const spec = { ...base, kind: 'table', rows: [] };
+  renderPlot(container, spec); assert.equal(container.querySelector('h3').textContent, base.title);
+  renderPlot(container, spec, { hideTitle: true }); assert.equal(container.querySelector('h3'), undefined);
+});

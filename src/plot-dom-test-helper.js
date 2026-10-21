@@ -7,6 +7,7 @@ export function plotDOM() {
     setAttribute(key, value) { this.attributes[key] = String(value); }
     getAttribute(key) { return this.attributes[key]; }
     addEventListener(type, fn) { const list = this.listeners.get(type) || []; list.push(fn); this.listeners.set(type, list); }
+    removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(item => item !== fn)); }
     async emit(type, event = {}) { const ev = { target: this, preventDefault() {}, stopPropagation() {}, ...event }; for (const fn of this.listeners.get(type) || []) await fn(ev); }
     matches(selector) { if (selector === '[data-instance]') return this.dataset.instance != null; if (selector.startsWith('.')) return this.className.split(' ').includes(selector.slice(1)); return this.tagName.toLowerCase() === selector; }
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector); }
@@ -20,6 +21,8 @@ export function plotDOM() {
     focus() { this.ownerDocument.activeElement = this; }
   }
   const doc = { createElement: tag => new Element(tag, doc), createElementNS: (_ns, tag) => new Element(tag, doc) };
+  const events = new Element('document', doc);
+  for (const method of ['addEventListener', 'removeEventListener', 'emit']) doc[method] = events[method].bind(events);
   doc.body = doc.createElement('body'); doc.activeElement = doc.body;
   return { document: doc, Element, find: (root, tag, text) => root.querySelectorAll(tag).find(item => item.textContent === text) };
 }
