@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from array import array
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -21,6 +22,90 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent
 MAX_MESSAGE_BYTES = 512 * 1024 * 1024
+ARRAY_FRAME = 1 << 63
+
+
+def _array_dtype(value):
+    try:
+        dtype = np.dtype(value)
+    except TypeError as exc:
+        raise ValueError("Invalid solver RPC array dtype") from exc
+    if (dtype.fields is not None or dtype.subdtype is not None or dtype.metadata is not None or
+            dtype.kind not in "biuf" or dtype.itemsize not in (1, 2, 4, 8) or
+            (dtype.kind == "f" and dtype.itemsize == 1)):
+        raise ValueError("Unsupported solver RPC array dtype")
+    return dtype
+
+
+def _array_message(message):
+    """Extract numerical buffers by path, without reserving JSON value tags."""
+    descriptors, buffers = [], []
+    total = 0
+    def extract(value, path):
+        nonlocal total
+        if isinstance(value, np.ndarray):
+            dtype = _array_dtype(value.dtype)
+            total += value.nbytes
+            if total > MAX_MESSAGE_BYTES:
+                raise ValueError("Solver RPC message exceeds the transport limit")
+            if dtype.kind == "f" and not np.isfinite(value).all():
+                raise ValueError("Nonfinite solver RPC array")
+            descriptors.append(dict(path=path, dtype=dtype.str, shape=list(value.shape), nbytes=value.nbytes))
+            buffers.append(value.tobytes(order="C"))
+            return None
+        if isinstance(value, Mapping):
+            if any(not isinstance(key, str) for key in value):
+                raise TypeError("Array solver RPC objects require string keys")
+            return {key: extract(item, [*path, key]) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [extract(item, [*path, index]) for index, item in enumerate(value)]
+        return value
+    return dict(message=extract(message, []), arrays=descriptors), buffers
+
+
+def _restore_arrays(payload):
+    """Arrays retain immutable frame bytes as their base after this call exits."""
+    if len(payload) < 8:
+        raise ValueError("Invalid solver RPC array frame")
+    metadata_size, = struct.unpack_from("!Q", payload)
+    offset = 8 + metadata_size
+    if offset > len(payload):
+        raise ValueError("Invalid solver RPC array metadata length")
+    envelope = json.loads(payload[8:offset])
+    if (not isinstance(envelope, dict) or set(envelope) != {"message", "arrays"} or
+            not isinstance(envelope["message"], dict) or not isinstance(envelope["arrays"], list)):
+        raise ValueError("Invalid solver RPC array envelope")
+    message = envelope["message"]
+    for item in envelope["arrays"]:
+        if not isinstance(item, dict) or set(item) != {"path", "dtype", "shape", "nbytes"}:
+            raise ValueError("Invalid solver RPC array descriptor")
+        shape, size, path = item["shape"], item["nbytes"], item["path"]
+        if (not isinstance(item["dtype"], str) or not isinstance(shape, list) or len(shape) > 32 or
+                any(type(dimension) is not int or not 0 <= dimension <= MAX_MESSAGE_BYTES for dimension in shape) or
+                type(size) is not int or size < 0):
+            raise ValueError("Invalid solver RPC array shape or byte count")
+        dtype = _array_dtype(item["dtype"])
+        if dtype.str != item["dtype"] or math.prod(shape) * dtype.itemsize != size or offset + size > len(payload):
+            raise ValueError("Inconsistent solver RPC array dtype, shape or byte count")
+        if not isinstance(path, list) or not path:
+            raise ValueError("Invalid solver RPC array path")
+        parent = message
+        for index, key in enumerate(path):
+            if not ((isinstance(parent, dict) and isinstance(key, str) and key in parent) or
+                    (isinstance(parent, list) and type(key) is int and 0 <= key < len(parent))):
+                raise ValueError("Invalid solver RPC array path")
+            if index + 1 < len(path):
+                parent = parent[key]
+        if parent[key] is not None:
+            raise ValueError("Solver RPC array path is duplicate or does not replace a placeholder")
+        value = np.frombuffer(payload, dtype=dtype, count=size // dtype.itemsize, offset=offset).reshape(shape)
+        if dtype.kind == "f" and not np.isfinite(value).all():
+            raise ValueError("Nonfinite solver RPC array")
+        parent[key] = value
+        offset += size
+    if offset != len(payload):
+        raise ValueError("Unexpected trailing solver RPC array bytes")
+    return message
 
 
 def send_lease(channel, descriptors):
@@ -58,7 +143,7 @@ def wire_value(value):
     return value.item() if isinstance(value, np.generic) else value
 
 
-def send_message(channel, message):
+def send_message(channel, message, *, array_buffers=False):
     # Let the JSON encoder traverse ordinary containers and numeric buffers in
     # C. Recursively normalizing every float in Python doubled this work for
     # each solve (native_plan previously walked the same tree first).
@@ -70,10 +155,16 @@ def send_message(channel, message):
         if isinstance(value, Mapping):
             return dict(value)
         raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+    buffers = []
+    if array_buffers:
+        message, buffers = _array_message(message)
     payload = json.dumps(message, default=encode, allow_nan=False, separators=(",", ":")).encode()
-    if len(payload) > MAX_MESSAGE_BYTES:
+    if array_buffers:
+        payload = struct.pack("!Q", len(payload)) + payload
+    size = len(payload) + sum(map(len, buffers))
+    if size > MAX_MESSAGE_BYTES:
         raise ValueError("Solver RPC message exceeds the transport limit")
-    channel.sendall(struct.pack("!Q", len(payload)) + payload)
+    channel.sendall(struct.pack("!Q", size | (ARRAY_FRAME if array_buffers else 0)) + payload + b"".join(buffers))
 
 
 def receive_message(channel, deadline=None):
@@ -91,9 +182,12 @@ def receive_message(channel, deadline=None):
             data.extend(part)
         return data
     size, = struct.unpack("!Q", read(8))
+    array_buffers = bool(size & ARRAY_FRAME)
+    size &= ~ARRAY_FRAME
     if size > MAX_MESSAGE_BYTES:
         raise ValueError("Solver RPC message exceeds the transport limit")
-    message = json.loads(read(size))
+    payload = read(size)
+    message = _restore_arrays(bytes(payload)) if array_buffers else json.loads(payload)
     if not isinstance(message, dict):
         raise ValueError("Solver RPC requires an object")
     return message
@@ -135,7 +229,8 @@ class SolverProcess:
         try:
             self.channel.settimeout(timeout)
             send_lease(self.channel, list(self.lease_fds()))
-            send_message(self.channel, dict(identity, operation=operation, payload=payload))
+            send_message(self.channel, dict(identity, operation=operation, payload=payload),
+                         array_buffers=operation == "solve")
             reply = receive_message(self.channel, deadline=deadline)
         except TimeoutError as exc:
             self._stop(f"{operation} exceeded its {timeout}s startup/teardown deadline")
@@ -216,6 +311,6 @@ def native_plan(event):
     xu = xu.reshape(-1).copy()
     xu[:count * 21] *= np.tile(signs, count * 3)
     xu[count * 21:] *= np.tile(signs, 2)
-    event["_xu"] = xu.tolist()
+    event["_xu"] = xu
     event["_signs"] = [1.] * 7
     return event

@@ -60,7 +60,7 @@ def serve(channel, root):
                 adapter.t = float(payload["time_s"])
                 event = adapter.solve_snapshot(payload["origin"], payload["settings_version"],
                                               reference=payload["reference"], include_context=False)
-                result = dict(plan=native_plan(event), torque_nm=adapter.u.tolist())
+                result = dict(plan=native_plan(event), torque_nm=adapter.u)
             elif operation == "inspect":
                 if adapter is None or adapter.solver is None:
                     raise ValueError("Inspection solver is not configured")
@@ -74,7 +74,7 @@ def serve(channel, root):
                 return
             else:
                 raise ValueError(f"Unsupported solver operation: {operation}")
-            send_message(channel, dict(identity, ok=True, result=result))
+            send_message(channel, dict(identity, ok=True, result=result), array_buffers=operation == "solve")
         except Exception as exc:
             traceback.print_exc()
             send_message(channel, dict(identity, ok=False, error=str(exc)))

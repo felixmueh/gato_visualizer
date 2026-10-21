@@ -96,11 +96,11 @@ class SimulatorAdapter(MPCAdapter):
     def solve_snapshot(self, origin, settings_version):
         if self.task["kind"] == "figure8":
             self.update_tracking_reference()
-        response = self.remote.request("solve", state=self.x.tolist(), time_s=self.t,
-            reference=self.reference.tolist(), origin=origin, settings_version=settings_version)
+        response = self.remote.request("solve", state=self.x, time_s=self.t,
+            reference=self.reference, origin=origin, settings_version=settings_version)
         event = response["plan"]
         self.u = np.asarray(response["torque_nm"])
-        self.last_xu = np.asarray(event["_xu"])
+        self.last_xu = np.asarray(event["_xu"]).copy()
         self.sequence += 1
         # Target/anchors are simulator-owned; the child's model never moves them.
         event.update(seq=self.sequence, _xu=self.last_xu, _signs=self.signs,
