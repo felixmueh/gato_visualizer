@@ -6,7 +6,7 @@ import { setupSourceSettings } from "./source-settings.js";
 import "./floating-dialog.css";
 import { workbenchShell } from "./workbench-shell.js";
 import { setupExpandedTimeline } from "./expanded-timeline.js";
-import { setupMetrics, replayMetricSnapshot } from "./metrics.js";
+import { setupPlotInspection } from "./plot-inspection.js";
 import { setupWorkbench } from "./workbench-ui.js";
 import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-telemetry.js";
@@ -26,7 +26,7 @@ import "@fontsource/dm-sans/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "./style.css";
 import "./timeline.css";
-import "./metrics.css";
+import "./plots.css";
 
 const icons = {
   play: '<path d="m8 5 11 7-11 7V5Z" fill="currentColor" stroke="none"/>',
@@ -70,7 +70,7 @@ let scene;
 let robotBounds;
 let ready = false;
 let live;
-setupSourceSettings({ button: $('source-settings-open'), beforeApply: () => {
+setupSourceSettings({ button: $('source-settings-open'), onPlottersReload: () => plotInspection.refresh(), beforeApply: () => {
   try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
 } });
 let liveGroup;
@@ -79,6 +79,7 @@ let liveMarker;
 let tracePoints = [];
 let lastLiveTime;
 let livePrediction;
+let replayInspectionPrediction;
 let liveReference;
 let displayedLiveReference;
 let displayedLivePlan;
@@ -99,17 +100,15 @@ const expandedTimeline = setupExpandedTimeline({
 });
 const linkedGraphContainer = $('timeline-linked-graphs');
 expandedTimeline.bindSurface(linkedGraphContainer);
-const metrics = setupMetrics({
-  rightContainer: $('demonstration-graph'),
-  bottomContainer: linkedGraphContainer,
-  getData: () => live?.mode === 'live'
-    ? { ...live.metricHistory, selectedPlan: displayedLivePlan, sourceKind: 'live', sourceLabel: 'Recorded Live MPC' }
-    : replayMetricSnapshot(trajectory),
-  getView: () => {
-    const view = expandedTimeline.snapshot;
-    return { window: view.visible, cursor: view.selectedTime };
-  },
+let inspectedPrediction;
+const plotInspection = setupPlotInspection({
+  episodeContainer: $('episode-plots'), solveContainer: $('solve-plots'), bottomContainer: linkedGraphContainer,
+  getSource: () => live?.mode === 'live'
+    ? { source: { kind: 'live', generation: live.history.generation }, revision: [live.history.cursor, displayedLivePlan?.seq, displayedLivePlan?.settings_version, displayedLivePlan?.origin], solveSeq: displayedLivePlan?.origin === 'preview' ? `preview:${displayedLivePlan.seq}` : null, label: 'Recorded Live MPC' }
+    : trajectory ? { source: { kind: 'replay', id: replayLibrary?.selectedId || 'default', trajectory_index: data?.trajectories?.indexOf(trajectory) ?? 0, ...(data?.source?.plot_revision ? { revision: data.source.plot_revision } : {}) }, revision: data?.source?.plot_revision || trajectory.id, label: trajectory.label || 'Imported recording' } : null,
+  getView: () => { const view = expandedTimeline.snapshot; return { window: view.visible, cursor: view.selectedTime, episodeClock: live?.mode === 'live' || trajectory?.kind === 'recorded', inspectSolve: workbench.activeTab === 'solve' };  },
   onSeek: time => expandedTimeline.seek(time),
+  onPrediction: inspection => { inspectedPrediction = inspection; renderInspectedPrediction(); },
 });
 function updateExpandedTimeline() {
   if (live?.mode === 'live') {
@@ -438,7 +437,7 @@ function animate(timestamp) {
   targetGizmo?.update();
   if (liveGroup?.userData.target) liveGroup.userData.target.visible = displayedLiveReference?.kind === 'figure8' || !targetGizmo?.active;
   renderer.render(scene, camera);
-  workbench.update(); updateExpandedTimeline(); metrics.update(); auxiliaryViews?.render(timestamp);
+  workbench.update(); updateExpandedTimeline(); plotInspection.update(); auxiliaryViews?.render(timestamp);
 }
 
 $("play").addEventListener("click", togglePlay);
@@ -530,6 +529,7 @@ async function start() {
     window.__motionStudio = {
       get auxiliaryViews() { return auxiliaryViews?.snapshot; },
       get timeline() { return expandedTimeline.snapshot; },
+      get plots() { return plotInspection.snapshot; },
       get workbench() { return { activeTab: workbench.activeTab, auxiliaryVisible: workbench.auxiliaryVisible }; },
       get targetGizmo() { return targetGizmo?.snapshot; },
       get library() { return replayLibrary; },
@@ -619,14 +619,22 @@ function disposeLiveObject(object) {
 }
 
 function showLivePlan(plan) {
-  auxiliaryViews?.invalidate();
-  if (!liveGroup) return;
   displayedLivePlan = plan;
-  disposeLiveObject(livePrediction);
-  livePrediction = undefined;
-  if (!plan) { refreshFitAvailability(); return; }
-  livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false);
-  liveGroup.add(livePrediction);
+  renderInspectedPrediction();
+}
+
+function renderInspectedPrediction() {
+  auxiliaryViews?.invalidate();
+  if (live?.mode !== 'live') {
+    if (replayInspectionPrediction) { scene?.remove(replayInspectionPrediction); replayInspectionPrediction.geometry.dispose(); replayInspectionPrediction.material.dispose(); replayInspectionPrediction = undefined; }
+    if (inspectedPrediction?.active && inspectedPrediction.prediction?.ee_xyz?.length && scene) { replayInspectionPrediction = makeLiveLine(inspectedPrediction.prediction.ee_xyz, pathColor, false); replayInspectionPrediction.name = 'inspected-solve-prediction'; scene.add(replayInspectionPrediction); }
+    return;
+  }
+  if (replayInspectionPrediction) replayInspectionPrediction.visible = false;
+  if (!liveGroup) return;
+  disposeLiveObject(livePrediction); livePrediction = undefined;
+  const plan = !displayedLivePlan && !inspectedPrediction?.pinned ? null : inspectedPrediction?.active ? inspectedPrediction.prediction : displayedLivePlan;
+  if (plan?.ee_xyz?.length) { livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false); liveGroup.add(livePrediction); }
   refreshFitAvailability();
 }
 

@@ -17,12 +17,15 @@ export async function sourceRequest(path, body, fetcher = fetch) {
   return result;
 }
 
-export function setupSourceSettings({ button, beforeApply = () => {}, reload = () => location.reload(), request = sourceRequest } = {}) {
+export function setupSourceSettings({ button, beforeApply = () => {}, reload = () => location.reload(), onPlottersReload = () => {}, request = sourceRequest } = {}) {
   const content = document.createElement('div'); content.className = 'source-settings-form';
   content.innerHTML = `<label>tiago_mpc checkout<input name="mpc_root" type="text" spellcheck="false" autocomplete="off" required></label>
     <label>Python interpreter override<input name="python" type="text" spellcheck="false" autocomplete="off" placeholder="Selected checkout environment"></label>
     <label>Binary cache override<input name="cache" type="text" spellcheck="false" autocomplete="off" placeholder="Selected checkout/.cache/gato"></label>
     <p class="source-identity"></p><div class="source-actions"><button type="button" data-action="inspect">Check source and binaries</button><button type="button" class="source-apply" data-action="apply">Apply and restart backend</button></div>
+    <hr><label>Python plotting directory<input name="plotters" type="text" spellcheck="false" autocomplete="off" placeholder="Selected checkout/_visualizer"></label>
+    <p class="plotters-default settings-note"></p><div class="source-actions"><button type="button" data-action="plotters">Reload plotters</button></div>
+    <p class="settings-note">Bundled plots are always available. Reload saves this directory and reloads Python plotters without restarting MPC. Clear it to follow the selected checkout.</p>
     <hr><label>Additional knot counts N<input name="counts" type="text" inputmode="numeric" placeholder="e.g. 48 96"></label>
     <label class="source-rebuild"><input name="rebuild" type="checkbox">Rebuild selected counts even when already compatible</label>
     <div class="source-actions"><button type="button" data-action="build">Build selected N</button></div>
@@ -32,11 +35,13 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
   const field = name => content.querySelector(`[name="${name}"]`);
   const action = name => content.querySelector(`[data-action="${name}"]`);
   const message = content.querySelector('.source-message'), identity = content.querySelector('.source-identity'), log = content.querySelector('.source-build-log');
+  let plottersInitialized = false, plottersDefault = null;
   let initialized = false, busy = false, buildRunning = false, restarting = false, timer;
   const selection = () => ({ mpc_root: field('mpc_root').value.trim(), python: field('python').value.trim() || null, cache: field('cache').value.trim() || null });
   function say(text, error = false) { message.textContent = text; message.dataset.error = String(error); }
   function controls() {
     action('inspect').disabled = busy || restarting;
+    action('plotters').disabled = busy || restarting;
     action('apply').disabled = busy || buildRunning || restarting;
     action('build').disabled = busy || buildRunning || restarting;
   }
@@ -58,6 +63,13 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
         field('cache').value = selected.cache || '';
         describe(result.current || {}); initialized = true;
       }
+      if (!plottersInitialized) {
+        const plots = await request('/api/plots/settings');
+        plottersDefault = plots.default_directory;
+        field('plotters').value = plots.override || plots.directory || '';
+        content.querySelector('.plotters-default').textContent = `Default: ${plots.default_directory || `${field('mpc_root').value}/_visualizer`}`;
+        plottersInitialized = true;
+      }
       const build = result.build;
       buildRunning = build?.state === 'running';
       if (build) {
@@ -74,6 +86,13 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
     try { await callback(); } catch (error) { say(error.message, true); }
     finally { busy = false; controls(); }
   }
+  action('plotters').addEventListener('click', () => run(async () => {
+    const directory = field('plotters').value.trim();
+    await request('/api/plots/settings', { directory: directory && directory !== plottersDefault ? directory : null });
+    const result = await request('/api/plots/reload', {});
+    say(result.errors?.length ? `Plotters reloaded with errors: ${result.errors.join('; ')}` : 'Plotters reloaded. MPC continues unchanged.');
+    onPlottersReload();
+  }));
   action('inspect').addEventListener('click', () => run(async () => { say('Checking selected environment and binary identities…'); describe(await request('/api/source/inspect', selection())); }));
   action('build').addEventListener('click', () => run(async () => {
     const counts = parseBuildCounts(field('counts').value);
@@ -100,6 +119,8 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
     if (priorRoot && field('mpc_root').value.trim() !== priorRoot) {
       if ([`${priorRoot}/venv-host/bin/python`, `${priorRoot}/.venv/bin/python`].includes(field('python').value)) field('python').value = '';
       if (field('cache').value === `${priorRoot}/.cache/gato`) field('cache').value = '';
+      if (field('plotters').value === `${priorRoot}/_visualizer`) field('plotters').value = '';
+      content.querySelector('.plotters-default').textContent = `Default after Apply: ${field('mpc_root').value.trim()}/_visualizer`;
     }
   });
   button?.addEventListener('click', () => { dialog.open(); clearTimeout(timer); refresh(); });

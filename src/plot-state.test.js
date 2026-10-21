@@ -1,0 +1,45 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createPlotState, timelineEligible, awaitPlotJob } from './plot-state.js';
+
+test('independent duplicate configs, reorder, shared placements and persistence', () => {
+  let stored; const state = createPlotState({}, value => { stored = structuredClone(value); });
+  const definition = { id: 'episode.joint', inputs: { joint: { default: 'J1' }, quantity: { default: 'q' } } };
+  const first = state.add(definition, 'episode'), second = state.duplicate(first.id);
+  state.configure(second.id, { joint: 'J2', quantity: 'qd' });
+  assert.equal(first.parameters.joint, 'J1'); assert.equal(second.parameters.joint, 'J2');
+  state.place(first.id, true); state.configure(first.id, { joint: 'J3' });
+  assert.equal(first.timeline, true); assert.equal(first.parameters.joint, 'J3');
+  state.place(first.id, false); assert.equal(state.instances.length, 2);
+  state.reorder(second.id, first.id); assert.equal(state.instances[0].id, second.id);
+  state.place(second.id, true, false); assert.equal(second.timeline, false);
+  const restored = createPlotState(stored); assert.deepEqual(restored.instances, state.instances);
+  state.remove(first.id); assert.equal(state.instances.length, 1);
+});
+
+test('episode range changes only with selected scope; pin fixes solve and actual iteration independently of robot cursor', () => {
+  const state = createPlotState(); state.setSource('live');
+  const a = { id: 'a', iterations: [{ index: 0 }, { index: 3 }] }, b = { id: 'b', iterations: [] };
+  state.follow(a); assert.equal(state.iteration, null); state.selectIteration(2); assert.equal(state.iteration, null);
+  state.selectIteration(3); state.pin(); state.follow(b); assert.equal(state.selected.id, 'a'); assert.equal(state.iteration, 3);
+  let view = { cursor: 5, window: [2, 8] };
+  assert.deepEqual(state.range(view), { mode: 'entire', cursor_s: 5 });
+  view.window = [4, 6]; assert.deepEqual(state.range(view), { mode: 'entire', cursor_s: 5 });
+  state.rangeMode = 'visible'; assert.deepEqual(state.range(view), { mode: 'visible', cursor_s: 5, start_s: 4, end_s: 6 });
+  state.pin(false); state.follow(b); assert.equal(state.selected.id, 'b'); assert.equal(state.iteration, null);
+  state.setSource('replay:recording'); assert.equal(state.selected, null);
+});
+
+test('only episode-clock curves or measured spans can share timeline', () => {
+  for (const kind of ['lines', 'bars', 'spans']) assert.equal(timelineEligible({ scope: 'episode' }, { kind, x: { identity: 'episode_time' } }), true);
+  for (const identity of ['sqp_iteration', 'wall_time', 'prediction_time']) assert.equal(timelineEligible({ scope: 'episode' }, { kind: 'lines', x: { identity } }), false);
+  assert.equal(timelineEligible({ scope: 'episode' }, { kind: 'table' }), false);
+});
+
+test('async jobs poll job_id, reject local errors and discard stale completions', async () => {
+  const calls = []; const request = async (path, body) => { calls.push([path, body]); return calls.length === 1 ? { job_id: 'abc', state: 'running' } : { state: 'complete', catalog: [], results: [] }; };
+  const result = await awaitPlotJob(request, '/api/plots/evaluate', { plots: [] }, { wait: async () => {} });
+  assert.deepEqual(result.results, []); assert.equal(calls[1][0], '/api/plots/jobs/abc');
+  await assert.rejects(awaitPlotJob(async () => ({ state: 'failed', error: 'Bad plugin' }), '/api/plots/evaluate', {}), /Bad plugin/);
+  assert.equal(await awaitPlotJob(request, '/api/plots/evaluate', {}, { alive: () => false }), null);
+});

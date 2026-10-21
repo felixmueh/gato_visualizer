@@ -74,6 +74,8 @@ test('source window checks without compiling, streams explicit build status, the
   const request = async (path, body) => {
     requests.push({ path, body });
     if (path === '/api/source') return { current, build: currentBuild };
+    if (path === '/api/plots/settings') return body === undefined ? { directory: '/source/_visualizer', default_directory: '/source/_visualizer', override: null } : { directory: body.directory };
+    if (path === '/api/plots/reload') return { errors: [] };
     if (path === '/api/source/inspect') return current;
     if (path === '/api/source/build') { currentBuild = { state: 'running', N: body.N, log: 'compiling current key', log_path: '/retained/build.log' }; return currentBuild; }
     if (path === '/api/source/apply') { applied = true; return { accepted: true }; }
@@ -84,8 +86,13 @@ test('source window checks without compiling, streams explicit build status, the
     const ui = setupSourceSettings({ button, request, beforeApply: () => beforeApply++, reload: () => reloaded++ });
     await button.emit('click'); await new Promise(resolve => setImmediate(resolve));
     assert.equal(ui.dialog.isOpen, true);
-    assert.deepEqual(requests.map(item => item.path), ['/api/source']);
+    assert.deepEqual(requests.map(item => item.path), ['/api/source', '/api/plots/settings']);
     const form = ui.dialog.body.children[0], field = name => form.querySelector(`[name="${name}"]`), action = name => form.querySelector(`[data-action="${name}"]`);
+    field('plotters').value = '/custom/plots';
+    await action('plotters').emit('click');
+    assert.deepEqual(requests.find(item => item.path === '/api/plots/settings' && item.body).body, { directory: '/custom/plots' });
+    assert.equal(requests.filter(item => item.path === '/api/source/apply').length, 0);
+    assert.equal(requests.filter(item => item.path.endsWith('/build')).length, 0);
     await action('inspect').emit('click');
     assert.equal(requests.filter(item => item.path.endsWith('/build')).length, 0);
     field('counts').value = '96,48';

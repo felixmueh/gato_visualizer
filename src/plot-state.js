@@ -9,7 +9,7 @@ export function createPlotState(saved = {}, persist = () => {}) {
   return {
     instances,
     add(definition, context) {
-      const item = { id: `plot-${Date.now().toString(36)}-${++sequence}`, plot_id: definition.id, context, parameters: Object.fromEntries(Object.entries(definition.controls || {}).map(([key, value]) => [key, value.default])), timeline: false };
+      const item = { id: `plot-${Date.now().toString(36)}-${++sequence}`, plot_id: definition.id, context, parameters: Object.fromEntries(Object.entries(definition.inputs || definition.controls || {}).map(([key, value]) => [key, value.default])), timeline: false };
       instances.push(item); save(); return item;
     },
     duplicate(id) { const original = find(id); if (!original) return; const item = { ...original, id: `plot-${Date.now().toString(36)}-${++sequence}`, parameters: structuredClone(original.parameters), timeline: false }; instances.splice(instances.indexOf(original) + 1, 0, item); save(); return item; },
@@ -18,9 +18,9 @@ export function createPlotState(saved = {}, persist = () => {}) {
     reorder(id, before) { const item = find(id), target = find(before); if (!item || item === target) return; instances.splice(instances.indexOf(item), 1); instances.splice(target ? instances.indexOf(target) : instances.length, 0, item); save(); },
     place(id, value, eligible = true) { const item = find(id); if (item && item.context === 'episode' && eligible) item.timeline = value; save(); },
     setSource(key) { if (key !== sourceKey) { sourceKey = key; pinned = selected = null; iteration = null; } },
-    follow(solve) { if (!pinned) { if (selected?.id !== solve?.id) iteration = solve?.selected_iteration ?? solve?.iterations?.at(-1)?.index ?? null; selected = solve || null; } },
+    follow(solve) { if (!pinned) { if (selected?.id !== solve?.id) iteration = null; selected = solve || null; } },
     pin(value = true) { pinned = value && selected ? { ...selected } : null; },
-    selectIteration(index) { if (selected?.iterations?.some(item => item.index === index)) iteration = index; },
+    selectIteration(index) { if (index == null || selected?.iterations?.some(item => item.index === index)) iteration = index; },
     set rangeMode(value) { if (['entire', 'through_cursor', 'visible'].includes(value)) { rangeMode = value; save(); } },
     get rangeMode() { return rangeMode; }, get selected() { return pinned || selected; }, get pinned() { return Boolean(pinned); }, get iteration() { return iteration; },
     range(view) { return { mode: rangeMode, cursor_s: view.cursor, ...(rangeMode === 'visible' ? { start_s: view.window[0], end_s: view.window[1] } : {}) }; },
@@ -38,9 +38,9 @@ export async function awaitPlotJob(request, path, payload, { alive = () => true,
     if (!alive()) return null;
     await wait(80);
     if (!alive()) return null;
-    job = await request(`/api/plots/jobs/${encodeURIComponent(job.id)}`);
+    job = await request(`/api/plots/jobs/${encodeURIComponent(job.job_id || job.id)}`);
   }
   if (!alive() || job.state === 'superseded') return null;
-  if (job.state === 'error') throw new Error(typeof job.error === 'string' ? job.error : JSON.stringify(job.error));
+  if (job.state === 'error' || job.state === 'failed') throw new Error(typeof job.error === 'string' ? job.error : JSON.stringify(job.error));
   return job.result ?? job;
 }

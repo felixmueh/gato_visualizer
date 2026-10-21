@@ -141,7 +141,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     else zoom(Math.exp(clamp(event.deltaY * unit, -500, 500) * .002), fractionAt(event));
   }, { passive: false });
   element.addEventListener('pointerdown', event => {
-    if (event.target.closest?.('button, input, select, label')) return;
+    if (event.target.closest?.('button, input, select, label, [draggable="true"]')) return;
     if (event.button !== 0 && event.button !== 1) return;
     event.preventDefault(); hideTooltip(); surface.focus();
     drag = { pointer: event.pointerId, pan: event.button === 1 || event.altKey, x: event.clientX, window: [...window], element };
