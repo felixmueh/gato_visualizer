@@ -11,6 +11,7 @@ import numpy as np
 from execution_session import DEFAULT_EXECUTION, MultirateSession
 
 MAX_STATES = 250000
+PROGRESS_INTERVAL_S = .05
 
 
 def estimated_states(execution, duration=None):
@@ -37,6 +38,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
     generation_start = dict(kind="current")
     state_count = 0
     last_busy = 0.
+    next_progress = 0.
     last_metrics = dict(calculation_rtf=0., mpc_hz=0., control_hz=0., simulation_hz=0.)
 
     def current(expected=None):
@@ -366,8 +368,14 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     job = None
                     locks.release()
                 else:
-                    status("playing" if job["paced"] else "calculating", "Computing closed-loop MPC motion",
-                           complete=False, severity=severity)
+                    # Every interval is already in lossless history. Progress
+                    # is latest-value UI telemetry, not another 100+ Hz stream
+                    # that can back up the same bounded results queue.
+                    now = time.monotonic()
+                    if now >= next_progress:
+                        status("playing" if job["paced"] else "calculating", "Computing closed-loop MPC motion",
+                               complete=False, severity=severity)
+                        next_progress = now + PROGRESS_INTERVAL_S
             except Exception as exc:
                 if committed is not None:
                     adapter.x, adapter.t, adapter.sequence, adapter.applied_torque = committed
