@@ -192,9 +192,16 @@ def validate_settings(config, task, schema):
 class GPULocks:
     """Same lock paths, ordering and parent-exists policy as random100/run.py."""
     def __init__(self, mpc_root):
-        self.paths = (Path(mpc_root).parent / "GATO-upstream-contributions/.gpu.lock",
+        root = Path(mpc_root).resolve()
+        try:
+            common = subprocess.check_output(["git", "-C", str(root), "rev-parse",
+                "--path-format=absolute", "--git-common-dir"], text=True, stderr=subprocess.DEVNULL).strip()
+            workspace = Path(common).parent.parent
+        except (OSError, subprocess.SubprocessError):
+            workspace = root.parent
+        self.paths = (workspace / "GATO-upstream-contributions/.gpu.lock",
                       Path("/tmp/a2rlab-timing.lock"),
-                      Path(mpc_root).parent / "GATO/.git/experiment-runner.lock")
+                      workspace / "GATO/.git/experiment-runner.lock")
         self.handles = []
 
     def acquire(self):
@@ -231,7 +238,9 @@ class MPCAdapter:
         from server import RobotKinematics
         self.kinematics = RobotKinematics(Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf",
                                          end_effector_frame=self.reach.EE_FRAME)
-        path, self.gpu_path, self.signs = self.reach.runtime_urdf()
+        from source_runtime import prepared_model
+        with prepared_model(self.reach, retain=True) as prepared:
+            path, self.gpu_path, self.signs = prepared
         self.model_identity = dict(full_urdf_sha256=hashlib.sha256(
             (Path(mpc_root)/"models/tiago_pro/tiago_pro.urdf").read_bytes()).hexdigest(),
             gpu_urdf_sha256=hashlib.sha256(self.gpu_path.read_bytes()).hexdigest(),
@@ -307,6 +316,12 @@ class MPCAdapter:
                 raw = self.model.velocityLimit if group == 1 else self.model.effortLimit
                 lo, hi = -value * raw, value * raw
             self.solver.set_row_group_bounds(group, lo, hi)
+        self.configure_task(effective, task)
+        self.controller.reset(self.x * self.state_signs)
+        self.restarted = True
+
+    def configure_task(self, effective, task):
+        """Fixed simulator owns world-space task geometry and exact references."""
         self.N, self.dt = effective["N"], effective["dt_s"]
         self.task = deepcopy(task)
         self.task_path_xyz = (figure8_reference(np.linspace(0., task["period_s"], 257),
@@ -318,8 +333,6 @@ class MPCAdapter:
         self.reference[:, :3] = self.target
         if self.task["kind"] == "figure8":
             self.update_tracking_reference()
-        self.controller.reset(self.x * self.state_signs)
-        self.restarted = True
 
     def target_world_at(self, timestamp):
         if self.task["kind"] == "figure8":
@@ -332,9 +345,11 @@ class MPCAdapter:
         self.reference[:, :3] = np.asarray([
             self.kinematics.world_from_torso.actInv(point) for point in world])
 
-    def solve_snapshot(self, origin, settings_version):
+    def solve_snapshot(self, origin, settings_version, reference=None):
         """Solve numerically and copy buffers; trajectory FK/encoding runs elsewhere."""
-        if self.task["kind"] == "figure8":
+        if reference is not None:
+            self.reference = np.asarray(reference, dtype=np.float32).reshape(self.N, 6).copy()
+        elif self.task["kind"] == "figure8":
             self.update_tracking_reference()
         if origin == "preview":
             self.controller.reset(self.x * self.state_signs)
@@ -420,17 +435,20 @@ class MPCAdapter:
         return render_state(self.state_snapshot(rtf), self.kinematics)
 
 
-def build_schema(mpc_root):
+def build_schema(mpc_root, available_n=None):
     """Discover imports/build availability inside the numerical subprocess."""
     from execution_session import DEFAULT_EXECUTION
     mpc_root = Path(mpc_root).expanduser().resolve()
     reach, configuration = import_mpc(mpc_root)
-    try:
-        from source_runtime import discover_compatible_modules
-        discovery = discover_compatible_modules(reach)
-        available = discovery["available_N"]
-    except (OSError, ValueError, KeyError):
-        available = []
+    if available_n is None:
+        try:
+            from source_runtime import discover_compatible_modules
+            discovery = discover_compatible_modules(reach)
+            available = discovery["available_N"]
+        except (OSError, ValueError, KeyError):
+            available = []
+    else:
+        available = list(available_n)
     _, settings, _ = configuration.load_configuration()
     defaults = {k: deepcopy(v) for k, v in settings.items() if k not in ("description", "save_plan_steps")}
     schema = dict(defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK),

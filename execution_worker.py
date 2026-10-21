@@ -20,9 +20,10 @@ def estimated_states(execution, duration=None):
     return 1+int(np.ceil(span*(execution["simulation_hz"]+execution["control_hz"]+execution["to_hz"])))
 
 
-def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory=None, schema_factory=None):
-    from live_mpc import build_schema, GPULocks, MPCAdapter, ROOT
+def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory=None, schema_factory=None, solver_profile=None):
+    from live_mpc import build_schema, GPULocks, ROOT
     from live_presentation import mutable
+    from solver_adapter import SimulatorAdapter
     locks = GPULocks(mpc_root)
     adapter = session = None
     generation = version = 0
@@ -85,7 +86,9 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
     def ensure_adapter():
         nonlocal adapter, need_config
         if adapter is None:
-            adapter = (adapter_factory or MPCAdapter)(mpc_root)
+            adapter = (adapter_factory or SimulatorAdapter)(mpc_root)
+            if adapter_factory is None:
+                adapter.select_profile(solver_profile)
         if need_config:
             folder = ROOT / "_expr_data/live/configs"
             folder.mkdir(parents=True, exist_ok=True)
@@ -114,7 +117,15 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
         state_count = 1
 
     try:
-        schema = (schema_factory or build_schema)(mpc_root)
+        if schema_factory is not None:
+            schema = schema_factory(mpc_root)
+        else:
+            # The fixed simulator imports only Python model/plant helpers.
+            # Binary loading/ABI discovery stays in an independent interpreter.
+            from source_runtime import probe_selection
+            selection = {key: solver_profile[key] for key in ("mpc_root", "python", "cache")}
+            discovered = probe_selection(selection)
+            schema = build_schema(mpc_root, available_n=discovered["available_N"])
         config = deepcopy(schema["defaults"]["config"])
         task = deepcopy(schema["defaults"]["task"])
         execution = deepcopy(schema["defaults"].get("execution", DEFAULT_EXECUTION))
@@ -143,6 +154,56 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         execution = deepcopy(command["execution"])
                         need_config = True
                     version = incoming_version
+                    if kind == "switch_solver_profile":
+                        job = None
+                        session = None
+                        # Finish the old invocation before replacing its process;
+                        # the revision has already cancelled its publication.
+                        while not locks.acquire() and current(token):
+                            shutdown.wait(.05)
+                        if not current(token):
+                            continue
+                        saved_state = None
+                        try:
+                            if adapter is None:
+                                adapter = (adapter_factory or SimulatorAdapter)(mpc_root)
+                            saved_state = (adapter.x.copy(), adapter.t, adapter.applied_torque, adapter.sequence)
+                            anchor = command.get("anchor")
+                            if anchor is not None:
+                                apply_anchor(anchor)
+                            adapter.select_profile(command["profile"])
+                            need_config = True
+                            ensure_adapter()
+                            # Stage reset and first state before committing the
+                            # new generation. A failed child/reset leaves the
+                            # previous history descriptor and bytes untouched.
+                            adapter.sequence = 0
+                            adapter.controller.reset(adapter.x * adapter.state_signs)
+                            staged_session = MultirateSession(adapter, execution, version)
+                            first_state = staged_session.initial_state()
+                            generation = command["target_generation"]
+                            initialized_generation = generation
+                            generation_start = dict(kind="current")
+                            session = staged_session
+                            initial_time, state_count = float(adapter.t), 1
+                            history_complete = False
+                            emit(dict(kind="profile_activated", token=token, generation=generation,
+                                profile=command["profile"], schema=adapter.profile_schema), token)
+                            emit(dict(kind="records", generation=generation, token=token,
+                                records=[first_state], complete=False), token)
+                            status("paused", "Solver profile selected; simulator state retained", complete=False)
+                        except Exception as exc:
+                            if adapter is not None and hasattr(adapter, "close_solver"):
+                                adapter.close_solver()
+                            if saved_state is not None:
+                                adapter.x, adapter.t, adapter.applied_torque, adapter.sequence = saved_state
+                            need_config = True
+                            emit(dict(kind="profile_failed", token=token, generation=generation,
+                                profile=command["profile"], message=str(exc)), token)
+                            status("paused", f"Solver switch failed: {exc}; history retained", complete=history_complete)
+                        finally:
+                            locks.release()
+                        continue
                     if kind in ("pause", "cancel"):
                         if kind == "cancel" or execution["calculation"] == "on_play":
                             job = None
@@ -310,6 +371,8 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             # experiment window as creation/solving.
             while not locks.acquire():
                 time.sleep(.05)
+            if hasattr(adapter, "close_solver"):
+                adapter.close_solver()
             adapter.controller = None
             adapter.solver = None
             adapter = None

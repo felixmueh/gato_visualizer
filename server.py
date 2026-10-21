@@ -417,7 +417,7 @@ def accepts_gzip(value):
 
 
 def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist=None, live=None,
-                replays=None, sources=None, live_error=None, plots=None):
+                replays=None, sources=None, live_error=None, plots=None, solver_profiles=None):
     dist = Path(dist or ROOT / "dist").resolve()
     scene_json = json.dumps(scene, allow_nan=False, separators=(",", ":")).encode()
     backend_id = uuid.uuid4().hex
@@ -447,6 +447,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             self.do_GET()
 
         def do_POST(self):
+            if urlsplit(self.path).path in ("/api/solver-profiles", "/api/solver-profiles/activate") and solver_profiles is not None:
+                self.solver_profile_command()
+                return
             if urlsplit(self.path).path.startswith("/api/plots/") and plots is not None:
                 self.plot_command()
                 return
@@ -475,6 +478,25 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 result, status = dict(accepted=True, settings_version=version), 200
             except (ValueError, TypeError) as exc:
                 result, status = dict(accepted=False, error=str(exc)), 400
+            self.send_payload(json.dumps(result, allow_nan=False).encode(),
+                              "application/json; charset=utf-8", status)
+
+        def solver_profile_command(self):
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
+                self.send_error(403)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 65536 or self.headers.get_content_type() != "application/json":
+                    raise ValueError("Expected a JSON profile request under 64 KiB")
+                body = json.loads(self.rfile.read(length))
+                if urlsplit(self.path).path.endswith("/activate"):
+                    result, status = solver_profiles.activate(body), 202
+                else:
+                    result, status = solver_profiles.save(body), 200
+            except (ValueError, TypeError, OSError, RuntimeError) as exc:
+                result, status = dict(error=str(exc)), 400
             self.send_payload(json.dumps(result, allow_nan=False).encode(),
                               "application/json; charset=utf-8", status)
 
@@ -611,6 +633,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                     result, status = dict(error=str(exc)), 404 if isinstance(exc, KeyError) else 400
                 self.send_payload(json.dumps(result, allow_nan=False, separators=(",", ":")).encode(),
                                   "application/json; charset=utf-8", status, compress=True)
+            elif path == "/api/solver-profiles" and solver_profiles is not None:
+                self.send_payload(json.dumps(solver_profiles.status(), allow_nan=False).encode(),
+                                  "application/json; charset=utf-8")
             elif path == "/api/replays" and replays is not None:
                 self.send_payload(json.dumps(replays.catalog(), allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
@@ -717,7 +742,7 @@ def main(argv=None):
     if not args.replay_only:
         from live_mpc import LiveService
         try:
-            live = LiveService(args.mpc_root)
+            live = LiveService(args.mpc_root, solver_profile=dict(id="simulator", name="Simulator checkout", **selection))
         except (ValueError, OSError, RuntimeError, queue.Empty) as exc:
             live_error = str(exc) or "Numerical worker did not become ready within 60 seconds"
             print(f"Live setup error: {exc}; use Source / Build to check this selection", file=sys.stderr)
@@ -734,8 +759,11 @@ def main(argv=None):
     sources = SourceSettings(selection, visualizer_config.path, request_restart)
     from plot_service import PlotService
     plots = PlotService(args.mpc_root, visualizer_config.path, scene, live=live, replays=library)
+    from solver_profiles import SolverProfiles
+    profiles = (SolverProfiles(live, selection, visualizer_config.path, visualizer_config.solver_profiles)
+                if live is not None else None)
     server = make_server(scene, robot_xml, meshes, args.host, args.port, live=live, replays=library,
-                         sources=sources, live_error=live_error, plots=plots)
+                         sources=sources, live_error=live_error, plots=plots, solver_profiles=profiles)
     server.replay_library = library
     server.visualizer_config = visualizer_config
     print(f"TIAGo visualizer: http://{args.host}:{server.server_port}", flush=True)

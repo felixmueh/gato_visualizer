@@ -17,6 +17,7 @@ class VisualizerConfig:
     ingest_directory: Path
     source: dict | None = None
     plotters_directory: Path | None = None
+    solver_profiles: tuple = ()
 
 
 def load_visualizer_config(path=DEFAULT_CONFIG):
@@ -33,7 +34,7 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
         raise ValueError(f"Cannot read visualizer config {selected}: {exc}") from exc
     if not isinstance(settings, dict):
         raise ValueError("Visualizer config must be a JSON object")
-    unknown = set(settings) - {"ingest_directory", "source", "plotters_directory"}
+    unknown = set(settings) - {"ingest_directory", "source", "plotters_directory", "solver_profiles"}
     if unknown:
         raise ValueError(f"Unknown visualizer config fields: {sorted(unknown)}")
     value = settings.get("ingest_directory", str(DEFAULT_INGEST_DIRECTORY))
@@ -65,8 +66,20 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
         if not plotters.is_absolute():
             plotters = selected.parent / plotters
         plotters = plotters.resolve()
+    profiles = settings.get("solver_profiles", [])
+    if not isinstance(profiles, list) or any(not isinstance(item, dict) for item in profiles):
+        raise ValueError("solver_profiles must be a list of named profile objects")
+    profiles = [dict(profile) for profile in profiles]
+    for profile in profiles:
+        for key in ("mpc_root", "python", "cache"):
+            value = profile.get(key)
+            if value is not None:
+                if not isinstance(value, str) or not value.strip() or "\x00" in value:
+                    raise ValueError(f"solver_profiles.{key} must be a path string")
+                location = Path(value).expanduser()
+                profile[key] = str(location if location.is_absolute() else selected.parent / location)
     return VisualizerConfig(path=selected, ingest_directory=directory.resolve(), source=source,
-                            plotters_directory=plotters)
+                            plotters_directory=plotters, solver_profiles=tuple(profiles))
 
 
 def save_source_selection(path, source):

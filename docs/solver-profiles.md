@@ -1,60 +1,93 @@
 # Solver profiles against one simulator
 
-Status: feasibility review and proposed architecture, not implemented.
-The current Source / Build dialog selects one complete TIAGo MPC checkout;
-Apply restarts the backend and reconstructs its source-bound objects.
+Status: backend process boundary and sequential profile switching implemented.
+Native/GPU conformance of the extracted boundary remains a separate check.
+Source / Build still selects the complete simulator checkout; its Apply action
+restarts the backend. Solver-profile activation keeps that simulator, HTTP
+service and browser session running.
 
-## Proposed first version
+## Ownership and lifecycle
 
-Keep a fixed simulator profile for a running session: its prepared TIAGo model,
-integrator, assets, initial posture and plant parameters define the world.
-Initially use an existing `tiago_mpc` checkout. An internally pinned simulator
-could come later; maintaining another simulator is not required for switching
-solver implementations.
+The simulator checkout supplies the prepared TIAGo model, integrator, assets,
+initial posture and task geometry. The current plant remains explicitly
+loss-free, matching existing Live behavior: it uses `reach_sim.rk4`. Profile
+selection never enables passive forces or changes this plant model.
 
-Add named solver profiles, each identifying a `tiago_mpc` checkout/worktree,
-Python interpreter and compiled-module cache. Run one active solver in its own
-process. Its environment and imports must be isolated from other profiles;
-loading two incompatible GATO installations in one Python process is unsuitable.
-Existing compatible binaries can be reused without copying or rebuilding them.
+Named solver profiles identify a TIAGo checkout/worktree, Python interpreter
+and compiled-module cache. Exactly one solver child exists. `SimulatorAdapter`
+owns simulation, scheduling, exact references and native states; `SolverProcess`
+launches `solver_worker.py` with the selected Python using `subprocess`, which
+works inside the existing daemon coordinator. A private socket carries framed
+JSON requests/replies. Native stdout/stderr go to the owning checkout's ignored
+`_expr_data/live/solver-processes/` directory.
 
-Switch while paused. Capture native joint position, velocity and task time,
-stop the previous solver process, validate/start the selected profile, and reset
-its controller from that state. Keep the simulator, HTTP server and browser
-open. Begin an identified history segment; retain old disk recordings and their
-source identities. A failed switch stays paused with the existing history intact.
-Do not promise to migrate an optimizer's private warm-start state between
-implementations.
+The coordinator owns creation, configuration, calls and graceful destruction
+under the canonical experiment GPU locks. The child never acquires those locks.
+Lock roots derive from the simulator repository's common Git directory, not a
+solver worktree's parent. RPC protocol, epoch and request IDs reject mismatched
+replies. A publication revision floor rejects late packets from an old profile.
+Normal settings and profile switching only load compatible prebuilt modules;
+they never compile. Source / Build remains the explicit build operation.
 
-## Implementation boundary
+Activation cancels calculation, captures native q/qd/task time, stops the old
+child, validates/starts the replacement and resets its controller. A successful
+switch starts a fresh identified history generation at the captured state and
+stays paused. Every prior disk recording remains intact. There is no transfer
+of private warm-start state between implementations.
 
-The numerical coordinator owns simulation, scheduling and GPU arbitration.
-Extract the solver part of the current `MPCAdapter` behind a process interface:
-native state, reference and configuration go in; native predictions, diagnostics
-and source identity come out. Each implementation adapter owns its joint-6 GPU
-conversion. The plant must never receive implementation-specific GPU coordinates.
-
-This is a medium backend refactor, not just a profile dropdown. Current
-`live_mpc`, `execution_session` and worker code directly combine model setup,
-controller construction and simulation. The present numerical worker is a
-daemon, so naively spawning another multiprocessing child inside it will fail;
-worker supervision must be adjusted deliberately. A coordinator must own the
-shared GPU locks and lease work to children, avoiding a child waiting on a lock
-already held by its parent. Canonical lock paths cannot depend on a worktree's
-different parent directory. Late results from a replaced profile must be rejected.
+A failed switch stays paused and keeps the prior history generation/file active.
+Because the old child has already stopped, failure reports no active solver;
+select another compatible profile to resume. Other mutations are rejected while
+switching. Existing plots retain their instances, but current generation-change
+rules still clear the pinned Solve. This feature adds no historical-generation
+browsing UI and does not broaden stale-generation plot acceptance.
 
 ## Compatibility and provenance
 
-Distinguish binary loadability from robot compatibility. The latter includes
-native joint order, units, torque semantics, root/reference frames and grasp TCP.
-Record model, limits, friction and solver configuration differences explicitly:
-intentional predictor changes can be the point of the comparison, but must not
-silently change the fixed plant. Record a solver-profile identity on every solve
-and applied plan so switching never relabels older results.
+Binary discovery checks the selected source/model/toolchain/Python ABI/GPU
+architecture and actual loadability. Coordinate compatibility is checked
+separately: native joint order, dimensions, units, actuator-torque semantics,
+reference frame, root transform, end-effector frame and TCP offset must agree.
+Different physical model hashes/limits/configurations are explicitly recorded;
+intentional predictor differences do not change the fixed simulator.
 
-Start with sequential switching and one controller acting on one plant.
-Keeping inactive workers warm can reduce subsequent switch latency, at the cost
-of memory and lifecycle complexity. Multiple prediction overlays can be added
-as sequential shadow solves. Comparing independent closed-loop outcomes needs
-separate plant histories; simultaneous GPU execution introduces contention and
-is a separate feature.
+The child converts final packed q/v/u arrays into native coordinates before RPC.
+The existing render contract receives `_signs = [1,...,1]`; historical plans keep
+their recorded signs. Every solve records profile/process identity, source/model
+identities, effective solver configuration, bounds, predictor dynamics, actual
+binary path/hash/native source ID and inspection capabilities. States and applied
+controls carry the profile/process identity and exact plan sequence association.
+
+## HTTP and local settings
+
+- `GET /api/solver-profiles` returns `profiles`, `active_profile_id`,
+  `simulator_source`, `switch` and `generation`.
+- `POST /api/solver-profiles` accepts `{profile: {id, name, mpc_root, python?,
+  cache?}}` and saves it in `visualizer.json.solver_profiles`. The reserved
+  `simulator` profile follows Source / Build. Cache defaults to the selected
+  project's cache. Saving does not load a solver or compile.
+- `POST /api/solver-profiles/activate` accepts `{profile_id, anchor?}` and returns
+  HTTP 202 `{state: "switching", profile_id}`. The optional anchor contains
+  native `q`, `qd`, and `sim_time_s`; omission uses the committed simulation tip.
+- SSE `solver_profile` events contain `state: "active" | "failed"`, `profile_id`,
+  `generation`, and optional `error`. Success refreshes `/api/live/schema` for
+  compatible knot counts and preserves current Live settings. An unavailable
+  current N fails explicitly; there is no automatic N substitution.
+- Catalog `switch.state` is `idle`, `switching` or `failed`. `idle` with the
+  requested `active_profile_id` confirms success when SSE is unavailable.
+
+## Inspection extension boundary
+
+RPC operations are `bootstrap`, `configure`, `reset`, `solve`, and `close`.
+The same request envelope can host inspection work with captured native state,
+exact reference/configuration, explicit cold initialization, a finite SQP cap
+and an optional wall budget. Configuration reports `capabilities.iteration_capture`
+only when both Python and native APIs support it; `exact_resume` is false.
+Native capture hooks and inspection orchestration are separate work.
+
+An inspection operation must retain full trajectory traces as binary artifacts
+under this checkout's `_expr_data/solve-inspections/` and return a compact
+descriptor. Never transport all iteration trajectories through JSON RPC or plot
+context. Plot readers load the binary trace; only the selected iteration's
+prediction and small iteration-index/status metadata cross HTTP. Inspection
+results remain separate from applied plans and never advance the plant.

@@ -169,7 +169,9 @@ class MultirateSession:
                 self.control_tick += 1
                 records.append(dict(type="control", sim_time_s=float(a.t), torque_nm=a.u.tolist(),
                                     plan_seq=self.plan["seq"], plan_elapsed_s=elapsed,
-                                    horizon_exhausted=self.horizon_exhausted, plan_exhausted=self.horizon_exhausted))
+                                    horizon_exhausted=self.horizon_exhausted, plan_exhausted=self.horizon_exhausted,
+                                    solver_profile=self.plan.get("solver_profile", {}).get("profile"),
+                                    solver_process_epoch=self.plan.get("solver_profile", {}).get("process_epoch")))
             while self._tick_time(self.sim_tick, "simulation_hz") <= a.t+1e-12:
                 self.sim_tick += 1
             until = min(interval_end, self._tick_time(self.sim_tick, "simulation_hz"),

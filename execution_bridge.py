@@ -106,8 +106,21 @@ class ProcessLiveService:
     boundaries. Old-generation results cannot replace the current trajectory.
     """
     def __init__(self, mpc_root, adapter_factory=None, schema_factory=None,
-                 worker_target=worker_main, render_factory=None):
+                 worker_target=worker_main, render_factory=None, solver_profile=None):
         self.mpc_root = Path(mpc_root).expanduser().resolve()
+        if solver_profile is None:
+            if adapter_factory is None:
+                from source_runtime import resolve_selection
+                import os
+                selection = resolve_selection(self.mpc_root, cache=os.environ.get("GATO_CACHE_DIR"))
+            else:
+                import sys
+                selection = dict(mpc_root=str(self.mpc_root), python=sys.executable,
+                                 cache=str(self.mpc_root / ".cache/gato"))
+            solver_profile = dict(id="simulator", name="Simulator checkout", **selection)
+        self.active_profile_id = solver_profile["id"]
+        self.profile_switch = dict(state="idle")
+        self._profile_revision_floor = 0
         self.condition = threading.Condition()
         self.events = deque(maxlen=256)
         self.latest = {}
@@ -122,7 +135,7 @@ class ProcessLiveService:
         self.shutdown = self.context.Event()
         self._process = self.context.Process(target=worker_target,
             args=(self.mpc_root, self.commands, self.results, self.revision, self.shutdown,
-                  adapter_factory, schema_factory), name="live-mpc-compute", daemon=True)
+                  adapter_factory, schema_factory, solver_profile), name="live-mpc-compute", daemon=True)
         self._process.start()
         try:
             ready = self.results.get(timeout=60)
@@ -195,6 +208,28 @@ class ProcessLiveService:
     def history(self, generation, after=0, limit=256):
         return self.history_store.page(generation, after, limit)
 
+    def switch_solver_profile(self, profile, anchor=None):
+        anchor = validate_anchor(anchor)
+        with self.condition:
+            if self.closed or not self._process.is_alive():
+                raise ValueError("Numerical coordinator is unavailable")
+            if self.profile_switch["state"] == "switching":
+                raise ValueError("A solver profile switch is in progress")
+            if self.commands.full():
+                raise ValueError("Command queue full; wait for the current solve to return")
+            with self.revision.get_lock():
+                self.revision.value += 1
+            self.profile_switch = dict(state="switching", profile_id=profile["id"])
+            self._profile_revision_floor = self.revision.value
+            self._preview_requested = True
+            request = dict(type="switch_solver_profile", profile=deepcopy(profile), anchor=anchor,
+                token=self.revision.value, generation=self.generation, target_generation=self.generation+1,
+                settings_version=self.version, config=deepcopy(self.config), task=deepcopy(self.task),
+                execution=deepcopy(self.execution))
+            self.commands.put_nowait(request)
+            self.publish(dict(type="status", state="paused", message="Switching solver profile",
+                generation=self.generation, settings_version=self.version, job_active=False))
+
     def command(self, command):
         from live_mpc import validate_settings
         if not isinstance(command, dict):
@@ -222,6 +257,8 @@ class ProcessLiveService:
         with self.condition:
             if self.closed:
                 raise ValueError("Live service is closed")
+            if self.profile_switch["state"] == "switching":
+                raise ValueError("A solver profile switch is in progress")
             if not self._process.is_alive():
                 raise ValueError("Numerical worker stopped; restart the server")
             if kind == "precalculate" or (kind == "play" and self.execution["calculation"] != "on_play"):
@@ -278,6 +315,36 @@ class ProcessLiveService:
                 continue
             try:
                 kind = packet.get("kind")
+                if kind in ("profile_activated", "profile_failed"):
+                    with self.condition:
+                        if packet.get("token") != self.revision.value:
+                            continue
+                        identifier = packet["profile"]["id"]
+                        if kind == "profile_activated":
+                            self.generation = packet["generation"]
+                            self.history_store.reset(self.generation)
+                            self.inspection_store.reset(self.generation)
+                            self.history_store.complete = False
+                            self._generation_start = dict(kind="current")
+                            self.latest.pop("state", None)
+                            self.latest.pop("plan", None)
+                            self.active_profile_id = identifier
+                            self.profile_switch = dict(state="idle")
+                            for key in ("available_N", "parameters", "source"):
+                                self.schema[key] = deepcopy(packet["schema"].get(key))
+                            self.publish_events([dict(type="solver_profile", state="active",
+                                profile_id=identifier, generation=self.generation), self._history_metadata()])
+                        else:
+                            self.active_profile_id = None
+                            self.profile_switch = dict(state="failed", profile_id=identifier, error=packet["message"])
+                            self.publish(dict(type="solver_profile", state="failed", profile_id=identifier,
+                                generation=self.generation, error=packet["message"]))
+                    continue
+                # A queued record from the replaced solver cannot enter either
+                # history while the activation transaction is in progress.
+                if (self.profile_switch["state"] == "switching" or
+                        packet.get("token", -1) < self._profile_revision_floor):
+                    continue
                 if kind == "failure":
                     with self.condition:
                         if packet.get("generation") == self.generation and packet.get("token") == self.revision.value:
@@ -301,7 +368,8 @@ class ProcessLiveService:
                         records.append(record)
                     encoded_records = self.history_store.encode(records)
                     with self.condition:
-                        if packet["generation"] != self.generation:
+                        if (packet["generation"] != self.generation or
+                                packet.get("token", -1) < self._profile_revision_floor):
                             continue
                         self.history_store.append_encoded(encoded_records)
                         self.history_store.complete = packet.get("complete", False)
