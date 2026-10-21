@@ -23,7 +23,9 @@ a small API around the MPC.
   of knot points N. Each N needs its own compiled GATO module: prebuild the
   supported set during setup. Normal parameter/N changes never compile. The
   explicit Source / Build action may compile additional selected N values.
-- **Later, not now:** live plots, for example of solver convergence.
+- **Inspection:** Python plot functions produce specs for Episode and Solve
+  inspectors. Keep numerical derivations in Python and use the shared browser
+  renderer for both the application and offline author checks.
 
 The first deliverable is the interactive trajectory visualizer: prediction
 mode with live settings, and play mode.
@@ -39,6 +41,24 @@ decides so.
 The producer-side replay exporter is the explicitly requested exception:
 `tiago_mpc/experiments/tools.py`. Keep one lightweight implementation there;
 visualizer tests can use it to create portable recording fixtures.
+
+### Plotting and solver inspection
+
+Use the typed `gato_visualizer.plotting` API with `@plot_episode` and
+`@plot_solve`. Always load bundled `plotters/`; the configurable extra directory
+defaults to `<selected tiago_mpc>/_visualizer`. See `docs/plot-api.md` and
+`docs/plot-authoring.md` for the contract and deterministic offline checks.
+Plot evaluation runs in a separate CPU process and must not enter the native
+MPC critical path. Missing recorded telemetry stays unavailable. The `.solver`
+escape hatch is for explicitly attached local prototypes, never a current
+mutable solver masquerading as a historical Solve.
+
+The episode cursor follows recorded simulation time. The Solve inspector's
+separate cursor selects recorded SQP iterations; it is not a horizon cursor.
+Pinning retains the selected Solve and SQP iteration without pausing execution.
+Only render intermediate trajectories when actually recorded. Exact Continue
+SQP requires an optimizer checkpoint API; do not substitute another warm-seeded
+solve while describing it as exact continuation.
 
 ### Visualizer timing ownership — Felix, 2026-10-21
 
