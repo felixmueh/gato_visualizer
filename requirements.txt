@@ -1,0 +1,3 @@
+# The existing ../tiago_mpc/.venv already contains both packages.
+numpy>=2.2,<3
+pin>=3.9,<4

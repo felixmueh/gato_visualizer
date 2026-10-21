@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { itemRevision, uploadPath, validateReference, referencePosition, playbackClock } from './replay-library.js';
+
+test('folder uploads preserve relative names and reject unrelated files', () => {
+  assert.equal(uploadPath({name:'case.npz',webkitRelativePath:'random100/day1/case.npz'}),'random100/day1/case.npz');
+  assert.equal(uploadPath({name:'record.NPZ'}),'record.NPZ');
+  assert.throws(()=>uploadPath({name:'notes.txt'}),/\.npz/);
+});
+
+test('selected snapshot identity notices changes without depending on property order', () => {
+  assert.equal(itemRevision({id:'a',revision:'1'}),itemRevision({revision:'1',id:'a'}));
+  assert.notEqual(itemRevision({id:'a',revision:'1'}),itemRevision({id:'a',revision:'2'}));
+});
+
+test('moving references use their own nonuniform recorded timestamps and clamp endpoints', () => {
+  const trajectory={reference_time_s:[10,10.2,11],reference_xyz:[[0,0,1],[2,0,1],[10,0,1]]};
+  assert.doesNotThrow(()=>validateReference(trajectory));
+  assert.deepEqual(referencePosition(trajectory,10.6).map(x=>Math.round(x*1e8)/1e8),[6,0,1]);
+  assert.deepEqual(referencePosition(trajectory,0),[0,0,1]);
+  assert.deepEqual(referencePosition(trajectory,20),[10,0,1]);
+  assert.deepEqual(referencePosition({target_xyz:[1,2,3]},5),[1,2,3]);
+  assert.equal(referencePosition({},0),null);
+  assert.throws(()=>validateReference({...trajectory,reference_time_s:[1,1,2]}),/invalid/);
+  assert.throws(()=>validateReference({...trajectory,reference_xyz:[[1,NaN,3]]}),/invalid/);
+});
+
+test('wall recordings keep a wall clock label and unknown basis stays neutral', () => {
+  assert.equal(playbackClock({metadata:{time_basis:'wall'}}),'wall');
+  assert.equal(playbackClock({metadata:{time_basis:'simulation'}}),'simulation');
+  assert.equal(playbackClock({}),'recorded');
+});
+
+test('only an explicitly marked empty bootstrap scene is a starting pose', async () => {
+  const {isStartingScene, recordingLabel}=await import('./replay-library.js');
+  assert.equal(isStartingScene({source:{bootstrap:true},trajectories:[]}),true);
+  assert.equal(isStartingScene({source:{},trajectories:[]}),false);
+  assert.equal(isStartingScene({source:{bootstrap:true},trajectories:[{}]}),false);
+  const items=[{id:'one',name:'folder/run',source:'ingest'},{id:'two',name:'folder/run',source:'upload'}];
+  assert.equal(recordingLabel(items[0],items),'ingest/folder/run');
+  assert.equal(recordingLabel(items[1],items),'uploads/folder/run');
+  assert.equal(recordingLabel(items[0],[items[0]]),'folder/run');
+});
