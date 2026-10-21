@@ -33,9 +33,10 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
   let pointerId;
 
   const cancelDrag = () => {
-    if (transform.dragging) transform.pointerUp(null);
-    if (pointerId != null && canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+    const capturedPointer = pointerId;
     pointerId = undefined;
+    if (transform.dragging) transform.pointerUp(null);
+    if (capturedPointer != null && canvas.hasPointerCapture(capturedPointer)) canvas.releasePointerCapture(capturedPointer);
   };
   const select = (next) => {
     selected = Boolean(next && active);
@@ -68,6 +69,8 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     }
   };
   canvas.addEventListener('pointerdown', pickTarget, true);
+  canvas.addEventListener('pointercancel', cancelDrag);
+  canvas.addEventListener('lostpointercapture', cancelDrag);
   const escape = (event) => { if (event.key === 'Escape') select(false); };
   document.addEventListener('keydown', escape);
   const toggle = () => select(!selected);
@@ -110,6 +113,8 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     dispose() {
       cancelDrag();
       canvas.removeEventListener('pointerdown', pickTarget, true);
+      canvas.removeEventListener('pointercancel', cancelDrag);
+      canvas.removeEventListener('lostpointercapture', cancelDrag);
       document.removeEventListener('keydown', escape);
       button?.removeEventListener('click', toggle);
       transform.dispose();
