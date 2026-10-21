@@ -1200,8 +1200,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .sidebar { padding: 16px 16px 20px; min-width: 0; gap: 0; scrollbar-width: thin; }
 .studio-workbench .left-sidebar { grid-column: 1; border-right: 1px solid #2a394b; }
 .studio-workbench .right-sidebar { grid-column: 3; border-left: 1px solid #2a394b; border-right: 0; }
-.studio-workbench .main { grid-column: 2; grid-row: 1; min-height: 0; padding: 8px; gap: 8px; }
-.studio-workbench .viewport { min-height: 0; height: auto; border-radius: 7px; }
+.studio-workbench .main { grid-column: 2; grid-row: 1; min-height: 0; padding: 0; gap: 0; }
+.studio-workbench .viewport { min-height: 0; height: auto; border-radius: 0; }
 .studio-workbench .viewport-top { top: 10px; left: 10px; right: 10px; }
 .studio-workbench .viewport-tool, .studio-workbench .camera-controls button { pointer-events: auto; width: 33px; height: 31px; padding: 6px; background: #152332e8; border: 1px solid #3b4d61; border-radius: 5px; }
 .studio-workbench .camera-controls { margin-left: auto; }
@@ -1296,7 +1296,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 }
 @media (max-width: 960px) {
   .studio-workbench .workspace, .studio-workbench .workspace.left-hidden, .studio-workbench .workspace.right-hidden, .studio-workbench .workspace.left-hidden.right-hidden { display: block; position: relative; }
-  .studio-workbench .main { height: 100dvh; padding: 5px; gap: 5px; }
+  .studio-workbench .main { height: 100dvh; padding: 0; gap: 0; }
   .studio-workbench .viewport { height: auto; min-height: 0; }
   .studio-workbench .left-sidebar, .studio-workbench .right-sidebar { position: absolute; top: 44px; bottom: 60px; width: min(284px, calc(100vw - 70px)); z-index: 15; border: 1px solid #3b4e63; border-radius: 6px; box-shadow: 0 10px 30px #0008; }
   .studio-workbench .left-sidebar { left: 7px; }
