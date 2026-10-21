@@ -1,7 +1,10 @@
 # Solver profiles against one simulator
 
 Status: backend process boundary and sequential profile switching implemented.
-Native/GPU conformance of the extracted boundary remains a separate check.
+N32 native verification passed: 15 unchanged-reach comparisons and 34 bounded
+multirate/inspection/switch checks. This is one source/model/horizon qualification,
+not a task-success or all-profile claim. Raw receipts are retained in the
+integration checkout’s `_expr_data/native-inspection-checks/verification.json`.
 Source / Build still selects the complete simulator checkout; its Apply action
 restarts the backend. Solver-profile activation keeps that simulator, HTTP
 service and browser session running.
@@ -35,7 +38,7 @@ solver worktree's parent. RPC protocol, epoch and request IDs reject mismatched
 replies. A publication revision floor rejects late packets from an old profile.
 The child arms Linux parent-death termination before numerical imports and
 checks the expected parent PID to cover startup races. Bootstrap/configure have
-60s/120s deadlines, and close has a 5s deadline. Failed startup/teardown gets
+60s/120s deadlines, reset has a 30s deadline, and close has a 5s deadline. Failed startup/teardown gets
 bounded terminate/kill cleanup while the coordinator owns the GPU lease; logs
 remain retained. Ordinary solve requests and Pause/cancel remain cooperative.
 Explicit backend shutdown waits 10s, then stops its own coordinator if necessary;
@@ -98,7 +101,7 @@ controls carry the profile/process identity and exact plan sequence association.
 
 ## Inspection extension boundary
 
-RPC operations are `bootstrap`, `configure`, `reset`, `solve`, and `close`.
+RPC operations are `bootstrap`, `configure`, `reset`, `solve`, `inspect`, and `close`.
 The same request envelope can host inspection work with captured native state,
 exact reference/configuration, explicit cold initialization, a finite SQP cap
 and an optional wall budget. Configuration reports `capabilities.iteration_capture`
