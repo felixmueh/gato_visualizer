@@ -67,7 +67,7 @@ test('pinned actual SQP iteration persists while episode advances; ranges and so
     await find(solve, 'button', 'Final result').emit('click'); assert.equal(ui.snapshot.iteration, null); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[1, 2, 3]]); assert.equal(picked.at(-1).predictionSource, 'final');
     await find(solve, 'button', 'Follow cursor').emit('click'); await ui.refresh(); assert.equal(ui.snapshot.selectedSolve.seq, '12'); assert.equal(ui.snapshot.pinned, false);
     source = { source: { kind: 'replay', id: 'new', trajectory_index: 0 } }; ui.update(); await flush(); assert.equal(ui.snapshot.pinned, false); assert.equal(seeks, 0);
-    assert.equal(find(solve, 'button', 'Continue SQP').disabled, true); ui.destroy();
+    assert.equal(find(solve, 'button', 'Run again').disabled, true); assert(solve.querySelectorAll('p').some(item => item.textContent.includes('active solver profile'))); ui.destroy();
   } finally { globalThis.document = original; }
 });
 
@@ -179,4 +179,48 @@ test('SQP plot drag selects recorded iterations across card rebuilds without see
     await document.emit('pointercancel', { pointerId: 2 }); await document.emit('pointermove', { pointerId: 2, clientX: 62 }); assert.equal(ui.snapshot.iteration, 7);
     ui.destroy();
   } finally { globalThis.document = original; }
+});
+
+test('fresh inspection pins only Solve, hydrates true snapshots safely, and leaves original Episode source/cursor/settings unchanged', async () => {
+  const { document, find } = plotDOM(), original = { document: globalThis.document, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
+  globalThis.document = document;
+  const timers = new Map(); let timerId = 0; globalThis.setTimeout = (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; }; globalThis.clearTimeout = id => timers.delete(id);
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  const source = { source: { kind: 'live', generation: 4 }, revision: 1 }, view = { window: [0, 10], cursor: 2, episodeClock: true, inspectSolve: true }, settings = { config: { N: 32, solver_params: { max_sqp_iters: 5 } } }, retainedSettings = structuredClone(settings), requests = [], picked = [];
+  const finalPrediction = { ee_xyz: [[10, 0, 0], [11, 0, 0]] }, originalSolve = { id: 'original-7', seq: 7, iterations: [{ index: 1 }], final_prediction: structuredClone(finalPrediction) };
+  let deferFirst = true, releaseFirst;
+  const inspection = { id: 'job1', state: 'completed', source: { kind: 'inspection', id: 'fresh1' }, iterations_run: 2, requested: { sqp_iters: 8 }, initialization: 'cold_state', original: { source: source.source }, original_solve_id: 'original-7', actual_solver_profile: { profile: { id: 'candidate' } } };
+  const summary = iteration => ({ id: 'fresh-solve', seq: 'fresh-solve', iterations: [0, 1, 2].map(index => ({ index, has_prediction: true })), selected_iteration: iteration, selected_prediction: { ee_xyz: [[iteration ?? 2, 0, 1], [iteration ?? 2, 1, 1]] }, final_prediction: iteration == null ? { ee_xyz: [[2, 0, 1], [2, 1, 1]] } : {}, provenance: { initialization: 'cold_state', solver_profile: { profile: { id: 'candidate' } }, original_solver_profile: { profile: { id: 'main' } }, original: { source: source.source, solve_id: 'original-7' } } });
+  const request = async (path, body) => {
+    requests.push({ path, body: structuredClone(body) });
+    if (path.endsWith('/capability')) return { available: true, initialization: 'cold_state', profile_id: 'candidate' };
+    if (path === '/api/solve-inspections') return { id: 'job1', job_id: 'job1', state: 'pending' };
+    if (path === '/api/solve-inspections/jobs/job1') return inspection;
+    const fresh = body.context === 'solve' && body.source.kind === 'inspection';
+    const response = { state: 'complete', catalog: body.context === 'episode' ? [jointDef] : [solveDef], context: { episode_available: body.context === 'episode', clock: 'live:4', bounds: [0, 10], selected_solve: fresh ? summary(body.selection.iteration) : structuredClone(originalSolve) }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, title: 'Recorded data', kind: 'lines', x: { identity: body.context === 'episode' ? 'episode_time' : 'sqp_iteration', clock: 'live:4' }, y: {}, series: [{ x: [0, 2], y: [2, 0] }] } })) };
+    if (fresh && path === '/api/plots/catalog' && body.selection.iteration === 1 && deferFirst) { deferFirst = false; return new Promise(resolve => { releaseFirst = () => resolve(response); }); }
+    return response;
+  };
+  try {
+    let seeks = 0;
+    const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => view, getSolverProfile: () => ({ id: 'candidate', switching: false }), onSeek: () => seeks++, onPrediction: item => picked.push(item), request, storage: null });
+    ui.update(); await flush(); ui.state.add(jointDef, 'episode'); ui.state.add(solveDef, 'solve'); await ui.refresh(); await flush();
+    // A refresh may throttle a duplicate capability check; release only that timer.
+    for (const [id, timer] of [...timers]) if (timer.delay !== 200) { timers.delete(id); await timer.fn(); }
+    ui.runAgain.cap.value = '8'; await ui.runAgain.run.emit('click');
+    assert.deepEqual(requests.find(item => item.path === '/api/solve-inspections').body, { source: { kind: 'live', generation: 4 }, selection: { solve_id: 'original-7' }, profile_id: 'candidate', sqp_iters: 8 });
+    const [id, timer] = [...timers].find(([, value]) => value.delay === 200); timers.delete(id); await timer.fn();
+    await ui.refresh(); assert.deepEqual(ui.snapshot.solveSource, { kind: 'inspection', id: 'fresh1' }); assert.equal(ui.snapshot.pinned, true);
+    assert(solve.querySelector('.solve-identity').textContent.includes('Fresh / cold')); assert(solve.querySelector('.solve-identity').textContent.includes('solver profile candidate')); assert(solve.querySelector('.solve-identity').textContent.includes('original solver profile main'));
+    const slider = solve.querySelector('input'); slider.value = '1'; await slider.emit('input'); const pending = ui.refresh(); await flush();
+    assert.equal(ui.snapshot.iteration, 1); assert.equal(picked.at(-1).predictionSource, 'final-context'); assert(solve.querySelector('.plot-message').textContent.includes('loading'));
+    slider.value = '2'; await slider.emit('input'); releaseFirst(); await pending; await ui.refresh();
+    assert.equal(ui.snapshot.iteration, 2); assert.equal(ui.snapshot.pinned, true); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[2, 0, 1], [2, 1, 1]]); assert.equal(picked.at(-1).predictionSource, 'iteration');
+    assert.equal(ui.snapshot.selectedSolve.iterations[2].prediction, undefined); // only the selected snapshot is transported
+    view.cursor = 4; await ui.refresh(); assert.equal(ui.snapshot.iteration, 2); assert.equal(view.cursor, 4); assert.equal(seeks, 0); assert.deepEqual(settings, retainedSettings);
+    assert(requests.filter(item => item.body?.context === 'episode').every(item => item.body.source.kind === 'live' && item.body.source.generation === 4));
+    assert(!requests.some(item => item.path === '/api/live/command')); assert.deepEqual(originalSolve.final_prediction, finalPrediction);
+    await find(solve, 'button', 'Follow episode').emit('click'); await ui.refresh(); assert.equal(ui.snapshot.inspection, null); assert.equal(ui.snapshot.selectedSolve.id, 'original-7'); assert.deepEqual(picked.at(-1).prediction, finalPrediction); assert.equal(ui.snapshot.instances.length, 2); assert.equal(view.cursor, 4);
+    ui.destroy();
+  } finally { Object.assign(globalThis, original); }
 });

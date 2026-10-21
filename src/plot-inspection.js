@@ -2,9 +2,10 @@ import { createFloatingDialog } from './floating-dialog.js';
 import { createPlotState, timelineEligible, awaitPlotJob } from './plot-state.js';
 import { renderPlot } from './plot-renderer.js';
 import { sourceRequest } from './source-settings.js';
+import { setupSolveRun } from './solve-run.js';
 
 /** One host for both inspectors. Only the episode timeline owns a playback clock. */
-export function setupPlotInspection({ episodeContainer, solveContainer, bottomContainer, getSource, getView, onSeek, onPrediction = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
+export function setupPlotInspection({ episodeContainer, solveContainer, bottomContainer, getSource, getView, getSolverProfile = () => null, onSeek, onPrediction = () => {}, onInspectionStart = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
   const doc = episodeContainer.ownerDocument;
   const el = (tag, text, cls) => { const item = doc.createElement(tag); if (text != null) item.textContent = text; if (cls) item.className = cls; return item; };
   const button = (text, action, title = text) => { const item = el('button', text); item.type = 'button'; item.title = title; item.setAttribute('aria-label', title); item.addEventListener('click', action); return item; };
@@ -14,20 +15,26 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   let lastSourceKey, evaluatedKeys = {}, inspectedKey, lastInspectActive, activeConfig;
   let catalogs = { episode: [], solve: [] }, metadata = {}, specs = new Map(), handles = [], revision = 0, busy = false, pending = false, lastRequest = '', lastPoll = -Infinity, lastRender = '', lastPrediction = '', pinnedSource, drag, destroyed = false;
   const presentations = new Map();
+  let solveOverride = null, lastSolveSourceKey;
+  const sourceKey = source => source ? JSON.stringify([source.kind, source.generation, source.id, source.trajectory_index, source.revision]) : '';
+  const solveSource = () => solveOverride || (state.pinned && pinnedSource ? { source: pinnedSource, solveSeq: state.selected?.seq ?? state.selected?.id } : getSource());
   const heading = el('div', null, 'plot-inspector-heading'), rangeLabel = el('label', 'Analyze '), range = el('select');
   for (const [value, text] of [['entire', 'Entire episode'], ['through_cursor', 'Through cursor'], ['visible', 'Visible window']]) { const option = el('option', text); option.value = value; range.append(option); }
   range.value = state.rangeMode; range.setAttribute('aria-label', 'Episode analysis range'); range.addEventListener('change', () => { state.rangeMode = range.value; invalidate(); }); rangeLabel.append(range); heading.append(rangeLabel, button('+', () => openCatalog('episode'), 'Add episode plot'));
   const episodeNote = el('p', '', 'plot-message'), episodeCards = el('div', null, 'plot-cards'); episodeContainer.replaceChildren(heading, episodeNote, episodeCards);
-  const solveHeading = el('div', null, 'plot-inspector-heading'), pin = button('Pin solve', () => { state.pin(!state.pinned); pinnedSource = state.pinned ? structuredClone(getSource()?.source) : null; invalidate(); });
+  const solveHeading = el('div', null, 'plot-inspector-heading'), pin = button('Pin solve', () => { if (solveOverride) clearInspection(); else { if (state.pinned) runAgain.invalidateAdoption(); state.pin(!state.pinned); pinnedSource = state.pinned ? structuredClone(getSource()?.source) : null; invalidate(); } });
   pin.setAttribute('aria-pressed', 'false'); solveHeading.append(pin, button('+', () => openCatalog('solve'), 'Add solve plot'));
   const identity = el('p', '', 'solve-identity'), strip = el('div', null, 'sqp-strip'), iterationLabel = el('span'), previous = button('‹', () => stepIteration(-1), 'Previous recorded SQP iteration'), next = button('›', () => stepIteration(1), 'Next recorded SQP iteration'), slider = el('input');
   slider.type = 'range'; slider.step = '1'; slider.min = '0'; slider.setAttribute('aria-label', 'Recorded SQP iteration'); slider.addEventListener('input', () => selectIteration(Number(slider.value)));
   strip.append(previous, iterationLabel, next, slider);
   const final = button('Final result', () => { state.selectIteration(null); invalidate(); });
   strip.append(final);
-  const capability = el('p', '', 'plot-message'), continuation = button('Continue SQP', () => {}); continuation.disabled = true;
-  const continuationReason = el('p', '', 'plot-message');
-  const solveCards = el('div', null, 'plot-cards'); solveContainer.replaceChildren(solveHeading, identity, strip, capability, continuation, continuationReason, solveCards);
+  const capability = el('p', '', 'plot-message'), runContainer = el('div');
+  const solveCards = el('div', null, 'plot-cards'); solveContainer.replaceChildren(solveHeading, identity, strip, capability, runContainer, solveCards);
+  const runAgain = setupSolveRun({ container: runContainer, request,
+    onStart: () => { onInspectionStart(); pinnedSource = structuredClone(solveSource()?.source); state.pin(true); invalidate(); },
+    onComplete: result => setInspection(result),
+  });
   const bottomTitle = el('div', 'Timeline plots · drop an episode-time plot here', 'timeline-plot-hint'), bottomCards = el('div', null, 'timeline-plot-rows'); bottomContainer.replaceChildren(bottomTitle, bottomCards);
   for (const [label, amount] of [['↑', -100], ['↓', 100]]) bottomTitle.append(button(label, () => bottomCards.scrollBy({ top: amount, behavior: 'smooth' }), `Scroll timeline plot rows ${amount < 0 ? 'up' : 'down'}`));
   bottomContainer.addEventListener('dragover', event => { if (drag && eligible(drag.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
@@ -102,7 +109,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
           if (!presentations.has(key)) presentations.set(key, {});
           // A following window can move while Live grows. Only a duration
           // change (zoom), source, scope or plot configuration resets the fit.
-          const fitKey = [lastSourceKey, item.parameters, episodeTime ? [linked ? 'timeline' : state.rangeMode, linked || state.rangeMode === 'visible' ? view.window?.[1] - view.window?.[0] : null] : state.selected?.id];
+          const fitKey = [item.context === 'solve' ? lastSolveSourceKey : lastSourceKey, item.parameters, episodeTime ? [linked ? 'timeline' : state.rangeMode, linked || state.rangeMode === 'visible' ? view.window?.[1] - view.window?.[0] : null] : state.selected?.id];
           handles.push(renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, presentation: presentations.get(key), fitKey, window, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined }));
         }
         else graph.append(el('p', 'Waiting for plot data…', 'plot-message'));
@@ -116,32 +123,65 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   }
   function renderSolve() {
     const selected = state.selected, records = selected?.iterations || [], index = records.findIndex(item => item.index === state.iteration);
-    solveContainer.classList.toggle('solve-pinned', state.pinned); pin.textContent = state.pinned ? 'Follow cursor' : 'Pin solve'; pin.setAttribute('aria-pressed', String(state.pinned)); pin.disabled = !selected;
+    solveContainer.classList.toggle('solve-pinned', state.pinned); pin.textContent = solveOverride ? 'Follow episode' : state.pinned ? 'Follow cursor' : 'Pin solve'; pin.setAttribute('aria-pressed', String(state.pinned)); pin.disabled = !selected && !solveOverride;
     identity.textContent = selected ? `${state.pinned ? 'Pinned · ' : ''}${selected.origin === 'preview' ? 'Preview' : 'Solve'} ${selected.seq ?? selected.id}${Number.isFinite(selected.sim_time_s ?? selected.time_s) ? ` · ${(selected.sim_time_s ?? selected.time_s).toFixed(3)} s` : ''}${metadata.solve?.context?.association ? ` · ${metadata.solve.context.association}` : ''}` : 'No recorded solve associated with the episode cursor.';
+    if (selected) { const source = solveSource()?.source; identity.textContent += ` · ${source?.kind}:${source?.id ?? source?.generation ?? 'current'}${source?.trajectory_index != null ? `/${source.trajectory_index}` : ''}`; }
+    if (solveOverride) {
+      const result = solveOverride.result, provenance = selected?.provenance || {}, actualProfile = provenance.solver_profile?.profile?.id || provenance.solver_profile?.id || result.actual_solver_profile?.profile?.id || result.profile_id;
+      const originalProfile = provenance.original_solver_profile?.profile?.id || provenance.original_solver_profile?.id;
+      const original = provenance.original?.source || result.original?.source;
+      identity.textContent = `Pinned · Fresh / cold · inspection ${solveOverride.source.id} · solver profile ${actualProfile || 'recorded in result'} · original ${original?.kind || 'recorded'}:${original?.id ?? original?.generation ?? 'captured'} Solve ${provenance.original?.solve_id ?? result.original_solve_id ?? 'captured'}${originalProfile ? ` · original solver profile ${originalProfile}` : ''}`;
+    }
     strip.hidden = !records.length; slider.max = String(Math.max(0, records.length - 1)); slider.value = String(Math.max(0, index)); slider.disabled = !records.length; previous.disabled = index <= 0; next.disabled = index >= records.length - 1; final.disabled = state.iteration == null;
     const current = records[index]; iterationLabel.textContent = current ? `${current.index === 0 ? 'Seed' : `SQP ${current.index}`} · ${index + 1} of ${records.length} recorded${current.status ? ` · ${current.status}` : ''}` : 'Final result';
     // A metrics-only iteration has no trajectory snapshot. Keep the selected
     // solve's final plan visible as explicitly labelled display context, without
     // attaching it to the iteration record or changing the Python plot inputs.
-    const iterationMissing = state.iteration != null && !current?.prediction;
-    const finalContext = iterationMissing && Boolean(selected?.final_prediction);
-    const prediction = state.iteration == null || finalContext ? selected?.final_prediction : current?.prediction;
+    const snapshot = selected?.selected_iteration === state.iteration ? selected?.selected_prediction : null;
+    const iterationPrediction = current?.prediction || snapshot;
+    const iterationMissing = state.iteration != null && !iterationPrediction;
+    const loading = iterationMissing && current?.has_prediction === true;
+    const finalContext = iterationMissing && Boolean(selected?.final_prediction?.ee_xyz?.length);
+    const prediction = state.iteration == null ? snapshot || selected?.final_prediction : finalContext ? selected.final_prediction : iterationPrediction;
     const predictionSource = finalContext ? 'final-context' : prediction ? state.iteration == null ? 'final' : 'iteration' : null;
-    capability.textContent = finalContext ? 'Final prediction shown; iteration trajectory not recorded.' : !records.length ? 'Only the final result is retained; no intermediate SQP records are available.' : iterationMissing ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : 'Recorded SQP inspection leaves the episode clock unchanged.';
-    continuation.title = selected?.reason || selected?.capabilities?.continue_reason || 'Exact continuation needs a retained optimizer checkpoint, which this source does not provide.';
-    continuationReason.textContent = `Continue SQP unavailable: ${continuation.title}`;
-    continuation.setAttribute('aria-label', `Continue SQP unavailable: ${continuation.title}`);
+    capability.textContent = finalContext ? loading ? 'Final prediction shown; selected iteration trajectory loading.' : 'Final prediction shown; iteration trajectory not recorded.' : loading ? 'Loading recorded iteration trajectory…' : !records.length ? 'Only the final result is retained; no intermediate SQP records are available.' : iterationMissing ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : 'Recorded SQP inspection leaves the episode clock unchanged.';
     const active = Boolean(selected) && (getView().inspectSolve !== false || state.pinned);
-    const key = JSON.stringify([getSource()?.source, selected?.id, state.iteration, prediction, predictionSource, active, state.pinned]);
+    const key = JSON.stringify([solveSource()?.source, selected?.id, state.iteration, prediction, predictionSource, active, state.pinned]);
     if (key !== lastPrediction) { lastPrediction = key; onPrediction({ active, prediction: prediction || null, predictionSource, pinned: state.pinned, solve: selected, iteration: state.iteration }); }
+    runAgain.update(runContext());
+  }
+  function runContext() {
+    const selected = state.selected, source = solveSource()?.source, profile = getSolverProfile();
+    if (!selected || !source) return null;
+    return { source, selection: { solve_id: selected.id ?? selected.seq, ...(source.kind === 'replay' && source.trajectory_index != null ? { trajectory_index: source.trajectory_index } : {}) }, profile_id: typeof profile === 'string' ? profile : profile?.id, switching: Boolean(profile?.switching) };
+  }
+  function syncSolveSource() {
+    const key = sourceKey(solveSource()?.source);
+    if (key === lastSolveSourceKey) return;
+    lastSolveSourceKey = key; state.setSource(key); metadata.solve = {}; evaluatedKeys.solve = undefined; inspectedKey = undefined;
+    for (const item of state.instances) if (item.context === 'solve') specs.delete(item.id);
+    revision++; pending = true;
+  }
+  function setInspection(result) {
+    solveOverride = { source: structuredClone(result.source), result: structuredClone(result), label: 'Fresh solve inspection' };
+    state.pin(false); pinnedSource = null; syncSolveSource(); invalidate();
+  }
+  function clearInspection() {
+    runAgain.invalidateAdoption(); solveOverride = null; state.pin(false); pinnedSource = null; syncSolveSource(); invalidate();
+  }
+  function adoptSolve(response, source) {
+    if (sourceKey(source) !== lastSolveSourceKey) return;
+    const solve = response.context?.selected_solve || response.inspection?.selected_solve;
+    state.follow(solve, sourceKey(source));
+    if (solveOverride && solve) state.pin(true);
   }
   function selectIteration(position) { const selected = state.selected?.iterations?.[position]; if (!selected) return; state.selectIteration(selected.index); invalidate(); }
   function selectIterationByIndex(value) { const records = state.selected?.iterations || []; const nearest = records.reduce((best, item, i) => !best || Math.abs(item.index - value) < best.delta ? { i, delta: Math.abs(item.index - value) } : best, null); if (nearest) selectIteration(nearest.i); }
   function stepIteration(direction) { const records = state.selected?.iterations || []; selectIteration(Math.max(0, Math.min(records.length - 1, records.findIndex(item => item.index === state.iteration) + direction))); }
   function invalidate() { revision++; pending = true; renderCards(); }
   function payload(scope, includePlots = false) {
-    const source = scope === 'solve' && state.pinned ? pinnedSource : getSource()?.source;
-    return { client_id: client, source, context: scope, selection: { solve_seq: scope === 'solve' && state.pinned ? state.selected?.seq ?? state.selected?.id : scope === 'solve' ? getSource()?.solveSeq ?? null : null, iteration: scope === 'solve' ? state.iteration : null }, range: scope === 'episode' && getView().episodeClock === false ? { mode: 'entire' } : state.range(getView()), pixels: Math.max(200, Math.round(bottomContainer.clientWidth || 800)), ...(includePlots ? { plots: state.instances.filter(item => item.context === scope).map(item => ({ instance_id: item.id, plot_id: item.plot_id, inputs: item.parameters })) } : {}) };
+    const source = scope === 'solve' ? solveSource()?.source : getSource()?.source;
+    return { client_id: client, source, context: scope, selection: { solve_seq: scope === 'solve' && state.pinned ? state.selected?.seq ?? state.selected?.id : scope === 'solve' ? solveSource()?.solveSeq ?? null : null, iteration: scope === 'solve' ? state.iteration : null }, range: scope === 'episode' && getView().episodeClock === false ? { mode: 'entire' } : state.range(getView()), pixels: Math.max(200, Math.round(bottomContainer.clientWidth || 800)), ...(includePlots ? { plots: state.instances.filter(item => item.context === scope).map(item => ({ instance_id: item.id, plot_id: item.plot_id, inputs: item.parameters })) } : {}) };
   }
   async function refresh(force = false) {
     if (busy || destroyed || !getSource()?.source || getSource().source.kind === 'live' && getSource().source.generation == null) { pending ||= force; return; }
@@ -150,12 +190,14 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       const source = getSource();
       // Follow the source's recorded association with a metadata-only job.
       // Cursor motion never recomputes unchanged final/iteration plot data.
-      const inspectPayload = payload('solve'), inspectSignature = JSON.stringify([inspectPayload, source.revision]);
+      const inspectPayload = payload('solve'), inspectKey = structuredClone(inspectPayload);
+      if (state.pinned) delete inspectKey.range;
+      const inspectSignature = JSON.stringify([inspectKey, solveSource()?.revision]);
       if (inspectedKey !== inspectSignature) {
         const response = await awaitPlotJob(request, '/api/plots/catalog', inspectPayload, { alive });
         if (!response || !alive()) return;
         metadata.solve = response; catalogs.solve = response.catalog || response.plots || [];
-        state.follow(response.context?.selected_solve || response.inspection?.selected_solve);
+        adoptSolve(response, inspectPayload.source);
         inspectedKey = inspectSignature;
       }
       for (const scope of ['episode', 'solve']) {
@@ -171,7 +213,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         const response = await awaitPlotJob(request, '/api/plots/evaluate', body, { alive });
         if (!response || !alive()) return;
         catalogs[scope] = response.catalog || response.plots || []; metadata[scope] = response;
-        if (scope === 'solve') state.follow(response.context?.selected_solve || response.inspection?.selected_solve);
+        if (scope === 'solve') adoptSolve(response, body.source);
         for (const result of response.results || []) specs.set(result.instance_id, result.spec || { version: 1, kind: 'unavailable', title: 'Plot error', message: result.error || 'Plot failed.' });
         evaluatedKeys[scope] = signature;
       }
@@ -184,21 +226,27 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   function update() {
     if (destroyed) return;
     const current = getSource(), view = getView();
-    const sourceKey = current?.source ? JSON.stringify([current.source.kind, current.source.generation, current.source.id, current.source.trajectory_index, current.source.revision]) : '';
-    if (lastSourceKey !== sourceKey) {
+    const episodeSourceKey = sourceKey(current?.source);
+    if (lastSourceKey !== episodeSourceKey) {
       for (const presentation of presentations.values()) presentation.cancelScrub?.();
       presentations.clear();
-      lastSourceKey = sourceKey; state.setSource(sourceKey); pinnedSource = null; specs.clear(); metadata = {}; evaluatedKeys = {}; inspectedKey = undefined; revision++;
+      lastSourceKey = episodeSourceKey;
+      if (!solveOverride) { runAgain.invalidateAdoption(); state.pin(false); pinnedSource = null; }
+      for (const item of state.instances) if (item.context === 'episode') specs.delete(item.id);
+      metadata.episode = {}; evaluatedKeys.episode = undefined; revision++;
+      syncSolveSource();
       episodeNote.textContent = current ? 'Loading active source…' : 'No episode selected.';
       renderCards();
     }
-    const key = JSON.stringify([current?.source, current?.revision, state.rangeMode, state.rangeMode === 'visible' ? view.window : null, state.rangeMode === 'through_cursor' ? view.cursor : null, state.pinned ? state.selected?.id : view.cursor, state.iteration, state.instances]);
+    syncSolveSource();
+    const key = JSON.stringify([current?.source, current?.revision, lastSolveSourceKey, state.rangeMode, state.rangeMode === 'visible' ? view.window : null, state.rangeMode === 'through_cursor' ? view.cursor : null, state.pinned ? state.selected?.id : view.cursor, state.iteration, state.instances]);
     if (key !== lastRequest) { lastRequest = key; pending = true; }
     if (lastInspectActive !== view.inspectSolve) { lastInspectActive = view.inspectSolve; renderSolve(); }
     // Presentation markers update cheaply at RAF; Python is capped at 5 Hz.
     handles.forEach(handle => handle.updateCursor?.(handle.axisIdentity === 'sqp_iteration' ? state.iteration : handle.axisIdentity === 'episode_time' && view.episodeClock !== false && (handle.linked || state.rangeMode !== 'through_cursor') ? view.cursor : undefined));
     if (lastRender !== JSON.stringify([view.window, state.rangeMode === 'through_cursor' ? view.cursor : null])) renderCards();
+    runAgain.update(runContext());
     const now = Date.now(); if ((pending || now - lastPoll > 1500 && current?.source?.kind === 'live') && now - lastPoll >= 200) { lastPoll = now; refresh(); }
   }
-  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; invalidate(); return refresh(true); }, state, catalogDialog, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, rangeMode: state.rangeMode }; }, destroy() { destroyed = true; handles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
+  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, rangeMode: state.rangeMode, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; runAgain.destroy(); handles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
 }

@@ -18,7 +18,13 @@ export function createPlotState(saved = {}, persist = () => {}) {
     reorder(id, before) { const item = find(id), target = find(before); if (!item || item === target) return; instances.splice(instances.indexOf(item), 1); instances.splice(target ? instances.indexOf(target) : instances.length, 0, item); save(); },
     place(id, value, eligible = true) { const item = find(id); if (item && item.context === 'episode' && eligible) item.timeline = value; save(); },
     setSource(key) { if (key !== sourceKey) { sourceKey = key; pinned = selected = null; iteration = null; } },
-    follow(solve) { if (!pinned) { if (selected?.id !== solve?.id) iteration = null; selected = solve || null; } },
+    follow(solve, source) {
+      if (pinned) {
+        // Only hydrate this exact historical solve, never follow a new cursor
+        // association while pinned. The owner supplies its request source key.
+        if (source === sourceKey && source != null && solve?.id === pinned.id) pinned = selected = { ...solve };
+      } else { if (selected?.id !== solve?.id) iteration = null; selected = solve || null; }
+    },
     pin(value = true) { pinned = value && selected ? { ...selected } : null; },
     selectIteration(index) { if (index == null || selected?.iterations?.some(item => item.index === index)) iteration = index; },
     set rangeMode(value) { if (['entire', 'through_cursor', 'visible'].includes(value)) { rangeMode = value; save(); } },

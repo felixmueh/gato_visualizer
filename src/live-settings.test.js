@@ -778,3 +778,19 @@ test('solver activation from Replay fetches the paused segment on Live entry wit
     assert.equal(downloads, 1); assert.deepEqual(live.history.bounds, [2.5, 2.5]); assert.equal(h.commands.length, 0); assert.equal(live.playing, false);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
+
+test('fresh inspection holds local playback and pending edits without sending Live commands or moving the cursor', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    for (const time of [0, .1, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+    h.$('live-history').value = '.1'; h.$('live-history').emit('input'); h.$('live-play').emit('click'); await flush(); assert.equal(live.playing, true);
+    const before = live.history.selectedTime, count = h.commands.length, pose = structuredClone(live.displayedState);
+    live.holdForInspection(); live.frame(performance.now() + 10000);
+    assert.equal(live.playing, false); assert.equal(live.history.selectedTime, before); assert.deepEqual(live.displayedState, pose); assert.equal(h.commands.length, count);
+    h.edit('solver_params.q_cost', 7.5); const draft = live.settings; live.holdForInspection(); await new Promise(resolve => setTimeout(resolve, 380));
+    assert.deepEqual(live.settings, draft); assert.equal(h.commands.length, count); assert.equal(live.history.selectedTime, before);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});

@@ -813,6 +813,13 @@ export function setupLive({ onMode, onPlan, onState, onReset, onReference = () =
     get precomputedPath() { return !dirty && !pending && historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
     get settings() { return settings ? cloneSettings(settings) : null; }, get status() { return status; },
     get pending() { return profileSwitching || pending || (mode === 'live' && !connected()); }, get playing() { return clock.playing; },
+    holdForInspection() {
+      // The inspection endpoint owns cooperative numerical pausing. This only
+      // holds the browser's clock and queued edits, preserving its displayed
+      // native pose/cursor and the private Live controller state.
+      clearTimeout(settingsTimer); ++submission; clock.pause(); extensionPending = false;
+      controlsEnabled(); renderDirty = true;
+    },
     beginSolverProfileSwitch, finishSolverProfileSwitch,
     frame, togglePlay: () => { if (mode === 'live' && !$('live-play').disabled) $('live-play').click(); },
   };

@@ -36,6 +36,15 @@ test('only episode-clock curves or measured spans can share timeline', () => {
   assert.equal(timelineEligible({ scope: 'episode' }, { kind: 'table' }), false);
 });
 
+test('pinned snapshot hydration requires the exact Solve and request source, preserving its selected iteration', () => {
+  const state = createPlotState(), solve = { id: 'same-id', iterations: [{ index: 0 }, { index: 2 }] };
+  state.setSource('live:4'); state.follow(solve); state.pin(true); state.selectIteration(2);
+  state.follow({ ...solve, selected_iteration: 2, selected_prediction: { ee_xyz: [[2, 0, 0]] } }, 'live:5'); assert.equal(state.selected.selected_prediction, undefined);
+  state.follow({ ...solve, id: 'different', selected_prediction: {} }, 'live:4'); assert.equal(state.selected.id, 'same-id');
+  const update = { ...solve, selected_iteration: 2, selected_prediction: { ee_xyz: [[2, 0, 0]] } };
+  state.follow(update, 'live:4'); assert.deepEqual(state.selected.selected_prediction, update.selected_prediction); assert.equal(state.iteration, 2); assert.equal(state.pinned, true);
+});
+
 test('async jobs poll job_id, reject local errors and discard stale completions', async () => {
   const calls = []; const request = async (path, body) => { calls.push([path, body]); return calls.length === 1 ? { job_id: 'abc', state: 'running' } : { state: 'complete', catalog: [], results: [] }; };
   const result = await awaitPlotJob(request, '/api/plots/evaluate', { plots: [] }, { wait: async () => {} });

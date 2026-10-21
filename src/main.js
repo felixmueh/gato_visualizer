@@ -29,6 +29,7 @@ import "@fontsource/ibm-plex-mono/latin-400.css";
 import "./style.css";
 import "./timeline.css";
 import "./plots.css";
+import "./solve-run.css";
 
 const icons = {
   play: '<path d="m8 5 11 7-11 7V5Z" fill="currentColor" stroke="none"/>',
@@ -115,6 +116,8 @@ const plotInspection = setupPlotInspection({
     ? { source: { kind: 'live', generation: live.history.generation }, revision: [live.history.cursor, displayedLivePlan?.seq, displayedLivePlan?.settings_version, displayedLivePlan?.origin], solveSeq: displayedLivePlan?.origin === 'preview' ? `preview:${displayedLivePlan.seq}` : null, label: 'Recorded Live MPC' }
     : trajectory ? { source: { kind: 'replay', id: replayLibrary?.selectedId || 'default', trajectory_index: data?.trajectories?.indexOf(trajectory) ?? 0, ...(data?.source?.plot_revision ? { revision: data.source.plot_revision } : {}) }, revision: data?.source?.plot_revision || trajectory.id, label: trajectory.label || 'Imported recording' } : null,
   getView: () => { const view = expandedTimeline.snapshot; return { window: view.visible, cursor: view.selectedTime, episodeClock: live?.mode === 'live' || trajectory?.kind === 'recorded', inspectSolve: workbench.activeTab === 'solve' };  },
+  getSolverProfile: () => ({ id: solverProfiles.snapshot.catalog.active_profile_id, switching: solverProfiles.snapshot.switching }),
+  onInspectionStart: () => live?.holdForInspection(),
   onSeek: time => expandedTimeline.seek(time),
   onPrediction: inspection => { inspectedPrediction = inspection; renderInspectedPrediction(); },
 });
