@@ -26,6 +26,9 @@ the specification and provides presentation interactions.
   `numeric`, or `category`. `prediction_time` is a prediction-horizon offset.
 - Series have `label`, matching `x`/`y` arrays, optional `color`, and `style`
   `line`, `step`, or `bar`. Numeric missing values use null, never NaN/Infinity.
+- Bar series may provide Python-computed `bin_edges`: finite, strictly
+  increasing boundaries with one more entry than `y`, so histogram widths are
+  rendered from the actual bins rather than guessed from their centres.
 - Table `rows`: `{label, value, unit, note}`; value may be numeric, text, or null.
 - Span `spans`: `{lane, start, end, label, color?}` with measured axis identity.
 - Unavailable results carry `message` explaining the missing data/capability.
