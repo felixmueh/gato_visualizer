@@ -127,7 +127,12 @@ export function renderPlot(container, spec, options = {}) {
   svg.addEventListener('pointermove', event => {
     const x = xAt(event); readout.textContent = `${categories ? categories[Math.max(0, Math.min(categories.length - 1, Math.round(x)))] : fmt(x)}${spec.x_axis?.unit ? ` ${spec.x_axis.unit}` : ''}`;
     series.forEach(line => { let closest = -1, delta = Infinity; (line.x || []).forEach((value, i) => { if (Math.abs(value - x) < delta && Number.isFinite(line.y?.[i])) { closest = i; delta = Math.abs(value - x); } }); if (closest >= 0) readout.textContent += ` · ${line.label || 'Value'}: ${fmt(line.y[closest])}`; });
+    // The visible readout stays on one line. Retain every series value for
+    // inspection when a narrow card truncates it.
+    readout.setAttribute('title', readout.textContent);
+    root.setAttribute('title', readout.textContent);
   });
+  svg.addEventListener('pointerleave', () => { readout.textContent = ''; readout.setAttribute('title', ''); root.setAttribute('title', ''); });
   if (!options.linked && options.onSeek) {
     svg.style.cursor = 'ew-resize';
     svg.addEventListener('pointerdown', event => {

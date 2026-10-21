@@ -89,3 +89,20 @@ test('embedded titles can be suppressed while standalone preview titles remain',
   renderPlot(container, spec); assert.equal(container.querySelector('h3').textContent, base.title);
   renderPlot(container, spec, { hideTitle: true }); assert.equal(container.querySelector('h3'), undefined);
 });
+
+test('hover readouts retain all recorded values and clear when leaving the plot', async () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  renderPlot(container, { ...base, kind: 'lines', series: [
+    { label: 'A long joint label', x: [0, 1], y: [2, 3] },
+    { label: 'Another joint', x: [0, 1], y: [4, null] },
+  ] }, { linked: true });
+  const svg = container.querySelector('svg'), readout = container.querySelector('.plot-hover');
+  await svg.emit('pointermove', { clientX: 600 });
+  assert.equal(readout.textContent, '1 s · A long joint label: 3 · Another joint: 4');
+  assert.equal(readout.getAttribute('title'), readout.textContent);
+  assert.equal(container.querySelector('.plot-renderer').getAttribute('title'), readout.textContent);
+  await svg.emit('pointerleave');
+  assert.equal(readout.textContent, '');
+  assert.equal(readout.getAttribute('title'), '');
+  assert.equal(container.querySelector('.plot-renderer').getAttribute('title'), '');
+});

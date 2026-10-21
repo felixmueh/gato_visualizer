@@ -22,7 +22,7 @@
 .plot-renderer th:nth-child(3), .plot-renderer td:nth-child(3) { white-space: nowrap; overflow-wrap: normal; }
 .plot-unit { color: #8fa8bc; font-size: 10px; margin: 7px 0; }
 .plot-legend { display: flex; flex-wrap: wrap; gap: 4px 9px; font-size: 9px; }
-.plot-hover { min-height: 16px; font: 9px 'IBM Plex Mono', monospace; color: #a8bacc; }
+.plot-hover { height: 16px; line-height: 16px; font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #a8bacc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .plot-catalog-list { display: grid; gap: 10px; margin-top: 14px; }
 .plot-catalog-item { border: 1px solid #354c61; padding: 12px; border-radius: 5px; font-size: 12px; }
 .plot-catalog-item p { color: #9fb1c1; font-size: 11px; }
@@ -45,7 +45,10 @@
 .timeline-plot-rows .plot-renderer svg { height: 85px; }
 .timeline-plot-rows .plot-unit { margin: 2px 0; }
 .timeline-plot-rows .plot-renderer .plot-message { margin: 0; }
-.timeline-plot-rows .plot-renderer .plot-hover { min-height: 0; }
+/* Linked plots already reserve a lower SVG margin. Keep hover values there,
+   outside document flow, so hovering cannot resize the timeline or viewport. */
+.timeline-plot-rows .plot-renderer { position: relative; }
+.timeline-plot-rows .plot-renderer .plot-hover { position: absolute; bottom: 0; left: 0; right: 0; pointer-events: none; }
 .timeline-plot-hint button { float: right; margin-left: 5px; padding: 0 9px; font-size: 11px; }
 .timeline-plot-rows { scrollbar-width: none; }
 .timeline-plot-rows::-webkit-scrollbar { width: 0; }
