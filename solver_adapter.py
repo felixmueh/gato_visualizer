@@ -8,13 +8,16 @@ import numpy as np
 from live_mpc import MPCAdapter
 from solver_process import SolverProcess, model_contract, validate_contract
 
+RESET_TIMEOUT_SECONDS = 30
+
 
 class RemoteController:
     def __init__(self, adapter):
         self.adapter = adapter
 
     def reset(self, native_state):
-        self.adapter.remote.request("reset", state=np.asarray(native_state).tolist())
+        self.adapter.remote.request("reset", timeout=RESET_TIMEOUT_SECONDS,
+                                    state=np.asarray(native_state).tolist())
 
 
 class SimulatorAdapter(MPCAdapter):

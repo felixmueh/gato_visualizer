@@ -10,6 +10,7 @@ import unittest
 import threading
 import subprocess
 import fcntl
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -19,7 +20,7 @@ import numpy as np
 from execution_bridge import ProcessLiveService
 from execution_session import DEFAULT_EXECUTION, MultirateSession
 from solver_process import SolverProcess, native_plan, validate_contract, send_lease, receive_leased_message
-from solver_adapter import SimulatorAdapter
+from solver_adapter import SimulatorAdapter, RemoteController
 from solver_profiles import SolverProfiles
 from server import make_server
 from tests.test_execution import FakeAdapter, FakeRenderer, fake_schema, fake_worker, MPC_ROOT
@@ -276,6 +277,20 @@ with socket.socket(fileno=fd) as channel:
                     child.request("bootstrap", timeout=1)
                 self.assertIsNotNone(child.process.poll())
                 self.assertIn("bootstrap exceeded", child.log_path.read_text())
+            finally:
+                child.close()
+
+    def test_remote_reset_timeout_stops_stalled_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            child = SolverProcess(dict(id="test", mpc_root=directory, python=sys.executable,
+                cache=directory), script=self.blocking_child(directory))
+            controller = RemoteController(SimpleNamespace(remote=child))
+            try:
+                with patch("solver_adapter.RESET_TIMEOUT_SECONDS", 1):
+                    with self.assertRaisesRegex(RuntimeError, "reset timed out"):
+                        controller.reset(np.zeros(14))
+                self.assertIsNotNone(child.process.poll())
+                self.assertIn("reset exceeded", child.log_path.read_text())
             finally:
                 child.close()
 
