@@ -39,6 +39,7 @@ class HistoryStore:
                 self.stream.close()
             self.generation = generation
             self.offsets = []
+            self.plan_offsets = {}
             self.state_count = 0
             self.end_time = 0.
             self.complete = True
@@ -46,17 +47,26 @@ class HistoryStore:
             self.stream = self.path.open("w+b")
 
     @staticmethod
+    def plan_identity(record):
+        identifier = str(record.get("id", record.get("seq")))
+        return f"preview:{identifier}" if record.get("origin") == "preview" else identifier
+
+    @staticmethod
     def encode(records):
         return [(json.dumps(record, allow_nan=False, separators=(",", ":")).encode()+b"\n",
-                 float(record.get("sim_time_s", record.get("end_time_s", 0))), record.get("type") == "state") for record in records]
+                 float(record.get("sim_time_s", record.get("end_time_s", 0))), record.get("type") == "state",
+                 HistoryStore.plan_identity(record) if record.get("type") == "plan" else None) for record in records]
 
     def append(self, records):
         self.append_encoded(self.encode(records))
 
     def append_encoded(self, encoded_records):
         with self.lock:
-            for encoded, timestamp, is_state in encoded_records:
-                self.offsets.append(self.stream.tell())
+            for encoded, timestamp, is_state, plan_id in encoded_records:
+                offset = self.stream.tell()
+                if plan_id is not None:
+                    self.plan_offsets.setdefault(plan_id, (len(self.offsets), offset, len(encoded)))
+                self.offsets.append(offset)
                 self.stream.write(encoded)
                 self.end_time = max(self.end_time, timestamp)
                 self.state_count += is_state
@@ -94,6 +104,39 @@ class HistoryStore:
                 records = [json.loads(reader.readline()) for _ in range(stop-after)]
         return dict(generation=generation, next_cursor=stop, complete=complete,
                     records=records, history_end_s=end_time)
+
+    def selected_plan(self, descriptor, identifier):
+        """Read one retained plan, never scan/decode unrelated physics states."""
+        if type(identifier) not in (str, int) or not str(identifier):
+            raise ValueError("Select a retained solve id")
+        identifier = str(identifier)
+        with self.lock:
+            if (type(descriptor.get("generation")) is not int or
+                    descriptor["generation"] != self.generation or descriptor.get("path") != str(self.path)):
+                raise HistoryGenerationError(f"History changed; current generation={self.generation}")
+            cursor, byte_end = descriptor.get("cursor"), descriptor.get("byte_end")
+            if (descriptor.get("kind") != "live" or type(cursor) is not int or
+                    not 0 <= cursor <= len(self.offsets) or type(byte_end) is not int):
+                raise ValueError("Invalid committed Live history prefix")
+            expected_end = self.offsets[cursor] if cursor < len(self.offsets) else self.stream.tell()
+            if byte_end != expected_end:
+                raise ValueError("Invalid committed Live history prefix")
+            indexed = self.plan_offsets.get(identifier)
+            if indexed is None or indexed[0] >= cursor or indexed[1] + indexed[2] > byte_end:
+                raise ValueError("Selected solve is not retained in this source")
+            _, offset, size = indexed
+            path = self.path
+        # Keep disk I/O and JSON decoding out of the append/metadata lock. A
+        # concurrently superseded file remains retained, like history pages.
+        with path.open("rb") as reader:
+            reader.seek(offset)
+            encoded = reader.read(size)
+        if len(encoded) != size or not encoded.endswith(b"\n"):
+            raise ValueError("Committed Live history prefix is incomplete")
+        plan = json.loads(encoded)
+        if not isinstance(plan, dict) or plan.get("type") != "plan" or self.plan_identity(plan) != identifier:
+            raise ValueError("Selected retained solve identity changed")
+        return plan
 
     def close(self):
         if self.stream:

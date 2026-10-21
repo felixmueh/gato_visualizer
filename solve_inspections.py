@@ -110,6 +110,21 @@ class InspectionService:
         selection = deepcopy(request["body"]["selection"])
         if selection.get("solve_seq") is not None:
             selection["solve_id"] = selection["solve_seq"]
+        if request["descriptor"].get("kind") == "live":
+            identifier = selection.get("solve_id")
+            if type(identifier) not in (str, int) or not str(identifier):
+                raise ValueError("Live inspection requires an explicit retained solve id")
+            preview = str(identifier).startswith("preview:")
+            descriptor = request["descriptor"]
+            if preview:
+                descriptor = descriptor.get("preview_source")
+                if descriptor is None or descriptor.get("generation") != request["descriptor"].get("generation"):
+                    raise ValueError("Selected preview solve is not retained in this source")
+            store = getattr(self.live, "inspection_store" if preview else "history_store", None)
+            if store is None:
+                raise ValueError("Indexed Live solve history is unavailable")
+            selected = store.selected_plan(descriptor, identifier)
+            return captured_problem(selected), str(identifier)
         with self.reader_lock:
             raw = self.reader.read(request["descriptor"])
             if selection.get("trajectory_index") is not None and not any(

@@ -218,7 +218,8 @@ class JobTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.folder=Path(self.temp.name)
         self.history=HistoryStore(self.folder/'history');self.history.append([dict(plan(),type='plan',id='7',seq=7)])
         self.profile=dict(id='active',mpc_root='/selected/mpc',python='/selected/python',cache='/selected/cache')
-        self.live=SimpleNamespace(pauses=[],pause_for_inspection=lambda identifier,timeout:self.live.pauses.append(identifier))
+        self.live=SimpleNamespace(history_store=self.history, pauses=[],
+                                  pause_for_inspection=lambda identifier,timeout:self.live.pauses.append(identifier))
         self.profiles=SimpleNamespace(active_selection=lambda identifier=None:deepcopy(self.profile))
         self.plots=SimpleNamespace(mpc_root='/simulator',default_scene={},
             _descriptor=lambda source:self.history.plot_source(source['generation']))
