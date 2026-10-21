@@ -4,6 +4,7 @@ import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
 import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-telemetry.js";
 import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartingScene } from "./replay-library.js";
+import { setupTargetGizmo } from "./target-gizmo.js";
 import { setupViewCube } from "./view-cube.js";
 import { createPathLine, setPathPoints, setPathPointCount, pathLineInfo } from "./path-lines.js";
 import {
@@ -48,6 +49,8 @@ document.querySelector("#app").innerHTML = `
         <div class="target-offsets">${['X', 'Y', 'Z'].map((axis, i) => `<label>${axis}<input id="target-offset-${i}" aria-label="Target ${axis} offset in metres" type="number" step="0.01" value="0" /></label>`).join('')}</div>
         <div id="live-task-parameters"></div>
         <p class="settings-note">Only prebuilt knot counts are available. Changes during Play restart the controller at its current state.</p>
+        <button id="target-move" class="secondary-action" disabled>Move target in 3D</button>
+        <p id="target-move-note" class="settings-note">Target handles become available after the live preview is ready.</p>
         <div id="live-settings"></div>
         <p id="live-source" class="settings-note source-live"></p>
       </section>
@@ -129,6 +132,7 @@ let renderer;
 let camera;
 let controls;
 let viewCube;
+let targetGizmo;
 let scene;
 let robotBounds;
 let ready = false;
@@ -429,6 +433,8 @@ function animate(timestamp) {
   controls.update();
   live?.frame(timestamp);
   viewCube.update(timestamp);
+  targetGizmo?.update();
+  if (liveGroup?.userData.target) liveGroup.userData.target.visible = !targetGizmo?.active;
   renderer.render(scene, camera);
 }
 
@@ -508,12 +514,15 @@ async function start() {
     setCamera("home");
     ready = true;
     live = setupLive({ onMode: changeMode, onPlan: showLivePlan, onState: showLiveState, onReset: resetLiveTrace });
+    targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
+      moveTarget: position => live.setTargetWorld(position), button: $('target-move'), note: $('target-move-note') });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: isStartingScene(data) ? 'Starting pose' : 'Default recording' });
     $("connection-label").textContent = "Local source";
     document.querySelector(".connection").classList.add("connected");
     $("load-overlay").hidden = true;
     // Expose a small read-only handle for browser smoke checks and local inspection.
     window.__motionStudio = {
+      get targetGizmo() { return targetGizmo?.snapshot; },
       get library() { return replayLibrary; },
       get replayScene() { return data; },
       get pathInfo() { return { replay: (pathGroup?.children || []).filter(line => line.isLine2).map(pathLineInfo), live: (liveGroup?.children || []).filter(line => line.isLine2).map(pathLineInfo) }; },

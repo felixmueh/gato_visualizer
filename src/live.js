@@ -1,3 +1,5 @@
+import { targetWorldPosition, targetWorldOffset } from './target-gizmo.js';
+
 // The API uses native joint values and full robot-root coordinates. No sign or
 // frame conversions belong in the browser.
 import { createLiveHistory } from './live-history.js';
@@ -88,6 +90,7 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
   let presentedState;
   let renderDirty = true;
   const playout = createLivePlayout();
+  let defaultTargetWorld;
   const inputs = [];
 
   const message = (text, error = false) => {
@@ -309,6 +312,9 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
       if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
       const applied = pending && expectedVersion != null && item.settings_version >= expectedVersion;
       if (applied) pending = false;
+      if (!defaultTargetWorld && (item.task_kind || settings.task.kind) === 'reach' && expectedVersion != null && item.settings_version >= expectedVersion) {
+        defaultTargetWorld = item.reference_xyz[0].map((value, i) => value - settings.task.target_offset_m[i]);
+      }
       controlsEnabled();
       refreshPlanLabel();
       if (status === 'playing') renderDirty = true;
@@ -497,6 +503,23 @@ export function setupLive({ onMode, onPlan, onState, onReset }) {
     $('live-availability').textContent = `Live MPC needs setup: ${error.message}`;
   });
   return {
+    get targetInteraction() {
+      const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
+      const available = mode === 'live' && historyTime == null && $('live-task').value === 'reach' && liveReady && source?.readyState === EventSource.OPEN && !needsInitialPreview
+        && Boolean(defaultTargetWorld) && settings.task.kind === 'reach' && offset.every(value => Number.isFinite(value) && Math.abs(value) <= 1)
+        && [0, 1, 2].every(i => $(`target-offset-${i}`).value.trim() !== '')
+        && status !== 'gpu_busy' && status !== 'error';
+      return { available, position_world: defaultTargetWorld ? targetWorldPosition(defaultTargetWorld, offset) : null,
+        pending: dirty || pending, offset_m: offset };
+    },
+    setTargetWorld(position) {
+      if (!this.targetInteraction.available) return null;
+      const offset = targetWorldOffset(defaultTargetWorld, position);
+      if (!offset) return null;
+      offset.forEach((value, i) => { $(`target-offset-${i}`).value = String(Number(value.toFixed(6))); });
+      change();
+      return this.targetInteraction.position_world;
+    },
     get mode() { return mode; },
     get plan() { return plan; },
     get state() { return state; },
