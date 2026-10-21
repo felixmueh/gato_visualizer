@@ -47,7 +47,7 @@ export function setupWorkbench({ document: doc = document, onLayout = () => {} }
       selectTab(tabs[next]); $(`inspection-tab-${tabs[next]}`).focus();
     });
   }
-  $('demonstration-graph').innerHTML = demonstrationGraph();
+  // The metrics module fills this mount with recorded series.
   const updateStop = bindStopPreference($('live-stop-at-end'), $('live-continue'));
   const update = () => {
     updateStop();

@@ -1,3 +1,5 @@
+import { expandedTimelineShell } from './expanded-timeline.js';
+
 export function workbenchShell(icon) {
   return `<div class="workspace workbench" id="workbench">
     <aside class="sidebar left-sidebar" id="left-sidebar" aria-label="Task and settings">
@@ -43,6 +45,7 @@ export function workbenchShell(icon) {
         <div class="load-overlay" id="load-overlay" role="status"><div class="spinner"></div><strong id="load-title">Opening workspace</strong><p id="load-detail">Loading robot description…</p></div>
         <div hidden><span id="scene-title">TIAGo Pro</span><div id="path-legend"></div></div>
       </section>
+      ${expandedTimelineShell()}
       <section id="live-controls" class="playback transport-bar live-controls" aria-label="Live MPC playback" hidden>
         <button id="live-play" class="transport-button primary-action" disabled aria-label="Play live history" title="Play / pause">${icon('play')}</button>
         <button id="live-reset" class="transport-button" disabled aria-label="Reset state" title="Reset state">${icon('restart')}</button>
@@ -53,6 +56,7 @@ export function workbenchShell(icon) {
           <button id="live-precalculate" class="transport-button" disabled aria-label="Precalculate" title="Precalculate closed-loop motion">${icon('calculate')}</button>
           <label class="duration-input"><input id="live-duration" type="number" min=".01" step="any" value="10" aria-label="Calculation duration seconds"><span>s</span></label>
         </div>
+        <button id="live-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div hidden><input id="live-continue" type="checkbox"><button id="live-preview">Preview</button><button id="live-cancel">Cancel calculation</button><button id="live-history-latest">Go latest</button></div>
       </section>
       <section class="playback transport-bar" id="replay-controls" aria-label="Recorded trajectory playback">
@@ -64,6 +68,7 @@ export function workbenchShell(icon) {
           <label class="stop-option" title="Stop at the end; uncheck to loop this recording"><input id="replay-stop-at-end" type="checkbox" checked>Stop</label>
           <label class="replay-speed"><span class="sr-only">Playback speed</span><select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
         </div>
+        <button id="replay-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div class="transport-metadata" hidden><span id="timeline-middle"></span><span id="timeline-end"></span><span class="keyboard-hint"></span></div>
       </section>
     </main>

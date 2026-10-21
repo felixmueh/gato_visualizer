@@ -3,6 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
 import { workbenchShell } from "./workbench-shell.js";
+import { setupExpandedTimeline } from "./expanded-timeline.js";
 import { setupWorkbench } from "./workbench-ui.js";
 import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-telemetry.js";
@@ -21,6 +22,7 @@ import "@fontsource/dm-sans/latin-500.css";
 import "@fontsource/dm-sans/latin-600.css";
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "./style.css";
+import "./timeline.css";
 
 const icons = {
   play: '<path d="m8 5 11 7-11 7V5Z" fill="currentColor" stroke="none"/>',
@@ -76,6 +78,25 @@ let lastCameraFit;
 let jointCells = [];
 let auxiliaryViews;
 const workbench = setupWorkbench({ onLayout: () => auxiliaryViews?.invalidate() });
+const emptyTimingIntervals = [];
+const expandedTimeline = setupExpandedTimeline({
+  onLayout: () => auxiliaryViews?.invalidate(),
+  onSeek: time => {
+    const input = $(live?.mode === 'live' ? 'live-history' : 'timeline');
+    if (input.disabled) return;
+    input.value = time;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  },
+});
+function updateExpandedTimeline() {
+  if (live?.mode === 'live') {
+    const history = live.history;
+    expandedTimeline.update({ mode: 'live', identity: history.generation, bounds: history.bounds, time: history.selectedTime, intervals: history.intervals });
+  } else {
+    const duration = trajectory ? trajectory.time_s.at(-1) - trajectory.time_s[0] : 0;
+    expandedTimeline.update({ mode: 'replay', identity: trajectory, bounds: [0, duration], time: elapsed, clockLabel: `${trajectory ? playbackClock(trajectory) : 'recorded'} time`.replace(/^./, letter => letter.toUpperCase()), intervals: emptyTimingIntervals });
+  }
+}
 
 function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_limits, torqueKind = "applied") {
   updateJointTable(jointCells, {q, qd, torque, limits, torqueKind});
@@ -393,7 +414,7 @@ function animate(timestamp) {
   targetGizmo?.update();
   if (liveGroup?.userData.target) liveGroup.userData.target.visible = !targetGizmo?.active;
   renderer.render(scene, camera);
-  workbench.update(); auxiliaryViews?.render(timestamp);
+  workbench.update(); updateExpandedTimeline(); auxiliaryViews?.render(timestamp);
 }
 
 $("play").addEventListener("click", togglePlay);
@@ -484,6 +505,7 @@ async function start() {
     // Expose a small read-only handle for browser smoke checks and local inspection.
     window.__motionStudio = {
       get auxiliaryViews() { return auxiliaryViews?.snapshot; },
+      get timeline() { return expandedTimeline.snapshot; },
       get workbench() { return { activeTab: workbench.activeTab, auxiliaryVisible: workbench.auxiliaryVisible }; },
       get targetGizmo() { return targetGizmo?.snapshot; },
       get library() { return replayLibrary; },
