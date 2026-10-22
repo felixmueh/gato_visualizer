@@ -23,7 +23,6 @@ import numpy as np
 import pinocchio as pin
 
 from visualizer_config import DEFAULT_CONFIG, load_visualizer_config
-from replay_format import normalize_joint_limits
 
 ROOT = Path(__file__).resolve().parent
 JOINT_NAMES = [f"arm_right_{i}_joint" for i in range(1, 8)]
