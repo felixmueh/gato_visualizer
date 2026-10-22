@@ -323,7 +323,7 @@ class ReplayTests(unittest.TestCase):
             library.upload("invalid.npz", b"invalid")
         self.assertFalse((library.upload_directory / "invalid.npz").exists())
 
-    def test_no_legacy_recording_bootstraps_without_fabricated_trajectory(self):
+    def test_starting_pose_scene_has_no_fabricated_trajectory(self):
         fresh = self.folder / "fresh-checkout"
         (fresh / "models").mkdir(parents=True)
         (fresh / "models/tiago_pro").symlink_to(MODEL.parent, target_is_directory=True)
@@ -339,8 +339,6 @@ class ReplayTests(unittest.TestCase):
         selected = library.scene(uploaded["id"])
         self.assertFalse(any(name in selected["fixed_joints"] for name in JOINT_NAMES))
         np.testing.assert_array_equal(selected["trajectories"][0]["q"], self.q)
-        with self.assertRaises(ValueError):
-            load_scene(fresh, self.folder / "missing-explicit-recording")
 
     def test_http_catalog_upload_scene_and_errors(self):
         library = self.library()

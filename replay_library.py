@@ -67,8 +67,7 @@ class ReplayLibrary:
                 yield path
 
     def _scan(self):
-        default_name = "Starting pose" if self.default_scene["source"].get("bootstrap") else "Default recording"
-        items = [dict(id="default", name=default_name, path="", source="default",
+        items = [dict(id="default", name="Starting pose", path="", source="default",
                       status="ready", revision="default")]
         paths, retained = {}, {}
         for source, root in (("ingest", self.ingest_directory), ("upload", self.upload_directory)):

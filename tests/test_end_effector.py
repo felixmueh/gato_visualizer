@@ -1,6 +1,5 @@
 """CPU FK and recording compatibility for application-defined TCP frames."""
 from dataclasses import replace
-import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,7 +10,7 @@ import pinocchio as pin
 
 from live_presentation import LiveRenderer, snapshot
 from replay_format import load_replay
-from server import JOINT_NAMES, RobotKinematics, load_scene, replay_scene
+from server import JOINT_NAMES, RobotKinematics, replay_scene
 
 from tiago_mpc_source import MPC_ROOT, replay_exporter
 
@@ -78,19 +77,6 @@ class EndEffectorTests(unittest.TestCase):
             selected = legacy if frame == "arm_right_tool_joint" else replace(
                 replay, metadata={**replay.metadata, "end_effector_frame": frame})
             scene = replay_scene(selected, self.path, self.root, base)
-            self.assertEqual(scene["end_effector_frame"], frame)
-            np.testing.assert_allclose(scene["trajectories"][0]["ee_xyz"], self.expected(frame), atol=1e-10)
-
-    def test_legacy_run_summary_selects_tcp_explicitly(self):
-        run = self.root / "run"
-        run.mkdir()
-        np.savez(run / "trajectory.npz", time_s=[0, .03], state=np.c_[self.q, np.zeros((2, 7))])
-        summary = dict(joint_names=JOINT_NAMES, target_m=[.1, .2, .3], dt_s=.03, N=2)
-        for frame in ("arm_right_tool_joint", "test_grasp_joint"):
-            if frame == "test_grasp_joint":
-                summary["end_effector_frame"] = frame
-            (run / "summary.json").write_text(json.dumps(summary))
-            scene, _, _ = load_scene(self.root, run)
             self.assertEqual(scene["end_effector_frame"], frame)
             np.testing.assert_allclose(scene["trajectories"][0]["ee_xyz"], self.expected(frame), atol=1e-10)
 

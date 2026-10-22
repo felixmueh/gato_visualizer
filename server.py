@@ -32,15 +32,10 @@ JOINT_NAMES = [f"arm_right_{i}_joint" for i in range(1, 8)]
 LEFT_ARM_REST_RAD = (0.39, -1.73, 0.38, -2.35, 0.0, -1.21, -0.04)
 FIXED_DISPLAY_JOINTS = {f"arm_left_{i}_joint": angle
                         for i, angle in enumerate(LEFT_ARM_REST_RAD, 1)}
-DEFAULT_RUN = Path("_expr_data/canonical-model-correction-20261020/default-smoke")
 
 
 class SourceError(ValueError):
     """A source recording cannot be represented faithfully."""
-
-
-class NoRecordingError(SourceError):
-    """Autodiscovery found no recording; canonical starting context is available."""
 
 
 def finite_array(value, name, shape=None):
@@ -125,17 +120,6 @@ def add_telemetry(item, qd=None, torque=None, torque_times=None, kind="applied")
     return item
 
 
-def discover_run(mpc_root):
-    preferred = mpc_root / DEFAULT_RUN
-    if (preferred / "trajectory.npz").is_file() and (preferred / "summary.json").is_file():
-        return preferred
-    candidates = [p.parent for p in (mpc_root / "_expr_data").rglob("trajectory.npz")
-                  if (p.parent / "summary.json").is_file()]
-    if not candidates:
-        raise NoRecordingError(f"No recorded trajectory found under {mpc_root / '_expr_data'}; use --run-dir")
-    return max(candidates, key=lambda p: (p / "trajectory.npz").stat().st_mtime_ns)
-
-
 class RobotKinematics:
     def __init__(self, urdf, fixed_joints=None, *, end_effector_frame="arm_right_tool_joint",
                  reduced_urdf=None):
@@ -209,16 +193,6 @@ class RobotKinematics:
         return self.world_from_torso.act(finite_array(target, "torso target", (3,)))
 
 
-def read_json(path):
-    try:
-        value = json.loads(path.read_text())
-    except (OSError, ValueError) as exc:
-        raise SourceError(f"Cannot read {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise SourceError(f"Expected an object in {path}")
-    return value
-
-
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -251,8 +225,8 @@ def canonical_model_assets(mpc_root):
             assets, fixed_joints, next(iter(root_links)))
 
 
-def load_bootstrap_scene(mpc_root):
-    """Show an honest starting pose when no legacy recording is available."""
+def load_scene(mpc_root):
+    """The default scene: the starting pose, without a recording."""
     robot_xml, assets, fixed_joints, world_frame = canonical_model_assets(mpc_root)
     starting_right_rad = (-.39, -1.73, -.38, -2.35, 0.0, -1.21, .04)
     fixed_joints.update(zip(JOINT_NAMES, starting_right_rad))
@@ -264,101 +238,6 @@ def load_bootstrap_scene(mpc_root):
                  source=dict(mpc_root=str(Path(mpc_root).resolve()), bootstrap=True,
                              label="Starting pose — upload or select a recording",
                              full_urdf_sha256=sha256(urdf), files_sha256={}))
-    return scene, robot_xml, assets
-
-
-def load_scene(mpc_root, run_dir=None):
-    """Load immutable source files and return JSON data plus allowed assets."""
-    mpc_root = Path(mpc_root).expanduser().resolve()
-    urdf = mpc_root / "models/tiago_pro/tiago_pro.urdf"
-    if not urdf.is_file():
-        raise SourceError(f"Canonical full robot model is missing: {urdf}")
-    if run_dir is None:
-        try:
-            run_dir = discover_run(mpc_root)
-        except NoRecordingError:
-            return load_bootstrap_scene(mpc_root)
-    else:
-        run_dir = Path(run_dir).expanduser().resolve()
-    summary = read_json(run_dir / "summary.json")
-    if summary.get("joint_names") != JOINT_NAMES:
-        raise SourceError("Recording joint_names do not match the seven native right-arm joints")
-    target = finite_array(summary.get("target_m"), "summary target_m", (3,))
-    dt = float(summary.get("dt_s", 0))
-    knots = summary.get("N", 0)
-    if not np.isfinite(dt) or dt <= 0:
-        raise SourceError("Recording dt_s must be finite and positive")
-    end_effector_frame = summary.get("end_effector_frame", "arm_right_tool_joint")
-    kinematics = RobotKinematics(urdf, end_effector_frame=end_effector_frame)
-    target_world = kinematics.target_to_world(target).tolist()
-    try:
-        with np.load(run_dir / "trajectory.npz", allow_pickle=False) as data:
-            times = finite_array(data["time_s"], "recorded time_s")
-            if times.ndim != 1 or len(times) < 2:
-                raise SourceError("Recorded trajectory must contain at least two timestamps")
-            if times[0] < 0 or not (np.diff(times) > 0).all():
-                raise SourceError("Recorded timestamps must be nonnegative and strictly increasing")
-            states = finite_array(data["state"], "recorded state", (len(times), 14))
-            applied = (finite_array(data["applied_torque_nm"], "recorded applied_torque_nm", (len(times)-1, 7))
-                       if "applied_torque_nm" in data.files else None)
-    except (OSError, KeyError, ValueError) as exc:
-        raise SourceError(f"Cannot load recorded trajectory from {run_dir}: {exc}") from exc
-
-    def trajectory(identifier, label, kind, time_s, q, metadata):
-        return dict(id=identifier, label=label, kind=kind,
-                    time_s=time_s.tolist(), q=q.tolist(),
-                    ee_xyz=kinematics.ee_positions(q).tolist(),
-                    target_xyz=target_world, metadata=metadata)
-
-    recorded_metadata = {key: summary[key] for key in (
-        "status", "mode", "timing", "orientation", "collisions", "reached",
-        "limits_pass", "final_distance_m", "solve_time_median_ms", "solver_params",
-        "admm_effective", "dt_s", "N") if key in summary}
-    recorded_metadata.update(coordinates="native", source_file="trajectory.npz")
-    trajectories = [trajectory("recorded", "Recorded MPC motion", "recorded",
-                               times, states[:, :7], recorded_metadata)]
-    add_telemetry(trajectories[0], states[:, 7:], applied, times[:-1])
-    source_files = [run_dir / "trajectory.npz", run_dir / "summary.json"]
-    for index, plan in enumerate(sorted(run_dir.glob("plan_[0-9][0-9][0-9][0-9].npz"))):
-        try:
-            with np.load(plan, allow_pickle=False) as data:
-                q, qd, torque = decode_prediction_telemetry(data["xu"], data["signs"], knots)
-                reference = finite_array(data["reference"], "plan reference", (int(knots), 6))
-                if not np.allclose(reference[:, :3], target, atol=1e-7, rtol=1e-6):
-                    raise SourceError("Plan has a moving/different target; this MVP supports fixed-target reaches")
-                # The saved plan's initial state is native, unlike its GPU XU.
-                initial = finite_array(data["state"], "plan initial state", (14,))
-                initial_delta = float(np.max(np.abs(q[0] - initial[:7])))
-        except (OSError, KeyError, ValueError) as exc:
-            raise SourceError(f"Cannot decode {plan}: {exc}") from exc
-        step = int(plan.stem.split("_")[1])
-        trajectories.append(trajectory(f"prediction-{index}", f"Prediction {index + 1}", "prediction",
-                                       np.arange(int(knots)) * dt, q,
-                                       dict(source_file=plan.name, controller_step=step,
-                                            recorded_start_s=step * dt, dt_s=dt, N=int(knots),
-                                            initial_q_difference_rad=initial_delta,
-                                            coordinates="native, decoded from GPU signs")))
-        add_telemetry(trajectories[-1], qd, torque, np.arange(int(knots)-1)*dt, kind="predicted")
-        source_files.append(plan)
-
-    robot_xml, assets, fixed_joints, world_frame = canonical_model_assets(mpc_root)
-    scene = dict(robot_url="/assets/robot.urdf", joint_names=JOINT_NAMES,
-                 joint_limits=(normalize_joint_limits(summary.get("raw_limits"), list(range(7)))
-                               or canonical_joint_limits(urdf)),
-                 fixed_joints=fixed_joints, world_frame=world_frame,
-                 up_axis="Z", end_effector_frame=end_effector_frame,
-                 source=dict(mpc_root=str(mpc_root), run_dir=str(run_dir),
-                             repository_commit=summary.get("repository_commit"),
-                             gato_commit=summary.get("gato_commit"),
-                             full_urdf_sha256=sha256(urdf),
-                             recorded_urdf_sha256=summary.get("urdf_sha256"),
-                             files_sha256={p.name: sha256(p) for p in source_files}),
-                 trajectories=trajectories)
-    # Reject nonfinite summary metadata too, before any HTTP response is served.
-    try:
-        json.dumps(scene, allow_nan=False)
-    except (ValueError, TypeError) as exc:
-        raise SourceError(f"Recording metadata is not finite JSON: {exc}") from exc
     return scene, robot_xml, assets
 
 
@@ -810,7 +689,6 @@ def main(argv=None):
                         help="Visualizer JSON config (default: checkout visualizer.json)")
     parser.add_argument("--mpc-root", type=Path,
                         help="Source checkout; overrides TIAGO_MPC_ROOT and saved Source / Build selection")
-    parser.add_argument("--run-dir", type=Path, help="Existing reaching recording directory (read only)")
     parser.add_argument("--host", default="127.0.0.1", help="Use 0.0.0.0 to view over your local network")
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--replay-only", action="store_true", help="Disable all live solver work")
@@ -830,7 +708,7 @@ def main(argv=None):
     os.environ["GATO_CACHE_DIR"] = selection["cache"]
     os.environ["PATH"] = str(Path(selection["python"]).parent) + os.pathsep + os.environ.get("PATH", "")
     try:
-        scene, robot_xml, meshes = load_scene(args.mpc_root, args.run_dir)
+        scene, robot_xml, meshes = load_scene(args.mpc_root)
     except (SourceError, OSError, RuntimeError) as exc:
         parser.exit(1, f"Source error: {exc}\n")
     live, live_error = None, None
@@ -872,10 +750,7 @@ def main(argv=None):
     print(f"Ingest directory: {visualizer_config.ingest_directory} "
           "(recursive catalog updates when the browser polls)", flush=True)
     print(f"Browser uploads: {library.upload_directory}", flush=True)
-    if scene["source"].get("bootstrap"):
-        print("Starting pose only: upload or select a recording for replay", flush=True)
-    else:
-        print(f"Read-only recording: {scene['source']['run_dir']}", flush=True)
+    print("Starting pose only: upload or select a recording for replay", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -91,7 +91,7 @@ export function playbackClock(trajectory) {
   return basis === 'wall' ? 'wall' : basis === 'simulation' ? 'simulation' : 'recorded';
 }
 
-export function setupReplayLibrary({ onScene, initialId = 'default', initialName = 'Default recording' }) {
+export function setupReplayLibrary({ onScene, initialId = 'default', initialName = 'Starting pose' }) {
   const $ = (id) => document.getElementById(id);
   let selectedId = initialId;
   let selectedItem = { id: initialId, name: initialName, path: '', status: 'ready' };

@@ -1,7 +1,6 @@
-"""Adapter checks against the retained canonical recording, without GPU work."""
+"""Starting-pose scene, kinematics and HTTP checks against the canonical model, without GPU work."""
 import json
 from pathlib import Path
-import shutil
 import tempfile
 import threading
 import unittest
@@ -12,7 +11,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pinocchio as pin
 
-from server import DEFAULT_RUN, JOINT_NAMES, RobotKinematics, SourceError, decode_prediction, decode_prediction_telemetry, load_scene, make_server
+from server import JOINT_NAMES, RobotKinematics, SourceError, decode_prediction, decode_prediction_telemetry, load_scene, make_server
 
 from tiago_mpc_source import MPC_ROOT
 
@@ -42,41 +41,35 @@ class PredictionTests(unittest.TestCase):
                     decode_prediction(packed, signs, 2)
 
 
-@unittest.skipUnless((MPC_ROOT / DEFAULT_RUN / "trajectory.npz").is_file(),
-                     "Canonical sibling tiago_mpc recording is not available")
+@unittest.skipUnless((MPC_ROOT / "models/tiago_pro/tiago_pro.urdf").is_file(),
+                     "Canonical sibling tiago_mpc model is not available")
 class CanonicalSourceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.scene, cls.robot_xml, cls.meshes = load_scene(MPC_ROOT)
 
-    def test_native_recorded_state_and_gpu_prediction(self):
-        recorded, predicted = self.scene["trajectories"][:2]
-        with np.load(MPC_ROOT / DEFAULT_RUN / "trajectory.npz") as archive:
-            np.testing.assert_array_equal(recorded["q"], archive["state"][:, :7])
-            np.testing.assert_array_equal(recorded["time_s"], archive["time_s"])
-        with np.load(MPC_ROOT / DEFAULT_RUN / "plan_0000.npz") as archive:
-            np.testing.assert_array_equal(predicted["q"],
-                                          decode_prediction(archive["xu"], archive["signs"], 32))
-        self.assertLess(recorded["q"][0][5], 0)
-        self.assertLess(predicted["q"][0][5], 0)
-        self.assertEqual(len(self.scene["trajectories"]), 6)
+    def test_starting_scene_has_no_trajectories(self):
+        self.assertTrue(self.scene["source"]["bootstrap"])
+        self.assertEqual(self.scene["trajectories"], [])
         self.assertEqual(self.scene["world_frame"], "base_footprint")
+        with tempfile.TemporaryDirectory() as empty, \
+                self.assertRaisesRegex(SourceError, "Canonical full robot model is missing"):
+            load_scene(empty)
 
     def test_full_and_reduced_fk_agree_after_torso_transform(self):
         full = RobotKinematics(MPC_ROOT / "models/tiago_pro/tiago_pro.urdf")
         reduced = pin.buildModelFromUrdf(str(MPC_ROOT / "models/tiago_right/tiago_right_arm.urdf"))
         data = reduced.createData()
         fid = reduced.getFrameId("arm_right_tool_joint")
-        rows = np.asarray(self.scene["trajectories"][0]["q"])[[0, 50, -1]]
+        rows = np.array([[-.39, -1.73, -.38, -2.35, 0, -1.21, .04],
+                         [-.2, -1.5, -.5, -2.1, .3, -1., -.2],
+                         [.1, -1.2, -.7, -1.8, .6, -.7, -.4]])
         expected = []
         for q in rows:
             pin.forwardKinematics(reduced, data, q)
             pin.updateFramePlacements(reduced, data)
             expected.append(full.world_from_torso.act(data.oMf[fid].translation))
         np.testing.assert_allclose(full.ee_positions(rows), expected, atol=1e-10)
-        target_local = json.loads((MPC_ROOT / DEFAULT_RUN / "summary.json").read_text())["target_m"]
-        np.testing.assert_allclose(self.scene["trajectories"][0]["target_xyz"],
-                                   full.world_from_torso.act(np.asarray(target_local)), atol=1e-12)
 
     def test_mesh_uris_are_all_allowlisted(self):
         tree = ET.fromstring(self.robot_xml)
@@ -85,22 +78,6 @@ class CanonicalSourceTests(unittest.TestCase):
         self.assertTrue(all(p.is_file() for p in self.meshes.values()))
         self.assertEqual(len(urls), 35)
         self.assertEqual(self.scene["fixed_joints"]["torso_lift_joint"], 0)
-
-    def test_source_failures_do_not_make_up_trajectories(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            folder = Path(temporary)
-            with self.assertRaisesRegex(SourceError, "Canonical full robot model is missing"):
-                load_scene(folder, MPC_ROOT / DEFAULT_RUN)
-            shutil.copy(MPC_ROOT / DEFAULT_RUN / "summary.json", folder / "summary.json")
-            np.savez(folder / "trajectory.npz", time_s=[0, 0], state=np.zeros((2, 14)))
-            with self.assertRaisesRegex(SourceError, "strictly increasing"):
-                load_scene(MPC_ROOT, folder)
-            np.savez(folder / "trajectory.npz", time_s=[0, 1], state=np.zeros((2, 7)))
-            with self.assertRaisesRegex(SourceError, "expected shape"):
-                load_scene(MPC_ROOT, folder)
-            np.savez(folder / "trajectory.npz", time_s=[0, 1], state=np.full((2, 14), np.nan))
-            with self.assertRaisesRegex(SourceError, "nonfinite"):
-                load_scene(MPC_ROOT, folder)
 
     def test_http_routes_and_path_allowlist(self):
         with tempfile.TemporaryDirectory() as temporary:

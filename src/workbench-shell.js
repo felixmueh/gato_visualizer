@@ -23,7 +23,7 @@ export function workbenchShell(icon) {
       </section>
       <section id="replay-section">
         <label class="field-label" for="recording-select">RECORDING</label>
-        <div class="select-wrap"><select id="recording-select" aria-label="Recording library"><option value="default">Default recording</option></select></div>
+        <div class="select-wrap"><select id="recording-select" aria-label="Recording library"><option value="default">Starting pose</option></select></div>
         <div class="recording-path-row"><p id="recording-path" class="recording-path"></p><span id="recording-model-warning" class="recording-model-warning" role="img" hidden>⚠</span><button id="recording-link" class="recording-link" title="Copy a direct link to this recording" aria-label="Copy a direct link to this recording" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5l3-3M7 4.5l1.2-1.2a2.5 2.5 0 013.5 3.5L10.5 8M9 11.5l-1.2 1.2a2.5 2.5 0 01-3.5-3.5L5.5 8"/></svg></button></div><p id="recording-update" class="recording-update" role="status"></p>
         <button id="recording-reload" class="secondary-action recording-reload" hidden>Reload recording</button>
         <div class="upload-actions"><button id="upload-files" class="secondary-action">Upload .npz</button><button id="upload-folder" class="secondary-action">Upload folder</button></div>

@@ -558,7 +558,7 @@ async function start() {
     limitTint.setEnabled(limitTintEnabled); limitTint.setSettings(limitUse);
     jointCells = createJointTable($("joint-list"), data.joint_names);
     setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
-    populateReplay(data, {name: isStartingScene(data) ? 'Starting pose' : 'Default recording'});
+    populateReplay(data, {name: 'Starting pose'});
     robot.updateMatrixWorld(true);
     robotBounds = new THREE.Box3().setFromObject(robot);
     setCamera("home");
@@ -567,7 +567,7 @@ async function start() {
     live = setupLive({ presentationSettings: presentationSettings.settings, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item) });
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
       moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });
-    replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: isStartingScene(data) ? 'Starting pose' : 'Default recording' });
+    replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Starting pose' });
     $("connection-label").textContent = "Local source";
     document.querySelector(".connection").classList.add("connected");
     $("load-overlay").hidden = true;
@@ -780,7 +780,7 @@ function populateReplay(recording, item) {
   const commit = recording.source?.repository_commit || recording.source?.commit;
   $('source-commit').textContent = commit ? String(commit).slice(0, 7) : 'recording';
   $('source-commit').title = commit || 'Uploaded or watched recording';
-  const path = item.path || recording.source?.run_dir || recording.source?.recording || '';
+  const path = item.path || recording.source?.recording || '';
   $('source-run').textContent = item.name || path || 'Local saved trajectory';
   $('source-run').title = path;
   if (recording.trajectories.length) selectTrajectory(recording.trajectories[0].id);
