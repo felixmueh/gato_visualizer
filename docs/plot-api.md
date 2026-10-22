@@ -26,6 +26,17 @@ the specification and provides presentation interactions.
   `numeric`, or `category`. `prediction_time` is a prediction-horizon offset.
 - Series have `label`, matching `x`/`y` arrays, optional `color`, and `style`
   `line`, `step`, or `bar`. Numeric missing values use null, never NaN/Infinity.
+  A `color` may be a CSS token with fallback, `var(--limit-torque, #b398f3)`.
+  Optional `hover` holds one text (or null) per sample; the readout shows it
+  instead of `label: value`, and display reduction keeps it aligned.
+- Guides may set `style: "hard"` (solid, in the limit-beyond colour) instead
+  of the default dashed line. `bands: [{axis: "y", start, end, tone, label?}]`
+  shade a y interval across the plot beneath the data; `end: null` reaches the
+  top. Tones are `near` (tinted) and `beyond` (hatched), using the CSS tokens
+  `--limit-near` and `--limit-beyond` with fallbacks.
+- `y.span: [low, high]` is the default automatic y range: data beyond it
+  extend that side, data inside never shrink it. Viewer y limits and outlier
+  clipping still apply.
 - Bar series may provide Python-computed `bin_edges`: finite, strictly
   increasing boundaries with one more entry than `y`, so histogram widths are
   rendered from the actual bins rather than guessed from their centres.
@@ -66,6 +77,10 @@ what retained fields can be read. `.solver` is absent/None in web/replay views.
 Input schemas are keyed by parameter name and use `type` values `joint`,
 `boolean`, `number`, or `choice`, plus `default`, `label`, optional `unit`,
 `description`, `min`, `max`, and `choices`. Joint values are stable joint names.
+Choices may be `{value, label}` objects (from `Choice(..., labels=...)`). A
+choice's `disabled_when: {option: {other_input: value}}` disables that option
+in the settings dialog while the other input has that value; evaluation
+rejects the combination.
 The SDK exports `Joint`, `Boolean`, `Number`, `Choice`, `EpisodeView`,
 `SolveView` and `InspectionContext`; see [plot-authoring.md](plot-authoring.md).
 
