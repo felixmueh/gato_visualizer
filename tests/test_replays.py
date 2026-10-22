@@ -10,6 +10,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 import zipfile
 
 import numpy as np
@@ -232,6 +233,17 @@ class ReplayTests(unittest.TestCase):
         archive.seek(0)
         with self.assertRaisesRegex(ReplayError, "limit|header size"):
             load_replay(archive, model_urdf=MODEL)
+
+    def test_figure_eight_sized_replay_loads_and_array_count_has_its_own_limit(self):
+        # A default figure eight records 2400 plans with five arrays each; 1100
+        # plans already exceed the former 1024-plan and 4096-array limits.
+        plan = dict(time_s=[0, .01], q=self.q, qd_rad_s=np.zeros((2, 7)),
+                    torque_nm=np.zeros((1, 7)), torque_time_s=[0])
+        path = self.export(self.folder / "figure8.npz",
+                           plans=[dict(plan, origin_time_s=i * .01) for i in range(1100)])
+        self.assertEqual(len(load_replay(path, model_urdf=MODEL).predictions), 1100)
+        with patch("replay_format.MAX_ARRAYS", 100), self.assertRaisesRegex(ReplayError, "100 array limit"):
+            load_replay(path, model_urdf=MODEL)
 
     def test_recursive_catalog_errors_recover_after_file_changes_and_snapshot_stays_loaded(self):
         library = self.library()

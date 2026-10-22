@@ -372,7 +372,8 @@ def replay_scene(replay, path, mpc_root, base_scene):
     def world_points(reference):
         points = np.atleast_2d(reference.xyz)
         if reference.frame == "torso_lift_link":
-            return np.asarray([kinematics.target_to_world(point) for point in points])
+            transform = kinematics.world_from_torso
+            return points @ transform.rotation.T + transform.translation
         return points
 
     def trajectory(identifier, label, kind, times, q, reference, origin=None, stats=None):
@@ -743,8 +744,8 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                     if set(query) != {"id"} or len(query["id"]) != 1:
                         raise ValueError("Select one recording with its catalog id")
                     selected = replays.scene(query["id"][0])
-                    self.send_payload(json.dumps(selected, allow_nan=False).encode(),
-                                      "application/json; charset=utf-8")
+                    self.send_payload(json.dumps(selected, allow_nan=False, separators=(",", ":")).encode(),
+                                      "application/json; charset=utf-8", compress=True)
                 except (KeyError, ValueError, OSError) as exc:
                     status = 404 if isinstance(exc, KeyError) else 400
                     self.send_payload(json.dumps(dict(error=str(exc))).encode(),

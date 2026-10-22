@@ -22,7 +22,12 @@ JOINT_NAMES = tuple(f"arm_right_{i}_joint" for i in range(1, 8))
 MAX_COMPRESSED_BYTES = 64 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_TOTAL_SAMPLES = 200_000
-MAX_PREDICTIONS = 1024
+# A default figure eight has 2400 plans of five arrays each; the total sample
+# limit still bounds the work per plan.
+MAX_PREDICTIONS = 10_000
+MAX_ARRAYS = 65_536
+# NumPy stores the JSON as UCS-4, four bytes per character (about 0.8 KiB per plan).
+MAX_METADATA_BYTES = 16 * 1024 * 1024
 REFERENCE_FRAMES = ("base_footprint", "torso_lift_link")
 
 
@@ -196,7 +201,9 @@ def load_replay(source, *, model_urdf):
             names = [member.filename for member in members]
             if len(names) != len(set(names)):
                 raise ReplayError("Replay archive contains duplicate array names")
-            if len(members) > 4096 or sum(m.file_size for m in members) > MAX_UNCOMPRESSED_BYTES:
+            if len(members) > MAX_ARRAYS:
+                raise ReplayError(f"Replay exceeds the {MAX_ARRAYS} array limit")
+            if sum(m.file_size for m in members) > MAX_UNCOMPRESSED_BYTES:
                 raise ReplayError("Replay exceeds the 256 MiB expanded-array limit")
             if any(not n.endswith(".npy") or "/" in n or "\\" in n for n in names):
                 raise ReplayError("Replay must contain only top-level NumPy arrays")
@@ -213,8 +220,8 @@ def load_replay(source, *, model_urdf):
                         raise ReplayError(f"Unsupported NPY array version: {version}")
                     if shape and shape[0] > MAX_TOTAL_SAMPLES:
                         raise ReplayError(f"Replay exceeds the {MAX_TOTAL_SAMPLES} sample display limit")
-                    if member.filename == "metadata_json.npy" and member.file_size > 1024*1024:
-                        raise ReplayError("Replay metadata exceeds the 1 MiB limit")
+                    if member.filename == "metadata_json.npy" and member.file_size > MAX_METADATA_BYTES:
+                        raise ReplayError("Replay metadata exceeds the 16 MiB limit")
                     if dtype.hasobject:
                         raise ReplayError("Object/pickle arrays are not allowed in replays")
                     expected_bytes = math.prod(shape) * dtype.itemsize
