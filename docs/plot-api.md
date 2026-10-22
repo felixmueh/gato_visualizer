@@ -119,6 +119,9 @@ in `iterations` remain scalar summaries, including index 0 for Seed. The full
 raw trace stays in a lazy read-only `SolveView.iteration_trace` handle in the
 CPU process. Context `provenance` records initialization, requested cap/budget,
 actual count/stop reason, original solve/source and actual implementation/model.
+A request with `selection.iteration_paths: k` additionally returns a top-level
+`iteration_paths` chunk of end-effector paths for the 3D view (see
+[Fresh inspection service](inspection.md#fresh-inspection-service-and-binary-data-flow)).
 See [the inspection HTTP contract](inspection.md#fresh-inspection-http-contract).
 
 Preview solves have a separate append-only inspection store, written after

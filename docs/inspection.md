@@ -38,7 +38,9 @@ Preview solves remain distinguishable from recorded controller solves.
 Pin solve freezes the selected solve and its SQP iteration selection while the
 episode cursor and Live computation can continue. Show a persistent muted-red
 badge/border and visible Pinned text with the solve identity and episode
-timestamp where available. Colour is supplemental to the text and toggle state.
+timestamp where available. The pinned Solve's 3D prediction uses the same red
+(the `--pin-red` custom property in `src/plots.css`). Colour is supplemental to
+the text and toggle state.
 Returning to Follow cursor clears the pinned treatment. Plot placement on the
 timeline uses the label Show on timeline to distinguish it from Pin solve.
 
@@ -54,8 +56,12 @@ Selecting an iteration updates graph markers on iteration-index plots, the
 iteration-specific data of other solve plots, and the 3D prediction when that
 iteration's trajectory was recorded. Missing trajectories or metrics remain
 explicitly unavailable; do not substitute the final trajectory as though it
-belonged to every iteration. Solver-iteration selection does not advance the
-robot's recorded episode state.
+belonged to every iteration. For a metrics-only iteration the final plan stays
+as labelled, faded context. A recorded trajectory that has not arrived yet keeps
+the previously shown trajectory on screen and dims the strip label (tooltip:
+loading) instead of falling back to the final plan. Moving the SQP cursor never
+cancels an in-flight plot response. Solver-iteration selection does not advance
+the robot's recorded episode state.
 
 Prediction-horizon scrubbing is deferred. Horizon-time profiles may still show
 the selected iteration's predicted positions/velocities/controls, but no second
@@ -184,6 +190,16 @@ native q/v/u, including joint 6, and computes its FK in Python. Context iteratio
 entries contain only index, status, has_prediction and scalar statistics.
 `selected_solve.selected_prediction` is the sole selected-iteration prediction;
 `selected_iteration` echoes the request so the browser can reject stale results.
+
+For smooth scrubbing the Solve inspector also prefetches end-effector paths:
+when `selected_solve.capabilities.iteration_paths` is true, a catalog request
+with `selection.iteration_paths: k` (separate browser channel) returns a
+top-level `iteration_paths: {start, stop, ee_xyz}` for the aligned chunk of
+snapshots containing k. A chunk holds at most 32768 knots (1024 snapshots at
+N32), coordinates are rounded to 1 µm, and each is computed once per trace. The
+browser keeps at most four chunks plus 64 single snapshots of the selected
+Solve and discards them when the Solve changes. Paths only feed the 3D view;
+plots still use the full selected snapshot.
 A standalone inspection source has no episode. It does not replace the source
 of the Episode inspector or advance the episode cursor.
 
