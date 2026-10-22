@@ -52,12 +52,17 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   const episodeNote = el('p', '', 'plot-message'), episodeCards = el('div', null, 'plot-cards'); episodeContainer.replaceChildren(heading, episodeNote, episodeCards);
   const solveHeading = el('div', null, 'plot-inspector-heading'), pin = button('Pin solve', () => { if (solveOverride) clearInspection(); else { if (state.pinned) runAgain.invalidateAdoption(); state.pin(!state.pinned); pinnedSource = state.pinned ? structuredClone(getSource()?.source) : null; invalidate(); } });
   pin.setAttribute('aria-pressed', 'false'); solveHeading.append(pin, button('+', () => openCatalog('solve'), 'Add solve plot'));
-  const identity = el('p', '', 'solve-identity'), strip = el('div', null, 'sqp-strip'), iterationLabel = el('span'), previous = button('‹', () => stepIteration(-1), 'Previous recorded SQP iteration'), next = button('›', () => stepIteration(1), 'Next recorded SQP iteration'), slider = el('input');
+  // Identity names the solve; badges mark only distinctions that change how
+  // the shown plan is read. Provenance and explanations are in tooltips.
+  const identity = el('p', null, 'solve-identity'), identityText = el('span'), associationBadge = el('span', null, 'solve-badge'), finalOnlyBadge = el('span', 'final only', 'solve-badge'), coldBadge = el('span', 'cold start', 'solve-badge');
+  finalOnlyBadge.title = 'Only the final result is retained; no intermediate SQP records are available.';
+  identity.append(identityText, associationBadge, finalOnlyBadge, coldBadge);
+  const strip = el('div', null, 'sqp-strip'), iterationCell = el('span', null, 'sqp-iteration'), iterationLabel = el('span'), noPathBadge = el('span', 'no path', 'solve-badge'), previous = button('‹', () => stepIteration(-1), 'Previous recorded SQP iteration'), next = button('›', () => stepIteration(1), 'Next recorded SQP iteration'), slider = el('input');
   slider.type = 'range'; slider.step = '1'; slider.min = '0'; slider.setAttribute('aria-label', 'Recorded SQP iteration'); slider.addEventListener('input', () => selectIteration(Number(slider.value)));
-  strip.append(previous, iterationLabel, next, slider);
+  iterationCell.append(iterationLabel, noPathBadge); strip.append(previous, iterationCell, next, slider);
   const final = button('Final result', () => { state.selectIteration(null); reselect(); });
   strip.append(final);
-  const capability = el('p', '', 'plot-message'), runContainer = el('div');
+  const capability = el('p', '', 'plot-message solve-error'), runContainer = el('div');
   const solveCards = el('div', null, 'plot-cards'); solveContainer.replaceChildren(solveHeading, identity, strip, capability, runContainer, solveCards);
   const runAgain = setupSolveRun({ container: runContainer, request,
     onStart: () => { onInspectionStart(); pinnedSource = structuredClone(solveSource()?.source); state.pin(true); invalidate(); },
@@ -241,13 +246,21 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     // Retain only this solve's real final snapshot as labelled display context.
     if (selected?.final_prediction?.ee_xyz?.length) finalContextPrediction = structuredClone(selected.final_prediction);
     solveContainer.classList.toggle('solve-pinned', state.pinned); pin.textContent = solveOverride ? 'Follow episode' : state.pinned ? 'Follow cursor' : 'Pin solve'; pin.setAttribute('aria-label', pin.textContent); pin.title = pin.textContent; pin.setAttribute('aria-pressed', String(state.pinned)); pin.disabled = !selected && !solveOverride;
-    identity.textContent = selected ? `${state.pinned ? 'Pinned · ' : ''}${selected.origin === 'preview' ? 'Preview' : 'Solve'} ${selected.seq ?? selected.id}${Number.isFinite(selected.sim_time_s ?? selected.time_s) ? ` · ${(selected.sim_time_s ?? selected.time_s).toFixed(3)} s` : ''}${metadata.solve?.context?.association ? ` · ${metadata.solve.context.association}` : ''}` : 'No recorded solve associated with the episode cursor.';
-    if (selected) { const source = solveSource()?.source; identity.textContent += ` · ${source?.kind}:${source?.id ?? source?.generation ?? 'current'}${source?.trajectory_index != null ? `/${source.trajectory_index}` : ''}`; }
+    const association = metadata.solve?.context?.association, source = solveSource()?.source;
+    const sourceLabel = source ? `${source.kind}:${source.id ?? source.generation ?? 'current'}${source.trajectory_index != null ? `/${source.trajectory_index}` : ''}` : '';
+    identityText.textContent = selected ? `${selected.origin === 'preview' ? 'Preview' : 'Solve'} ${selected.seq ?? selected.id}${Number.isFinite(selected.sim_time_s ?? selected.time_s) ? ` · ${(selected.sim_time_s ?? selected.time_s).toFixed(3)} s` : ''}` : 'No associated solve';
+    identityText.title = selected ? [state.pinned ? 'Pinned' : 'Follows the episode cursor', sourceLabel].filter(Boolean).join(' · ') : 'No recorded solve is associated with the episode cursor.';
+    // Recorded and explicit associations are the normal case and need no cue.
+    const unusual = selected && association && !['recorded', 'explicit', 'explicit trajectory', 'preview'].includes(association);
+    associationBadge.hidden = !unusual; associationBadge.textContent = unusual ? association.replace(/\s*\(.*\)$/, '') : ''; associationBadge.title = unusual ? `Associated with the episode cursor by: ${association}` : '';
+    coldBadge.hidden = !solveOverride;
     if (solveOverride) {
       const result = solveOverride.result, provenance = selected?.provenance || {}, actualProfile = provenance.solver_profile?.profile?.id || provenance.solver_profile?.id || result.actual_solver_profile?.profile?.id || result.profile_id;
       const originalProfile = provenance.original_solver_profile?.profile?.id || provenance.original_solver_profile?.id;
       const original = provenance.original?.source || result.original?.source;
-      identity.textContent = `Pinned · Fresh / cold · inspection ${solveOverride.source.id} · solver profile ${actualProfile || 'recorded in result'} · original ${original?.kind || 'recorded'}:${original?.id ?? original?.generation ?? 'captured'} Solve ${provenance.original?.solve_id ?? result.original_solve_id ?? 'captured'}${originalProfile ? ` · original solver profile ${originalProfile}` : ''}`;
+      identityText.textContent = `Inspection ${solveOverride.source.id}`;
+      identityText.title = `Pinned · solver profile ${actualProfile || 'recorded in result'} · original ${original?.kind || 'recorded'}:${original?.id ?? original?.generation ?? 'captured'} Solve ${provenance.original?.solve_id ?? result.original_solve_id ?? 'captured'}${originalProfile ? ` · original solver profile ${originalProfile}` : ''}`;
+      coldBadge.title = `Fresh solve from the captured state and reference with a cold optimizer start; not a continuation of the recorded solve. ${identityText.title}`;
     }
     strip.hidden = !records.length; slider.max = String(Math.max(0, records.length - 1)); slider.value = String(Math.max(0, index)); slider.disabled = !records.length; previous.disabled = index <= 0; next.disabled = index >= records.length - 1; final.disabled = state.iteration == null;
     const current = records[index]; iterationLabel.textContent = current ? `${current.index === 0 ? 'Seed' : `SQP ${current.index}`} · ${index + 1} of ${records.length} recorded${current.status ? ` · ${current.status}` : ''}` : 'Final result';
@@ -263,7 +276,10 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     const { prediction, source: predictionSource } = shown;
     if (prediction) { held = prediction; heldKey = finalKey; }
     strip.classList.toggle('loading', shown.status === 'loading'); iterationLabel.title = shown.status === 'loading' ? 'Loading the recorded trajectory of this iteration' : '';
-    capability.textContent = predictionSource === 'final-context' ? 'Final prediction shown; iteration trajectory not recorded.' : !records.length ? 'Only the final result is retained; no intermediate SQP records are available.' : shown.status === 'missing' ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : 'Recorded SQP inspection leaves the episode clock unchanged.';
+    // The faded final plan in the 3D view is the cue for a missing iteration path.
+    finalOnlyBadge.hidden = !selected || records.length > 0;
+    const noPath = predictionSource === 'final-context' || shown.status === 'missing';
+    noPathBadge.hidden = !noPath; noPathBadge.title = predictionSource === 'final-context' ? 'This iteration\'s trajectory was not recorded; the faded line is the solve\'s final plan, shown as context.' : noPath ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : '';
     const active = Boolean(selected) && (getView().inspectSolve !== false || state.pinned);
     const key = JSON.stringify([solveSource()?.source, selected?.id, state.iteration, prediction, predictionSource, active, state.pinned]);
     if (key !== lastPrediction) { lastPrediction = key; onPrediction({ active, prediction: prediction || null, predictionSource, pinned: state.pinned, solve: selected, iteration: state.iteration }); }
@@ -362,6 +378,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       episodeNote.textContent = metadata.episode?.context?.episode_available === false ? 'No MPC episode' : '';
       // Initial data should appear immediately; subsequent streaming data and
       // changing ranges share the same bounded redraw cadence.
+      capability.textContent = '';
       renderSolve();
       renderCards(force || !receivedData); receivedData = true; if (catalogDialog.isOpen) renderCatalog();
     } catch (error) { if (alive()) { episodeNote.textContent = error.message; capability.textContent = error.message; } }

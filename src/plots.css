@@ -53,7 +53,11 @@
 /* Bottom-edge grip: drag to change this placement's plot height. */
 .plot-resize-handle { position: absolute; left: 0; right: 0; bottom: -3px; height: 7px; cursor: ns-resize; touch-action: none; z-index: 1; }
 .plot-resize-handle:hover, .plot-resize-handle:active { background: linear-gradient(transparent 2px, #57c7dc80 2px, #57c7dc80 4px, transparent 4px); }
-.solve-identity { font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.solve-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+/* A short cue for a distinction that changes how the shown plan is read; the reason is its tooltip. */
+.solve-badge { display: inline-block; padding: 0 6px; border: 1px solid #4a6177; border-radius: 9px; color: #b8cad9; font: 500 9px/15px 'IBM Plex Mono', monospace; white-space: nowrap; cursor: help; }
+.solve-badge[hidden] { display: none; }
+.sqp-iteration { display: flex; justify-content: center; align-items: center; gap: 6px; }
 .solve-pinned { border: 1px solid #986366; background: #392b31; padding: 10px; border-radius: 6px; }
 .solve-pinned .solve-identity { color: #edb6b9; font-weight: 600; }
 .solve-pinned .plot-inspector-heading button[aria-pressed='true'] { border-color: var(--pin-red); color: #f0c9cc; background: #51343b; }

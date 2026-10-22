@@ -6,6 +6,7 @@ import { plotDOM } from './plot-dom-test-helper.js';
 const jointDef = { id: 'episode.joint', scope: 'episode', title: 'Joint data', inputs: { joint: { type: 'joint', default: 'arm_right_1_joint', label: 'Joint' }, quantity: { type: 'choice', default: 'q', choices: ['q', 'qd'] } } };
 const summaryDef = { id: 'episode.summary', scope: 'episode', title: 'Episode summary', inputs: {} };
 const solveDef = { id: 'solve.trace', scope: 'solve', title: 'SQP trace', inputs: {} };
+const badge = (root, text) => root.querySelectorAll('.solve-badge').find(item => item.textContent === text);
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
 
 test('hidden Solve inspector does not probe capabilities or evaluate Solve plots; reopening checks the current selection', async () => {
@@ -124,21 +125,21 @@ test('pinned actual SQP iteration persists while episode advances; ranges and so
   try {
     const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => view, onSeek: () => seeks++, onPrediction: p => picked.push(p), request, storage: null });
     ui.update(); await flush(); assert.equal(ui.snapshot.selectedSolve.seq, '7');
-    await find(solve, 'button', 'Pin solve').emit('click'); assert(solve.className.includes('solve-pinned')); assert(solve.querySelector('.solve-identity').textContent.includes('Pinned'));
+    await find(solve, 'button', 'Pin solve').emit('click'); assert(solve.className.includes('solve-pinned')); assert(solve.querySelector('.solve-identity').children[0].title.includes('Pinned'));
     const slider = solve.querySelector('input'); slider.value = '1'; await slider.emit('input'); assert.equal(ui.snapshot.iteration, 3); assert.deepEqual(picked.at(-1).prediction, { ee_xyz: [[1, 2, 3]] }); assert.equal(picked.at(-1).predictionSource, 'final-context'); assert.equal(seeks, 0);
-    assert.equal(solve.querySelector('.plot-message').textContent, 'Final prediction shown; iteration trajectory not recorded.');
+    assert.equal(badge(solve, 'no path').hidden, false); assert(badge(solve, 'no path').title.includes('final plan'));
     view.cursor = 12; await ui.refresh(); assert.equal(ui.snapshot.selectedSolve.seq, '7'); assert.equal(ui.snapshot.iteration, 3); assert.equal(requests.at(-1).selection.solve_seq, '7'); assert.equal(picked.at(-1).predictionSource, 'final-context'); assert.equal(view.cursor, 12);
     view.aggregate = { start: 5, end: null }; await ui.refresh(); assert.deepEqual(requests.at(-1).range, { mode: 'window', cursor_s: 12, start_s: 5 });
     // A real recorded seed snapshot takes precedence over the final context.
     slider.value = '0'; await slider.emit('input'); assert.equal(ui.snapshot.iteration, 0); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[0, 0, 0]]); assert.equal(picked.at(-1).predictionSource, 'iteration'); assert.equal(view.cursor, 12); assert.equal(seeks, 0);
-    assert(!solve.querySelector('.plot-message').textContent.includes('Final prediction shown'));
+    assert.equal(badge(solve, 'no path').hidden, true);
     assert.equal(ui.snapshot.selectedSolve.iterations[1].prediction, undefined);
     assert.equal(ui.snapshot.selectedSolve.iterations[1].has_prediction, false);
     assert(requests.filter(item => item.context === 'solve').some(item => item.selection.iteration === 3));
     await find(solve, 'button', 'Final result').emit('click'); assert.equal(ui.snapshot.iteration, null); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[1, 2, 3]]); assert.equal(picked.at(-1).predictionSource, 'final');
     await find(solve, 'button', 'Follow cursor').emit('click'); await ui.refresh(); assert.equal(ui.snapshot.selectedSolve.seq, '12'); assert.equal(ui.snapshot.pinned, false);
     source = { source: { kind: 'replay', id: 'new', trajectory_index: 0 } }; ui.update(); await flush(); assert.equal(ui.snapshot.pinned, false); assert.equal(seeks, 0);
-    assert.equal(find(solve, 'button', 'Run again').disabled, true); assert(solve.querySelectorAll('p').some(item => item.textContent.includes('active solver profile'))); ui.destroy();
+    assert.equal(find(solve, 'button', 'Run again').disabled, true); assert(find(solve, 'button', 'Run again').title.includes('active solver profile')); ui.destroy();
   } finally { globalThis.document = original; }
 });
 
@@ -179,7 +180,7 @@ test('metrics-only SQP inspection without a final prediction stays unavailable',
     const slider = solve.querySelector('input'); slider.value = '0'; await slider.emit('input');
     assert.equal(ui.snapshot.iteration, 2); assert.equal(picked.at(-1).active, true);
     assert.equal(picked.at(-1).prediction, null); assert.equal(picked.at(-1).predictionSource, null);
-    assert.equal(solve.querySelector('.plot-message').textContent, 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.');
+    assert.equal(badge(solve, 'no path').hidden, false); assert.equal(badge(solve, 'no path').title, 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.');
     assert.equal(view.cursor, 2); assert.equal(selected.iterations[0].prediction, undefined);
     ui.destroy();
   } finally { globalThis.document = original; }
@@ -312,11 +313,11 @@ test('fresh inspection pins only Solve, hydrates true snapshots safely, and leav
     assert.deepEqual(requests.find(item => item.path === '/api/solve-inspections').body, { source: { kind: 'live', generation: 4 }, selection: { solve_id: 'original-7' }, profile_id: 'candidate', sqp_iters: 8 });
     const [id, timer] = [...timers].find(([, value]) => value.delay === 200); timers.delete(id); await timer.fn();
     await ui.refresh(); assert.deepEqual(ui.snapshot.solveSource, { kind: 'inspection', id: 'fresh1' }); assert.equal(ui.snapshot.pinned, true);
-    assert(solve.querySelector('.solve-identity').textContent.includes('Fresh / cold')); assert(solve.querySelector('.solve-identity').textContent.includes('solver profile candidate')); assert(solve.querySelector('.solve-identity').textContent.includes('original solver profile main'));
+    assert.equal(badge(solve, 'cold start').hidden, false); assert.equal(solve.querySelector('.solve-identity').children[0].textContent, 'Inspection fresh1'); assert(badge(solve, 'cold start').title.includes('solver profile candidate')); assert(badge(solve, 'cold start').title.includes('original solver profile main'));
     const slider = solve.querySelector('input'); slider.value = '1'; await slider.emit('input'); const pending = ui.refresh(); await flush();
     // The final trajectory already on screen stays while the snapshot loads; no context message flickers.
     assert.equal(ui.snapshot.iteration, 1); assert.equal(picked.at(-1).predictionSource, 'held'); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[2, 0, 1], [2, 1, 1]]);
-    assert(!solve.querySelector('.plot-message').textContent.includes('Final prediction shown')); assert(solve.querySelector('.sqp-strip').className.includes('loading'));
+    assert.equal(badge(solve, 'no path').hidden, true); assert(solve.querySelector('.sqp-strip').className.includes('loading'));
     slider.value = '2'; await slider.emit('input'); releaseFirst(); await pending; await ui.refresh();
     assert.equal(ui.snapshot.iteration, 2); assert.equal(ui.snapshot.pinned, true); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[2, 0, 1], [2, 1, 1]]); assert.equal(picked.at(-1).predictionSource, 'iteration');
     assert.equal(ui.snapshot.selectedSolve.iterations[2].prediction, undefined); // only the selected snapshot is transported
@@ -346,7 +347,7 @@ test('changing between real SQP snapshots keeps the previous snapshot visible wh
     const slider = solve.querySelector('input'); slider.value = '1'; await slider.emit('input'); await ui.refresh();
     assert.equal(ui.snapshot.selectedSolve.selected_iteration, 1); assert.deepEqual(ui.snapshot.selectedSolve.final_prediction, {}); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[1, 0, 1], [1, 1, 1]]);
     slider.value = '2'; await slider.emit('input'); const pending = ui.refresh(); await flush();
-    assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[1, 0, 1], [1, 1, 1]]); assert.equal(picked.at(-1).predictionSource, 'held'); assert.equal(solve.querySelector('.plot-message').textContent, 'Recorded SQP inspection leaves the episode clock unchanged.');
+    assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[1, 0, 1], [1, 1, 1]]); assert.equal(picked.at(-1).predictionSource, 'held'); assert.equal(badge(solve, 'no path').hidden, true);
     assert(solve.querySelector('.sqp-strip').className.includes('loading'));
     assert.deepEqual(ui.snapshot.selectedSolve.final_prediction, {}); assert.equal(ui.snapshot.selectedSolve.selected_iteration, 1);
     releaseSecond(); await pending;
