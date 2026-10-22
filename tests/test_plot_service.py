@@ -66,6 +66,17 @@ class SourceTests(unittest.TestCase):
         self.assertIsNone(inspect_source(raw, {}, dict(cursor_s=.5))[0])
         self.assertEqual(inspect_source(raw, dict(trajectory_index=0), dict(cursor_s=1.5))[0]["id"], "saved-plan")
 
+    def test_replay_reference_interpolates_on_its_own_clock_for_long_recordings(self):
+        times = [10 + i*.001 for i in range(20001)]
+        scene = dict(trajectories=[dict(kind="recorded", time_s=times, q=[[0.]*7]*len(times),
+                                        reference_time_s=[10., 30.], reference_xyz=[[0., 0., 0.], [2., 4., 6.]])])
+        started = time.monotonic()
+        states = scene_records(scene)["states"]
+        self.assertLess(time.monotonic()-started, 5)
+        self.assertEqual(states[0]["target_xyz"], [0., 0., 0.])
+        self.assertEqual([round(v, 9) for v in states[10000]["target_xyz"]], [1., 2., 3.])
+        self.assertEqual(states[-1]["sim_time_s"], times[-1]-10)
+
     def test_recorded_association_and_sparse_iteration_records(self):
         first = dict(seq=1, sim_time_s=0, q=[[0]*7], diagnostics=dict(
             pcg_iters=[[5], [0]], min_merit=[[12.]], step_size=[[-1.]]))

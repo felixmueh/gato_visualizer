@@ -160,6 +160,15 @@ def scene_records(scene):
             raw["plans"].append(plan)
             plan["joint_limits"] = raw["joint_limits"]
         elif trajectory.get("kind") == "recorded":
+            # References retain their own clock, rather than positional zip.
+            # Interpolate each axis once: per-state column rebuilding was
+            # quadratic and timed out the plot worker on long recordings.
+            reference_time, reference = trajectory.get("reference_time_s"), trajectory.get("reference_xyz")
+            targets = None
+            if reference_time is not None and reference is not None:
+                import numpy as np
+                targets = np.stack([np.interp(trajectory.get("time_s", []), reference_time,
+                                              [p[axis] for p in reference]) for axis in range(3)], axis=1).tolist()
             for i, time_s in enumerate(trajectory.get("time_s", [])):
                 state = dict(type="state", sim_time_s=time_s-origin, recorded_time_s=time_s,
                              trajectory_index=trajectory_index)
@@ -167,12 +176,8 @@ def scene_records(scene):
                     values = trajectory.get(field)
                     if values is not None and i < len(values):
                         state[field] = values[i]
-                # References retain their own clock, rather than positional zip.
-                reference_time, reference = trajectory.get("reference_time_s"), trajectory.get("reference_xyz")
-                if reference_time is not None and reference is not None:
-                    import numpy as np
-                    state["target_xyz"] = [float(np.interp(time_s, reference_time,
-                                                          [p[axis] for p in reference])) for axis in range(3)]
+                if targets is not None:
+                    state["target_xyz"] = targets[i]
                 raw["states"].append(state)
             if trajectory.get("torque_nm") is not None:
                 raw.setdefault("torque_samples", []).extend(
