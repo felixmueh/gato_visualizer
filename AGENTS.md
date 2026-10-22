@@ -143,6 +143,11 @@ expected, as on the real robot. A plant/predictor difference is a supported
 configuration, not a defect. Label which model each displayed element uses and
 keep the difference visible in metadata.
 
+The supplied arm friction, damping and armature values are questionable.
+Develop with them, keep coefficients configurable, and make plant/predictor
+coefficient mismatch easy to set up for robustness checks; identified values
+come later and matter for tuning, not for the design.
+
 ## What the display claims
 
 Label what each element shows: a prediction is not executed motion, and
