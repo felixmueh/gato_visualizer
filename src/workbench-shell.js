@@ -89,7 +89,7 @@ export function workbenchShell(icon) {
         <details class="source-section"><summary>Source</summary><span id="mode-label">TRAJECTORY REPLAY</span><div class="connection"><i></i><span id="connection-label">Connecting</span></div><div class="source-name">tiago_mpc <span id="source-commit"></span></div><p id="source-run"></p><p id="live-source" class="settings-note source-live"></p></details>
       </section>
       <section id="inspection-solve" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-solve" hidden><div id="solve-plots"></div></section>
-      <section id="inspection-joints" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-joints" hidden><div class="section-heading"><h2>Right arm</h2><span class="unit-label">NATIVE</span></div><div class="joint-list" id="joint-list"></div></section>
+      <section id="inspection-joints" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-joints" hidden><div class="section-heading"><h2 title="Right arm, native joint values">Right arm</h2><div class="joint-view-toggle" role="group" aria-label="Joints presentation"><button id="joint-view-gauges" type="button" title="Limit gauges">Gauges</button><button id="joint-view-numbers" type="button" title="Exact values">Numbers</button></div></div><div class="joint-list" id="joint-list" data-view="gauges"></div></section>
     </aside>
   </div>`;
 }

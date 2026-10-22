@@ -31,12 +31,14 @@ export function sampleTelemetry(trajectory, time) {
 // Per joint: a position range bar (marker, URDF end ticks, shaded near bands)
 // and velocity/torque utilisation bars to a 100 % tick that overflow past it.
 // The reference is the URDF limit; colours follow the 3D tint's states.
-// Exact values, bounds and distances are in each gauge's tooltip.
+// Exact values, bounds and distances are in each gauge's tooltip, which appears
+// at once on hover (see createGaugeTooltip). The Numbers view shows the same
+// values as text in the same cells, coloured by the same states.
 const SCALE = 0.86; // Share of a utilisation bar up to its 100 % tick; the rest shows overflow.
 const POSITION_INSET = 0.07; // Space beyond each position bound for a marker beyond it.
 const MEANING = { position: 'Native joint position', velocity: 'Recorded joint velocity' };
-const DIGITS = { position: 3, velocity: 3, torque: 2 };
-const signed = (value, digits) => `${value < 0 ? '−' : '+'}${Math.abs(value).toFixed(digits)}`;
+export const DIGITS = { position: 3, velocity: 3, torque: 2 };
+export const signed = (value, digits) => `${value < 0 ? '−' : '+'}${Math.abs(value).toFixed(digits)}`;
 const percent = value => `${Math.round(value * 100)} %`;
 
 export function headingTitle(settings = DEFAULT_LIMIT_USE) {
@@ -44,6 +46,27 @@ export function headingTitle(settings = DEFAULT_LIMIT_USE) {
 }
 
 function el(doc, tag, className) { const item = doc.createElement(tag); if (className) item.className = className; return item; }
+
+export const JOINT_VIEWS = Object.freeze(['gauges', 'numbers']);
+export const JOINT_VIEW_KEY = 'joint-view-v1';
+export function loadJointView(storage) {
+  try { const view = storage?.getItem(JOINT_VIEW_KEY); return JOINT_VIEWS.includes(view) ? view : 'gauges'; } catch { return 'gauges'; }
+}
+export function saveJointView(storage, view) {
+  try { storage?.setItem(JOINT_VIEW_KEY, view); } catch { /* per-viewer convenience only */ }
+}
+
+// Segmented Gauges/Numbers control. The choice lives on the container as
+// data-view (CSS shows one presentation) and is remembered per viewer.
+export function setupJointViewToggle({ container, buttons, storage = globalThis.localStorage }) {
+  const apply = view => {
+    container.dataset.view = view;
+    for (const [name, button] of Object.entries(buttons)) { button.setAttribute('aria-pressed', String(name === view)); button.classList?.toggle('active', name === view); }
+  };
+  for (const [name, button] of Object.entries(buttons)) button.addEventListener('click', () => { apply(name); saveJointView(storage, name); });
+  apply(loadJointView(storage));
+  return apply;
+}
 
 function createGauge(doc, quantity) {
   const gauge = el(doc, 'span', 'limit-gauge'); gauge.dataset.quantity = quantity;
@@ -70,7 +93,11 @@ export function createJointTable(container, names) {
   const heading = el(doc, 'div', 'joint-row joint-columns');
   // Colour is the cue; its meaning is a hover away.
   heading.title = headingTitle();
-  for (const text of ['JOINT', 'POS', 'VEL', 'TORQUE']) heading.append(Object.assign(el(doc, 'span'), { textContent: text }));
+  for (const [text, unit] of [['JOINT'], ['POS', 'rad'], ['VEL', 'rad/s'], ['TORQUE', 'N m']]) {
+    const cell = Object.assign(el(doc, 'span'), { textContent: text });
+    if (unit) cell.append(Object.assign(el(doc, 'small', 'joint-unit'), { textContent: ` ${unit}` }));
+    heading.append(cell);
+  }
   container.replaceChildren(heading);
   const rows = names.map((name, i) => {
     const row = el(doc, 'div', 'joint-row');
@@ -79,12 +106,13 @@ export function createJointTable(container, names) {
     container.append(row); return gauges;
   });
   rows.heading = heading;
+  rows.tooltip = createGaugeTooltip(container);
   return rows;
 }
 
 const range = (bounds, unit) => `${signed(bounds[0], 3)} … ${signed(bounds[1], 3)} ${unit}`;
 
-function gaugeTitle(quantity, value, use, { limits, mpcBounds, index, torqueKind }) {
+export function gaugeTip(quantity, value, use, { limits, mpcBounds, index, torqueKind }) {
   const meaning = quantity === 'torque' ? (torqueKind === 'predicted' ? 'Predicted actuator torque' : 'Last applied actuator torque') : MEANING[quantity];
   const unit = { position: 'rad', velocity: 'rad/s', torque: 'Nm' }[quantity];
   const parts = [Number.isFinite(value) ? `${meaning} ${signed(value, DIGITS[quantity])} ${unit}` : `${meaning} unavailable`];
@@ -102,9 +130,10 @@ function updateGauge(parts, quantity, value, context) {
   const { gauge } = parts;
   gauge.dataset.state = use ? use.state : Number.isFinite(value) ? 'unbounded' : 'missing';
   parts.track.hidden = !use;
-  parts.text.textContent = use ? '' : Number.isFinite(value) ? signed(value, DIGITS[quantity]) : '—';
-  gauge.title = gaugeTitle(quantity, value, use, context);
-  gauge.setAttribute('aria-label', use ? `${quantity} ${percent(use.utilisation)} of URDF limit, ${use.state}` : `${quantity} ${parts.text.textContent === '—' ? 'unavailable' : parts.text.textContent}`);
+  // The text is the Numbers view's cell; the Gauges view shows it only where no bar can be drawn.
+  parts.text.textContent = Number.isFinite(value) ? signed(value, DIGITS[quantity]) : '—';
+  gauge.dataset.tip = gaugeTip(quantity, value, use, context);
+  gauge.setAttribute('aria-label', use ? `${quantity} ${parts.text.textContent}, ${percent(use.utilisation)} of URDF limit, ${use.state}` : `${quantity} ${parts.text.textContent === '—' ? 'unavailable' : parts.text.textContent}`);
   if (!use) return;
   const near = settings.limit_near_percent / 100;
   if (quantity === 'position') {
@@ -127,4 +156,29 @@ export function updateJointTable(rows, { q, qd, torque, limits, mpcBounds = null
     const values = [q?.[index], qd?.[index], torque?.[index]];
     gauges.forEach((parts, j) => updateGauge(parts, LIMIT_QUANTITIES[j], values[j], { limits, mpcBounds, index, torqueKind, settings }));
   });
+  rows.tooltip?.refresh();
+}
+
+// One shared tooltip, shown at the pointer without the native title delay.
+// It reads each gauge's data-tip, so it follows the playback cursor while
+// hovered; its border takes the gauge's state like the 3D tint's tooltip.
+export function createGaugeTooltip(container) {
+  const doc = container.ownerDocument, tip = el(doc, 'div', 'limit-tint-tooltip gauge-tooltip');
+  tip.setAttribute('role', 'tooltip'); tip.hidden = true;
+  doc.body?.append(tip);
+  let current = null, x = 0, y = 0;
+  const place = () => {
+    const width = tip.getBoundingClientRect?.().width ?? 0, height = tip.getBoundingClientRect?.().height ?? 0;
+    const view = doc.defaultView, room = view?.innerWidth ?? Infinity, roomY = view?.innerHeight ?? Infinity;
+    tip.style.left = `${Math.max(4, x + 14 + width > room ? x - 14 - width : x + 14)}px`;
+    tip.style.top = `${Math.max(4, y + 14 + height > roomY ? y - 14 - height : y + 14)}px`;
+  };
+  const show = () => {
+    if (!current?.dataset.tip) { tip.hidden = true; return; }
+    tip.textContent = current.dataset.tip; tip.dataset.state = current.dataset.state; tip.hidden = false; place();
+  };
+  const target = event => event.target?.closest?.('.limit-gauge') ?? null;
+  container.addEventListener?.('pointermove', event => { current = target(event); x = event.clientX; y = event.clientY; show(); });
+  container.addEventListener?.('pointerleave', () => { current = null; tip.hidden = true; });
+  return { element: tip, refresh() { if (current) show(); }, show: (gauge, at = {}) => { current = gauge; x = at.x ?? 0; y = at.y ?? 0; show(); } };
 }

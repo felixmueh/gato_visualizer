@@ -16,7 +16,7 @@ import { setupPlotInspection } from "./plot-inspection.js";
 import { setupWorkbench } from "./workbench-ui.js";
 import { setupSidebarResize } from "./sidebar-width.js";
 import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
-import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-telemetry.js";
+import { createJointTable, updateJointTable, sampleTelemetry, setupJointViewToggle } from "./joint-telemetry.js";
 import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartingScene } from "./replay-library.js";
 import { setupTargetGizmo } from "./target-gizmo.js";
 import { setupViewCube } from "./view-cube.js";
@@ -557,6 +557,7 @@ async function start() {
     limitTint = createLimitTint({ robot, jointNames: data.joint_names, camera, element: renderer.domElement, tooltip: $("limit-tint-tooltip") });
     limitTint.setEnabled(limitTintEnabled); limitTint.setSettings(limitUse);
     jointCells = createJointTable($("joint-list"), data.joint_names);
+    setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
     populateReplay(data, {name: isStartingScene(data) ? 'Starting pose' : 'Default recording'});
     robot.updateMatrixWorld(true);
     robotBounds = new THREE.Box3().setFromObject(robot);

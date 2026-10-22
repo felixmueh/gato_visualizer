@@ -324,9 +324,15 @@ ticks at the URDF bounds and shaded near bands, and velocity and torque bars of
 |value| up to a 100 % tick, overflowing past it when beyond. Bars use one colour
 per quantity while inside, amber when near, red at the limit and red outlined
 beyond (the states of [Presentation settings](docs/presentation.md#joint-limit-states)).
-Hover a bar for the exact native value, the URDF limit, the state with the
-distance to the bound and, when known, the MPC bound. Missing telemetry displays
-“—”; a value without a known limit shows as a number. Recordings can carry
+A **Gauges / Numbers** switch in the tab header swaps the bars for a compact
+table of the same cells: position (rad), velocity (rad/s) and torque (N m) as
+signed numbers in the same state colours. Both views read the same telemetry
+at the playback cursor; the choice is remembered per viewer (browser
+`localStorage`, default Gauges). Hovering a bar or number shows a tooltip at
+once, without the native delay: the exact native value, the URDF limit, the
+utilisation, the state with the distance to the bound and, when known, the MPC
+bound. Missing telemetry displays “—”; a value without a known limit shows as a
+number. Recordings can carry
 their historical limits, otherwise the current display URDF supplies them. Recorded torque
 holds between its saved command timestamps; a prediction's final knot has no
 torque. Live torque reports the last command actually applied to the plant.

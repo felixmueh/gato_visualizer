@@ -318,8 +318,25 @@ a {
 .limit-gauge-over { position: absolute; top: -1px; bottom: -1px; background: repeating-linear-gradient(135deg, var(--limit-beyond) 0 2px, var(--limit-beyond-edge) 2px 3px); }
 .limit-gauge-marker { position: absolute; top: -3px; bottom: -3px; width: 3px; margin-left: -1.5px; border-radius: 1px; background: var(--gauge); }
 .limit-gauge[data-state='beyond'] .limit-gauge-marker, .limit-gauge[data-state='beyond'] .limit-gauge-fill { box-shadow: 0 0 0 1px var(--limit-beyond-edge); }
+.limit-gauge-track:not([hidden]) ~ .limit-gauge-text { display: none; }
 .limit-gauge-text { display: block; font: 10px/12px "IBM Plex Mono", monospace; color: #7f93a8; text-align: center; font-variant-numeric: tabular-nums; }
 .limit-gauge[data-state='unbounded'] .limit-gauge-text { color: #bdd0df; }
+/* Numbers view: the same cells as text, in the state colours. */
+.joint-list[data-view='numbers'] .limit-gauge-track { display: none; }
+.joint-list[data-view='numbers'] .limit-gauge-text { display: block; color: #bdd0df; }
+.joint-list[data-view='numbers'] .limit-gauge[data-state='near'] .limit-gauge-text { color: var(--limit-near); }
+.joint-list[data-view='numbers'] .limit-gauge[data-state='at'] .limit-gauge-text { color: var(--limit-at); }
+.joint-list[data-view='numbers'] .limit-gauge[data-state='beyond'] .limit-gauge-text { color: var(--limit-at); text-decoration: underline; text-underline-offset: 2px; }
+.joint-list[data-view='numbers'] .limit-gauge[data-state='missing'] .limit-gauge-text { color: #6e8199; }
+.joint-list[data-view='numbers'] .joint-columns { font-size: 8px; }
+.joint-list:not([data-view='numbers']) .joint-unit { display: none; }
+.joint-unit { color: #5f7389; font-size: 7px; text-transform: none; }
+.joint-view-toggle { display: inline-flex; gap: 2px; margin-left: auto; padding: 2px; border-radius: 4px; background: #1f2d3c; }
+.joint-view-toggle button { padding: 3px 7px; font-size: 10px; color: #8fa4b9; background: transparent; border-radius: 3px; }
+.joint-view-toggle button[aria-pressed='true'] { background: #243e47; color: #86ddd5; }
+.limit-tint-tooltip.gauge-tooltip { position: fixed; z-index: 60; border-color: #4a6a86; color: #dbe7f2; }
+.limit-tint-tooltip.gauge-tooltip[data-state='near'] { border-color: var(--limit-near); color: #ffe7bd; }
+.limit-tint-tooltip.gauge-tooltip[data-state='at'], .limit-tint-tooltip.gauge-tooltip[data-state='beyond'] { border-color: var(--limit-at); color: #ffd9d9; }
 .source-section {
   margin-top: auto;
   padding-top: 1px;
