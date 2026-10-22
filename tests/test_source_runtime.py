@@ -290,7 +290,8 @@ class BuilderTests(unittest.TestCase):
             data = json.loads(result.stdout)
             self.assertFalse(data["compatible"])
             self.assertEqual(data["selection"]["mpc_root"], str(root))
-            self.assertEqual(data["selection"]["python"], sys.executable)
+            # Selection normalizes ".." (os.path.abspath) but keeps the venv symlink.
+            self.assertEqual(data["selection"]["python"], os.path.abspath(sys.executable))
             self.assertIn("source", data)
 
     def test_cli_invalid_source_emits_json_without_source_imports(self):
