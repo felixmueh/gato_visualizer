@@ -74,9 +74,9 @@
 .timeline-drop-ready { outline: 1px dashed #57c7dc66; outline-offset: -1px; border-radius: 4px; background: #57c7dc08; }
 .timeline-drop-ready .timeline-plot-rows:empty { min-height: 28px; }
 .timeline-drop-ready.timeline-drop-over { outline-color: #57c7dc; background: #57c7dc14; }
-.timeline-plot-hint.resizable { cursor: ns-resize; padding: 0 0 2px; min-height: 12px; touch-action: none; border-top: 2px solid transparent; }
-.timeline-plot-hint.resizable:hover { border-top-color: #57c7dc80; }
-.timeline-plot-rows { display: grid; gap: 5px; max-height: 290px; overflow-y: auto; }
+.timeline-plot-hint button[hidden] { display: none; }
+/* The rows are exactly as tall as their plots; JS caps them at the room the viewport can give up. */
+.timeline-plot-rows { display: grid; gap: 5px; overflow-y: auto; }
 .timeline-plot-rows .plot-card { border: 0; padding: 4px 0; border-bottom: 1px solid #354557; border-radius: 0; }
 .timeline-plot-rows .plot-card-heading { padding: 0 5px; margin-bottom: 0; align-items: center; }
 /* Title, unit and legend share one row above each timeline plot. */

@@ -129,7 +129,7 @@ const linkedGraphContainer = $('timeline-linked-graphs');
 expandedTimeline.bindSurface(linkedGraphContainer);
 let inspectedPrediction;
 const plotInspection = setupPlotInspection({
-  episodeContainer: $('episode-plots'), solveContainer: $('solve-plots'), bottomContainer: linkedGraphContainer,
+  episodeContainer: $('episode-plots'), solveContainer: $('solve-plots'), bottomContainer: linkedGraphContainer, viewport: $('viewport'), stripHandle: $('timeline-strip-resize'),
   getSource: () => live?.mode === 'live'
     ? { source: { kind: 'live', generation: live.history.generation }, revision: [live.history.cursor, displayedLivePlan?.seq, displayedLivePlan?.settings_version, displayedLivePlan?.origin], solveSeq: displayedLivePlan?.origin === 'preview' ? `preview:${displayedLivePlan.seq}` : null, label: 'Recorded Live MPC' }
     : trajectory ? { source: { kind: 'replay', id: replayLibrary?.selectedId || 'default', trajectory_index: data?.trajectories?.indexOf(trajectory) ?? 0, ...(data?.source?.plot_revision ? { revision: data.source.plot_revision } : {}) }, revision: data?.source?.plot_revision || trajectory.id, label: trajectory.label || 'Imported recording' } : null,

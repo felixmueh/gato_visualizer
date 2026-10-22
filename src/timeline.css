@@ -26,20 +26,25 @@
 .timeline-mpc-key { color: #ed716c; }
 .timeline-simulation-key { color: #e8c65a; }
 
-/* Aggregate window: dim what is excluded; handles are open (hollow) at an unbounded data edge. */
+/* The panel's top edge resizes the docked plots (look shared with the sidebar handles). */
+.timeline-strip-resize { position: absolute; top: -4px; left: 0; right: 0; height: 7px; cursor: ns-resize; touch-action: none; z-index: 16; }
+.timeline-strip-resize:hover, .timeline-strip-resize.dragging { background: linear-gradient(transparent 2px, #57c7dc80 2px, #57c7dc80 4px, transparent 4px); }
+
+/* Aggregate window: dim what is excluded. Handles share the playhead's white
+   so they read as draggable; at an unbounded data edge they are open (hollow, muted). */
 .timeline-window-shade { position: absolute; top: 39px; height: 25px; background: #0b1520b8; pointer-events: none; }
 .timeline-window-handle { position: absolute; top: 33px; height: 37px; width: 11px; transform: translateX(-50%); cursor: ew-resize; z-index: 1; }
-.timeline-window-handle::before { content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: #68d9ce; box-shadow: 0 0 0 1px #142130; }
-.timeline-window-handle[data-side='start']::after, .timeline-window-handle[data-side='end']::after { content: ''; position: absolute; top: 0; width: 6px; height: 3px; background: #68d9ce; }
+.timeline-window-handle::before { content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: #eefbff; box-shadow: 0 0 0 1px #142130; }
+.timeline-window-handle[data-side='start']::after, .timeline-window-handle[data-side='end']::after { content: ''; position: absolute; top: 0; width: 6px; height: 3px; background: #eefbff; }
 .timeline-window-handle[data-side='start']::after { left: 5px; }
 .timeline-window-handle[data-side='end']::after { right: 5px; }
-.timeline-window-handle.open::before, .timeline-window-handle.open::after { background: #5c7488; }
-.timeline-window-handle.open { opacity: .8; }
+.timeline-window-handle.open::before { background: #142130; box-shadow: inset 0 0 0 1px #eefbff99, 0 0 0 1px #142130; }
+.timeline-window-handle.open::after { background: #eefbff99; }
 /* Open handles rest just inside the data edge so they stay grabbable. */
 .timeline-window-handle.open[data-side='start'] { transform: translateX(-4px); }
 .timeline-window-handle.open[data-side='end'] { transform: translateX(-7px); }
-.timeline-window-handle:hover::before, .timeline-window-handle.dragging::before, .timeline-window-handle:hover::after, .timeline-window-handle.dragging::after { background: #9ff0e7; }
-.timeline-window-handle.open:hover, .timeline-window-handle.open.dragging { opacity: 1; }
+.timeline-window-handle:hover::before, .timeline-window-handle.dragging::before, .timeline-window-handle:hover::after, .timeline-window-handle.dragging::after { background: #fff; }
+.timeline-window-handle.open:hover::before, .timeline-window-handle.open.dragging::before { background: #142130; box-shadow: inset 0 0 0 1px #fff, 0 0 0 1px #142130; }
 .timeline-window-handle[hidden] { display: none; }
 .timeline-zoom-controls .timeline-window-clear { display: inline-flex; align-items: center; justify-content: center; color: #68d9ce; border-color: #3d6a72; }
 .timeline-zoom-controls .timeline-window-clear[hidden] { display: none; }

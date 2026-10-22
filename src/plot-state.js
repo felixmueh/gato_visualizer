@@ -2,9 +2,8 @@
 export function createPlotState(saved = {}, persist = () => {}) {
   let sequence = 0;
   const instances = (saved.instances || []).filter(item => item.id && item.plot_id && ['episode', 'solve'].includes(item.context)).map(item => ({ ...item, parameters: { ...item.parameters } }));
-  let timelineHeight = plotHeight(saved.timelineHeight, 60, 900);
   let sourceKey, pinned = null, selected = null, iteration = null;
-  const save = () => persist({ instances, ...(timelineHeight ? { timelineHeight } : {}) });
+  const save = () => persist({ instances });
   const find = id => instances.find(item => item.id === id);
   return {
     instances,
@@ -15,11 +14,12 @@ export function createPlotState(saved = {}, persist = () => {}) {
     duplicate(id) { const original = find(id); if (!original) return; const item = { ...structuredClone(original), id: `plot-${Date.now().toString(36)}-${++sequence}`, timeline: false }; instances.splice(instances.indexOf(original) + 1, 0, item); save(); return item; },
     remove(id) { const index = instances.findIndex(item => item.id === id); if (index >= 0) instances.splice(index, 1); save(); },
     configure(id, parameters, display) { const item = find(id); if (item) { item.parameters = structuredClone(parameters); if (display !== undefined) item.display = displayLimits(display); } save(); },
-    /** Plot heights per placement are presentation only, like display limits. */
-    resize(id, placement, height, persistNow = true) { const item = find(id), value = plotHeight(height); if (!item || !['sidebar', 'timeline'].includes(placement)) return; item.sizes = { ...item.sizes, [placement]: value }; if (persistNow) save(); },
+    /** Plot heights per placement are presentation only, like display limits.
+     * An undefined height restores the placement's default. */
+    resize(id, placement, height, persistNow = true) { const item = find(id), value = plotHeight(height); if (!item || !['sidebar', 'timeline'].includes(placement)) return; const sizes = { ...item.sizes, [placement]: value }; if (value === undefined) delete sizes[placement]; item.sizes = sizes; if (persistNow) save(); },
     height(id, placement) { return plotHeight(find(id)?.sizes?.[placement]); },
-    get timelineHeight() { return timelineHeight; },
-    set timelineHeight(value) { timelineHeight = plotHeight(value, 60, 900); save(); },
+    /** Persist after a sequence of unsaved resizes. */
+    save,
     reorder(id, before) { const item = find(id), target = find(before); if (!item || item === target) return; instances.splice(instances.indexOf(item), 1); instances.splice(target ? instances.indexOf(target) : instances.length, 0, item); save(); },
     place(id, value, eligible = true) { const item = find(id); if (item && item.context === 'episode' && eligible) item.timeline = value; save(); },
     setSource(key) { if (key !== sourceKey) { sourceKey = key; pinned = selected = null; iteration = null; } },
@@ -44,7 +44,7 @@ export function displayLimits(value = {}) {
   return limits.min != null && limits.max != null && limits.min >= limits.max ? { ...limits, max: null } : limits;
 }
 
-function plotHeight(value, low = 40, high = 900) { return Number.isFinite(value) && value > 0 ? Math.round(Math.max(low, Math.min(high, value))) : undefined; }
+function plotHeight(value, low = 40, high = 4000) { return Number.isFinite(value) && value > 0 ? Math.round(Math.max(low, Math.min(high, value))) : undefined; }
 
 
 /** The timeline's aggregate window as an episode analysis range. Omitted

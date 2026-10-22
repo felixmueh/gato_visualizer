@@ -454,3 +454,54 @@ test('Live growth reveals docked and sidebar plots through the cursor every fram
     const current = bottom.querySelector('svg'); assert.equal(clipWidth(current), full(current) / 2);
   } finally { ui.destroy(); globalThis.document = original.document; Date.now = original.now; }
 });
+
+test('docked plots resize their own height: card edges follow the mouse, the panel edge scales the strip, the viewport keeps its minimum', async () => {
+  const { document } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section'), handle = document.createElement('div');
+  // Rows report 200 px and the viewport 300 px: the strip may take 400 px.
+  const viewport = { getBoundingClientRect: () => ({ height: 300 }) };
+  const view = { window: [0, 5], cursor: 1, aggregate: { start: null, end: null } }, persisted = new Map(), resizeListeners = [];
+  const win = { addEventListener: (type, fn) => resizeListeners.push(fn), removeEventListener() {} };
+  const request = async (_path, body) => ({ state: 'complete', catalog: [jointDef], context: { clock: 'replay:r:0', bounds: [0, 5], joint_names: ['arm_right_1_joint', 'arm_right_2_joint'] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'Joint data', x: { identity: 'episode_time', clock: 'replay:r:0' }, y: {}, series: [{ x: [0, 5], y: [0, 1] }] } })) });
+  const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, viewport, stripHandle: handle, window: win, getSource: () => ({ source: { kind: 'replay', id: 'r', trajectory_index: 0 } }), getView: () => view, request, storage: { getItem: key => persisted.get(key), setItem: (key, value) => persisted.set(key, value) } });
+  const svgHeights = () => bottom.querySelectorAll('svg').map(svg => Number.parseInt(svg.style.height));
+  const drag = async (target, from, to, pointerId) => { await target.emit('pointerdown', { pointerId, button: 0, clientY: from }); await document.emit('pointermove', { pointerId, clientY: to }); const during = svgHeights(); await document.emit('pointerup', { pointerId }); return during; };
+  try {
+    ui.update(); await flush();
+    for (let i = 0; i < 2; i++) ui.state.add(jointDef, 'episode');
+    await ui.refresh();
+    for (const item of ui.state.instances) ui.state.place(item.id, true);
+    await ui.refresh();
+    assert.deepEqual(svgHeights(), [85, 85]); assert.equal(handle.hidden, false);
+    // Every docked card has the settings button; it configures that instance.
+    const docked = bottom.querySelectorAll('.plot-card');
+    assert(docked.every(card => card.querySelectorAll('button').some(item => item.textContent === '⚙')));
+    await docked[0].querySelectorAll('button').find(item => item.textContent === '⚙').emit('click');
+    const config = document.body.children.find(item => item.id === `config-${ui.state.instances[0].id}`);
+    assert.deepEqual(config.querySelectorAll('select').map(select => select.options?.length ?? select.children.length), [2, 2]);
+    config.querySelectorAll('select')[1].value = 'qd'; await config.querySelector('form').emit('submit');
+    assert.equal(ui.state.instances[0].parameters.quantity, 'qd');
+    // A card's bottom edge: down is taller, up is shorter; others keep their height.
+    let grip = bottom.querySelectorAll('.plot-resize-handle')[0];
+    assert.deepEqual(await drag(grip, 500, 560, 1), [145, 85]);
+    grip = bottom.querySelectorAll('.plot-resize-handle')[0];
+    assert.deepEqual(await drag(grip, 500, 470, 2), [115, 85]);
+    // The strip stops where the viewport keeps its minimum: 400 px less two cards' chrome.
+    grip = bottom.querySelectorAll('.plot-resize-handle')[0];
+    assert.deepEqual(await drag(grip, 500, 2000, 3), [400 - 72 - 85, 85]);
+    assert.equal(JSON.parse(persisted.get('plot-inspection-v1')).instances[0].sizes.timeline, 243);
+    // Double-click restores the default height.
+    await bottom.querySelectorAll('.plot-resize-handle')[0].emit('dblclick'); assert.deepEqual(svgHeights(), [85, 85]);
+    // The panel's top edge: up grows all plots together, down shrinks them.
+    assert.deepEqual(await drag(handle, 500, 400, 4), [135, 135]);
+    assert.deepEqual(await drag(handle, 500, 560, 5), [105, 105]);
+    assert.deepEqual(await drag(handle, 500, -2000, 6), [164, 164]);
+    // A smaller window refits shown heights without overwriting stored ones.
+    viewport.getBoundingClientRect = () => ({ height: 150 });
+    resizeListeners.forEach(fn => fn()); await new Promise(resolve => setTimeout(resolve, 30));
+    assert.deepEqual(svgHeights(), [89, 89]);
+    assert.deepEqual(ui.state.instances.map(item => ui.state.height(item.id, 'timeline')), [164, 164]);
+    await handle.emit('dblclick'); assert.deepEqual(ui.state.instances.map(item => ui.state.height(item.id, 'timeline')), [undefined, undefined]);
+    ui.destroy();
+  } finally { globalThis.document = original; }
+});

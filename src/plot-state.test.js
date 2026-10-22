@@ -63,10 +63,13 @@ test('display limits and placement heights persist per instance and survive dupl
   assert.deepEqual(item.display, { min: null, max: 50, clipOutliers: true });
   state.resize(item.id, 'timeline', 140); state.resize(item.id, 'sidebar', 10);
   assert.equal(state.height(item.id, 'timeline'), 140); assert.equal(state.height(item.id, 'sidebar'), 40);
-  state.timelineHeight = 400;
   const copy = state.duplicate(item.id); assert.deepEqual(copy.display, item.display); assert.equal(state.height(copy.id, 'timeline'), 140);
   state.resize(item.id, 'timeline', 90, false); assert.equal(stored.instances[0].sizes.timeline, 140, 'drag moves do not persist each step');
-  const restored = createPlotState(stored); assert.equal(restored.timelineHeight, 400); assert.equal(restored.height(item.id, 'timeline'), 140);
+  state.save(); assert.equal(stored.instances[0].sizes.timeline, 90);
+  const restored = createPlotState(stored); assert.equal(restored.height(item.id, 'timeline'), 90);
+  // Tall strips are allowed; undefined resets a placement to its default.
+  state.resize(item.id, 'timeline', 1500); assert.equal(state.height(item.id, 'timeline'), 1500);
+  state.resize(item.id, 'timeline', undefined); assert.equal(state.height(item.id, 'timeline'), undefined); assert(!('timeline' in stored.instances[0].sizes));
   // An inverted pair keeps the bottom and returns the top to automatic.
   assert.deepEqual(displayLimits({ min: 3, max: 1 }), { min: 3, max: null, clipOutliers: false });
 });

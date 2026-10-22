@@ -4,10 +4,11 @@ import { aggregateBounded, aggregateLabel } from './expanded-timeline.js';
 import { renderPlot } from './plot-renderer.js';
 import { sourceRequest } from './source-settings.js';
 import { setupSolveRun } from './solve-run.js';
+import { stripRoom, fitStripHeights, resizeStrip, resizeStripCard, STRIP_CARD_CHROME, STRIP_PLOT_DEFAULT } from './timeline-strip.js';
 import { createIterationPathCache, iterationPredictionForView } from './prediction-selection.js';
 
 /** One host for both inspectors. Only the episode timeline owns a playback clock. */
-export function setupPlotInspection({ episodeContainer, solveContainer, bottomContainer, getSource, getView, getSolverProfile = () => null, getLimitUse = () => null, onSeek, onPrediction = () => {}, onInspectionStart = () => {}, onClearAggregate = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
+export function setupPlotInspection({ episodeContainer, solveContainer, bottomContainer, getSource, getView, getSolverProfile = () => null, getLimitUse = () => null, onSeek, onPrediction = () => {}, onInspectionStart = () => {}, onClearAggregate = () => {}, request = sourceRequest, storage = globalThis.localStorage, viewport = null, stripHandle = null, window: win = globalThis.window } = {}) {
   const doc = episodeContainer.ownerDocument;
   const el = (tag, text, cls) => { const item = doc.createElement(tag); if (text != null) item.textContent = text; if (cls) item.className = cls; return item; };
   const button = (text, action, title = text) => { const item = el('button', text); item.type = 'button'; item.title = title; item.setAttribute('aria-label', title); item.addEventListener('click', action); return item; };
@@ -68,24 +69,40 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     onStart: () => { onInspectionStart(); pinnedSource = structuredClone(solveSource()?.source); state.pin(true); invalidate(); },
     onComplete: result => setInspection(result),
   });
-  // The strip header carries no text. With rows it is a thin handle: drag it
-  // to change how much height the rows may take. While an eligible plot is
-  // dragged, the whole strip outlines itself as the drop zone.
+  // The strip header carries no text; its scroll buttons appear only when
+  // the plots overflow. The strip is exactly as tall as its plots: the
+  // panel's top edge (stripHandle) and each card's bottom edge change plot
+  // heights, so y-axes always rescale. While an eligible plot is dragged,
+  // the whole strip outlines itself as the drop zone.
   const bottomTitle = el('div', null, 'timeline-plot-hint'), bottomCards = el('div', null, 'timeline-plot-rows'); bottomContainer.replaceChildren(bottomTitle, bottomCards);
   const showDropZone = active => { bottomContainer.classList.toggle('timeline-drop-ready', active); if (!active) bottomContainer.classList.toggle('timeline-drop-over', false); };
   // Capture: the strip's own drop handler stops propagation and rebuilds the dragged card.
   const hideDropZone = () => showDropZone(false);
   for (const event of ['dragend', 'drop']) doc.addEventListener(event, hideDropZone, true);
   bottomContainer.addEventListener('dragleave', event => { if (!bottomContainer.contains?.(event.relatedTarget)) bottomContainer.classList.toggle('timeline-drop-over', false); });
-  for (const [label, amount] of [['↑', -100], ['↓', 100]]) bottomTitle.append(button(label, () => bottomCards.scrollBy({ top: amount, behavior: 'smooth' }), `Scroll timeline plot rows ${amount < 0 ? 'up' : 'down'}`));
-  const applyStripHeight = () => { bottomCards.style.maxHeight = state.timelineHeight ? `${state.timelineHeight}px` : ''; };
-  applyStripHeight();
-  bottomTitle.addEventListener('pointerdown', event => {
-    if (!bottomCards.children.length || event.target.closest?.('button') || event.button != null && event.button !== 0) return;
-    event.preventDefault(); event.stopPropagation();
-    const start = event.clientY, initial = bottomCards.getBoundingClientRect().height || state.timelineHeight || 290;
-    dragResize(event, next => { state.timelineHeight = initial + start - next.clientY; applyStripHeight(); });
-  });
+  const scrollButtons = [['↑', -100], ['↓', 100]].map(([label, amount]) => button(label, () => bottomCards.scrollBy({ top: amount, behavior: 'smooth' }), `Scroll timeline plot rows ${amount < 0 ? 'up' : 'down'}`));
+  bottomTitle.append(...scrollButtons);
+  // Docked plot layout of the last render: instance ids and displayed heights.
+  let docked = { ids: [], heights: [], chrome: 0 }, chromePerCard = STRIP_CARD_CHROME;
+  const measureRoom = () => viewport ? stripRoom({ rowsHeight: bottomCards.getBoundingClientRect().height, viewportHeight: viewport.getBoundingClientRect().height }) : Infinity;
+  const stripOptions = () => ({ room: measureRoom(), chrome: docked.chrome });
+  // A drag starts from what is shown: a window-fitted layout becomes the stored one.
+  const commitStrip = () => docked.ids.forEach((id, index) => { if ((state.height(id, 'timeline') ?? STRIP_PLOT_DEFAULT) !== docked.heights[index]) state.resize(id, 'timeline', docked.heights[index], false); });
+  const showStrip = heights => { docked.heights = heights; docked.ids.forEach((id, index) => { state.resize(id, 'timeline', heights[index], false); cardHandles.get(`${id}:timeline`)?.setView({ height: heights[index] }); }); };
+  if (stripHandle) {
+    stripHandle.title = 'Drag to resize the timeline plots · double-click to reset';
+    stripHandle.addEventListener('pointerdown', event => {
+      if (!docked.ids.length || event.button != null && event.button !== 0) return;
+      event.preventDefault(); event.stopPropagation();
+      const start = event.clientY, initial = [...docked.heights], options = stripOptions(); commitStrip(); stripHandle.classList.toggle('dragging', true);
+      dragResize(event, next => showStrip(resizeStrip(initial, start - next.clientY, options)), () => { stripHandle.classList.toggle('dragging', false); state.save(); renderCards(); });
+    });
+    stripHandle.addEventListener('dblclick', event => { event.preventDefault(); for (const id of docked.ids) state.resize(id, 'timeline', undefined, false); state.save(); renderCards(); });
+  }
+  // A window resize refits the shown heights; stored heights stay.
+  let resizeFrame;
+  const onWindowResize = () => { if (resizeFrame != null || resizing) return; resizeFrame = (globalThis.requestAnimationFrame || (fn => setTimeout(fn, 16)))(() => { resizeFrame = null; if (!destroyed) renderCards(); }); };
+  win?.addEventListener?.('resize', onWindowResize);
   /** Document-owned vertical drag that survives card rebuilds. */
   function dragResize(event, onMove, onEnd = () => {}) {
     const pointerId = event.pointerId;
@@ -193,6 +210,9 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     cardsPending = false; lastCardsAt = Date.now();
     handles.forEach(handle => handle.destroy({ preserveInteraction: true })); handles = []; cardHandles.clear(); episodeCards.replaceChildren(); solveCards.replaceChildren(); bottomCards.replaceChildren();
     const usedPresentations = new Set();
+    const dockedItems = visible(bottomContainer) ? state.instances.filter(item => item.timeline && eligible(item.id) && ['lines', 'bars', 'spans'].includes(specs.get(item.id)?.kind)) : [];
+    const room = measureRoom(), chrome = dockedItems.length * chromePerCard;
+    docked = { ids: dockedItems.map(item => item.id), heights: fitStripHeights(dockedItems.map(item => state.height(item.id, 'timeline')), { room, chrome }), chrome };
     for (const item of state.instances) {
       const definition = definitionFor(item), spec = specs.get(item.id);
       for (const placement of ['sidebar', ...(item.timeline && eligible(item.id) ? ['timeline'] : [])]) {
@@ -210,7 +230,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         if (placement === 'sidebar') {
           if (eligible(item.id)) { const show = button('↧', () => { state.place(item.id, !item.timeline); renderCards(); }, item.timeline ? 'Hide from timeline' : 'Show on timeline'); show.className = 'plot-timeline-toggle'; show.setAttribute('aria-pressed', String(item.timeline)); title.append(show); }
           title.append(button('⚙', () => configure(item), 'Configure plot'), button('⧉', () => { state.duplicate(item.id); invalidate(); }, 'Duplicate plot'), button('×', () => { state.remove(item.id); specs.delete(item.id); invalidate(); }, 'Remove plot'));
-        } else title.append(button('×', () => { state.place(item.id, false); renderCards(); }, 'Remove timeline placement'));
+        } else title.append(button('⚙', () => configure(item), 'Configure plot'), button('×', () => { state.place(item.id, false); renderCards(); }, 'Remove timeline placement'));
         card.append(title);
         const graph = el('div', null, 'plot-card-body'); card.append(graph);
         if (spec) {
@@ -223,7 +243,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
           // A following window can move while Live grows. Only a duration
           // change (zoom), source, scope or plot configuration resets the fit.
           const fitKey = [item.context === 'solve' ? lastSolveSourceKey : lastSourceKey, item.parameters, episodeTime ? [linked ? 'timeline' : view.aggregate ?? null, linked ? view.window?.[1] - view.window?.[0] : null] : state.selected?.id];
-          const handle = renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, notes: false, legendTarget, height: state.height(item.id, placement), yLimits: item.display ? displayLimits(item.display) : undefined, presentation: presentations.get(key), fitKey, window, reveal, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined });
+          const handle = renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, notes: false, legendTarget, height: linked && docked.ids.includes(item.id) ? docked.heights[docked.ids.indexOf(item.id)] : state.height(item.id, placement), yLimits: item.display ? displayLimits(item.display) : undefined, presentation: presentations.get(key), fitKey, window, reveal, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined });
           if (episodeTime) handle.episodeLinked = linked;
           handles.push(handle); cardHandles.set(key, handle);
           if (['lines', 'bars', 'spans'].includes(spec.kind)) card.append(resizeHandle(item, placement, key, linked ? 85 : 170));
@@ -233,19 +253,40 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       }
     }
     for (const [key, presentation] of presentations) if (!usedPresentations.has(key)) { presentation.cancelScrub?.(); presentations.delete(key); }
-    bottomTitle.classList.toggle('resizable', bottomCards.children.length > 0);
-    bottomTitle.title = bottomCards.children.length ? 'Drag to resize the timeline plots' : '';
+    layoutStrip(room);
     renderSolve(); lastRender = JSON.stringify([getView().window, getView().aggregate ?? null]);
   }
+  /** Measure the docked cards' own chrome and keep the rows within the room. */
+  function layoutStrip(room) {
+    if (stripHandle) stripHandle.hidden = !docked.ids.length;
+    bottomCards.style.maxHeight = Number.isFinite(room) && docked.ids.length ? `${room}px` : '';
+    if (docked.ids.length && viewport) {
+      const extra = (bottomCards.scrollHeight || 0) - docked.heights.reduce((a, b) => a + b, 0);
+      const measured = extra > 0 ? extra / docked.ids.length : chromePerCard;
+      // A first layout with an estimated chrome refits once with the measured one.
+      if (Math.abs(measured - chromePerCard) > 1) { chromePerCard = measured; docked.chrome = measured * docked.ids.length; const heights = fitStripHeights(docked.ids.map(id => state.height(id, 'timeline')), { room, chrome: docked.chrome }); if (heights.some((value, index) => value !== docked.heights[index])) { docked.heights = heights; docked.ids.forEach((id, index) => cardHandles.get(`${id}:timeline`)?.setView({ height: heights[index] })); } }
+    }
+    // The last card's resize grip reaches 3 px below the rows; that is not overflow.
+    const overflow = (bottomCards.scrollHeight || 0) > (bottomCards.clientHeight || 0) + 4;
+    scrollButtons.forEach(item => { item.hidden = !overflow; });
+  }
   function resizeHandle(item, placement, key, fallback) {
-    const grip = el('div', null, 'plot-resize-handle'); grip.title = 'Drag to resize';
+    const grip = el('div', null, 'plot-resize-handle'); grip.title = 'Drag to resize · double-click to reset';
     grip.addEventListener('pointerdown', event => {
       if (event.button != null && event.button !== 0) return;
       event.preventDefault(); event.stopPropagation();
-      const start = event.clientY, initial = state.height(item.id, placement) ?? fallback;
+      const start = event.clientY, index = placement === 'timeline' ? docked.ids.indexOf(item.id) : -1;
+      if (index >= 0) {
+        // Docked: this card follows the mouse; the strip grows into the viewport.
+        const initial = [...docked.heights], options = stripOptions(); commitStrip();
+        dragResize(event, next => { const heights = [...initial]; heights[index] = resizeStripCard(initial, index, next.clientY - start, options); showStrip(heights); }, () => { state.save(); renderCards(); });
+        return;
+      }
+      const initial = state.height(item.id, placement) ?? fallback;
       dragResize(event, next => { state.resize(item.id, placement, initial + next.clientY - start, false); cardHandles.get(key)?.setView({ height: state.height(item.id, placement) }); },
         () => { state.resize(item.id, placement, state.height(item.id, placement)); renderCards(); });
     });
+    grip.addEventListener('dblclick', event => { event.preventDefault(); event.stopPropagation(); state.resize(item.id, placement, undefined); renderCards(); });
     return grip;
   }
   function reductionNotes(spec) { return (spec?.display_reduction || []).map(item => `Display shows ${item.displayed} of ${item.original} points${item.series ? ` of ${item.series}` : ''}; peaks and gaps kept.`); }
@@ -428,5 +469,5 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     runAgain.update(runContext());
     const now = Date.now(); if ((pending || now - lastPoll > 1500 && current?.source?.kind === 'live') && now - lastPoll >= 200) { lastPoll = now; refresh(); }
   }
-  return { update, invalidate, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, aggregate: getView().aggregate ?? null, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; resizing?.cancel(); for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); for (const event of ['dragend', 'drop']) doc.removeEventListener(event, hideDropZone, true); runAgain.destroy(); handles.forEach(handle => handle.destroy()); catalogHandles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
+  return { update, invalidate, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, aggregate: getView().aggregate ?? null, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; resizing?.cancel(); win?.removeEventListener?.('resize', onWindowResize); for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); for (const event of ['dragend', 'drop']) doc.removeEventListener(event, hideDropZone, true); runAgain.destroy(); handles.forEach(handle => handle.destroy()); catalogHandles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
 }
