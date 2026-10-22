@@ -159,6 +159,17 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       else { input.type = 'number'; input.step = 'any'; if (schema.min != null) input.min = schema.min; if (schema.max != null) input.max = schema.max; input.value = item.parameters[name] ?? schema.default; input.required = true; }
       label.append(input); if (schema.description) label.append(el('small', schema.description)); body.append(label); fields.push({ name, schema, input });
     }
+    // An option excluded by another input's value is disabled; its tooltip
+    // names the conflict. Evaluation rejects the combination as well.
+    const constrain = () => {
+      const current = Object.fromEntries(fields.map(({ name, input }) => [name, input.value]));
+      for (const { schema, input } of fields) for (const option of input.options || []) {
+        const conflict = Object.entries(schema.disabled_when?.[option.value] || {}).find(([other, value]) => current[other] === String(value));
+        option.disabled = Boolean(conflict); const other = conflict && fields.find(field => field.name === conflict[0]);
+        option.title = conflict ? `Unavailable while ${other.schema.label || other.name} is ${other.input.selectedOptions?.[0]?.textContent ?? conflict[1]}` : '';
+      }
+    };
+    fields.forEach(({ input }) => input.addEventListener('change', constrain)); constrain();
     // Every plotted graph shares viewer-side y limits. Empty sides stay automatic.
     let display;
     if (!['table', 'spans', 'unavailable'].includes(spec?.kind)) {

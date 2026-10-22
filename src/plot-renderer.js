@@ -75,7 +75,13 @@ export function renderPlot(container, spec, options = {}) {
   const rangeKey = JSON.stringify([options.fitKey, spec.y, spec.kind, spec.kind === 'spans' ? null : limits]);
   const resetFit = presentation.rangeKey !== rangeKey;
   presentation.rangeKey = rangeKey;
-  const padded = ([low, high]) => { const pad = (high - low) * .12; return [low - pad, high + pad]; };
+  // A spec's y.span is the default automatic range: data beyond it extends
+  // that side with a small margin, data inside it never shrinks it.
+  const span = Array.isArray(spec.y_axis?.span) && spec.y_axis.span.every(Number.isFinite) ? spec.y_axis.span : null;
+  const padded = ([low, high]) => {
+    const pad = (high - low) * (span ? .04 : .12);
+    return span ? [low < span[0] ? low - pad : span[0], high > span[1] ? high + pad : span[1]] : [low - pad, high + pad];
+  };
   const previousRange = resetFit ? null : presentation.targetRange;
   // Keep an envelope while history grows. Small fluctuations inside its
   // headroom do not move the axis; a deliberate range/source change refits it.
@@ -146,9 +152,27 @@ export function renderPlot(container, spec, options = {}) {
     const title = doc.createElementNS(ns, 'title'); title.textContent = `${span.lane}: ${span.label} (${fmt(span.start)}–${fmt(span.end)} ${spec.x?.unit || ''})`; shape.append(title);
     if (spec.kind === 'spans') node('text', { x: margin.left + 4, y: margin.top + lane * laneHeight + 13, fill: '#d7e4ef', 'font-size': 10 }, span.lane);
   }
+  // Bands shade a y interval across the plot (end null: to the top). Tones
+  // use the limit-state colour tokens; beyond is hatched, so a violation reads
+  // differently from merely near. They sit beneath the data and the reveal.
+  const tone = { near: 'var(--limit-near, #ffd166)', beyond: 'var(--limit-beyond, #ff737b)' };
+  const bandY = value => Math.max(margin.top, Math.min(height - margin.bottom, sy(value)));
+  for (const band of spec.bands || []) if (band.axis === 'y' && tone[band.tone]) {
+    const top = () => Number.isFinite(band.end) ? bandY(band.end) : margin.top, bottom = () => Number.isFinite(band.start) ? bandY(band.start) : height - margin.bottom;
+    if (band.tone === 'beyond' && !defs.querySelector('pattern')) {
+      const pattern = doc.createElementNS(ns, 'pattern'), stroke = doc.createElementNS(ns, 'path');
+      for (const [key, value] of Object.entries({ id: `${clipId}-hatch`, width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' })) pattern.setAttribute(key, value);
+      stroke.setAttribute('d', 'M0,0V6'); stroke.setAttribute('stroke-width', 2); stroke.style.stroke = tone.beyond; stroke.setAttribute('opacity', .35); pattern.append(stroke); defs.append(pattern);
+    }
+    const shape = node('rect', { x: margin.left, width: innerWidth, y: top, height: () => Math.max(0, bottom() - top()), class: `plot-band plot-band-${band.tone}` });
+    shape.style.fill = band.tone === 'beyond' ? `url(#${clipId}-hatch)` : tone.near; if (band.tone === 'near') shape.setAttribute('opacity', .14);
+    if (band.label) { const title = doc.createElementNS(ns, 'title'); title.textContent = band.label; shape.append(title); }
+  }
   for (const guide of spec.guides || []) if (guide.axis === 'y' && Number.isFinite(guide.value)) {
-    node('line', { x1: margin.left, x2: width - margin.right, y1: () => sy(guide.value), y2: () => sy(guide.value), stroke: '#e69a94', 'stroke-width': 1, 'stroke-dasharray': '4 3' });
-    node('text', { x: width - margin.right - 3, y: () => sy(guide.value) - 3, 'text-anchor': 'end', fill: '#e69a94', 'font-size': 9 }, guide.label || fmt(guide.value));
+    const hard = guide.style === 'hard', color = hard ? tone.beyond : '#e69a94';
+    const line = node('line', { x1: margin.left, x2: width - margin.right, y1: () => sy(guide.value), y2: () => sy(guide.value), stroke: '#e69a94', 'stroke-width': hard ? 1.2 : 1, ...(hard ? {} : { 'stroke-dasharray': '4 3' }) });
+    const text = node('text', { x: width - margin.right - 3, y: () => sy(guide.value) - 3, 'text-anchor': 'end', fill: '#e69a94', 'font-size': 9 }, guide.label || fmt(guide.value));
+    if (hard) { line.style.stroke = color; text.style.fill = color; }
   }
   const colors = ['#57c7dc', '#e6b961', '#b398f3', '#eb8d95', '#85c99c', '#ddab78', '#b5cae3'];
   const legend = el('div', null, 'plot-legend'), barRects = [];
@@ -169,8 +193,11 @@ export function renderPlot(container, spec, options = {}) {
       const edges = line.bin_edges || [], left = edges[i] ?? x - (line.width ?? .8) / 2, right = edges[i + 1] ?? x + (line.width ?? .8) / 2;
       barRects.push({ left, right, rect: null, line, i });
       barRects.at(-1).rect = node('rect', { x: sx(left), y: () => Math.min(sy(y), sy(0)), width: Math.max(1, sx(right) - sx(left) - 1), height: () => Math.abs(sy(y) - sy(0)), fill: color }, null, data);
+      barRects.at(-1).rect.style.fill = color;
     });
-    else node('path', { d: path, stroke: color, fill: 'none', 'stroke-width': 1.6, 'vector-effect': 'non-scaling-stroke' }, null, data);
+    // Also as style: a colour may be a CSS token, var(--name, fallback),
+    // which presentation attributes do not resolve.
+    else node('path', { d: path, stroke: color, fill: 'none', 'stroke-width': 1.6, 'vector-effect': 'non-scaling-stroke' }, null, data).style.stroke = color;
   });
   svg.append(clipped, labelGroup);
   const xLabels = [];
@@ -199,7 +226,7 @@ export function renderPlot(container, spec, options = {}) {
     if (bar) { readout.textContent = `${fmt(bar.left)}–${fmt(bar.right)}${unit} · ${bar.line.label || 'Value'}: ${fmt(bar.line.y[bar.i])}`; }
     else {
       readout.textContent = `${categories ? categories[Math.max(0, Math.min(categories.length - 1, Math.round(x)))] : fmt(x)}${unit}`;
-      series.forEach(line => { let closest = -1, delta = Infinity; (line.x || []).forEach((value, i) => { if (Math.abs(value - x) < delta && Number.isFinite(line.y?.[i])) { closest = i; delta = Math.abs(value - x); } }); if (closest >= 0) readout.textContent += ` · ${line.label || 'Value'}: ${fmt(line.y[closest])}`; });
+      series.forEach(line => { let closest = -1, delta = Infinity; (line.x || []).forEach((value, i) => { if (Math.abs(value - x) < delta && Number.isFinite(line.y?.[i])) { closest = i; delta = Math.abs(value - x); } }); if (closest >= 0) readout.textContent += ` · ${line.hover?.[closest] || `${line.label || 'Value'}: ${fmt(line.y[closest])}`}`; });
     }
     // The visible readout stays on one line. Retain every series value for
     // inspection when a narrow card truncates it.

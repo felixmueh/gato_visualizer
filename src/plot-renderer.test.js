@@ -226,3 +226,26 @@ test('y labels are drawn above guide lines and curves so their outline knocks th
   const guide = container.querySelectorAll('line').find(item => item.getAttribute('stroke-dasharray') === '4 3');
   assert(order(label) > order(guide)); assert.equal(label.getAttribute('paint-order'), 'stroke');
 });
+
+test('limit bands, a hard guide, a default y span, token colours and per-sample hover text', async () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  const spec = { ...base, kind: 'lines', y: { label: 'Limit use', unit: '%', span: [0, 105] },
+    guides: [{ axis: 'y', value: 100, label: 'limit', style: 'hard' }],
+    bands: [{ axis: 'y', start: 90, end: 100, tone: 'near' }, { axis: 'y', start: 100, end: null, tone: 'beyond' }],
+    series: [{ label: 'Position', x: [0, 1], y: [40, 60], color: 'var(--limit-position, #57c7dc)', hover: ['J4 position 40 %', 'J4 position 60 % · 0.5 rad from upper bound'] }] };
+  renderPlot(container, spec);
+  const ticks = () => container.querySelectorAll('text').filter(item => item.attributes.class === 'plot-y-tick').map(item => Number(item.textContent));
+  // Default span 0–105 even though the data only reach 60.
+  assert.equal(ticks()[0], 0); assert(ticks().at(-1) >= 100 && ticks().at(-1) <= 105);
+  const bands = container.querySelectorAll('rect').filter(item => /plot-band/.test(item.attributes.class || ''));
+  assert.equal(bands.length, 2); assert.match(bands[1].style.fill, /^url\(#.*-hatch\)$/); assert.equal(bands[0].style.fill, 'var(--limit-near, #ffd166)');
+  const hard = container.querySelectorAll('line').find(item => item.style.stroke === 'var(--limit-beyond, #ff737b)');
+  assert(hard && !hard.attributes['stroke-dasharray']);
+  assert(container.querySelectorAll('path').some(item => item.attributes['vector-effect'] && item.style.stroke === 'var(--limit-position, #57c7dc)'));
+  const svg = container.querySelector('svg');
+  await svg.emit('pointermove', { clientX: 588 });
+  assert.equal(container.querySelector('.plot-hover').textContent, '1 s · J4 position 60 % · 0.5 rad from upper bound');
+  // Data above the span extend it; viewer limits still win.
+  renderPlot(container, { ...spec, series: [{ ...spec.series[0], y: [40, 400] }] }); assert(ticks().at(-1) >= 300);
+  renderPlot(container, spec, { yLimits: { min: 50, max: 110 } }); assert(ticks()[0] >= 50 && ticks()[0] < 70 && ticks().at(-1) <= 110);
+});
