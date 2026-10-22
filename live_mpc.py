@@ -92,6 +92,8 @@ def parameter_specs(config, available_n, predictor_friction):
                     spec.update(disabled=True, label=spec["label"] + " (fixed)")
             elif isinstance(item, bool):
                 spec["kind"] = "bool"
+            elif isinstance(item, str):  # a new text field: shown, fixed at its default
+                spec.update(kind="choice", choices=[item], disabled=True, label=spec["label"] + " (fixed)")
             else:
                 spec["kind"] = "int" if isinstance(item, int) else "float"
                 lo, hi = RANGES.get(name, (0, 1e5) if key.endswith("cost") else (1e-8, 1e4))

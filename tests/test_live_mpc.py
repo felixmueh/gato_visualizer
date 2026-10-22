@@ -52,6 +52,15 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(specs["plant.friction"]["group"], specs["friction"]["group"])
         validate_settings(dict(self.config, budget_s=.05, warmup=2, friction=self.friction), self.task, self.schema)
 
+    def test_a_new_text_parameter_is_shown_fixed_at_its_default(self):
+        probe = live_probe()
+        probe["defaults"] = dict(probe["defaults"], integrator="rk4")
+        probe["available_N_by_friction"] = dict(off=[32], on=[])
+        schema = build_schema(probe, MPC_ROOT)
+        spec = next(s for s in schema["parameters"] if s["path"] == "integrator")
+        self.assertEqual((spec["kind"], spec["choices"], spec["disabled"]), ("choice", ["rk4"], True))
+        validate_settings(schema["defaults"]["config"], self.task, schema)
+
     def test_nonfinite_limits_unknown_fields_and_uncompiled_n_rejected(self):
         cases = [("N", 128), ("N", True), ("N", 32.5), ("dt_s", float("nan")),
                  ("dt_s", -1), ("solver.max_sqp_iters", 100001),
