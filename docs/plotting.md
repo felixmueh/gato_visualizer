@@ -49,7 +49,7 @@ Presentation (Felix, 2026-10-22): keep cards small and let the design carry the
 information. Descriptions, spec notes and display-reduction details appear on
 hover over the card title and in the ⚙ dialog, not as permanent text. Timeline
 rows put title, unit and legend in one row and keep a y axis inside the plot.
-Plot heights are resizable per placement. The docked strip is exactly as tall as its plots: the timeline panel's top edge scales them together (`src/timeline-strip.js`), and the viewport keeps a minimum height.
+Plot heights are resizable per placement. The docked strip is exactly as tall as its plots: the timeline panel's top edge scales them together, the divider between two docked plots resizes only the plot below it (`src/timeline-strip.js`), and the viewport keeps a minimum height.
 Every graph (lines/bars) has viewer y limits, bottom and top separately a value
 or automatic, with optional outlier clipping of automatic sides; these, like
 heights, are browser presentation settings saved with the plot instance in

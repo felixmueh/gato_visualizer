@@ -21,15 +21,16 @@ test('a smaller window scales all plots down together without touching stored he
   assert.deepEqual(fitStripHeights([100, 100], { room: 50, chrome: 0, min: 40 }), [40, 40]);
 });
 
-test('a card handle follows the mouse: down is taller, up is shorter, limits clamp the height only', () => {
+test('a divider belongs to the plot below it: up makes that plot taller, down shorter, limits clamp the height only', () => {
+  // Regression: dragging the divider between two docked plots resized the upper one.
   const shown = [100, 85], options = { room: 400, chrome: 72, min: 40 };
-  assert.equal(resizeStripCard(shown, 0, 50, options), 150);
-  assert.equal(resizeStripCard(shown, 0, -30, options), 70);
-  assert.equal(resizeStripCard(shown, 0, 1000, options), 400 - 72 - 85);
-  assert.equal(resizeStripCard(shown, 0, -1000, options), 40);
+  assert.equal(resizeStripCard(shown, 1, 50, options), 135);
+  assert.equal(resizeStripCard(shown, 1, -30, options), 55);
+  assert.equal(resizeStripCard(shown, 1, 1000, options), 400 - 72 - 100);
+  assert.equal(resizeStripCard(shown, 1, -1000, options), 40);
   // Monotonic in the drag: never inverted by a clamp.
   let last = -Infinity;
-  for (let delta = -300; delta <= 600; delta += 7) { const value = resizeStripCard(shown, 0, delta, options); assert(value >= last); last = value; }
+  for (let growth = -300; growth <= 600; growth += 7) { const value = resizeStripCard(shown, 1, growth, options); assert(value >= last); last = value; }
 });
 
 test('the panel edge grows the strip when dragged up and shrinks it when dragged down', () => {

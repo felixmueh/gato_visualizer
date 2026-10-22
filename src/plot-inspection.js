@@ -88,7 +88,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   const stripOptions = () => ({ room: measureRoom(), chrome: docked.chrome });
   // A drag starts from what is shown: a window-fitted layout becomes the stored one.
   const commitStrip = () => docked.ids.forEach((id, index) => { if ((state.height(id, 'timeline') ?? STRIP_PLOT_DEFAULT) !== docked.heights[index]) state.resize(id, 'timeline', docked.heights[index], false); });
-  const showStrip = heights => { docked.heights = heights; docked.ids.forEach((id, index) => { state.resize(id, 'timeline', heights[index], false); cardHandles.get(`${id}:timeline`)?.setView({ height: heights[index] }); }); };
+  const showStrip = (heights, only) => { docked.heights = heights; docked.ids.forEach((id, index) => { if (only != null && index !== only) return; state.resize(id, 'timeline', heights[index], false); cardHandles.get(`${id}:timeline`)?.setView({ height: heights[index] }); }); };
   if (stripHandle) {
     stripHandle.title = 'Drag to resize the timeline plots · double-click to reset';
     stripHandle.addEventListener('pointerdown', event => {
@@ -246,7 +246,10 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
           const handle = renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, notes: false, legendTarget, height: linked && docked.ids.includes(item.id) ? docked.heights[docked.ids.indexOf(item.id)] : state.height(item.id, placement), yLimits: item.display ? displayLimits(item.display) : undefined, presentation: presentations.get(key), fitKey, window, reveal, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined });
           if (episodeTime) handle.episodeLinked = linked;
           handles.push(handle); cardHandles.set(key, handle);
-          if (['lines', 'bars', 'spans'].includes(spec.kind)) card.append(resizeHandle(item, placement, key, linked ? 85 : 170));
+          // Sidebar cards resize from their bottom edge. Docked cards resize from
+          // the divider above them (the timeline below cannot move); the top
+          // card's top edge is the panel handle, which scales all of them.
+          if (['lines', 'bars', 'spans'].includes(spec.kind) && (!linked || docked.ids.indexOf(item.id) > 0)) card.append(resizeHandle(item, placement, key, linked ? 85 : 170));
         }
         else graph.append(el('p', 'Waiting for plot data…', 'plot-message'));
         (placement === 'timeline' ? bottomCards : item.context === 'episode' ? episodeCards : solveCards).append(card);
@@ -271,20 +274,22 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     scrollButtons.forEach(item => { item.hidden = !overflow; });
   }
   function resizeHandle(item, placement, key, fallback) {
-    const grip = el('div', null, 'plot-resize-handle'); grip.title = 'Drag to resize · double-click to reset';
+    const grip = el('div', null, placement === 'timeline' ? 'plot-resize-handle top' : 'plot-resize-handle'); grip.title = 'Drag to resize · double-click to reset';
     grip.addEventListener('pointerdown', event => {
       if (event.button != null && event.button !== 0) return;
       event.preventDefault(); event.stopPropagation();
-      const start = event.clientY, index = placement === 'timeline' ? docked.ids.indexOf(item.id) : -1;
+      // A click without movement keeps the grip, so its double-click can reset.
+      const start = event.clientY, index = placement === 'timeline' ? docked.ids.indexOf(item.id) : -1; let moved = false;
       if (index >= 0) {
-        // Docked: this card follows the mouse; the strip grows into the viewport.
+        // Docked: the divider above this card follows the mouse. Up makes the
+        // card taller and the strip grows into the viewport; cards above keep their height.
         const initial = [...docked.heights], options = stripOptions(); commitStrip();
-        dragResize(event, next => { const heights = [...initial]; heights[index] = resizeStripCard(initial, index, next.clientY - start, options); showStrip(heights); }, () => { state.save(); renderCards(); });
+        dragResize(event, next => { moved = true; const heights = [...initial]; heights[index] = resizeStripCard(initial, index, start - next.clientY, options); showStrip(heights, index); }, () => { if (moved) { state.save(); renderCards(); } });
         return;
       }
       const initial = state.height(item.id, placement) ?? fallback;
-      dragResize(event, next => { state.resize(item.id, placement, initial + next.clientY - start, false); cardHandles.get(key)?.setView({ height: state.height(item.id, placement) }); },
-        () => { state.resize(item.id, placement, state.height(item.id, placement)); renderCards(); });
+      dragResize(event, next => { moved = true; state.resize(item.id, placement, initial + next.clientY - start, false); cardHandles.get(key)?.setView({ height: state.height(item.id, placement) }); },
+        () => { if (moved) { state.resize(item.id, placement, state.height(item.id, placement)); renderCards(); } });
     });
     grip.addEventListener('dblclick', event => { event.preventDefault(); event.stopPropagation(); state.resize(item.id, placement, undefined); renderCards(); });
     return grip;

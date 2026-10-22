@@ -54,6 +54,8 @@
 .plot-config-form .plot-display-clip { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: #c3d3e2; font-size: 11px; cursor: pointer; }
 /* Bottom-edge grip: drag to change this placement's plot height. */
 .plot-resize-handle { position: absolute; left: 0; right: 0; bottom: -3px; height: 7px; cursor: ns-resize; touch-action: none; z-index: 1; }
+/* Docked cards: the divider above the card belongs to it. */
+.plot-resize-handle.top { top: -4px; bottom: auto; }
 .plot-resize-handle:hover, .plot-resize-handle:active { background: linear-gradient(transparent 2px, #57c7dc80 2px, #57c7dc80 4px, transparent 4px); }
 .solve-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 /* A short cue for a distinction that changes how the shown plan is read; the reason is its tooltip. */

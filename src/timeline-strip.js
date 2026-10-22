@@ -1,7 +1,8 @@
 // Docked plot strip heights: pure layout rules for the rows between the 3D
 // viewport and the timeline ruler. The strip is exactly as tall as its plots;
 // every resize changes plot heights (so y-axes rescale), never only a
-// container. The viewport keeps STRIP_VIEWPORT_MIN pixels.
+// container. The viewport keeps STRIP_VIEWPORT_MIN pixels. The panel's top
+// edge scales every plot; the divider between two plots belongs to the lower one.
 export const STRIP_VIEWPORT_MIN = 100, STRIP_PLOT_MIN = 40, STRIP_PLOT_DEFAULT = 85, STRIP_CARD_CHROME = 36;
 
 /** Pixels the strip may take: its current height plus what the viewport can give up. */
@@ -23,11 +24,12 @@ export function fitStripHeights(stored, { room = Infinity, chrome = 0, min = STR
   return trim(heights.map(value => Math.max(min, Math.floor(value * available / total))), available, min);
 }
 
-/** A card's bottom handle moved by delta (down positive): only that card
- * changes, in the mouse's direction, until the strip fills its room. */
-export function resizeStripCard(displayed, index, delta, { room = Infinity, chrome = 0, min = STRIP_PLOT_MIN } = {}) {
+/** The divider above a docked card moved up by growth pixels (down is
+ * negative): only that card changes, so the divider follows the mouse while
+ * the bottom-anchored strip grows into the viewport, until it fills its room. */
+export function resizeStripCard(displayed, index, growth, { room = Infinity, chrome = 0, min = STRIP_PLOT_MIN } = {}) {
   const others = sum(displayed) - displayed[index], high = Math.max(min, plotRoom(room, chrome) - others);
-  return Math.round(Math.max(min, Math.min(high, displayed[index] + delta)));
+  return Math.round(Math.max(min, Math.min(high, displayed[index] + growth)));
 }
 
 /** The panel's top edge moved by delta (up positive): all plots scale

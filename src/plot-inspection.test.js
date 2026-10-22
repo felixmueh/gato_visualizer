@@ -455,7 +455,7 @@ test('Live growth reveals docked and sidebar plots through the cursor every fram
   } finally { ui.destroy(); globalThis.document = original.document; Date.now = original.now; }
 });
 
-test('docked plots resize their own height: card edges follow the mouse, the panel edge scales the strip, the viewport keeps its minimum', async () => {
+test('docked plots resize their own height: dividers follow the mouse, the panel edge scales the strip, the viewport keeps its minimum', async () => {
   const { document } = plotDOM(), original = globalThis.document; globalThis.document = document;
   const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section'), handle = document.createElement('div');
   // Rows report 200 px and the viewport 300 px: the strip may take 400 px.
@@ -481,17 +481,21 @@ test('docked plots resize their own height: card edges follow the mouse, the pan
     assert.deepEqual(config.querySelectorAll('select').map(select => select.options?.length ?? select.children.length), [2, 2]);
     config.querySelectorAll('select')[1].value = 'qd'; await config.querySelector('form').emit('submit');
     assert.equal(ui.state.instances[0].parameters.quantity, 'qd');
-    // A card's bottom edge: down is taller, up is shorter; others keep their height.
-    let grip = bottom.querySelectorAll('.plot-resize-handle')[0];
-    assert.deepEqual(await drag(grip, 500, 560, 1), [145, 85]);
-    grip = bottom.querySelectorAll('.plot-resize-handle')[0];
-    assert.deepEqual(await drag(grip, 500, 470, 2), [115, 85]);
+    // Regression: the divider between two docked plots belongs to the lower
+    // plot. Up makes it taller, down shorter; the upper plot keeps its height.
+    const cards = bottom.querySelectorAll('.plot-card');
+    assert.equal(cards[0].querySelectorAll('.plot-resize-handle').length, 0, 'the top card resizes through the panel edge');
+    assert.equal(cards[1].querySelectorAll('.plot-resize-handle').length, 1); assert.match(cards[1].querySelector('.plot-resize-handle').className, /\btop\b/);
+    const divider = () => bottom.querySelectorAll('.plot-resize-handle')[0];
+    assert.deepEqual(await drag(divider(), 500, 440, 1), [85, 145]);
+    assert.deepEqual(await drag(divider(), 500, 530, 2), [85, 115]);
     // The strip stops where the viewport keeps its minimum: 400 px less two cards' chrome.
-    grip = bottom.querySelectorAll('.plot-resize-handle')[0];
-    assert.deepEqual(await drag(grip, 500, 2000, 3), [400 - 72 - 85, 85]);
-    assert.equal(JSON.parse(persisted.get('plot-inspection-v1')).instances[0].sizes.timeline, 243);
+    assert.deepEqual(await drag(divider(), 500, -2000, 3), [85, 400 - 72 - 85]);
+    assert.deepEqual(JSON.parse(persisted.get('plot-inspection-v1')).instances.map(item => item.sizes?.timeline), [undefined, 243]);
     // Double-click restores the default height.
-    await bottom.querySelectorAll('.plot-resize-handle')[0].emit('dblclick'); assert.deepEqual(svgHeights(), [85, 85]);
+    await divider().emit('dblclick'); assert.deepEqual(svgHeights(), [85, 85]);
+    // Sidebar cards keep their bottom-edge grips.
+    assert(episode.querySelectorAll('.plot-resize-handle').every(grip => grip.className === 'plot-resize-handle'));
     // The panel's top edge: up grows all plots together, down shrinks them.
     assert.deepEqual(await drag(handle, 500, 400, 4), [135, 135]);
     assert.deepEqual(await drag(handle, 500, 560, 5), [105, 105]);

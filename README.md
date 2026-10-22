@@ -160,10 +160,12 @@ Episode plot to the expanded timeline (outlined as a drop zone while dragging), 
 remove that placement. Docked graphs share the episode window and scrub cursor;
 their title, unit and legend share one row, and y labels sit inside the plot.
 Aggregates and prediction-horizon/SQP plots stay in the sidebar. Hover a plot
-title for its description and notes. Drag a plot's bottom edge to resize it
-(sidebar and timeline heights are separate); a docked plot grows the strip up
-into the viewport. Drag the timeline panel's top edge to scale all docked plots
-together, up to a small remaining viewport. Double-click either edge to reset.
+title for its description and notes. Drag a sidebar plot's bottom edge to
+resize it (sidebar and timeline heights are separate). On the timeline, the
+divider between two docked plots belongs to the plot below it: drag up to
+enlarge that plot, growing the strip into the viewport, or down to shrink it.
+Drag the timeline panel's top edge to scale all docked plots together, up to a
+small remaining viewport. Double-click a grip or edge to reset.
 A smaller window shrinks docked plots to fit without forgetting their heights.
 ⚙ on sidebar and docked cards opens the same plot settings and also sets each plot's
 y-axis bottom/top (a value or automatic) and can clip outliers from automatic
