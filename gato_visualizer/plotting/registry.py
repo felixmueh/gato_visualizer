@@ -1,7 +1,7 @@
 """Ordinary Python functions with discoverable metadata and isolated imports."""
 from __future__ import annotations
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 import importlib.util
@@ -38,10 +38,18 @@ class Boolean:
 
 @dataclass(frozen=True)
 class Choice:
+    """One of ``choices``; optional display ``labels`` in the same order.
+
+    ``disabled_when`` maps an option to the other inputs' values that exclude
+    it, e.g. ``{'all': {'quantity': 'all'}}``: the browser disables that option
+    and evaluation rejects the combination.
+    """
     choices: tuple = ()
     default: Any = None
     label: str = ''
     unit: str = ''
+    labels: tuple = ()
+    disabled_when: Mapping = field(default_factory=dict)
 
 
 def _decorate(scope, *, id=None, title=None, description='', requires=(), optional=(), inputs=None):
@@ -77,7 +85,13 @@ def _input_dict(control):
         result['choices'] = [f'arm_right_{i}_joint' for i in range(1, control.count + 1)]
         result.pop('count', None)
     if isinstance(control, Choice):
-        result['choices'] = list(control.choices)
+        result['choices'] = ([dict(value=value, label=label) for value, label in zip(control.choices, control.labels)]
+                             if control.labels else list(control.choices))
+        result.pop('labels', None)
+        if control.disabled_when:
+            result['disabled_when'] = {str(k): dict(v) for k, v in control.disabled_when.items()}
+        else:
+            result.pop('disabled_when', None)
     if 'minimum' in result:
         result['min'] = result.pop('minimum')
     if 'maximum' in result:
@@ -175,6 +189,10 @@ class Registry:
         if unknown:
             raise ValueError(f'unknown inputs: {", ".join(sorted(unknown))}')
         values = {name: _checked_input(name, control, supplied.get(name, control.default)) for name, control in controls.items()}
+        for name, control in controls.items():
+            for other in (control.disabled_when.get(values[name], {}) if isinstance(control, Choice) else {}).items():
+                if values.get(other[0]) == other[1]:
+                    raise ValueError(f'{name}={values[name]!r} is unavailable with {other[0]}={other[1]!r}')
         result = definition['function'](view, **values)
         result = validate_spec(result)
         if result.get('x', {}).get('identity') == 'episode_time':

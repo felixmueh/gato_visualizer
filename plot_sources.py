@@ -99,6 +99,8 @@ class SourceReader:
                 raw["joint_limits"] = raw["plans"][0].get("joint_limits")
             if raw["controls"]:
                 raw["torque_samples"] = raw["controls"]
+            # Physical (scene / URDF) limits; plans carry the tighter MPC bounds.
+            raw["scene_joint_limits"] = (self.default_scene or {}).get("joint_limits") or {}
             # Preview is retained separately from executed episode history.
             if descriptor.get("preview_source"):
                 if self.preview_reader is None:
@@ -140,6 +142,7 @@ def scene_records(scene):
     raw = dict(scene=scene, source=scene.get("source", {}),
                joint_names=scene.get("joint_names", [f"arm_right_{i}_joint" for i in range(1, 8)]),
                joint_limits=scene.get("plot_recorded_joint_limits", scene.get("joint_limits")) or {},
+               scene_joint_limits=scene.get("joint_limits") or {},
                states=[], plans=[], intervals=[], records=[], trajectories=scene.get("trajectories", []))
     recorded = next((t for t in raw["trajectories"] if t.get("kind") == "recorded"), None)
     origin = recorded["time_s"][0] if recorded and recorded.get("time_s") else 0

@@ -34,4 +34,7 @@ def example_episode(*, missing=False, context=None):
         states = [{key: value for key, value in state.items() if key not in ('qd', 'torque_nm', 'ee_xyz', 'target_xyz')} for state in states]
         intervals = []
     return EpisodeView(dict(states=states, plans=[plan, second] if not missing else [], intervals=intervals,
-                            joint_limits=plan['joint_limits'], extra_experiment={'known': 42}), context or InspectionContext())
+                            joint_limits=plan['joint_limits'], extra_experiment={'known': 42},
+                            # Physical (scene) limits; here equal to the recorded bounds.
+                            scene_joint_limits=dict(lower_position_rad=[-1., -2.], upper_position_rad=[1., 2.],
+                                                    velocity_rad_s=[2., 2.], effort_nm=[5., 5.])), context or InspectionContext())

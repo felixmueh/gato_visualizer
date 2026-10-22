@@ -20,6 +20,7 @@ class Series(TypedDict, total=False):
     style: Literal['line', 'step', 'bar']
     color: str
     bin_edges: list[float]
+    hover: list[str | None]
 
 
 class PlotSpec(TypedDict, total=False):
@@ -33,6 +34,7 @@ class PlotSpec(TypedDict, total=False):
     notes: list[str]
     guides: list[dict[str, Any]]
     spans: list[dict[str, Any]]
+    bands: list[dict[str, Any]]
     message: str
 
 
@@ -66,7 +68,7 @@ def validate_spec(spec: Any) -> PlotSpec:
         if not test:
             raise ValueError(f'PlotSpec: {message}')
     require(isinstance(spec, dict), 'expected a dictionary')
-    allowed = {'version', 'kind', 'title', 'x', 'y', 'series', 'rows', 'notes', 'guides', 'spans', 'message'}
+    allowed = {'version', 'kind', 'title', 'x', 'y', 'series', 'rows', 'notes', 'guides', 'spans', 'bands', 'message'}
     require(not spec.keys() - allowed, f'unsupported fields {sorted(spec.keys() - allowed)}')
     require(spec.get('version') == 1, 'version must be 1')
     kind = spec.get('kind')
@@ -83,7 +85,10 @@ def validate_spec(spec: Any) -> PlotSpec:
         require(isinstance(spec.get('series'), list), 'series must be an array')
         for index, item in enumerate(spec['series']):
             require(isinstance(item, dict) and isinstance(item.get('label'), str), f'series {index} needs label')
-            require(not item.keys() - {'label', 'x', 'y', 'style', 'color', 'bin_edges'}, f'series {index} has unsupported fields')
+            require(not item.keys() - {'label', 'x', 'y', 'style', 'color', 'bin_edges', 'hover'}, f'series {index} has unsupported fields')
+            if 'hover' in item:
+                require(isinstance(item['hover'], list) and len(item['hover']) == len(item['y']) and
+                        all(v is None or isinstance(v, str) for v in item['hover']), f'series {index} hover must be text per sample')
             require(item.get('style', 'line') in ('line', 'step', 'bar'), f'series {index} invalid style')
             require(isinstance(item.get('x'), list) and isinstance(item.get('y'), list), f'series {index} x/y must be arrays')
             require(len(item['x']) == len(item['y']), f'series {index} x/y length mismatch')
@@ -95,6 +100,14 @@ def validate_spec(spec: Any) -> PlotSpec:
                 require(all(finite(v) for v in edges) and all(a < b for a, b in zip(edges, edges[1:])), f'series {index} bin edges must be finite and increasing')
         for guide in spec.get('guides', []):
             require(isinstance(guide, dict) and guide.get('axis') == 'y' and finite(guide.get('value')) and isinstance(guide.get('label'), str), 'invalid guide')
+            require(guide.get('style', 'dashed') in ('dashed', 'hard'), 'guide style must be dashed or hard')
+        for band in spec.get('bands', []):
+            require(isinstance(band, dict) and band.get('axis') == 'y' and band.get('tone') in ('near', 'beyond'), 'band needs y axis and tone near/beyond')
+            require(all(band.get(key) is None or finite(band.get(key)) for key in ('start', 'end')) and
+                    (band.get('start') is None or band.get('end') is None or band['start'] < band['end']), 'band start/end must be ordered numbers or null')
+            require(isinstance(band.get('label', ''), str), 'band label must be text')
+        span = spec['y'].get('span')
+        require(span is None or (isinstance(span, list) and len(span) == 2 and all(finite(v) for v in span) and span[0] < span[1]), 'y span must be [low, high]')
     if kind == 'table':
         require(isinstance(spec.get('rows'), list), 'rows must be an array')
         for row in spec['rows']:

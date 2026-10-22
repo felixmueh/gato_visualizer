@@ -55,6 +55,8 @@ def reduce_spec(spec, pixels=1200):
             return dict(version=1, kind="unavailable", title=spec.get("title", "Plot"),
                         message="The requested display contains too many distinct gaps. Select a smaller visible range.")
         series["x"], series["y"] = [xs[i] for i in indices], [ys[i] for i in indices]
+        if isinstance(series.get("hover"), list) and len(series["hover"]) == len(xs):
+            series["hover"] = [series["hover"][i] for i in indices]
         # Structured, not a note: the browser shows it on hover only.
         spec.setdefault("display_reduction", []).append(
             dict(series=series.get("label"), original=len(xs), displayed=len(indices)))
