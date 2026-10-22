@@ -88,6 +88,11 @@ follows the package API that experiments use, without shims.
   `Mpc` in the visualizer's own solver child (ADR 002 unchanged). The
   coordinator imports no compiled GATO module. Diagnostics come from
   `mpc.step`, plan statistics from `Plan.stats`.
+- **Replays:** the MPC-bound overlay comes from the replay's
+  `provenance.params`. The legacy default recording loader is gone; the app
+  starts at the starting pose.
+- **Run again on recordings from before the migration** reports
+  "unavailable: pre-migration recording"; there is no converter.
 - **Default `tiago_mpc` root is `../tiago_mpc`.** The frozen
   `tiago_mpc_vis_baseline` worktree is no longer used.
 
