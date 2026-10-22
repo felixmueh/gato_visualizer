@@ -9,7 +9,7 @@ inspect its predicted tool path, then play the simulated closed-loop motion.
 **Temporary default (2026-10-22):** `tiago_mpc` main is being restructured. Until the
 visualizer follows it, the default source is `../tiago_mpc_vis_baseline`, a frozen
 `tiago_mpc` worktree on branch `vis-baseline` (main at `72ca2b0`). Select another
-checkout with `--mpc-root`, `TIAGO_MPC_ROOT` or Source / Build.
+checkout with `--mpc-root`, `TIAGO_MPC_ROOT` or Settings › Backend.
 
 Use a prepared sibling `../tiago_mpc_vis_baseline` checkout with canonical models, fetched
 LFS meshes and GATO dependencies. A saved legacy reaching recording is optional;
@@ -20,7 +20,7 @@ falls back to the checkout's `.venv`. It does not install Python packages there.
 
 The viewer reuses compatible GATO binaries in the selected checkout’s
 `.cache/gato`. Prepare missing horizon modules explicitly during setup or use
-the **Source / Build settings** gear button:
+the gear button (**Settings › Backend**):
 
 ```bash
 cd /workspace/tiago_mpc_visualizer
@@ -57,12 +57,22 @@ TIAGO_PYTHON=/path/to/python ./scripts/start.sh --port 8090
 ./scripts/start.sh --port 8090 --run-dir /absolute/path/to/recording
 ```
 
-The gear button opens a movable **Source / Build settings** window. Enter a
-`tiago_mpc` checkout or worktree path; it shows the resolved source branch,
-commit/dirty state, Python environment, cache and compatible knot counts. Python
-and cache overrides are optional. The previous visualizer cache can be reused by
-entering `/workspace/tiago_mpc_visualizer/.cache/gato` explicitly; it is never
-copied into the selected project cache. Compatibility checks include the current
+The gear button opens a movable **Settings** window with two tabs, remembered per
+browser. **Backend** holds what affects computation or backend processes: the
+simulator source, solver profiles, binary builds and the Python plotting
+directory. **UI** holds presentation preferences (reporting, playback buffer,
+interpolation, joint-limit tint); new presentation settings appear there.
+
+In **Backend**, enter a `tiago_mpc` checkout or worktree path; Check source shows
+its branch, commit/dirty state and compatible knot counts. The Python interpreter
+and binary cache fields are prefilled with the checkout's own resolved paths
+(`venv-host/bin/python`, else `.venv/bin/python`; `<checkout>/.cache/gato`;
+`POST /api/source/defaults` with `{"mpc_root": …}` returns them). An
+unedited field follows a checkout change; an edited one is a highlighted override
+with a reset arrow that restores the checkout default. Values equal to the
+default are sent as "follow the checkout". The previous visualizer cache can be
+reused by entering `/workspace/tiago_mpc_visualizer/.cache/gato` as the cache
+override; it is never copied into the selected project cache. Compatibility checks include the current
 URDF/grasp frame, generated/native GATO sources, toolchain, Python ABI, GPU
 architecture, and extension load/embedded identity. Discovery includes built N
 values beyond 16/32/64/128 and does not rely on manifest.N alone.
@@ -151,14 +161,14 @@ joint motion and bounds, timing histograms, episode aggregates, prediction joint
 profiles and recorded iteration diagnostics. Missing values remain unavailable.
 Custom `@plot_episode` and `@plot_solve` functions load from
 `<selected tiago_mpc>/_visualizer` by default. Change the directory and reload
-plotters in Source / Build settings without restarting MPC. See the
+plotters in Settings › Backend without restarting MPC. See the
 [plot authoring guide](docs/plot-authoring.md) for typed views, the starter and
 offline numerical checks with shared-renderer HTML previews.
 
 ## Solver profiles
 
-Source / Build settings also save named solver checkout/interpreter/cache
-profiles. Select one in Live to switch solver implementations without reloading
+Settings › Backend also saves named solver checkout/interpreter/cache
+profiles (same prefilled defaults and reset arrows). Select one in Live to switch solver implementations without reloading
 the browser or replacing the simulator. Switching pauses at the displayed native
 state and starts a new history segment. Profiles must have compatible model
 coordinates and prebuilt binaries for the chosen knot count. See
@@ -241,7 +251,7 @@ rates per calculation-wall second are labeled separately.
 The settings include horizon N and knot interval, costs, SQP/PCG budgets and
 tolerance, ADMM choices, and bound margins/fractions. Only modules prepared for
 the current MPC/toolchain are offered; changing a setting never compiles one.
-Use Source / Build settings to inspect changed `tiago_mpc` code, build missing
+Use Settings › Backend to inspect changed `tiago_mpc` code, build missing
 modules explicitly and Apply the selected source/binaries. See the
 [execution API](docs/execution-api.md) and [prediction fields](docs/live-api.md).
 

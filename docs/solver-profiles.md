@@ -5,8 +5,8 @@ fresh inspection are implemented. Retained native checks cover selected N32
 source/model configurations; they do not qualify every profile/horizon or task
 success. See [the verification map](architecture.md#verification) for maintained
 checks and their scope.
-Source / Build still selects the complete simulator checkout; its Apply action
-restarts the backend. Solver-profile activation keeps that simulator, HTTP
+Source / Build (Settings › Backend) still selects the complete simulator checkout;
+its Apply action restarts the backend. Solver-profile activation keeps that simulator, HTTP
 service and browser session running.
 
 ## Ownership and lifecycle

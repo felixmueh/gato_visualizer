@@ -45,6 +45,14 @@ a small API around the MPC.
 The first deliverable is the interactive trajectory visualizer: prediction
 mode with live settings, and play mode.
 
+## UI design: let the design carry the information — Felix, 2026-10-22
+
+Show state through layout, controls and visual encoding (selected values,
+highlighting, reset arrows, colour). Add text only where it is really needed;
+put secondary details in hover tooltips instead of permanent text, and do not
+repeat what a control already shows. Match the existing dark blue palette and
+code idiom; dialogs use the same palette as the workbench.
+
 ## Relationship to tiago_mpc — Felix, 2026-10-21
 
 `tiago_mpc` keeps changing and the visualizer must follow it, but this project
