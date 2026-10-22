@@ -173,20 +173,26 @@ than benchmark evidence. Inspection never interrupts an external experiment;
 a failed nonblocking lease acquisition reports a terminal `busy` job.
 
 The selected problem must contain native initial q/qd/task time, the exact
-native reference, effective solver/controller settings, and explicitly captured
-installed constraint rows. `constraint_bounds_native` records the actual native
+native reference, the effective `MpcParams` (`problem_configuration`, the
+`asdict(MpcParams)` the solve used), and explicitly captured installed
+constraint rows. `constraint_bounds_native` records the actual native
 position/velocity/torque bounds and activity masks once after configuration.
 These are separate from display/physical `joint_limits`; compiled default
 margins and offsets must never be inferred from a physical-limit table.
 Historical records without exact constraint capture report unavailable. Missing
 Replay references, configuration or state are also unavailable, including a
-position-only replay with enough geometry to draw a trajectory.
+position-only replay with enough geometry to draw a trajectory. Solves recorded
+before the migration to `tiago_mpc` main carry the old configuration shape
+(`solver_params`, `controller`) and report "Run again unavailable:
+pre-migration recording"; there is no converter (Felix, 2026-10-22).
 
 Only an interpreter and module supporting `capture_iterations` plus
 `ITERATION_CAPTURE_AVAILABLE` can run an inspection. A CPU profile preflight
-checks that capability for the selected N; the configured child checks again.
-The request changes only the constructor-sized finite SQP cap and optional
-native wall budget. It calls `BSQP.solve` once with a cold held-state seed,
+checks that capability for the selected N and predictor friction; the
+configured child checks again. The child constructs `Mpc` from the captured
+`MpcParams` with only `solver.max_sqp_iters` replaced by the finite cap, from a
+compiled module (`find_binary`; it never compiles), plus the optional native
+wall budget. It calls `BSQP.solve` once with a cold held-state seed,
 preserving the solver's practical zero-PCG stop. This is neither the original
 warm initialization nor exact optimizer continuation. Requested cap/budget,
 actual completed count, stop reason, original selection, and the model, binary,
