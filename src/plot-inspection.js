@@ -135,7 +135,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     // Every plotted graph shares viewer-side y limits. Empty sides stay automatic.
     let display;
     if (!['table', 'spans', 'unavailable'].includes(spec?.kind)) {
-      const limits = displayLimits(item.display), group = el('fieldset', null, 'plot-display-limits'), legendText = el('legend', 'Y axis');
+      const limits = displayLimits(item.display), group = el('section', null, 'plot-display-limits'), legendText = el('h3', 'Y axis');
       const side = (text, value) => { const label = el('label', text), input = el('input'); input.type = 'number'; input.step = 'any'; input.placeholder = 'auto'; input.value = value ?? ''; label.append(input); return { label, input }; };
       const bottom = side('Bottom', limits.min), top = side('Top', limits.max), clip = el('label', null, 'plot-display-clip'), clipInput = el('input');
       clipInput.type = 'checkbox'; clipInput.checked = limits.clipOutliers; clip.title = 'Fit automatic sides to the 1st–99th percentile of visible samples';
