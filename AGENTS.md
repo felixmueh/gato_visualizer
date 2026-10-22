@@ -135,6 +135,14 @@ a guessed offset. Playback uses sample timestamps; Live defaults to sample hold
 with optional interpolation, while imported Replay interpolates between samples.
 Prediction playback is distinct from recorded simulated MPC motion.
 
+## Simulator versus MPC model — Felix, 2026-10-22
+
+The simulator may be more realistic than the MPC's predictor model (for
+example armature or friction in the plant only); a simpler MPC model is
+expected, as on the real robot. A plant/predictor difference is a supported
+configuration, not a defect. Label which model each displayed element uses and
+keep the difference visible in metadata.
+
 ## What the display claims
 
 Label what each element shows: a prediction is not executed motion, and
