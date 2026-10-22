@@ -24,6 +24,11 @@ export function writePath(value, path, next) {
   parent[last] = next;
 }
 
+export function availableKnotCounts(schema, config) {
+  const mode = config?.friction?.prediction ? 'on' : 'off';
+  return schema.available_N_by_friction?.[mode] ?? schema.available_N;
+}
+
 export function initialLiveSettings(schema) {
   if (!Array.isArray(schema.available_N) || !schema.available_N.length) {
     throw new Error('No knot counts are ready. Open Source / Build settings to select a compatible cache or build them. Replay is available.');
@@ -247,15 +252,28 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     }
     controlsEnabled(); refreshPlanLabel(); return Boolean(accepted);
   }
+  function refreshFrictionAvailability() {
+    const available = availableKnotCounts(schema, settings.config);
+    profileNError = !available.includes(settings.config.N);
+    const knot = inputs.find(item => item.parameter.path === 'N');
+    if (knot) for (const option of knot.input.children) {
+      const value = knot.parameter.choices[Number(option.value)];
+      option.disabled = !available.includes(value);
+      if (value != null) option.textContent = `${value}${option.disabled ? ' · unavailable' : ''}`;
+    }
+    const commit = schema.source?.mpc_commit;
+    $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · prebuilt N${schema.available_N_by_friction ? settings.config.friction?.prediction ? ' (predictor friction)' : ' (loss-free predictor)' : ''}: ${available.join(', ') || 'none'}`;
+  }
+  const unavailableFrictionMessage = () => `N=${settings.config.N} is unavailable for this predictor friction mode. Choose an available N or open Source / Build settings to build it explicitly; select smooth-friction predictor modules when Predictor friction is on.`;
   function change() {
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
     const next = readSettings();
-    if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); profileNError = false; }
+    if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); refreshFrictionAvailability(); }
     calculationControls();
     resetIndicators.update();
     dirty = true; renderDirty = true; pausePlayback(); refreshPlanLabel();
     controlsEnabled();
-    message(profileSwitching ? 'Solver switching · settings draft retained.' : profileUnavailable ? 'No solver is active · settings draft retained.' : 'Settings changed · replacing obsolete calculation…');
+    message(profileSwitching ? 'Solver switching · settings draft retained.' : profileUnavailable ? 'No solver is active · settings draft retained.' : profileNError ? unavailableFrictionMessage() : 'Settings changed · replacing obsolete calculation…', profileNError);
     clearTimeout(settingsTimer); if (!profileSwitching && !profileUnavailable) settingsTimer = setTimeout(submitSettings, 350);
   }
   function populate() {
@@ -352,9 +370,22 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       const name = parameter.group || 'Settings';
       const isHorizon = ['N', 'dt_s'].includes(parameter.path);
       if (!isHorizon && !groups.has(name)) {
-        const details = document.createElement('details'); details.className = 'settings-group'; details.open = groups.size === 0;
+        const details = document.createElement('details'); details.className = 'settings-group'; details.open = groups.size === 0 || name === 'Friction';
         const summary = document.createElement('summary'); summary.textContent = name;
-        const fields = document.createElement('div'); fields.className = 'settings-fields'; details.append(summary, fields); $('live-settings').append(details); groups.set(name, fields);
+        const fields = document.createElement('div'); fields.className = 'settings-fields'; details.append(summary);
+        if (name === 'Friction') {
+          const note = document.createElement('p'); note.className = 'settings-note';
+          note.textContent = 'Simulator: hard-sign Coulomb + viscous friction. Predictor: smooth tanh Coulomb + viscous friction. Uses the selected source’s canonical right-arm coefficients. Changes start a new segment from the displayed state.';
+          details.append(note);
+          const coefficients = schema.friction?.coefficients;
+          for (const [key, unit] of [['coulomb_nm', 'Coulomb (Nm)'], ['viscous_nm_s_per_rad', 'Viscous (Nm s/rad)']]) {
+            if (!Array.isArray(coefficients?.[key])) continue;
+            const values = document.createElement('p'); values.className = 'settings-note';
+            values.textContent = `${unit}, joints 1–7: ${coefficients[key].join(', ')}`;
+            values.title = coefficients.provenance || ''; details.append(values);
+          }
+        }
+        details.append(fields); $('live-settings').append(details); groups.set(name, fields);
       }
       const label = document.createElement('label'); label.className = 'parameter-row';
       const text = document.createElement('span'); text.textContent = parameter.label || parameter.path;
@@ -370,7 +401,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         }
       } else if (parameter.kind === 'bool') { input.type = 'checkbox'; input.checked = Boolean(value); }
       else { input.type = 'number'; input.step = parameter.kind === 'int' ? '1' : 'any'; if (parameter.min != null) input.min = parameter.min; if (parameter.max != null) input.max = parameter.max; input.value = value; input.required = true; }
-      input.disabled = Boolean(parameter.disabled); input.title = parameter.path; listen(input, 'input', () => {
+      input.disabled = Boolean(parameter.disabled); input.title = parameter.description || parameter.path; listen(input, 'input', () => {
         if (isHorizon) {
           if (parameter.path === 'N' && input.value !== '-1') profileNError = false;
           if (!profileNError) { if (horizonInput) horizonInput.disabled = false; syncHorizon(); }
@@ -415,11 +446,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     }
     $('live-continue').checked = settings.execution.continue_at_end;
     listen($('live-continue'), 'change', () => { settings.execution.continue_at_end = $('live-continue').checked; });
-    const commit = schema.source?.mpc_commit;
-    $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · prebuilt N: ${schema.available_N.join(', ')}`;
+    refreshFrictionAvailability();
     resetIndicators.update();
     calculationControls();
-    $('live-mode').disabled = false; message('Choose Live MPC to compute a prediction.');
+    $('live-mode').disabled = false; message(profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', profileNError);
   }
   function useGeneration(next, force = false) {
     if (!force && generation != null && next < generation) return false;
@@ -778,7 +808,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       schema = nextSchema; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = nextSettings;
       taskDrafts.clear();
       for (const [kind, draft] of retainedDrafts) if (schema.tasks?.some(task => task.kind === kind)) taskDrafts.set(kind, restoreCompatibleSettings(schema, { ...settings, task: draft }).task);
-      profileNError = !schema.available_N.includes(settings.config.N);
+      profileNError = !availableKnotCounts(schema, settings.config).includes(settings.config.N);
       liveReady = true; profileUnavailable = false; needsInitialPreview = false; initialResetPending = false;
       suppressInitialPreview = mode !== 'live';
       populate();

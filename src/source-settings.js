@@ -27,6 +27,8 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
     <p class="plotters-default settings-note"></p><div class="source-actions"><button type="button" data-action="plotters">Reload plotters</button></div>
     <p class="settings-note">Bundled plots are always available. Reload saves this directory and reloads Python plotters without restarting MPC. Clear it to follow the selected checkout.</p>
     <hr><label>Additional knot counts N<input name="counts" type="text" inputmode="numeric" placeholder="e.g. 48 96"></label>
+    <label class="source-rebuild"><input name="prediction_friction" type="checkbox">Build smooth-friction predictor modules</label>
+    <p class="settings-note">Off builds loss-free predictors. On builds tanh Coulomb + viscous predictors for the selected N; the smoothing width remains a runtime setting.</p>
     <label class="source-rebuild"><input name="rebuild" type="checkbox">Rebuild selected counts even when already compatible</label>
     <div class="source-actions"><button type="button" data-action="build">Build selected N</button></div>
     <p>Compilation uses half the available CPU cores and keeps Live running. Normal setting changes never compile. Apply starts a fresh Live session; saved replays and disk history remain.</p>
@@ -96,7 +98,7 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
   action('inspect').addEventListener('click', () => run(async () => { say('Checking selected environment and binary identities…'); describe(await request('/api/source/inspect', selection())); }));
   action('build').addEventListener('click', () => run(async () => {
     const counts = parseBuildCounts(field('counts').value);
-    await request('/api/source/build', { selection: selection(), N: counts, rebuild: field('rebuild').checked });
+    await request('/api/source/build', { selection: selection(), N: counts, rebuild: field('rebuild').checked, prediction_friction: field('prediction_friction').checked });
     clearTimeout(timer); await refresh();
   }));
   action('apply').addEventListener('click', () => run(async () => {

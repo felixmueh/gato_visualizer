@@ -96,8 +96,11 @@ test('source window checks without compiling, streams explicit build status, the
     await action('inspect').emit('click');
     assert.equal(requests.filter(item => item.path.endsWith('/build')).length, 0);
     field('counts').value = '96,48';
+    field('prediction_friction').checked = true;
+    assert.equal(requests.filter(item => item.path.endsWith('/build')).length, 0);
     await action('build').emit('click');
     assert.deepEqual(requests.find(item => item.path.endsWith('/build')).body.N, [48, 96]);
+    assert.equal(requests.find(item => item.path.endsWith('/build')).body.prediction_friction, true);
     assert.equal(action('apply').disabled, true);
     assert.equal(form.querySelector('.source-build-log').textContent, 'compiling current key');
     currentBuild = { ...currentBuild, state: 'complete' };
@@ -110,4 +113,22 @@ test('source window checks without compiling, streams explicit build status, the
     assert.equal(ui.dialog.isOpen, false);
     ui.dialog.destroy();
   } finally { Object.assign(globalThis, original); }
+});
+
+test('source and profile refresh preserve typed friction modes and valid predictor smoothing', () => {
+  const schema = {
+    available_N: [32], available_N_by_friction: { off: [32], on: [] },
+    defaults: { config: { N: 32, friction: { simulation: true, prediction: false, predictor_smoothing_rad_s: .03 } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
+    parameters: [
+      { path: 'N', kind: 'choice', choices: [32] },
+      { path: 'friction.simulation', kind: 'bool' }, { path: 'friction.prediction', kind: 'bool' },
+      { path: 'friction.predictor_smoothing_rad_s', kind: 'float', min: .001, max: 1 },
+    ], tasks: [{ kind: 'reach', defaults: { target_offset_m: [0, 0, 0] } }],
+  };
+  const saved = { config: { N: 32, friction: { simulation: false, prediction: true, predictor_smoothing_rad_s: .05 } }, task: { kind: 'reach' } };
+  assert.deepEqual(restoreCompatibleSettings(schema, saved).config.friction, saved.config.friction);
+  saved.config.friction.predictor_smoothing_rad_s = 0;
+  assert.equal(restoreCompatibleSettings(schema, saved).config.friction.predictor_smoothing_rad_s, .03);
+  saved.config.friction.prediction = 'false';
+  assert.equal(restoreCompatibleSettings(schema, saved).config.friction.prediction, false);
 });
