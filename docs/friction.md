@@ -31,3 +31,25 @@ The schema advertises `available_N_by_friction.off` and `.on`, while `available_
 This is an explicit build action. Ordinary configuration, preview, Play and inspection only qualify/load current binaries; they do not call registration or a compiler. Compatibility includes generated model/frame, native sources, toolchain, ABI and architecture. A previously present smooth binary may be stale. Build only the selected missing/stale variant, then Apply/restart using the existing workflow.
 
 Hard-sign Coulomb friction can produce integration-sensitive behavior near zero speed; retaining those outcomes is preferable to silently changing the plant law. These controls provide simulation comparisons, not physical-robot qualification or a claim that smooth friction resolves previous solver failures.
+
+## Initial validation, 2026-10-22
+
+The CPU checks for independent settings, prepared-module selection, provenance
+and inspection reconstruction passed. Legacy loss-free conformance also passed:
+all three plans, states, timestamps and applied controls matched the upstream
+reference bit for bit after aligning the selected interpreter's toolchain PATH.
+
+The initial friction-enabled dynamics checks failed. The standalone upstream
+reaching configuration with both laws enabled and a **3 ms plant step** produced
+an extremely large finite state during the first 10 ms interval, then failed on
+the second solve with a nonfinite prediction. The distinct visualizer check with
+**simulator friction only and a 1 ms plant step** also failed on the second solve
+at simulated time 0.01 s, reporting nonfinite prediction/torque and error status.
+The planned both-on visualizer check was held after this shared plant failure.
+Raw records are retained under `_expr_data/friction/native/` in the main checkout.
+
+The requested new UI defaults remain both on, but these dynamics are **not
+qualified**, and deployment was held after these checks. Passing control-plumbing
+checks does not resolve the dynamics failure. No cause was established; no
+timestep change, model change, solver repair or smaller-step follow-up was run
+as part of this validation.
