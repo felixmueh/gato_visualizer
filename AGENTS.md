@@ -158,12 +158,25 @@ come later and matter for tuning, not for the design.
 
 ## What the display claims
 
-Label what each element shows: a prediction is not executed motion, and
-simulated time is not solver time. Show the solver's work and status for each
-displayed plan (SQP, PCG and ADMM iterations, constraint violation); a finite
-plan does not show that the solver converged. The visualizer's independent
-simulation/control/TO clocks govern generation; recorded playback uses simulation
-timestamps at 1x. Visualizer runs are diagnostics, not experiment or timing evidence.
+The display must not let a viewer mistake one kind of data for another: a
+prediction is not executed motion, simulated time is not solver time, a finite
+plan does not show that the solver converged, and a final plan shown as context
+is not a recorded intermediate iterate. Show the solver's work and status for
+each displayed plan (SQP, PCG and ADMM iterations, constraint violation).
+Missing telemetry stays visibly unavailable.
+
+Make these distinctions visible through the design, not through explanations
+(Felix, 2026-10-22): line style, colour, fading, placement, the control's own
+value, or a short badge whose tooltip gives the reason. Only a distinction that
+changes how the current display is read needs a cue without hovering; usage
+hints, reasons for disabled controls, provenance and background belong in
+tooltips, the docs, or nowhere. Mark each distinction once, at the element it
+concerns. Do not add caveats for unlikely misreadings or repeat a label across
+panels; permanent text is a last resort of a few words.
+
+The visualizer's independent simulation/control/TO clocks govern generation;
+recorded playback uses simulation timestamps at 1x. Visualizer runs are
+diagnostics, not experiment or timing evidence.
 
 ## Host environment and GPU
 
