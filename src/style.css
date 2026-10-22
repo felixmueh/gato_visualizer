@@ -1100,6 +1100,7 @@ kbd {
 .mode-tabs button:disabled { opacity: .45; }
 .availability:empty { display: none; }
 .availability { font-size: 10px; line-height: 1.6; color: #dcb397; overflow-wrap: anywhere; margin-top: 0; }
+.availability-link { padding: 0; border: 0; background: none; color: #f0cdb3; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 #live-panel { margin-bottom: 22px; }
 .settings-note { font-size: 10px; line-height: 1.7; color: #8b9eb5; margin: 10px 0 14px; }
 .target-offsets { display: flex; gap: 8px; margin: 14px 0; }

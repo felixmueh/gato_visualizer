@@ -81,6 +81,8 @@ let solverProfiles;
 const sourceSettings = setupSourceSettings({ button: $('source-settings-open'), onOpen: () => solverProfiles?.refresh().catch(() => {}), onPlottersReload: () => plotInspection.refresh(), beforeApply: () => {
   try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
 } });
+// Notices link straight to the settings tab that fixes them.
+document.addEventListener('open-settings', event => { sourceSettings.dialog.selectTab(event.detail?.tab || 'backend'); $('source-settings-open').click(); });
 let limitTint, limitTintEnabled = true;
 const presentationSettings = setupPresentationSettings({ container: sourceSettings.panels.ui, onChange: settings => { live?.setPresentationSettings(settings); limitTintEnabled = settings.limit_tint; limitTint?.setEnabled(limitTintEnabled); } });
 solverProfiles = setupSolverProfiles({ liveContainer: $('live-panel'), editorContainer: sourceSettings.panels.solverProfiles,

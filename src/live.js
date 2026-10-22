@@ -829,7 +829,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       plan = undefined; inspectionPlan = null; inspectingPreview = false;
       status = 'paused'; job = { ...job, job_active: false };
       $('live-status').textContent = 'PAUSED'; $('live-status').classList.toggle('error', false);
-      $('live-availability').textContent = '';
+      $('live-availability').textContent = ''; $('live-availability').title = '';
       message(profileNError ? `N=${settings.config.N} is unavailable in this solver profile. Choose an available knot count before calculating.` : 'Solver ready · simulation paused.', profileNError);
     } catch (error) {
       if (reload !== schemaReload) return;
@@ -840,6 +840,13 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       if (reload === schemaReload) { profileSwitching = false; controlsEnabled(); renderDirty = true; }
     }
   }
+  // The notice stays short: the reason is its tooltip and the fix is one click away.
+  function showSetupNotice(reason) {
+    const notice = $('live-availability'), link = document.createElement('button');
+    link.type = 'button'; link.className = 'availability-link'; link.textContent = 'Settings › Backend';
+    link.addEventListener('click', () => document.dispatchEvent(new CustomEvent('open-settings', { detail: { tab: 'backend' } })));
+    notice.replaceChildren('Live MPC needs setup · ', link); notice.title = reason;
+  }
   const initialSchemaRequest = schemaReload;
   fetch('/api/live/schema').then(async response => { const result = await response.json(); if (initialSchemaRequest !== schemaReload) return; if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings);
     try {
@@ -847,7 +854,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       sessionStorage.removeItem('source-restart-live-settings');
       if (retained) { settings = restoreCompatibleSettings(schema, JSON.parse(retained)); dirty = !settingValuesEqual(settings, defaultSettings); }
     } catch {}
-    liveReady = true; populate(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; $('live-availability').textContent = `Live MPC needs setup: ${error.message}`; });
+    liveReady = true; populate(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; showSetupNotice(error.message); });
   return {
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
