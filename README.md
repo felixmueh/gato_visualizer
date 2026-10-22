@@ -115,6 +115,11 @@ and its recorded SQP iterations), and **Joints** (native
 position, velocity and actuator torque). Auxiliary views show the same robot and
 playback time and suspend rendering when their panel is hidden.
 
+Drag the inner edge of either sidebar to resize it (220-560 px, always leaving
+the viewport at least 360 px); double-click the edge to restore the default
+width. Widths are remembered per browser. Below 960 px the sidebars are
+overlays and keep their fixed width.
+
 The playback bar contains Play/Pause, Reset, the timeline and **Stop**. Checked
 Stop ends playback at the recording's end. With Manual/Automatic Live calculation,
 unchecking it continues simulation from the tip; in Replay, unchecking it loops

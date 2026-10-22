@@ -54,7 +54,8 @@
 .sqp-strip.loading span { opacity: .55; cursor: progress; }
 .sqp-strip input, .sqp-strip > button:last-child { grid-column: 1 / -1; width: 100%; }
 .sqp-strip[hidden] { display: none; }
-.timeline-plot-hint { color: #8199af; font-size: 10px; padding: 4px 0 7px; }
+/* flow-root contains the floated scroll buttons: otherwise the plot rows (a BFC) shrink beside them and end short of the timeline. */
+.timeline-plot-hint { display: flow-root; color: #8199af; font-size: 10px; padding: 4px 0 7px; }
 .timeline-plot-hint.resizable { cursor: ns-resize; padding: 0 0 2px; min-height: 12px; touch-action: none; border-top: 2px solid transparent; }
 .timeline-plot-hint.resizable:hover { border-top-color: #57c7dc80; }
 .timeline-plot-rows { display: grid; gap: 5px; max-height: 290px; overflow-y: auto; }
