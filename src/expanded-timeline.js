@@ -78,12 +78,15 @@ export function visibleTimelineIntervals(index, [start, end]) {
   return result;
 }
 
+// Gestures are discoverable on hover (surface and the footer's ?), not as permanent text.
+const GESTURE_HINT = 'Scroll to zoom; Alt-drag, middle-drag or horizontal scroll to pan; drag to scrub. Shift-drag selects an aggregate window; drag its edge handles to adjust, onto the data end for unbounded; Esc clears it. Arrow keys seek, Shift+arrows seek 1 ms, +/− zoom, 0 fits.';
+
 export function expandedTimelineShell() {
   return `<section id="expanded-timeline" class="expanded-timeline" aria-label="Timeline inspection" hidden>
     <div class="timeline-inspection-heading"><span id="timeline-clock-label">Recorded time</span><span id="timeline-timing-note">No timing data</span><div class="timeline-zoom-controls"><button id="timeline-window-clear" class="timeline-window-clear" aria-label="Clear aggregate window" title="Clear aggregate window (Esc)" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg></button><button id="timeline-zoom-out" aria-label="Zoom timeline out" title="Zoom out (−)">−</button><button id="timeline-zoom-in" aria-label="Zoom timeline in" title="Zoom in (+)">+</button><button id="timeline-fit" title="Fit entire recording (0)">Fit</button></div></div>
     <div id="timeline-linked-graphs"></div>
     <div id="timeline-inspector" class="timeline-inspector" role="slider" tabindex="0" aria-label="Inspect simulation time" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-describedby="timeline-gesture-hint"><canvas id="timeline-bands" aria-hidden="true"></canvas><div id="timeline-window-shade-start" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-shade-end" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-start" class="timeline-window-handle" data-side="start" role="slider" tabindex="-1" aria-label="Aggregate window start"></div><div id="timeline-window-end" class="timeline-window-handle" data-side="end" role="slider" tabindex="-1" aria-label="Aggregate window end"></div><div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"><span></span></div></div>
-    <div class="timeline-inspection-footer"><span id="timeline-gesture-hint">Scroll to zoom · Alt-drag to pan · drag to scrub · Shift-drag or edge handles for aggregate window</span><span id="timeline-selection">0.000 s</span></div>
+    <div class="timeline-inspection-footer"><span id="timeline-gesture-hint" class="timeline-gesture-help" title="${GESTURE_HINT}"><span aria-hidden="true">?</span><span class="sr-only">${GESTURE_HINT}</span></span><span id="timeline-selection">0.000 s</span></div>
     <div id="timeline-inspection-tooltip" class="timeline-inspection-tooltip" role="tooltip" hidden></div>
   </section>`;
 }
@@ -97,8 +100,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   let aggregate = { ...UNBOUNDED_AGGREGATE };
   const handles = { start: $('timeline-window-start'), end: $('timeline-window-end') };
   const shades = { start: $('timeline-window-shade-start'), end: $('timeline-window-shade-end') }, clearWindow = $('timeline-window-clear');
-  const gestureHint = 'Scroll to zoom; Alt-drag, middle-drag or horizontal scroll to pan; drag to scrub. Shift-drag selects an aggregate window; drag its edge handles to adjust, onto the data end for unbounded; Esc clears it. Arrow keys seek, Shift+arrows seek 1 ms, +/− zoom, 0 fits.';
-  surface.title = gestureHint;
+  surface.title = GESTURE_HINT;
   function paint() {
     if (!expanded) return;
     width = Math.max(1, surface.clientWidth);

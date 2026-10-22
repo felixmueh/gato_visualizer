@@ -39,7 +39,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   // The aggregate window is chosen on the expanded timeline; this chip only mirrors it.
   const heading = el('div', null, 'plot-inspector-heading'), windowChip = el('span', null, 'aggregate-window'), windowText = el('span');
   const windowClear = button('×', () => onClearAggregate(), 'Clear aggregate window'); windowChip.append(windowText, windowClear);
-  heading.append(windowChip, button('+', () => openCatalog('episode'), 'Add episode plot'));
+  heading.append(windowChip, button('+', () => openCatalog('episode'), 'Add episode plot or aggregate'));
   let windowKey;
   function renderWindowChip() {
     const view = getView(), aggregate = view.aggregate, episode = view.episodeClock !== false && metadata.episode?.context?.episode_available !== false;
@@ -63,10 +63,15 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     onStart: () => { onInspectionStart(); pinnedSource = structuredClone(solveSource()?.source); state.pin(true); invalidate(); },
     onComplete: result => setInspection(result),
   });
-  // The strip header says what to do only while it is empty. With rows it is
-  // a thin handle: drag it to change how much height the rows may take.
-  const bottomTitle = el('div', null, 'timeline-plot-hint'), bottomHint = el('span', 'Drop an episode-time plot here'), bottomCards = el('div', null, 'timeline-plot-rows'); bottomContainer.replaceChildren(bottomTitle, bottomCards);
-  bottomTitle.append(bottomHint);
+  // The strip header carries no text. With rows it is a thin handle: drag it
+  // to change how much height the rows may take. While an eligible plot is
+  // dragged, the whole strip outlines itself as the drop zone.
+  const bottomTitle = el('div', null, 'timeline-plot-hint'), bottomCards = el('div', null, 'timeline-plot-rows'); bottomContainer.replaceChildren(bottomTitle, bottomCards);
+  const showDropZone = active => { bottomContainer.classList.toggle('timeline-drop-ready', active); if (!active) bottomContainer.classList.toggle('timeline-drop-over', false); };
+  // Capture: the strip's own drop handler stops propagation and rebuilds the dragged card.
+  const hideDropZone = () => showDropZone(false);
+  for (const event of ['dragend', 'drop']) doc.addEventListener(event, hideDropZone, true);
+  bottomContainer.addEventListener('dragleave', event => { if (!bottomContainer.contains?.(event.relatedTarget)) bottomContainer.classList.toggle('timeline-drop-over', false); });
   for (const [label, amount] of [['↑', -100], ['↓', 100]]) bottomTitle.append(button(label, () => bottomCards.scrollBy({ top: amount, behavior: 'smooth' }), `Scroll timeline plot rows ${amount < 0 ? 'up' : 'down'}`));
   const applyStripHeight = () => { bottomCards.style.maxHeight = state.timelineHeight ? `${state.timelineHeight}px` : ''; };
   applyStripHeight();
@@ -84,7 +89,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     resizing = { cancel: () => finish({ pointerId }) };
     doc.addEventListener('pointermove', move); doc.addEventListener('pointerup', finish); doc.addEventListener('pointercancel', finish);
   }
-  bottomContainer.addEventListener('dragover', event => { if (drag && eligible(drag.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
+  bottomContainer.addEventListener('dragover', event => { if (drag && eligible(drag.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; bottomContainer.classList.toggle('timeline-drop-over', true); } });
   bottomContainer.addEventListener('drop', event => { if (!drag || !eligible(drag.id)) return; event.preventDefault(); event.stopPropagation(); state.place(drag.id, true); const target = event.target.closest?.('[data-instance]'); if (target) state.reorder(drag.id, target.dataset.instance); drag.accepted = true; renderCards(); });
   function setupDropList(list, context) {
     list.addEventListener('dragover', event => { if (drag && state.instances.find(item => item.id === drag.id)?.context === context) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
@@ -181,7 +186,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         // Notes and descriptions are secondary: they appear on hover only.
         const title = el('header', null, 'plot-card-heading'), grip = el('span', spec?.title || definition?.title || item.plot_id, 'plot-card-grip'); grip.draggable = true;
         grip.title = [spec?.title || definition?.title || item.plot_id, definition?.description, ...(spec?.notes || []), ...reductionNotes(spec), placement === 'timeline' ? 'Drag out to remove from the timeline' : 'Drag to reorder or onto the timeline'].filter(Boolean).join('\n');
-        grip.addEventListener('dragstart', event => { drag = { id: item.id, from: placement, accepted: false }; event.dataTransfer.setData('text/plain', item.id); event.dataTransfer.effectAllowed = 'move'; });
+        grip.addEventListener('dragstart', event => { drag = { id: item.id, from: placement, accepted: false }; event.dataTransfer.setData('text/plain', item.id); event.dataTransfer.effectAllowed = 'move'; showDropZone(placement === 'sidebar' && eligible(item.id) && visible(bottomContainer)); });
         grip.addEventListener('dragend', () => { if (drag?.from === 'timeline' && !drag.accepted) { state.place(item.id, false); renderCards(); } drag = null; }); title.append(grip);
         // Timeline rows carry unit and legend in their title row.
         const legendTarget = placement === 'timeline' ? el('div', null, 'plot-card-legend') : null;
@@ -212,10 +217,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       }
     }
     for (const [key, presentation] of presentations) if (!usedPresentations.has(key)) { presentation.cancelScrub?.(); presentations.delete(key); }
-    bottomHint.hidden = bottomCards.children.length > 0; bottomTitle.classList.toggle('resizable', bottomCards.children.length > 0);
-    bottomTitle.title = bottomCards.children.length ? 'Drag to resize the timeline plots · drop an episode-time plot to add it' : '';
-    if (!state.instances.some(item => item.context === 'episode')) episodeCards.append(el('p', 'Add episode plots and aggregates with +.', 'plot-message'));
-    if (!state.instances.some(item => item.context === 'solve')) solveCards.append(el('p', 'Add solve plots with +.', 'plot-message'));
+    bottomTitle.classList.toggle('resizable', bottomCards.children.length > 0);
+    bottomTitle.title = bottomCards.children.length ? 'Drag to resize the timeline plots' : '';
     renderSolve(); lastRender = JSON.stringify([getView().window, getView().aggregate ?? null]);
   }
   function resizeHandle(item, placement, key, fallback) {
@@ -395,5 +398,5 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     runAgain.update(runContext());
     const now = Date.now(); if ((pending || now - lastPoll > 1500 && current?.source?.kind === 'live') && now - lastPoll >= 200) { lastPoll = now; refresh(); }
   }
-  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, aggregate: getView().aggregate ?? null, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; resizing?.cancel(); for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); runAgain.destroy(); handles.forEach(handle => handle.destroy()); catalogHandles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
+  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, aggregate: getView().aggregate ?? null, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; resizing?.cancel(); for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); for (const event of ['dragend', 'drop']) doc.removeEventListener(event, hideDropZone, true); runAgain.destroy(); handles.forEach(handle => handle.destroy()); catalogHandles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
 }
