@@ -12,10 +12,7 @@ from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "visualizer.json"
 DEFAULT_INGEST_DIRECTORY = ROOT.parent / "_expr_data/ingest"
-# Temporary (Felix, 2026-10-22): tiago_mpc main is being restructured without
-# compatibility shims. Until the visualizer is migrated to the new package API,
-# default to a frozen worktree of the last state it supports (branch vis-baseline).
-DEFAULT_MPC_ROOT = ROOT.parent / "tiago_mpc_vis_baseline"
+DEFAULT_MPC_ROOT = ROOT.parent / "tiago_mpc"
 
 
 @dataclass(frozen=True)
