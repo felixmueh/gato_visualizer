@@ -34,11 +34,19 @@ class FakeLocks:
         self.handles = []
 
 
+def float32_finite(x):
+    """GATO stages states as float32; a finite float64 state may overflow."""
+    with np.errstate(over='ignore'):
+        return bool(np.isfinite(np.asarray(x, dtype=np.float32)).all())
+
+
 class FakeController:
     fresh = True
     def reset(self, x):
         if not LOCK_HELD:
             raise AssertionError('Controller reset outside lock')
+        if not float32_finite(x):
+            raise ValueError('reset x0 must be finite')
         self.fresh = True
 
 
@@ -67,6 +75,7 @@ class FakeAdapter:
         self.dt, self.N = config['dt_s'], config['N']
         self.delay = .25 if config['solver_params']['max_sqp_iters'] == 9000 else 0
         self.fail = config['solver_params']['max_sqp_iters'] == 8000
+        self.blow_up = config['solver_params']['max_sqp_iters'] == 7000
         self.task = task
         self.controller.reset(self.x*self.state_signs)
     def reset_state(self, reset_controller=True):
@@ -79,6 +88,8 @@ class FakeAdapter:
     def solve_snapshot(self, origin, version):
         if self.fail:
             raise RuntimeError('intentional test solve failure')
+        if not float32_finite(self.x):
+            raise FloatingPointError('Nonfinite torque or predicted trajectory')
         if self.delay:
             # CPU/GIL activity in this process cannot hold the HTTP GIL.
             stop = time.perf_counter()+self.delay
@@ -105,6 +116,9 @@ class FakeAdapter:
     def rk4(self, model, data, q, v, u, h):
         if self.clock:
             self.clock.value += .0001
+        if getattr(self, 'blow_up', False):
+            # Unstable plant: finite in float64, beyond the solver's float32.
+            return np.full(7, 1e300), np.full(7, 1e300)
         return q+u*h, v+u*h
     def state_snapshot(self, rtf=0, settings_version=0):
         return dict(type='state', sim_time_s=self.t, _x=self.x.copy(),
@@ -472,6 +486,23 @@ class SpawnTests(unittest.TestCase):
         version=self.service.next_version
         self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==version)
         self.assertEqual(self.service._process.pid,pid)
+
+    def test_reset_recovers_after_plant_blow_up_beyond_solver_precision(self):
+        # The 0.2 s TO interval spans two 0.1 s batches, so the failed solve's
+        # restored tip is already the blown-up state that Reset discards.
+        request=self.settings(simulation_hz=100.,control_hz=25.,to_hz=5.)
+        request['config']['solver_params']['max_sqp_iters']=7000
+        request['execution']['duration_s']=.5
+        self.service.command(request)
+        version=self.service.next_version
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==version)
+        self.service.command(dict(type='precalculate'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('state')=='error')
+        self.assertEqual(self.service.latest['status']['message'],'Nonfinite torque or predicted trajectory')
+        self.service.command(dict(type='reset'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('state')!='error' and
+                  self.service.latest.get('plan',{}).get('origin')=='preview')
+        self.assertEqual(self.records()[0]['q'],[0.]*7)
 
 
 if __name__=='__main__':

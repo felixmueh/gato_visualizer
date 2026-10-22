@@ -35,6 +35,62 @@ class BoundaryTests(unittest.TestCase):
             sender.close()
             receiver.close()
 
+    def test_configure_after_failed_solve_ignores_the_rejected_state(self):
+        # Each solve caches its input state in the child. After a plant
+        # blow-up that state overflows GATO's float32 staging; configure must
+        # not seed the new controller from it, or Reset cannot recover.
+        numerical = test_live_mpc.AdapterTelemetryTests().adapter()
+
+        def float32_finite(x):
+            with np.errstate(over="ignore"):
+                return bool(np.isfinite(np.asarray(x, dtype=np.float32)).all())
+
+        def gato_reset(x):
+            if not float32_finite(x):
+                raise ValueError("reset x0 must be finite")
+
+        def gato_step(x, reference):
+            if not float32_finite(x):
+                raise FloatingPointError("Nonfinite torque or predicted trajectory")
+            raise AssertionError("Only the rejected solve is requested")
+
+        numerical.controller = SimpleNamespace(reset=gato_reset, step=gato_step)
+        numerical.model_identity = {}
+        numerical.problem_configuration = {}
+        numerical.constraint_bounds_native = []
+        numerical.solver = SimpleNamespace(lib=SimpleNamespace(__file__=__file__), solve=lambda: None)
+        # MPCAdapter.configure ends by seeding its fresh controller from x.
+        numerical.configure = lambda path, task: numerical.controller.reset(numerical.x * numerical.state_signs)
+        sender, receiver = socket.socketpair()
+        sequence = iter(range(1, 100))
+
+        def request(operation, **payload):
+            send_lease(sender, [])
+            send_message(sender, dict(protocol=1, epoch="test-epoch", request_id=next(sequence),
+                                      operation=operation, payload=payload))
+            return receive_message(sender)
+
+        thread = threading.Thread(target=serve, args=(receiver, Path(__file__).parent))
+        with patch("live_mpc.MPCAdapter", return_value=numerical), \
+             patch("live_mpc.build_schema", return_value={}), \
+             patch("solver_worker.model_contract", return_value={}), \
+             patch("traceback.print_exc"):
+            thread.start()
+            try:
+                self.assertTrue(request("bootstrap")["ok"])
+                self.assertTrue(request("configure", config_path=__file__, task={})["ok"])
+                rejected = request("solve", state=np.full(14, 1e300), time_s=.01, reference=np.zeros((2, 6)),
+                                   origin="play", settings_version=1)
+                self.assertEqual(rejected["error"], "Nonfinite torque or predicted trajectory")
+                reconfigured = request("configure", config_path=__file__, task={})
+                self.assertTrue(reconfigured["ok"], reconfigured.get("error"))
+            finally:
+                request("close")
+                thread.join(timeout=3)
+                sender.close()
+                receiver.close()
+        self.assertFalse(thread.is_alive())
+
     def test_worker_compact_reply_restores_full_immutable_simulator_plan(self):
         numerical = test_live_mpc.AdapterTelemetryTests().adapter()
         numerical.model_identity = dict(full_urdf_sha256="predictor", gpu_urdf_sha256="gpu")

@@ -53,7 +53,9 @@ The UI hides `controller.warm_start` while retaining its complete config value.
   pauses browser playback while explicit precalculation continues.
 - `cancel`: invalidate the current job cooperatively.
 - `reset`: return to the comfortable pose, zero velocity and simulation time;
-  clear the current history and episode plan sequence.
+  clear the current history and episode plan sequence. Reset also recovers
+  after a numerical failure: the discarded state, which may be nonfinite or
+  beyond the solver's float32 range, never seeds the reconfigured solver.
 
 An anchor is `{sim_time_s, q: [7 native positions], qd: [7 native velocities]}`.
 The browser captures the displayed state once when a settings transaction

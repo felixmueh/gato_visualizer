@@ -144,6 +144,11 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             if adapter_factory is None:
                 adapter.select_profile(solver_profile)
         if need_config:
+            if initialized_generation != generation and generation_start.get("kind") == "reset":
+                # Configuring seeds the controller from the current state. A
+                # failed run's tip may be beyond the solver's float32 range,
+                # so Reset discards it before, not after, reconfiguring.
+                adapter.reset_state(reset_controller=False)
             folder = ROOT / "_expr_data/live/configs"
             folder.mkdir(parents=True, exist_ok=True)
             path = folder / f"config-{time.time_ns()}-v{version}.json"

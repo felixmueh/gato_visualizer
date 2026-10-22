@@ -37,6 +37,10 @@ def serve(channel, root):
             elif operation == "configure":
                 if adapter is None:
                     raise ValueError("Solver process is not initialized")
+                # The child's x only caches the last request's input; the
+                # simulator sends its own state right after configuring. Do not
+                # seed the new controller from a rejected blown-up state.
+                adapter.reset_state(reset_controller=False)
                 adapter.configure(payload["config_path"], payload["task"])
                 module = adapter.solver.lib
                 module_path = Path(module.__file__)
