@@ -140,7 +140,7 @@ Task position inputs remain available below the controller settings; direct
 viewport manipulation avoids scrolling to them during normal use.
 
 Changed Live settings show a circular-arrow button on their left. Click it to
-restore the original default supplied by the MPC configuration or active task.
+restore the original default supplied by `MpcParams` or the active task.
 The horizon reset restores the default knot interval at the currently selected
 N. Resetting a setting follows the same preview/Automatic calculation behavior
 as editing it; task pose also has a reset for position and rotation.
@@ -206,7 +206,7 @@ Settings › Backend also saves named solver checkout/interpreter/cache
 profiles (same `<checkout>` templates, defaults and reset arrows). Select one in Live to switch solver implementations without reloading
 the browser or replacing the simulator. Switching pauses at the displayed native
 state and starts a new history segment. Profiles must have compatible model
-coordinates and prebuilt binaries for the chosen knot count. See
+coordinates and compiled modules for the chosen knot count. See
 [solver profiles](docs/solver-profiles.md) for provenance and failure behavior.
 
 ## Live MPC

@@ -38,8 +38,9 @@
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Simulator source** | The selected checkout providing the fixed plant, robot assets, initial state and task geometry. | Solver profile |
+| **Simulator source** | The selected checkout providing the fixed plant (`tiago_mpc`'s `SimPlant`), robot assets, initial state and task geometry. | Solver profile |
 | **Solver profile** | A named checkout/interpreter/cache selection providing a compatible predictor and optimizer. | Simulator source, warm-state checkpoint |
+| **Compiled module** | The GATO module `tiago_mpc` compiles for one `MpcParams` variant (knot count N, predictor friction). `find_binary` finds it; only an explicit Build compiles it. | Prebuilt binary, compatible binary |
 | **Native coordinates** | The canonical robot joint coordinates used by plant states, portable replays and public Live predictions. | GPU coordinates |
 
 ## Relationships
@@ -81,4 +82,5 @@ For the current version, the continuation replaces the active episode history in
 - Prediction-horizon time, episode time, SQP iteration index and measured wall time are distinct axes; horizon scrubbing is deferred and the plotting contract must preserve their identities.
 - Exact **Solve continuation** requires a retained optimizer checkpoint; supplying a previous trajectory as a new solve's initial guess is a **new warm-seeded solve**, not an exact resume.
 - “MPC frequency” is ambiguous: specify **TO frequency** for replanning or **Control frequency** for actuator updates.
+- The thesis vocabulary names these differently: the visualizer's **TO frequency** is the thesis's control rate (the rate of control updates), and its **Control frequency** is the command rate at which the execution controller sends held torque commands. The field names `to_hz` and `control_hz` keep the visualizer's terms.
 - “Buffer ms” means received **Simulation time** ahead of the cursor; **Report frequency** uses wall time and neither changes recorded samples.
