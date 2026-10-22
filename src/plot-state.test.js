@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPlotState, timelineEligible, awaitPlotJob, displayLimits, aggregateAxis } from './plot-state.js';
+import { createPlotState, timelineEligible, awaitPlotJob, displayLimits, aggregateAxis, episodeFrame } from './plot-state.js';
 
 test('independent duplicate configs, reorder, shared placements and persistence', () => {
   let stored; const state = createPlotState({}, value => { stored = structuredClone(value); });
@@ -77,4 +77,17 @@ test('sidebar aggregate axes clip the window to the retained data bounds', () =>
   assert.deepEqual(aggregateAxis({ start: null, end: 12 }, [1, 9]), [1, 9]);
   assert.deepEqual(aggregateAxis({ start: 10, end: null }, [1, 9]), [10, 10]);
   assert.equal(aggregateAxis({ start: 3, end: 4 }, null), undefined);
+});
+
+test('episode frames: docked plots follow the timeline, sidebar open ends follow the reveal, fixed ends stay', () => {
+  const bounds = [0, 10];
+  assert.deepEqual(episodeFrame({ linked: true, view: { window: [2, 6], reveal: 6 }, bounds }), { window: [2, 6], reveal: 6 });
+  // No reveal (paused, scrubbed, Replay): the aggregate window over all fetched data.
+  assert.deepEqual(episodeFrame({ linked: false, view: { aggregate: { start: 1, end: null } }, bounds }), { window: [1, 10], reveal: undefined });
+  // Live growth: the open end follows the cursor, whether data lead (6 < 10) or lag (12 > 10).
+  assert.deepEqual(episodeFrame({ linked: false, view: { aggregate: { start: null, end: null }, reveal: 6 }, bounds }), { window: [0, 6], reveal: 6 });
+  assert.deepEqual(episodeFrame({ linked: false, view: { reveal: 12 }, bounds }), { window: [0, 12], reveal: 12 });
+  assert.deepEqual(episodeFrame({ linked: false, view: { aggregate: { start: null, end: 8 }, reveal: 6 }, bounds }), { window: [0, 8], reveal: 6 });
+  // A saved prediction horizon has no episode clock: no reveal.
+  assert.deepEqual(episodeFrame({ linked: false, view: { episodeClock: false, reveal: 3 }, bounds }), { window: bounds, reveal: undefined });
 });

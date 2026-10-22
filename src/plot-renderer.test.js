@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderPlot } from './plot-renderer.js';
+import { renderPlot, revealWidth } from './plot-renderer.js';
 import { plotDOM } from './plot-dom-test-helper.js';
 
 const base = { version: 1, title: 'Recorded data', x: { identity: 'episode_time', label: 'Episode', unit: 's' }, y: { label: 'Velocity', unit: 'rad/s' } };
@@ -144,4 +144,38 @@ test('hosts choose pixel height and legend placement; linked rows keep a y axis 
   const labels = container.querySelectorAll('.plot-y-tick');
   assert(labels.length >= 2); assert(labels.every(item => item.getAttribute('x') === '3'));
   assert.equal(container.querySelector('rect').getAttribute('x'), '0');
+});
+
+test('reveal width clips at the playback cursor within the plot and is full without a reveal time', () => {
+  assert.equal(revealWidth(undefined, [0, 10], 500), 500);
+  assert.equal(revealWidth(5, [0, 10], 500), 250);
+  assert.equal(revealWidth(-1, [0, 10], 500), 0);
+  assert.equal(revealWidth(12, [0, 10], 500), 500);
+  assert.equal(revealWidth(2, [2, 2], 500), 0);
+});
+test('per-frame x-window moves the drawn data by one transform and reveals only through the cursor', () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  const handle = renderPlot(container, { ...base, kind: 'lines', series: [{ label: 'Joint', x: [0, 5, 10], y: [0, 1, 0] }] }, { linked: true, window: [0, 10], reveal: 5, cursor: 5 });
+  const svg = container.querySelector('svg'), clip = container.querySelector('rect'), data = svg.querySelectorAll('g').find(item => item.attributes.class === 'plot-data');
+  const path = container.querySelector('path'), d = path.getAttribute('d'), width = Number(svg.getAttribute('viewBox').split(' ')[2]);
+  assert.equal(Number(clip.getAttribute('width')), width / 2, 'initial reveal hides data after the cursor');
+  assert.equal(data.getAttribute('transform'), ''); assert.equal(path.getAttribute('vector-effect'), 'non-scaling-stroke');
+  // Following Live: the window end tracks the cursor; the path itself is not rebuilt.
+  handle.setFrame({ window: [0, 6], reveal: 6 });
+  assert.equal(container.querySelector('path'), path); assert.equal(path.getAttribute('d'), d);
+  assert.equal(Number(clip.getAttribute('width')), width);
+  const [a, , , , e] = data.getAttribute('transform').match(/matrix\(([^)]*)\)/)[1].split(' ').map(Number);
+  assert(Math.abs(a - 10 / 6) < 1e-12); assert.equal(e, 0);
+  handle.updateCursor(3); assert.equal(Number(container.querySelectorAll('line').at(-1).getAttribute('x1')), width / 2);
+  // A panned window translates; without a reveal time all data are visible.
+  handle.setFrame({ window: [5, 15] });
+  assert.equal(Number(clip.getAttribute('width')), width); assert.equal(data.getAttribute('transform'), `matrix(1 0 0 1 ${-width / 2} 0)`);
+  // Data lagging the cursor are never extended: the clip may exceed the last sample only as empty space.
+  handle.setFrame({ window: [0, 20], reveal: 15 }); assert.equal(container.querySelector('path').getAttribute('d'), d);
+});
+test('sidebar x-range labels follow the per-frame window', () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  const handle = renderPlot(container, { ...base, kind: 'lines', series: [{ label: 'Joint', x: [0, 10], y: [0, 1] }] }, { window: [0, 10] });
+  handle.setFrame({ window: [2, 8], reveal: 6 });
+  assert.deepEqual(container.querySelectorAll('text').filter(item => item.attributes.class === 'plot-x-range').map(item => item.textContent), ['2', '8']);
 });

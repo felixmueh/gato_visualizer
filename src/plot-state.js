@@ -61,6 +61,19 @@ export function aggregateAxis(aggregate, bounds) {
   return [start, Math.max(start, Number.isFinite(aggregate?.end) ? Math.min(bounds[1], aggregate.end) : bounds[1])];
 }
 
+/** Per-frame x-window and reveal time of an episode-time plot. Docked plots
+ * follow the timeline window; sidebar plots fit the aggregate window, whose
+ * open end follows the reveal time while Live grows rather than the end of
+ * the last fetched data. Reveal hides data after the playback cursor; it
+ * never extends drawing beyond the data. */
+export function episodeFrame({ linked, view, bounds }) {
+  const reveal = view.episodeClock !== false && Number.isFinite(view.reveal) ? view.reveal : undefined;
+  if (linked) return { window: view.window, reveal };
+  if (view.episodeClock === false || !bounds) return { window: bounds, reveal };
+  const end = reveal != null && !Number.isFinite(view.aggregate?.end) ? Math.max(bounds[0], reveal) : bounds[1];
+  return { window: aggregateAxis(view.aggregate, [bounds[0], end]), reveal };
+}
+
 export function timelineEligible(definition, spec) {
   return (definition?.scope || definition?.context) === 'episode' && (spec ? ['lines', 'bars', 'spans'].includes(spec.kind) && spec.x?.identity === 'episode_time' : definition.timeline_eligible === true);
 }

@@ -1,5 +1,5 @@
 import { createFloatingDialog } from './floating-dialog.js';
-import { createPlotState, timelineEligible, awaitPlotJob, displayLimits, aggregateAxis } from './plot-state.js';
+import { createPlotState, timelineEligible, awaitPlotJob, displayLimits, episodeFrame } from './plot-state.js';
 import { aggregateBounded, aggregateLabel } from './expanded-timeline.js';
 import { renderPlot } from './plot-renderer.js';
 import { sourceRequest } from './source-settings.js';
@@ -195,19 +195,15 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         if (spec) {
           const view = getView(), linked = placement === 'timeline', episodeTime = spec.x?.identity === 'episode_time';
           const bounds = metadata.episode?.context?.bounds;
-          let window;
-          if (episodeTime) {
-            if (linked) window = view.window;
-            else if (view.episodeClock === false) window = bounds;
-            else window = aggregateAxis(view.aggregate, bounds);
-          }
+          const { window, reveal } = episodeTime ? episodeFrame({ linked, view, bounds }) : {};
           const cursor = spec.x?.identity === 'sqp_iteration' ? state.iteration : episodeTime && view.episodeClock !== false ? view.cursor : undefined;
           const key = `${item.id}:${placement}`; usedPresentations.add(key);
           if (!presentations.has(key)) presentations.set(key, {});
           // A following window can move while Live grows. Only a duration
           // change (zoom), source, scope or plot configuration resets the fit.
           const fitKey = [item.context === 'solve' ? lastSolveSourceKey : lastSourceKey, item.parameters, episodeTime ? [linked ? 'timeline' : view.aggregate ?? null, linked ? view.window?.[1] - view.window?.[0] : null] : state.selected?.id];
-          const handle = renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, notes: false, legendTarget, height: state.height(item.id, placement), yLimits: item.display ? displayLimits(item.display) : undefined, presentation: presentations.get(key), fitKey, window, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined });
+          const handle = renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, notes: false, legendTarget, height: state.height(item.id, placement), yLimits: item.display ? displayLimits(item.display) : undefined, presentation: presentations.get(key), fitKey, window, reveal, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined });
+          if (episodeTime) handle.episodeLinked = linked;
           handles.push(handle); cardHandles.set(key, handle);
           if (['lines', 'bars', 'spans'].includes(spec.kind)) card.append(resizeHandle(item, placement, key, linked ? 85 : 170));
         }
@@ -391,6 +387,10 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     if (lastInspectActive !== view.inspectSolve) { lastInspectActive = view.inspectSolve; renderSolve(); }
     // Presentation markers update cheaply at RAF; Python is capped at 5 Hz.
     handles.forEach(handle => handle.updateCursor?.(handle.axisIdentity === 'sqp_iteration' ? state.iteration : handle.axisIdentity === 'episode_time' && view.episodeClock !== false ? view.cursor : undefined));
+    // Episode-time plots move their x-window and reveal every frame with one
+    // transform and clip, so growth follows the 3D view between rebuilds.
+    const frameBounds = metadata.episode?.context?.bounds;
+    handles.forEach(handle => { if (handle.episodeLinked != null) handle.setFrame?.(episodeFrame({ linked: handle.episodeLinked, view, bounds: frameBounds })); });
     if (immediateView || cardsPending || lastRender !== JSON.stringify([view.window, view.aggregate ?? null])) { renderCards(immediateView); immediateView = false; }
     runAgain.update(runContext());
     const now = Date.now(); if ((pending || now - lastPoll > 1500 && current?.source?.kind === 'live') && now - lastPoll >= 200) { lastPoll = now; refresh(); }

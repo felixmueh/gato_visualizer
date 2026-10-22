@@ -426,3 +426,30 @@ test('cards keep notes on hover, resize per placement, configure y limits, and t
     ui.destroy();
   } finally { globalThis.document = original; }
 });
+
+test('Live growth reveals docked and sidebar plots through the cursor every frame without rebuilding them', async () => {
+  const { document } = plotDOM(), original = { document: globalThis.document, now: Date.now }; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  let now = 1000; Date.now = () => now;
+  const view = { window: [0, 4], cursor: 4, reveal: 4, aggregate: { start: null, end: null }, inspectSolve: false }, source = { source: { kind: 'live', generation: 1 }, revision: 1 };
+  const request = async (_path, body) => ({ state: 'complete', catalog: [jointDef], context: { clock: 'live:1', bounds: [0, 5] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'Recorded data', x: { identity: 'episode_time', clock: 'live:1' }, y: {}, series: [{ x: [0, 2.5, 5], y: [0, 1, 0] }] } })) });
+  const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => view, request, storage: null });
+  try {
+    ui.update(); await flush(); const item = ui.state.add(jointDef, 'episode'); item.timeline = true; await ui.refresh();
+    const dock = bottom.querySelector('svg'), side = episode.querySelector('svg');
+    const clipWidth = svg => Number(svg.querySelector('rect').getAttribute('width')), full = svg => Number(svg.getAttribute('viewBox').split(' ')[2]);
+    // Data reach 5 s; the following docked window ends at the cursor and the sidebar's open end follows it.
+    assert.equal(clipWidth(dock), full(dock));
+    now += 16; view.cursor = view.reveal = 4.05; view.window = [0, 4.05]; ui.update();
+    assert.equal(bottom.querySelector('svg'), dock, 'no rebuild within the 5 Hz cadence');
+    const data = dock.querySelectorAll('g').find(node => node.attributes.class === 'plot-data');
+    assert.match(data.getAttribute('transform'), /^matrix\(0\.98/);
+    assert.match(side.querySelectorAll('g').find(node => node.attributes.class === 'plot-data').getAttribute('transform'), /^matrix\(/);
+    // Paused: no reveal, the sidebar shows all fetched data again.
+    now += 16; delete view.reveal; ui.update();
+    assert.equal(side.querySelectorAll('text').filter(node => node.attributes.class === 'plot-x-range').at(-1).textContent, '5');
+    // Playing a docked window wider than the cursor clips at the cursor.
+    now += 16; view.window = [0, 5]; view.reveal = 2.5; ui.update();
+    const current = bottom.querySelector('svg'); assert.equal(clipWidth(current), full(current) / 2);
+  } finally { ui.destroy(); globalThis.document = original.document; Date.now = original.now; }
+});

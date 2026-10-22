@@ -120,13 +120,20 @@ const plotInspection = setupPlotInspection({
   getSource: () => live?.mode === 'live'
     ? { source: { kind: 'live', generation: live.history.generation }, revision: [live.history.cursor, displayedLivePlan?.seq, displayedLivePlan?.settings_version, displayedLivePlan?.origin], solveSeq: displayedLivePlan?.origin === 'preview' ? `preview:${displayedLivePlan.seq}` : null, label: 'Recorded Live MPC' }
     : trajectory ? { source: { kind: 'replay', id: replayLibrary?.selectedId || 'default', trajectory_index: data?.trajectories?.indexOf(trajectory) ?? 0, ...(data?.source?.plot_revision ? { revision: data.source.plot_revision } : {}) }, revision: data?.source?.plot_revision || trajectory.id, label: trajectory.label || 'Imported recording' } : null,
-  getView: () => { const view = expandedTimeline.snapshot; return { window: view.visible, cursor: view.selectedTime, aggregate: view.aggregate, episodeClock: live?.mode === 'live' || trajectory?.kind === 'recorded', inspectSolve: workbench.activeTab === 'solve' };  },
+  getView: () => { const view = expandedTimeline.snapshot; return { window: view.visible, cursor: view.selectedTime, aggregate: view.aggregate, reveal: liveReveal(view.selectedTime), episodeClock: live?.mode === 'live' || trajectory?.kind === 'recorded', inspectSolve: workbench.activeTab === 'solve' };  },
   getSolverProfile: () => ({ id: solverProfiles.snapshot.catalog.active_profile_id, switching: solverProfiles.snapshot.switching }),
   onInspectionStart: () => live?.holdForInspection(),
   onClearAggregate: () => expandedTimeline.clearAggregate(),
   onSeek: time => expandedTimeline.seek(time),
   onPrediction: inspection => { inspectedPrediction = inspection; renderInspectedPrediction(); },
 });
+// While Live playback runs at the growing edge, episode plots reveal data only
+// up to the playback cursor, in step with the 3D view. Paused, scrubbed or
+// Replay views show all available data.
+function liveReveal(time) {
+  const history = live?.mode === 'live' ? live.history : null;
+  return history?.playing && (history.following || history.buffering || history.growing) && Number.isFinite(time) ? time : undefined;
+}
 function updateExpandedTimeline() {
   if (live?.mode === 'live') {
     const history = live.history;

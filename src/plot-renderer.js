@@ -37,6 +37,9 @@ export function renderPlot(container, spec, options = {}) {
   const finiteX = [...series.flatMap(line => [...(line.x || []), ...(line.bin_edges || [])]), ...(spec.spans || []).flatMap(span => [span.start, span.end])].filter(Number.isFinite);
   const requestedX = options.window || (categories?.length ? [-.5, categories.length - .5] : null) || spec.x_axis?.range || (finiteX.length ? extent(finiteX) : [0, 1]);
   const xRange = requestedX[0] === requestedX[1] ? [requestedX[0], requestedX[0] + .001] : requestedX;
+  // Data are drawn once in this base range. A host may then move the x-window
+  // and the reveal time every frame (setFrame) without rebuilding the SVG.
+  let viewRange = [...xRange], reveal = Number.isFinite(options.reveal) ? options.reveal : null;
   const visible = valid.filter(([x]) => x >= xRange[0] && x <= xRange[1]);
   const guideValues = (spec.guides || []).filter(guide => guide.axis === 'y' && Number.isFinite(guide.value)).map(guide => guide.value);
   const lanes = [...new Set((spec.spans || []).map(span => span.lane))];
@@ -83,19 +86,24 @@ export function renderPlot(container, spec, options = {}) {
   const margin = options.linked ? { left: 0, right: 0, top: 10, bottom: 20 } : { left: Math.ceil(labelChars * 6 + 9), right: 12, top: 12, bottom: 34 };
   const innerWidth = width - margin.left - margin.right, innerHeight = height - margin.top - margin.bottom;
   const sx = x => margin.left + (x - xRange[0]) / (xRange[1] - xRange[0] || 1) * innerWidth;
+  const cx = x => margin.left + (x - viewRange[0]) / (viewRange[1] - viewRange[0] || 1) * innerWidth;
   const sy = y => height - margin.bottom - (y - yRange[0]) / (yRange[1] - yRange[0] || 1) * innerHeight;
   const ns = 'http://www.w3.org/2000/svg';
   const svg = doc.createElementNS(ns, 'svg'); svg.setAttribute('viewBox', `0 0 ${width} ${height}`); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', spec.title || 'Recorded plot'); svg.style.height = `${height}px`;
   const scaled = [];
-  const node = (tag, attributes, text) => {
+  const node = (tag, attributes, text, parent = svg) => {
     const item = doc.createElementNS(ns, tag);
     const draw = () => { for (const [key, value] of Object.entries(attributes)) item.setAttribute(key, typeof value === 'function' ? value() : value); if (text != null) item.textContent = String(typeof text === 'function' ? text() : text); };
     draw(); if (Object.values(attributes).some(value => typeof value === 'function') || typeof text === 'function') scaled.push(draw);
-    svg.append(item); return item;
+    parent.append(item); return item;
   };
   const clipId = `plot-clip-${Math.random().toString(36).slice(2)}`;
   const defs = doc.createElementNS(ns, 'defs'), clip = doc.createElementNS(ns, 'clipPath'), rect = doc.createElementNS(ns, 'rect');
   clip.setAttribute('id', clipId); for (const [key, value] of Object.entries({ x: margin.left, y: margin.top, width: innerWidth, height: innerHeight })) rect.setAttribute(key, value); clip.append(rect); defs.append(clip); svg.append(defs);
+  // Data marks live in a screen-space clipped group holding an x-transformed
+  // group. The clip also ends at the reveal time; it never extends the data.
+  const clipped = doc.createElementNS(ns, 'g'), data = doc.createElementNS(ns, 'g'); clipped.setAttribute('clip-path', `url(#${clipId})`); clipped.append(data);
+  data.setAttribute('class', 'plot-data');
   // The tick set changes while the range animates, so it is redrawn whole.
   // Linked rows keep their labels inside the left edge, outlined with the
   // background colour so curves stay readable beneath them.
@@ -114,7 +122,7 @@ export function renderPlot(container, spec, options = {}) {
   drawTicks(); scaled.push(drawTicks);
   for (const span of spec.spans || []) {
     const lane = lanes.indexOf(span.lane), laneHeight = innerHeight / Math.max(1, lanes.length);
-    const shape = node('rect', { x: sx(span.start), y: margin.top + lane * laneHeight + 2, width: Math.max(0, sx(span.end) - sx(span.start)), height: Math.max(1, laneHeight - 4), fill: span.color || '#57c7dc', opacity: .7, 'clip-path': `url(#${clipId})` });
+    const shape = node('rect', { x: sx(span.start), y: margin.top + lane * laneHeight + 2, width: Math.max(0, sx(span.end) - sx(span.start)), height: Math.max(1, laneHeight - 4), fill: span.color || '#57c7dc', opacity: .7 }, null, data);
     const title = doc.createElementNS(ns, 'title'); title.textContent = `${span.lane}: ${span.label} (${fmt(span.start)}–${fmt(span.end)} ${spec.x?.unit || ''})`; shape.append(title);
     if (spec.kind === 'spans') node('text', { x: margin.left + 4, y: margin.top + lane * laneHeight + 13, fill: '#d7e4ef', 'font-size': 10 }, span.lane);
   }
@@ -140,17 +148,19 @@ export function renderPlot(container, spec, options = {}) {
       const y = line.y?.[i]; if (!Number.isFinite(x) || !Number.isFinite(y)) return;
       const edges = line.bin_edges || [], left = edges[i] ?? x - (line.width ?? .8) / 2, right = edges[i + 1] ?? x + (line.width ?? .8) / 2;
       barRects.push({ left, right, rect: null, line, i });
-      barRects.at(-1).rect = node('rect', { x: sx(left), y: () => Math.min(sy(y), sy(0)), width: Math.max(1, sx(right) - sx(left) - 1), height: () => Math.abs(sy(y) - sy(0)), fill: color, 'clip-path': `url(#${clipId})` });
+      barRects.at(-1).rect = node('rect', { x: sx(left), y: () => Math.min(sy(y), sy(0)), width: Math.max(1, sx(right) - sx(left) - 1), height: () => Math.abs(sy(y) - sy(0)), fill: color }, null, data);
     });
-    else node('path', { d: path, stroke: color, fill: 'none', 'stroke-width': 1.6, 'clip-path': `url(#${clipId})` });
+    else node('path', { d: path, stroke: color, fill: 'none', 'stroke-width': 1.6, 'vector-effect': 'non-scaling-stroke' }, null, data);
   });
+  svg.append(clipped);
+  const xLabels = [];
   const axisTitle = axis => [axis?.label || axis?.identity?.replaceAll('_', ' '), axis?.unit ? `(${axis.unit})` : ''].filter(Boolean).join(' ');
   if (!options.linked) {
     if (categories) {
       const stride = Math.max(1, Math.ceil(categories.length / 8));
       categories.forEach((category, index) => { if (index % stride === 0) node('text', { x: sx(index), y: height - 22, 'text-anchor': 'middle', fill: '#9fb2c5', 'font-size': 10 }, category); });
-    } else node('text', { x: margin.left, y: height - 20, fill: '#9fb2c5', 'font-size': 10, class: 'plot-x-range' }, fmt(xRange[0]));
-    if (!categories) node('text', { x: width - margin.right, y: height - 20, 'text-anchor': 'end', fill: '#9fb2c5', 'font-size': 10, class: 'plot-x-range' }, fmt(xRange[1]));
+    } else xLabels.push(node('text', { x: margin.left, y: height - 20, fill: '#9fb2c5', 'font-size': 10, class: 'plot-x-range' }, fmt(xRange[0])));
+    if (!categories) xLabels.push(node('text', { x: width - margin.right, y: height - 20, 'text-anchor': 'end', fill: '#9fb2c5', 'font-size': 10, class: 'plot-x-range' }, fmt(xRange[1])));
     node('text', { x: width / 2, y: height - 4, 'text-anchor': 'middle', fill: '#bdcbd7', 'font-size': 11 }, axisTitle(spec.x_axis));
   }
   // Unit and legend share one row; a host may place it in its own header.
@@ -158,7 +168,7 @@ export function renderPlot(container, spec, options = {}) {
   if (options.legendTarget) options.legendTarget.replaceChildren(meta); else root.append(meta);
   const cursor = node('line', { y1: margin.top, y2: height - margin.bottom, stroke: '#fff', 'stroke-width': 1, 'stroke-dasharray': '3 3' });
   const readout = el('div', '', 'plot-hover');
-  const xAt = (event, box = svg.getBoundingClientRect()) => xRange[0] + Math.max(0, Math.min(1, ((event.clientX - box.left) / box.width * width - margin.left) / innerWidth)) * (xRange[1] - xRange[0]);
+  const xAt = (event, box = svg.getBoundingClientRect()) => viewRange[0] + Math.max(0, Math.min(1, ((event.clientX - box.left) / box.width * width - margin.left) / innerWidth)) * (viewRange[1] - viewRange[0]);
   let hoveredBar;
   const highlight = bar => { hoveredBar?.rect.setAttribute('stroke', 'none'); hoveredBar = bar; bar?.rect.setAttribute('stroke', '#eefbff'); };
   svg.addEventListener('pointermove', event => {
@@ -196,9 +206,24 @@ export function renderPlot(container, spec, options = {}) {
     svg.addEventListener('click', event => { if (!presentation.pointerSeek || event.detail === 0) options.onSeek(xAt(event)); presentation.pointerSeek = false; });
   }
   root.append(svg, readout); container.replaceChildren(root);
-  const updateCursor = value => { const visible = Number.isFinite(value) && value >= xRange[0] && value <= xRange[1]; cursor.setAttribute('visibility', visible ? 'visible' : 'hidden'); cursor.setAttribute('x1', sx(value)); cursor.setAttribute('x2', sx(value)); };
-  updateCursor(options.cursor);
-  const handle = makeHandle(updateCursor, width);
+  let cursorValue = options.cursor;
+  const updateCursor = value => { cursorValue = value; const visible = Number.isFinite(value) && value >= viewRange[0] && value <= viewRange[1]; cursor.setAttribute('visibility', visible ? 'visible' : 'hidden'); cursor.setAttribute('x1', cx(value)); cursor.setAttribute('x2', cx(value)); };
+  // Map the base drawing onto the current window with one affine transform,
+  // and end the clip at the reveal time (or the plot edge without one).
+  const applyFrame = () => {
+    const scale = (xRange[1] - xRange[0]) / (viewRange[1] - viewRange[0] || 1);
+    data.setAttribute('transform', scale === 1 && viewRange[0] === xRange[0] ? '' : `matrix(${scale} 0 0 1 ${cx(xRange[0]) - scale * margin.left} 0)`);
+    rect.setAttribute('width', revealWidth(reveal, viewRange, innerWidth));
+    if (xLabels.length === 2) { xLabels[0].textContent = fmt(viewRange[0]); xLabels[1].textContent = fmt(viewRange[1]); }
+    updateCursor(cursorValue);
+  };
+  const setFrame = ({ window: next, reveal: until } = {}) => {
+    if (!categories && Array.isArray(next) && next.every(Number.isFinite)) viewRange = next[0] === next[1] ? [next[0], next[0] + .001] : [...next];
+    reveal = Number.isFinite(until) ? until : null;
+    applyFrame();
+  };
+  applyFrame();
+  const handle = makeHandle(updateCursor, width, setFrame);
   if (yRange.some((value, index) => value !== targetRange[index])) {
     const from = [...yRange]; let start;
     const animate = time => {
@@ -212,10 +237,10 @@ export function renderPlot(container, spec, options = {}) {
     else { yRange = [...targetRange]; presentation.currentRange = yRange; scaled.forEach(draw => draw()); }
   }
   return handle;
-  function makeHandle(setCursor = () => {}, renderedWidth) {
+  function makeHandle(setCursor = () => {}, renderedWidth, setFrame = () => {}) {
     let observer;
     const cleanup = preserveInteraction => { observer?.disconnect(); if (typeof animationFrame !== 'undefined') globalThis.cancelAnimationFrame?.(animationFrame); if (!preserveInteraction) presentation.cancelScrub?.(); };
-    const handle = { axisIdentity: spec.x?.identity, linked: Boolean(options.linked), updateCursor: setCursor,
+    const handle = { axisIdentity: spec.x?.identity, linked: Boolean(options.linked), updateCursor: setCursor, setFrame,
       update(nextSpec, nextOptions = options) { cleanup(true); const replacement = renderPlot(container, nextSpec, { ...nextOptions, presentation }); Object.assign(handle, replacement); return handle; },
       setView(view) { return handle.update(spec, { ...options, ...view }); },
       destroy({ preserveInteraction = false } = {}) { cleanup(preserveInteraction); root.remove(); } };
@@ -227,6 +252,13 @@ export function renderPlot(container, spec, options = {}) {
     }
     return handle;
   }
+}
+
+/** Clip width in plot pixels that reveals data up to `reveal` within `window`.
+ * Without a finite reveal time the whole plot width is shown. */
+export function revealWidth(reveal, [low, high], innerWidth) {
+  if (!Number.isFinite(reveal)) return innerWidth;
+  return Math.max(0, Math.min(innerWidth, (reveal - low) / (high - low || 1) * innerWidth));
 }
 
 /** Round tick values inside range, roughly count of them, with exact labels. */

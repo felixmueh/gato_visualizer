@@ -38,7 +38,9 @@ dimmed on the timeline; the Episode header mirrors the window in a chip with a
 clear button. The reset arrow or Esc on the timeline also clears it.
 
 The playback cursor and zoom are independent of the window: moving either never
-re-evaluates aggregates. Like zoom, the window is per-source presentation state
+re-evaluates aggregates. During Live playback, plots reveal data only up to the
+playback cursor (presentation only; see [presentation](presentation.md#plot-growth-during-live-playback--felix-2026-10-22)).
+Aggregates still use the whole window. Like zoom, the window is per-source presentation state
 and resets when the recording or Live generation changes; it is not saved. The
 earlier Through cursor mode was removed with the selector; the backend still
 accepts `through_cursor` for API clients.
