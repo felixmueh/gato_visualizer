@@ -53,3 +53,35 @@ qualified**, and deployment was held after these checks. Passing control-plumbin
 checks does not resolve the dynamics failure. No cause was established; no
 timestep change, model change, solver repair or smaller-step follow-up was run
 as part of this validation.
+
+## Diagnosis of the instability, 2026-10-22
+
+The validation above stands as recorded; this later diagnosis adds a cause.
+
+- **Plant:** viscous damping is stiff for the explicit RK4 plant. At the
+  start posture the largest eigenvalue of M⁻¹B is 3922 1/s, set by joint 7's
+  link-only inertia (0.00077 kg m²). RK4 is stable only for h < 2.785/λ ≈
+  0.71 ms. A CPU-only Pinocchio loop with viscous damping alone diverges at
+  0.8, 1 and 3 ms and stays bounded at 0.7 and 0.5 ms; hard-sign Coulomb
+  chatter only seeds the growth from rest. GATO is not involved.
+- **Visualizer, 0.5 s at the default 1 kHz:** loss-free completes; simulator
+  friction (with or without predictor friction) diverges; predictor friction
+  with a loss-free plant also diverges (plan torque 850 Nm at 30 ms, then a
+  nonfinite plant state). At **5 kHz**, both laws on and simulator-only each
+  complete 0.5 s with torques near 8 Nm and speeds below 1 rad/s. These are
+  bounded diagnostics, not reaching qualification.
+- **Predictor:** GATO's explicit velocity update at the knot interval is stable
+  only for dt < 2/λ: 0.51 ms for viscous damping, 0.07 ms with the tanh slope
+  at width 0.03 rad/s, against 10 ms knots.
+- **Armature:** with the supplied right-arm armature added to M, these bounds
+  become 170 ms (plant), 122 ms (viscous predictor) and 14 ms (tanh predictor).
+  The coefficients describe joints with large reflected rotor inertia, while
+  both models use link inertia only. Armature stays inactive; enabling it is a
+  model decision for Felix.
+
+Reset after such a failure previously failed with `reset x0 must be finite`:
+the solver child and the worker both reseeded GATO from the blown-up state,
+which overflows GATO's float32 staging. Both now discard it first.
+
+Scripts: `_expr_data/reset-nonfinite/` (`plant_loop*.py`, `predictor_stability.py`,
+`armature_bound.py` for CPU checks; `repro.py`, `friction_matrix.py` for Live).
