@@ -178,6 +178,16 @@ The visualizer's independent simulation/control/TO clocks govern generation;
 recorded playback uses simulation timestamps at 1x. Visualizer runs are
 diagnostics, not experiment or timing evidence.
 
+## Defaults are never hidden — Felix, 2026-10-22
+
+Do not hide the defaults we rely on. A setting the visualizer can change is
+shown with the value actually in effect, including any default we choose or
+resolve (for example through the configuration resolver), never as an empty
+field that silently means "whatever the code does". A value we cannot change,
+such as a solver-internal default, is simply used and needs no display or
+report. Display what was resolved and handed to the solver, not what was
+requested, so display and solver cannot disagree.
+
 ## Host environment and GPU
 
 Run on the host with the selected `tiago_mpc` checkout's interpreter, preferring
