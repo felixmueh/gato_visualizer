@@ -19,6 +19,9 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+# Match the upstream builder and source probe before resolving cached toolchains.
+# Keep the selected virtualenv path; resolving its Python symlink would lose it.
+os.environ["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
 from live_mpc import GPULocks, MPCAdapter, import_mpc
 
 
