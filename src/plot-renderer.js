@@ -19,16 +19,19 @@ export function renderPlot(container, spec, options = {}) {
     const table = el('table'), head = el('tr');
     const labels = (spec.columns || ['Quantity', 'Value', 'Unit', 'Note']).map(column => typeof column === 'string' ? column : column.label);
     // A Note column is not a column: the note is the hover text of its row.
+    // A row note qualifies how its value reads (e.g. partial data), so the
+    // row also carries a small marker; the note itself stays on hover.
     const noteAt = labels.indexOf('Note');
     labels.forEach((label, index) => { if (index !== noteAt) head.append(el('th', label)); });
     table.append(head);
     for (const row of spec.rows || []) {
       const tr = el('tr'), cells = Array.isArray(row) ? row : [row.label, row.value, row.unit || '', row.note || ''];
+      const note = noteAt >= 0 && cells[noteAt] ? String(cells[noteAt]) : '';
       cells.forEach((value, index) => {
         if (index === noteAt) { if (value) tr.setAttribute('title', String(value)); return; }
         const text = value == null ? 'unavailable' : typeof value === 'number' ? fmt(value) : value, td = el('td', text);
         td.className = ['plot-table-label', 'plot-table-value'][index] || 'plot-table-unit';
-        if (index === 0) td.setAttribute('title', String(text));
+        if (index === 0) { td.setAttribute('title', note ? `${text}\n${note}` : String(text)); if (note) td.className += ' plot-table-noted'; }
         tr.append(td);
       });
       table.append(tr);

@@ -206,15 +206,16 @@ test('the cursor of a plot with data never carries NaN coordinates', () => {
   handle.updateCursor(undefined); handle.updateCursor(0.5); handle.setFrame({ window: [0, 1] });
   assert.deepEqual(nanAttributes(container), []);
 });
-test('tables keep words and numbers whole: notes become row titles, labels get a hover title', () => {
+test('tables keep words and numbers whole: noted rows get a marker and the note as hover, labels get a hover title', () => {
   const { document } = plotDOM(), container = document.createElement('div');
   renderPlot(container, { version: 1, kind: 'table', title: 'Summary', rows: [{ label: 'MPC wall median', value: 240.01, unit: 'ms', note: 'Median of intervals' }, { label: 'MPC wall p95', value: null, unit: 'ms', note: '' }] });
   assert.deepEqual(container.querySelectorAll('th').map(item => item.textContent), ['Quantity', 'Value', 'Unit']);
   const rows = container.querySelectorAll('tr');
   assert.equal(rows[1].getAttribute('title'), 'Median of intervals');
   const cells = rows[1].children; assert.equal(cells.length, 3);
-  assert.deepEqual(cells.map(item => item.className), ['plot-table-label', 'plot-table-value', 'plot-table-unit']);
-  assert.equal(cells[0].getAttribute('title'), 'MPC wall median'); assert.equal(cells[1].textContent, '240.01');
+  assert.deepEqual(cells.map(item => item.className), ['plot-table-label plot-table-noted', 'plot-table-value', 'plot-table-unit']);
+  assert.equal(cells[0].getAttribute('title'), 'MPC wall median\nMedian of intervals'); assert.equal(cells[1].textContent, '240.01');
+  assert.equal(rows[2].children[0].className, 'plot-table-label'); assert.equal(rows[2].children[0].getAttribute('title'), 'MPC wall p95');
   assert.equal(rows[2].children[1].textContent, 'unavailable');
 });
 test('y labels are drawn above guide lines and curves so their outline knocks them out', () => {

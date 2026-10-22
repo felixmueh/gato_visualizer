@@ -29,6 +29,8 @@
 .plot-renderer td.plot-table-value, .plot-renderer td.plot-table-unit { white-space: nowrap; }
 .plot-renderer td.plot-table-value, .plot-renderer th:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
 .plot-renderer td.plot-table-unit { color: #8fa9bc; padding-left: 0; }
+.plot-renderer td.plot-table-noted::before { content: '*'; margin-right: 3px; color: #57c7dc; } /* before: an ellipsized label would clip a suffix */
+.plot-renderer tr[title] { cursor: help; }
 .plot-renderer td.plot-table-value + td, .plot-renderer th:nth-child(2) + th { padding-left: 5px; }
 .plot-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin: 2px 0 4px; min-width: 0; }
 .plot-unit { color: #8fa8bc; font-size: 10px; }
