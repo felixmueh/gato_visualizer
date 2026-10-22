@@ -358,7 +358,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         evaluatedKeys[scope] = signature;
       }
       windowKey = undefined; renderWindowChip();
-      episodeNote.textContent = metadata.episode?.context?.episode_available === false ? 'No MPC episode accompanies this standalone solve.' : getView().episodeClock === false ? 'Companion episode · all available history. The active timeline is a prediction horizon; episode plots stay in this inspector.' : getSource()?.label || 'Active episode';
+      // The trajectory selector names the source and the window chip its range.
+      episodeNote.textContent = metadata.episode?.context?.episode_available === false ? 'No MPC episode' : '';
       // Initial data should appear immediately; subsequent streaming data and
       // changing ranges share the same bounded redraw cadence.
       renderSolve();

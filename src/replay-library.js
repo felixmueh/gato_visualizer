@@ -252,7 +252,7 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
       selectedId = id;
       selectedItem = item;
       selectedRevision = itemRevision(item);
-      notify(`Opened ${item.name}.`);
+      notify(''); // The selector shows what opened; only errors stay.
       return true;
     } catch (error) {
       notify(`Could not open ${item.name}: ${error.message} Current playback is retained.`, true);
@@ -286,7 +286,7 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
     $('upload-files').disabled = $('upload-folder').disabled = false;
     $('recording-files').value = $('recording-folder').value = '';
     await refresh();
-    notify(`${added} recording${added === 1 ? '' : 's'} added. ${added ? 'Choose one from the library. ' : ''}${errors.join(' · ')}`, errors.length > 0);
+    notify(`${added} recording${added === 1 ? '' : 's'} added.${errors.length ? ` ${errors.join(' · ')}` : ''}`, errors.length > 0);
   };
   $('recording-select').addEventListener('change', (event) => { pendingLink = null; choose(event.target.value); });
   $('recording-link').addEventListener('click', copyLink);

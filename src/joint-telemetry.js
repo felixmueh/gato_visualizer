@@ -43,6 +43,8 @@ export function magnitudeStatus(value, limit) {
 export function createJointTable(container, names) {
   const heading = document.createElement('div');
   heading.className = 'joint-row joint-columns';
+  // Colour is the cue; its meaning is a hover away.
+  heading.title = 'Yellow: within 10% of a limit · Red, underlined: at or beyond a limit · —: unavailable';
   for (const text of ['JOINT', 'POS rad', 'VEL rad/s', 'TORQUE Nm']) {
     const label = document.createElement('span'); label.textContent = text; heading.append(label);
   }
@@ -73,7 +75,7 @@ export function updateJointTable(cells, {q, qd, torque, limits, torqueKind = 'ap
       cell.classList.toggle('near-limit', states[j] === 'near-limit');
       cell.classList.toggle('at-limit', states[j] === 'at-limit');
       const meaning = j === 2 ? (torqueKind === 'predicted' ? 'Predicted actuator torque' : 'Last applied actuator torque') : j === 1 ? 'Recorded joint velocity' : 'Native joint position';
-      cell.title = `${meaning}${Number.isFinite(value) ? '' : ' unavailable'} · ${source}${limits ? ` · ${bounds[j]}` : ''}${states[j] ? ` · ${states[j] === 'at-limit' ? 'AT / BEYOND LIMIT' : 'NEAR LIMIT'}` : ''}`;
+      cell.title = `${meaning}${Number.isFinite(value) ? '' : ' unavailable'} · ${source}${limits ? ` · ${bounds[j]}` : ''}${states[j] ? ` · ${states[j] === 'at-limit' ? 'AT / BEYOND LIMIT' : 'NEAR LIMIT (within 10%)'}` : ''}`;
       cell.setAttribute('aria-label', `${meaning}: ${cell.textContent}${states[j] ? `, ${states[j].replace('-', ' ')}` : ''}`);
     });
   });

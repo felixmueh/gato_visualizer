@@ -5,6 +5,7 @@
 .plot-inspector-heading button, .plot-card button, .sqp-strip button { padding: 4px 8px; border: 1px solid #40556b; background: #233546; color: #ccdae5; border-radius: 4px; font-size: 11px; }
 .plot-inspector-heading > button:last-child { min-width: 28px; font-size: 18px; }
 .plot-message { color: #9eb0c1; font-size: 11px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
+.plot-message:empty { display: none; }
 .plot-cards { display: grid; gap: 12px; min-height: 40px; }
 .plot-card { position: relative; padding: 7px 9px 9px; border: 1px solid #34485d; border-radius: 6px; background: #162331; min-width: 0; }
 .plot-card-heading { display: flex; gap: 4px; align-items: start; margin-bottom: 2px; }

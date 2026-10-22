@@ -301,10 +301,9 @@ a {
 }
 .joint-columns { color: #879ab2; font-size: 8px; white-space: nowrap; }
 .joint-columns span:not(:first-child) { text-align: right; }
-.joint-value.near-limit, .limit-yellow { color: #ffd166; }
-.joint-value.at-limit, .limit-red { color: #ff737b; }
+.joint-value.near-limit { color: #ffd166; }
+.joint-value.at-limit { color: #ff737b; }
 .joint-value.at-limit { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
-.joint-limit-note { color: #879ab2; font-size: 9px; margin: 7px 0 0; }
 .source-section {
   margin-top: auto;
   padding-top: 1px;
@@ -1314,7 +1313,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .connection { margin: 9px 0; font-size: 9px; }
 .studio-workbench .source-section p, .studio-workbench .source-name { font-size: 9px; }
 .studio-workbench .joint-row { padding: 12px 0; }
-.studio-workbench .joint-limit-note { margin-top: 16px; }
 .studio-workbench:not(.live-mode) .live-metrics, .studio-workbench.live-mode .replay-metrics { display: none; }
 @media (max-width: 1100px) {
   .studio-workbench .workspace { --left-w: 250px; --right-w: 260px; }
