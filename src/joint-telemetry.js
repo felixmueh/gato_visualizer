@@ -1,3 +1,5 @@
+import { DEFAULT_LIMIT_USE, LIMIT_QUANTITIES, formatLimitDistance, limitBounds, quantityLimitUse } from './limit-use.js';
+
 // Positions/velocities interpolate; actuator commands hold until the next command.
 export function sampleTelemetry(trajectory, time) {
   const times = trajectory.time_s;
@@ -26,57 +28,103 @@ export function sampleTelemetry(trajectory, time) {
   return {qd, torque};
 }
 
-export function limitStatus(value, lower, upper) {
-  if (![value, lower, upper].every(Number.isFinite) || upper <= lower) return '';
-  const tolerance = Math.max(1e-9, (upper - lower) * 1e-7);
-  if (value <= lower + tolerance || value >= upper - tolerance) return 'at-limit';
-  const margin = (upper - lower) * .1;
-  return value <= lower + margin || value >= upper - margin ? 'near-limit' : '';
+// Per joint: a position range bar (marker, URDF end ticks, shaded near bands)
+// and velocity/torque utilisation bars to a 100 % tick that overflow past it.
+// The reference is the URDF limit; colours follow the 3D tint's states.
+// Exact values, bounds and distances are in each gauge's tooltip.
+const SCALE = 0.86; // Share of a utilisation bar up to its 100 % tick; the rest shows overflow.
+const POSITION_INSET = 0.07; // Space beyond each position bound for a marker beyond it.
+const MEANING = { position: 'Native joint position', velocity: 'Recorded joint velocity' };
+const DIGITS = { position: 3, velocity: 3, torque: 2 };
+const signed = (value, digits) => `${value < 0 ? '−' : '+'}${Math.abs(value).toFixed(digits)}`;
+const percent = value => `${Math.round(value * 100)} %`;
+
+export function headingTitle(settings = DEFAULT_LIMIT_USE) {
+  return `Limit use against the URDF limits. Position: range with the current value; velocity and torque: |value| up to the 100 % tick. Shaded/amber: near (≥ ${settings.limit_near_percent} %); red: at the limit; red outlined: beyond. —: unavailable`;
 }
 
-export function magnitudeStatus(value, limit) {
-  if (!Number.isFinite(value) || !Number.isFinite(limit) || limit <= 0) return '';
-  if (Math.abs(value) >= limit - Math.max(1e-9, limit * 1e-7)) return 'at-limit';
-  return Math.abs(value) >= .9 * limit ? 'near-limit' : '';
+function el(doc, tag, className) { const item = doc.createElement(tag); if (className) item.className = className; return item; }
+
+function createGauge(doc, quantity) {
+  const gauge = el(doc, 'span', 'limit-gauge'); gauge.dataset.quantity = quantity;
+  const track = el(doc, 'span', 'limit-gauge-track');
+  const parts = { gauge, track, text: el(doc, 'span', 'limit-gauge-text') };
+  if (quantity === 'position') {
+    parts.nearLow = el(doc, 'span', 'limit-gauge-near'); parts.nearHigh = el(doc, 'span', 'limit-gauge-near');
+    parts.tickLow = el(doc, 'span', 'limit-gauge-tick'); parts.tickHigh = el(doc, 'span', 'limit-gauge-tick');
+    parts.marker = el(doc, 'span', 'limit-gauge-marker');
+    parts.tickLow.style.left = `${POSITION_INSET * 100}%`; parts.tickHigh.style.left = `${(1 - POSITION_INSET) * 100}%`;
+    track.append(parts.nearLow, parts.nearHigh, parts.tickLow, parts.tickHigh, parts.marker);
+  } else {
+    parts.near = el(doc, 'span', 'limit-gauge-near'); parts.fill = el(doc, 'span', 'limit-gauge-fill');
+    parts.over = el(doc, 'span', 'limit-gauge-over'); parts.tick = el(doc, 'span', 'limit-gauge-tick');
+    parts.tick.style.left = `${SCALE * 100}%`; parts.over.style.left = `${SCALE * 100}%`;
+    track.append(parts.near, parts.fill, parts.over, parts.tick);
+  }
+  gauge.append(track, parts.text);
+  return parts;
 }
 
 export function createJointTable(container, names) {
-  const heading = document.createElement('div');
-  heading.className = 'joint-row joint-columns';
+  const doc = container.ownerDocument;
+  const heading = el(doc, 'div', 'joint-row joint-columns');
   // Colour is the cue; its meaning is a hover away.
-  heading.title = 'Yellow: within 10% of a limit · Red, underlined: at or beyond a limit · —: unavailable';
-  for (const text of ['JOINT', 'POS rad', 'VEL rad/s', 'TORQUE Nm']) {
-    const label = document.createElement('span'); label.textContent = text; heading.append(label);
-  }
+  heading.title = headingTitle();
+  for (const text of ['JOINT', 'POS', 'VEL', 'TORQUE']) heading.append(Object.assign(el(doc, 'span'), { textContent: text }));
   container.replaceChildren(heading);
-  return names.map((name, i) => {
-    const row = document.createElement('div'); row.className = 'joint-row';
-    const label = document.createElement('span'); label.className = 'joint-name';
-    label.textContent = `J${i + 1}`; label.title = name; row.append(label);
-    const cells = ['position', 'velocity', 'torque'].map((quantity) => {
-      const cell = document.createElement('span'); cell.className = 'joint-value';
-      cell.dataset.quantity = quantity; cell.textContent = '—'; row.append(cell); return cell;
-    });
-    container.append(row); return cells;
+  const rows = names.map((name, i) => {
+    const row = el(doc, 'div', 'joint-row');
+    const label = el(doc, 'span', 'joint-name'); label.textContent = `J${i + 1}`; label.title = name; row.append(label);
+    const gauges = LIMIT_QUANTITIES.map(quantity => { const parts = createGauge(doc, quantity); row.append(parts.gauge); return parts; });
+    container.append(row); return gauges;
   });
+  rows.heading = heading;
+  return rows;
 }
 
-export function updateJointTable(cells, {q, qd, torque, limits, torqueKind = 'applied'}) {
-  const source = limits?.source || 'Limits unavailable';
-  cells.forEach((row, i) => {
-    const values = [q?.[i], qd?.[i], torque?.[i]];
-    const lower = limits?.lower_position_rad?.[i], upper = limits?.upper_position_rad?.[i];
-    const velocity = limits?.velocity_rad_s?.[i], effort = limits?.effort_nm?.[i];
-    const states = [limitStatus(values[0], lower, upper), magnitudeStatus(values[1], velocity), magnitudeStatus(values[2], effort)];
-    const bounds = [`${lower} … ${upper} rad`, `±${velocity} rad/s`, `±${effort} Nm`];
-    row.forEach((cell, j) => {
-      const value = values[j];
-      cell.textContent = Number.isFinite(value) ? `${value < 0 ? '−' : '+'}${Math.abs(value).toFixed(j === 2 ? 2 : 3)}` : '—';
-      cell.classList.toggle('near-limit', states[j] === 'near-limit');
-      cell.classList.toggle('at-limit', states[j] === 'at-limit');
-      const meaning = j === 2 ? (torqueKind === 'predicted' ? 'Predicted actuator torque' : 'Last applied actuator torque') : j === 1 ? 'Recorded joint velocity' : 'Native joint position';
-      cell.title = `${meaning}${Number.isFinite(value) ? '' : ' unavailable'} · ${source}${limits ? ` · ${bounds[j]}` : ''}${states[j] ? ` · ${states[j] === 'at-limit' ? 'AT / BEYOND LIMIT' : 'NEAR LIMIT (within 10%)'}` : ''}`;
-      cell.setAttribute('aria-label', `${meaning}: ${cell.textContent}${states[j] ? `, ${states[j].replace('-', ' ')}` : ''}`);
-    });
+const range = (bounds, unit) => `${signed(bounds[0], 3)} … ${signed(bounds[1], 3)} ${unit}`;
+
+function gaugeTitle(quantity, value, use, { limits, mpcBounds, index, torqueKind }) {
+  const meaning = quantity === 'torque' ? (torqueKind === 'predicted' ? 'Predicted actuator torque' : 'Last applied actuator torque') : MEANING[quantity];
+  const unit = { position: 'rad', velocity: 'rad/s', torque: 'Nm' }[quantity];
+  const parts = [Number.isFinite(value) ? `${meaning} ${signed(value, DIGITS[quantity])} ${unit}` : `${meaning} unavailable`];
+  const urdf = limitBounds(limits, quantity, index);
+  parts.push(urdf ? `URDF ${quantity === 'position' ? range(urdf, unit) : `±${urdf[1]} ${unit}`}` : 'URDF limit unavailable');
+  if (use) parts.push(`${percent(use.utilisation)} · ${use.state} · ${formatLimitDistance(use)}`);
+  const mpc = limitBounds(mpcBounds, quantity, index);
+  if (mpc) parts.push(`MPC bound ${quantity === 'position' ? range(mpc, unit) : `±${Number(mpc[1].toPrecision(4))} ${unit}`}`);
+  return parts.join('\n');
+}
+
+function updateGauge(parts, quantity, value, context) {
+  const { limits, index, settings } = context;
+  const use = quantityLimitUse(quantity, value, limits, index, settings);
+  const { gauge } = parts;
+  gauge.dataset.state = use ? use.state : Number.isFinite(value) ? 'unbounded' : 'missing';
+  parts.track.hidden = !use;
+  parts.text.textContent = use ? '' : Number.isFinite(value) ? signed(value, DIGITS[quantity]) : '—';
+  gauge.title = gaugeTitle(quantity, value, use, context);
+  gauge.setAttribute('aria-label', use ? `${quantity} ${percent(use.utilisation)} of URDF limit, ${use.state}` : `${quantity} ${parts.text.textContent === '—' ? 'unavailable' : parts.text.textContent}`);
+  if (!use) return;
+  const near = settings.limit_near_percent / 100;
+  if (quantity === 'position') {
+    const span = 1 - 2 * POSITION_INSET, band = (1 - near) / 2 * span;
+    parts.nearLow.style.left = `${POSITION_INSET * 100}%`; parts.nearLow.style.width = `${band * 100}%`;
+    parts.nearHigh.style.left = `${(1 - POSITION_INSET - band) * 100}%`; parts.nearHigh.style.width = `${band * 100}%`;
+    const fraction = (value - use.lower) / (use.upper - use.lower);
+    parts.marker.style.left = `${Math.max(0, Math.min(1, POSITION_INSET + fraction * span)) * 100}%`;
+  } else {
+    parts.near.style.left = `${near * SCALE * 100}%`; parts.near.style.width = `${(1 - near) * SCALE * 100}%`;
+    parts.fill.style.width = `${Math.min(1, use.utilisation) * SCALE * 100}%`;
+    parts.over.style.width = `${Math.max(0, Math.min(1 - SCALE, (use.utilisation - 1) * SCALE)) * 100}%`;
+  }
+}
+
+export function updateJointTable(rows, { q, qd, torque, limits, mpcBounds = null, torqueKind = 'applied', settings = DEFAULT_LIMIT_USE }) {
+  settings = { ...DEFAULT_LIMIT_USE, ...settings };
+  if (rows.heading) rows.heading.title = headingTitle(settings);
+  rows.forEach((gauges, index) => {
+    const values = [q?.[index], qd?.[index], torque?.[index]];
+    gauges.forEach((parts, j) => updateGauge(parts, LIMIT_QUANTITIES[j], values[j], { limits, mpcBounds, index, torqueKind, settings }));
   });
 }

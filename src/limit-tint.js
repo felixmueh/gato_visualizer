@@ -1,42 +1,9 @@
-import { Color, Raycaster, Vector2 } from "three";
+import { Color, EdgesGeometry, LineBasicMaterial, LineSegments, Raycaster, Vector2 } from "three";
+import { DEFAULT_LIMIT_USE, LIMIT_QUANTITIES, describeLimitUse, jointLimitUse, limitColor, stateRank } from "./limit-use.js";
 
-// Links tint from this fraction of their joint's worst limit use and reach full
-// red at 100 %.
-export const LIMIT_TINT_THRESHOLD = 0.8;
-const LIMIT_COLOR = new Color(0xff2a2a);
-
-// Worst normalised limit use of one joint for the quantities the sample really
-// has. Position use is the distance from the range centre over the half range.
-export function jointLimitUse({ q, qd, torque, limits }, index) {
-  if (!limits) return null;
-  let worst = null;
-  const consider = (kind, value, limit, fraction, unit) => {
-    if (!Number.isFinite(value) || !Number.isFinite(limit) || limit <= 0 || !Number.isFinite(fraction)) return;
-    if (!worst || fraction > worst.fraction) worst = { kind, fraction, value, limit, unit };
-  };
-  const lower = limits.lower_position_rad?.[index], upper = limits.upper_position_rad?.[index];
-  if (Number.isFinite(q?.[index]) && Number.isFinite(lower) && Number.isFinite(upper) && upper > lower) {
-    const half = (upper - lower) / 2;
-    consider("position", q[index], half, Math.abs(q[index] - (upper + lower) / 2) / half, "rad");
-    worst && worst.kind === "position" && Object.assign(worst, { limit: half, range: [lower, upper] });
-  }
-  const velocity = limits.velocity_rad_s?.[index];
-  if (Number.isFinite(qd?.[index])) consider("velocity", qd[index], velocity, Math.abs(qd[index]) / velocity, "rad/s");
-  const effort = limits.effort_nm?.[index];
-  if (Number.isFinite(torque?.[index])) consider("torque", torque[index], effort, Math.abs(torque[index]) / effort, "N m");
-  return worst;
-}
-
-export function tintStrength(fraction, threshold = LIMIT_TINT_THRESHOLD) {
-  if (!Number.isFinite(fraction) || fraction < threshold) return 0;
-  return Math.min(1, (fraction - threshold) / (1 - threshold));
-}
-
-export function describeLimitUse(name, use) {
-  const percent = Math.round(use.fraction * 100);
-  if (use.kind === "position") return `${name} position ${percent} % of range ${use.range[0].toFixed(2)} … ${use.range[1].toFixed(2)} rad`;
-  return `${name} ${use.kind} ${percent} % of ${Number(use.limit.toPrecision(3))} ${use.unit}`;
-}
+// A link takes its joint's worst state over position, velocity and torque:
+// near = amber, at = solid red, beyond = red with a light edge outline.
+export const TINT_STATES = Object.freeze(["near", "at", "beyond"]);
 
 function linkMeshes(link) {
   const meshes = [];
@@ -49,23 +16,43 @@ function linkMeshes(link) {
   return meshes;
 }
 
-// Tints each moving joint's child link by that joint's worst limit use.
+// Quantities of one joint that are not within, worst first.
+export function tintedQuantities(use) {
+  return LIMIT_QUANTITIES.map((quantity) => use?.[quantity]).filter((item) => item && item.state !== "within")
+    .sort((a, b) => stateRank(b.state) - stateRank(a.state) || b.utilisation - a.utilisation);
+}
+
+// Tints each moving joint's child link by that joint's worst limit state.
 // Materials are per mesh (cloned by the caller); the original colour is kept.
-export function createLimitTint({ robot, jointNames, camera, element, tooltip }) {
+export function createLimitTint({ robot, jointNames, camera, element, tooltip, colors = {} }) {
+  const palette = Object.fromEntries(["near", "at", "beyond"].map((name) => [name, new Color(colors[name] ?? limitColor(name))]));
+  const edgeMaterial = new LineBasicMaterial({ color: colors.edge ?? 0xffe1e1, transparent: true, opacity: 0.9 });
   const links = jointNames.map((name) => {
     const joint = robot.joints[name];
     const meshes = (joint?.children ?? []).filter((child) => child.isURDFLink).flatMap(linkMeshes);
-    return { name, meshes, colors: meshes.map((mesh) => mesh.material.color.clone()), use: null };
+    return { name, meshes, colors: meshes.map((mesh) => mesh.material.color.clone()), use: null, state: null, edges: null };
   });
-  let enabled = true;
+  let enabled = true, settings = { ...DEFAULT_LIMIT_USE };
   let last;
+
+  // Edge outlines are built once per link, on its first beyond state.
+  function outline(link, visible) {
+    if (visible && !link.edges) {
+      link.edges = link.meshes.map((mesh) => {
+        const lines = new LineSegments(new EdgesGeometry(mesh.geometry, 30), edgeMaterial);
+        lines.name = "limit-beyond-outline"; lines.raycast = () => {}; mesh.add(lines); return lines;
+      });
+    }
+    link.edges?.forEach((lines) => { lines.visible = visible; });
+  }
 
   function apply() {
     links.forEach((link, index) => {
-      const use = enabled && last ? jointLimitUse(last, index) : null;
-      const strength = use ? tintStrength(use.fraction) : 0;
-      link.use = strength > 0 ? use : null;
-      link.meshes.forEach((mesh, i) => mesh.material.color.copy(link.colors[i]).lerp(LIMIT_COLOR, strength));
+      const use = enabled && last ? jointLimitUse(last, index, settings) : null;
+      const state = use?.worst && use.worst.state !== "within" ? use.worst.state : null;
+      link.use = state ? use : null; link.state = state;
+      link.meshes.forEach((mesh, i) => mesh.material.color.copy(state ? palette[state] : link.colors[i]));
+      outline(link, state === "beyond");
     });
   }
 
@@ -83,7 +70,8 @@ export function createLimitTint({ robot, jointNames, camera, element, tooltip })
       const hit = raycaster.intersectObject(robot, true)[0];
       const link = hit && links.find((item) => item.use && item.meshes.includes(hit.object));
       if (!link) { tooltip.hidden = true; return; }
-      tooltip.textContent = describeLimitUse(link.name, link.use);
+      tooltip.textContent = tintedQuantities(link.use).map((use) => describeLimitUse(link.name, use)).join("\n");
+      tooltip.dataset.state = link.state;
       tooltip.style.left = `${event.clientX - bounds.left + 14}px`;
       tooltip.style.top = `${event.clientY - bounds.top + 14}px`;
       tooltip.hidden = false;
@@ -95,6 +83,7 @@ export function createLimitTint({ robot, jointNames, camera, element, tooltip })
   return {
     update(sample) { last = sample; apply(); },
     setEnabled(value) { enabled = Boolean(value); if (!enabled && tooltip) tooltip.hidden = true; apply(); },
+    setSettings(value) { settings = { ...DEFAULT_LIMIT_USE, ...value }; apply(); },
     get links() { return links; },
   };
 }

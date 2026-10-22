@@ -11,6 +11,15 @@
   -webkit-font-smoothing: antialiased;
   color-scheme: dark;
   font-weight: 400;
+  /* Joint limit use (src/limit-use.js): one colour per quantity, shared by the
+     Joints gauges and limit plots, and one per state, shared with the 3D tint. */
+  --limit-position: #6fb2ee;
+  --limit-velocity: #b398f3;
+  --limit-torque: #85c99c;
+  --limit-near: #f2b544;
+  --limit-at: #ff4b4b;
+  --limit-beyond: #ff4b4b;
+  --limit-beyond-edge: #ffe1e1;
 }
 * {
   box-sizing: border-box;
@@ -272,8 +281,8 @@ a {
 }
 .joint-row {
   display: grid;
-  grid-template-columns: 30px repeat(3, minmax(0, 1fr));
-  column-gap: 4px;
+  grid-template-columns: 22px repeat(3, minmax(0, 1fr));
+  column-gap: 7px;
   align-items: center;
   justify-content: space-between;
   padding: 7px 0;
@@ -292,18 +301,25 @@ a {
   border-radius: 50%;
   background: #3e6174;
 }
-.joint-value {
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 11px;
-  color: #bdd0df;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-.joint-columns { color: #879ab2; font-size: 8px; white-space: nowrap; }
-.joint-columns span:not(:first-child) { text-align: right; }
-.joint-value.near-limit { color: #ffd166; }
-.joint-value.at-limit { color: #ff737b; }
-.joint-value.at-limit { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.joint-columns { color: #879ab2; font-size: 8px; white-space: nowrap; cursor: help; }
+.joint-columns span:not(:first-child) { text-align: center; }
+/* Limit gauges: the quantity colour while within, state colours otherwise. */
+.limit-gauge { --gauge: var(--limit-position); position: relative; display: block; height: 12px; min-width: 0; cursor: default; }
+.limit-gauge[data-quantity='velocity'] { --gauge: var(--limit-velocity); }
+.limit-gauge[data-quantity='torque'] { --gauge: var(--limit-torque); }
+.limit-gauge[data-state='near'] { --gauge: var(--limit-near); }
+.limit-gauge[data-state='at'], .limit-gauge[data-state='beyond'] { --gauge: var(--limit-at); }
+.limit-gauge-track { position: absolute; inset: 3px 0; border-radius: 1px; background: #1f2d3c; }
+.limit-gauge[data-quantity='position'] .limit-gauge-track { background: linear-gradient(90deg, transparent 7%, #1f2d3c 7%, #1f2d3c 93%, transparent 93%); }
+.limit-gauge-track[hidden] { display: none; }
+.limit-gauge-near { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--limit-near) 28%, transparent); }
+.limit-gauge-tick { position: absolute; top: -2px; bottom: -2px; width: 1px; margin-left: -.5px; background: #9fb3c6; }
+.limit-gauge-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--gauge); }
+.limit-gauge-over { position: absolute; top: -1px; bottom: -1px; background: repeating-linear-gradient(135deg, var(--limit-beyond) 0 2px, var(--limit-beyond-edge) 2px 3px); }
+.limit-gauge-marker { position: absolute; top: -3px; bottom: -3px; width: 3px; margin-left: -1.5px; border-radius: 1px; background: var(--gauge); }
+.limit-gauge[data-state='beyond'] .limit-gauge-marker, .limit-gauge[data-state='beyond'] .limit-gauge-fill { box-shadow: 0 0 0 1px var(--limit-beyond-edge); }
+.limit-gauge-text { display: block; font: 10px/12px "IBM Plex Mono", monospace; color: #7f93a8; text-align: center; font-variant-numeric: tabular-nums; }
+.limit-gauge[data-state='unbounded'] .limit-gauge-text { color: #bdd0df; }
 .source-section {
   margin-top: auto;
   padding-top: 1px;
@@ -1373,6 +1389,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   color: #ffd9d9;
   font: 11px 'IBM Plex Mono', monospace;
   pointer-events: none;
-  white-space: nowrap;
+  white-space: pre;
 }
+.limit-tint-tooltip[data-state='near'] { border-color: var(--limit-near); color: #ffe7bd; }
+.limit-tint-tooltip[data-state='beyond'] { border-color: var(--limit-beyond-edge); box-shadow: 0 0 0 1px var(--limit-beyond); }
 .limit-tint-tooltip[hidden] { display: none; }

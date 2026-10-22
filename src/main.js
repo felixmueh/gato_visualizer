@@ -5,6 +5,7 @@ import { setupLive } from "./live.js";
 import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
 import { createLimitTint } from "./limit-tint.js";
+import { DEFAULT_LIMIT_USE, pickLimitUse } from "./limit-use.js";
 import { setupPresentationSettings } from "./presentation-settings.js";
 import { setupSolverProfiles } from "./solver-profiles.js";
 import "./solver-profiles.css";
@@ -83,8 +84,16 @@ const sourceSettings = setupSourceSettings({ button: $('source-settings-open'), 
 } });
 // Notices link straight to the settings tab that fixes them.
 document.addEventListener('open-settings', event => { sourceSettings.dialog.selectTab(event.detail?.tab || 'backend'); $('source-settings-open').click(); });
-let limitTint, limitTintEnabled = true;
-const presentationSettings = setupPresentationSettings({ container: sourceSettings.panels.ui, onChange: settings => { live?.setPresentationSettings(settings); limitTintEnabled = settings.limit_tint; limitTint?.setEnabled(limitTintEnabled); } });
+let limitTint, limitTintEnabled = true, limitUse = { ...DEFAULT_LIMIT_USE }, lastJointTelemetry;
+const presentationSettings = setupPresentationSettings({ container: sourceSettings.panels.ui, onChange: settings => {
+  live?.setPresentationSettings(settings); limitTintEnabled = settings.limit_tint; limitTint?.setEnabled(limitTintEnabled);
+  const next = pickLimitUse(settings);
+  if (JSON.stringify(next) === JSON.stringify(limitUse)) return;
+  limitUse = next; limitTint?.setSettings(limitUse);
+  if (lastJointTelemetry) updateJointTelemetry(...lastJointTelemetry);
+  // Plots that draw limit states receive the same thresholds with each request.
+  plotInspection.invalidate();
+} });
 solverProfiles = setupSolverProfiles({ liveContainer: $('live-panel'), editorContainer: sourceSettings.panels.solverProfiles,
   beforeActivate: () => live?.beginSolverProfileSwitch(),
   onSettled: async item => { await live?.finishSolverProfileSwitch(item); plotInspection.refresh(); },
@@ -126,6 +135,7 @@ const plotInspection = setupPlotInspection({
     : trajectory ? { source: { kind: 'replay', id: replayLibrary?.selectedId || 'default', trajectory_index: data?.trajectories?.indexOf(trajectory) ?? 0, ...(data?.source?.plot_revision ? { revision: data.source.plot_revision } : {}) }, revision: data?.source?.plot_revision || trajectory.id, label: trajectory.label || 'Imported recording' } : null,
   getView: () => { const view = expandedTimeline.snapshot; return { window: view.visible, cursor: view.selectedTime, aggregate: view.aggregate, reveal: liveReveal(view.selectedTime), episodeClock: live?.mode === 'live' || trajectory?.kind === 'recorded', inspectSolve: workbench.activeTab === 'solve' };  },
   getSolverProfile: () => ({ id: solverProfiles.snapshot.catalog.active_profile_id, switching: solverProfiles.snapshot.switching }),
+  getLimitUse: () => limitUse,
   onInspectionStart: () => live?.holdForInspection(),
   onClearAggregate: () => expandedTimeline.clearAggregate(),
   onSeek: time => expandedTimeline.seek(time),
@@ -148,8 +158,11 @@ function updateExpandedTimeline() {
   }
 }
 
-function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_limits, torqueKind = "applied") {
-  updateJointTable(jointCells, {q, qd, torque, limits, torqueKind});
+// Limit use is measured against the URDF limits (`joint_limits`); the
+// tighter MPC bounds (`mpc_bounds`), when known, appear only in tooltips.
+function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_limits, torqueKind = "applied", mpcBounds = data?.mpc_bounds) {
+  lastJointTelemetry = [q, qd, torque, limits, torqueKind, mpcBounds];
+  updateJointTable(jointCells, {q, qd, torque, limits, mpcBounds, torqueKind, settings: limitUse});
   limitTint?.update({q, qd, torque, limits});
 }
 const pathColor = 0x34d8d4;
@@ -542,7 +555,7 @@ async function start() {
       }
     });
     limitTint = createLimitTint({ robot, jointNames: data.joint_names, camera, element: renderer.domElement, tooltip: $("limit-tint-tooltip") });
-    limitTint.setEnabled(limitTintEnabled);
+    limitTint.setEnabled(limitTintEnabled); limitTint.setSettings(limitUse);
     jointCells = createJointTable($("joint-list"), data.joint_names);
     populateReplay(data, {name: isStartingScene(data) ? 'Starting pose' : 'Default recording'});
     robot.updateMatrixWorld(true);
@@ -709,7 +722,7 @@ function showLiveState(state, context = {}) {
   defaultData.joint_names.forEach((name, i) => {
     robot.setJointValue(name, state.q[i]);
   });
-  updateJointTelemetry(state.q, state.qd, state.torque_nm, state.joint_limits || defaultData.joint_limits);
+  updateJointTelemetry(state.q, state.qd, state.torque_nm, state.joint_limits || defaultData.joint_limits, "applied", state.mpc_bounds || null);
   const referenceTarget = context.referenceTarget || (!displayedLiveReference?.draft ? state.target_xyz : null);
   if (Array.isArray(referenceTarget) && referenceTarget.length === 3 && referenceTarget.every(Number.isFinite) && liveGroup.userData.target) liveGroup.userData.target.position.fromArray(referenceTarget);
   if (context.tracePoints) {

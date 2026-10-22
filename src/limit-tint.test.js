@@ -1,47 +1,49 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Group, Mesh, MeshBasicMaterial, BoxGeometry } from "three";
-import { createLimitTint, describeLimitUse, jointLimitUse, tintStrength } from "./limit-tint.js";
+import { createLimitTint, tintedQuantities } from "./limit-tint.js";
+import { jointLimitUse } from "./limit-use.js";
 
-const limits = { lower_position_rad: [-1, -2], upper_position_rad: [1, 2], velocity_rad_s: [2, 2], effort_nm: [40, 43] };
+const one = { lower_position_rad: [-1], upper_position_rad: [1], velocity_rad_s: [2], effort_nm: [40] };
+const colors = { near: 0xf2b544, at: 0xff4b4b, beyond: 0xff4b4b };
 
-test("worst limit use picks the largest available utilisation and ignores missing data", () => {
-  const use = jointLimitUse({ q: [0, 0], qd: [1, 0], torque: [10, 39.56], limits }, 1);
-  assert.equal(use.kind, "torque");
-  assert(Math.abs(use.fraction - 0.92) < 1e-9);
-  assert.equal(describeLimitUse("arm_right_4", use), "arm_right_4 torque 92 % of 43 N m");
-  assert.equal(jointLimitUse({ q: [0.9], limits }, 0).kind, "position");
-  assert.equal(jointLimitUse({ q: [0.9], qd: null, torque: null, limits: null }, 0), null);
-  assert.equal(jointLimitUse({ q: [0], limits }, 0).fraction, 0);
-  // No qd/torque: only position can be reported.
-  assert.equal(jointLimitUse({ q: [0.5], torque: undefined, limits }, 0).kind, "position");
-});
-
-test("tint starts at the threshold and saturates at full limit use", () => {
-  assert.equal(tintStrength(0.79), 0);
-  assert.equal(tintStrength(0.8), 0);
-  assert(Math.abs(tintStrength(0.9) - 0.5) < 1e-12);
-  assert.equal(tintStrength(1.3), 1);
-  assert.equal(tintStrength(NaN), 0);
-});
-
-test("links tint, restore their original colour, and respect the on/off setting", () => {
+function robotWithLink() {
   const robot = new Group();
   const mesh = new Mesh(new BoxGeometry(), new MeshBasicMaterial({ color: 0x336699 }));
   const link = new Group(); link.isURDFLink = true; link.add(mesh);
   const joint = new Group(); joint.isURDFJoint = true; joint.add(link);
   robot.joints = { j1: joint }; robot.add(joint);
+  return { robot, mesh };
+}
+
+test("links take their joint's worst distinct state; within restores the original colour", () => {
+  const { robot, mesh } = robotWithLink();
   const original = mesh.material.color.getHex();
-  const tint = createLimitTint({ robot, jointNames: ["j1"] });
-  const one = { lower_position_rad: [-1], upper_position_rad: [1], velocity_rad_s: [2], effort_nm: [40] };
-  tint.update({ q: [0], torque: [40], limits: one });
-  assert(mesh.material.color.getHex() !== original);
-  assert(tint.links[0].use);
-  tint.setEnabled(false);
-  assert.equal(mesh.material.color.getHex(), original);
-  tint.setEnabled(true);
-  assert(mesh.material.color.getHex() !== original);
+  const tint = createLimitTint({ robot, jointNames: ["j1"], colors });
+  tint.update({ q: [0], torque: [37], limits: one });
+  assert.equal(tint.links[0].state, "near"); assert.equal(mesh.material.color.getHex(), colors.near);
+  tint.update({ q: [.999], torque: [37], limits: one });
+  assert.equal(tint.links[0].state, "at"); assert.equal(mesh.material.color.getHex(), colors.at);
+  const outline = () => mesh.children.find((child) => child.name === "limit-beyond-outline");
+  assert.equal(outline(), undefined);
+  tint.update({ q: [0], torque: [41], limits: one });
+  assert.equal(tint.links[0].state, "beyond"); assert.equal(outline().visible, true);
   tint.update({ q: [0], torque: [10], limits: one });
-  assert.equal(mesh.material.color.getHex(), original);
-  assert.equal(tint.links[0].use, null);
+  assert.equal(mesh.material.color.getHex(), original); assert.equal(tint.links[0].use, null); assert.equal(outline().visible, false);
+  tint.update({ q: [0], torque: [41], limits: one }); tint.setEnabled(false);
+  assert.equal(mesh.material.color.getHex(), original); assert.equal(outline().visible, false);
+});
+
+test("settings move the near threshold immediately", () => {
+  const { robot } = robotWithLink();
+  const tint = createLimitTint({ robot, jointNames: ["j1"], colors });
+  tint.update({ q: [.85], limits: one });
+  assert.equal(tint.links[0].state, null);
+  tint.setSettings({ limit_near_percent: 80 });
+  assert.equal(tint.links[0].state, "near");
+});
+
+test("tooltip lines list non-within quantities worst first", () => {
+  const use = jointLimitUse({ q: [.95], qd: [0], torque: [40.5], limits: one }, 0);
+  assert.deepEqual(tintedQuantities(use).map((item) => `${item.quantity}:${item.state}`), ["torque:beyond", "position:near"]);
 });
