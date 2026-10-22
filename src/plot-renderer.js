@@ -16,12 +16,21 @@ export function renderPlot(container, spec, options = {}) {
   // and expose them on hover instead (see plotDetails).
   for (const message of [...(options.notes === false ? [] : spec.notes || []), ...(spec.message && spec.kind !== 'unavailable' ? [spec.message] : [])]) root.append(el('p', typeof message === 'string' ? message : message.message, 'plot-message'));
   if (spec.kind === 'table') {
-    const table = el('table'); const head = el('tr');
-    for (const column of spec.columns || ['Quantity', 'Value', 'Unit', 'Note']) head.append(el('th', typeof column === 'string' ? column : column.label));
+    const table = el('table'), head = el('tr');
+    const labels = (spec.columns || ['Quantity', 'Value', 'Unit', 'Note']).map(column => typeof column === 'string' ? column : column.label);
+    // A Note column is not a column: the note is the hover text of its row.
+    const noteAt = labels.indexOf('Note');
+    labels.forEach((label, index) => { if (index !== noteAt) head.append(el('th', label)); });
     table.append(head);
     for (const row of spec.rows || []) {
-      const tr = el('tr');
-      for (const value of Array.isArray(row) ? row : [row.label, row.value, row.unit || '', row.note || '']) tr.append(el('td', value == null ? 'unavailable' : typeof value === 'number' ? fmt(value) : value));
+      const tr = el('tr'), cells = Array.isArray(row) ? row : [row.label, row.value, row.unit || '', row.note || ''];
+      cells.forEach((value, index) => {
+        if (index === noteAt) { if (value) tr.setAttribute('title', String(value)); return; }
+        const text = value == null ? 'unavailable' : typeof value === 'number' ? fmt(value) : value, td = el('td', text);
+        td.className = ['plot-table-label', 'plot-table-value'][index] || 'plot-table-unit';
+        if (index === 0) td.setAttribute('title', String(text));
+        tr.append(td);
+      });
       table.append(tr);
     }
     root.append(table); container.replaceChildren(root); return makeHandle();
@@ -32,7 +41,13 @@ export function renderPlot(container, spec, options = {}) {
   const categories = spec.x?.identity === 'category' ? [...new Set((spec.series || []).flatMap(line => line.x || []))] : null;
   const series = categories ? (spec.series || []).map(line => ({ ...line, x: (line.x || []).map(value => categories.indexOf(value)) })) : spec.series || [], points = series.flatMap(line => (line.x || []).map((x, i) => [x, line.y?.[i]]));
   const valid = points.filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
-  if (!valid.length && spec.kind !== 'spans') root.append(el('p', spec.empty_message || 'No recorded values available.', 'plot-message'));
+  // Without data there is no axis to draw: show the message alone, so no
+  // gridline, cursor or range is computed from nothing.
+  if (spec.kind === 'spans' ? !(spec.spans || []).length : !valid.length) {
+    root.append(el('p', spec.empty_message || 'No recorded values available.', 'plot-message'));
+    options.legendTarget?.replaceChildren();
+    container.replaceChildren(root); return makeHandle();
+  }
   const extent = values => { const min = values.reduce((a, b) => Math.min(a, b), Infinity), max = values.reduce((a, b) => Math.max(a, b), -Infinity); return min === max ? [min - Math.max(Math.abs(min) * .05, .01), max + Math.max(Math.abs(max) * .05, .01)] : [min, max]; };
   const finiteX = [...series.flatMap(line => [...(line.x || []), ...(line.bin_edges || [])]), ...(spec.spans || []).flatMap(span => [span.start, span.end])].filter(Number.isFinite);
   const requestedX = options.window || (categories?.length ? [-.5, categories.length - .5] : null) || spec.x_axis?.range || (finiteX.length ? extent(finiteX) : [0, 1]);
@@ -107,17 +122,19 @@ export function renderPlot(container, spec, options = {}) {
   // The tick set changes while the range animates, so it is redrawn whole.
   // Linked rows keep their labels inside the left edge, outlined with the
   // background colour so curves stay readable beneath them.
-  const tickGroup = doc.createElementNS(ns, 'g'); svg.append(tickGroup);
+  // Gridlines go below the data; labels are appended later, above guides and
+  // curves, so their outline cuts through anything that crosses them.
+  const tickGroup = doc.createElementNS(ns, 'g'), labelGroup = doc.createElementNS(ns, 'g'); svg.append(tickGroup);
   const drawTicks = () => {
-    const items = [];
+    const items = [], labels = [];
     for (const tick of niceTicks(yRange, tickCount)) {
       const y = sy(tick.value), line = doc.createElementNS(ns, 'line'), text = doc.createElementNS(ns, 'text');
       for (const [key, value] of Object.entries({ x1: margin.left, x2: width - margin.right, y1: y, y2: y, stroke: '#334457', 'stroke-width': .7 })) line.setAttribute(key, value);
       const top = y < margin.top + 8, bottom = y > height - margin.bottom - 4;
       for (const [key, value] of Object.entries(options.linked ? { x: 3, y: top ? y + 9 : bottom ? y - 2 : y + 3, fill: '#9fb2c5', 'font-size': 9, stroke: '#142130', 'stroke-width': 3, 'paint-order': 'stroke' } : { x: margin.left - 5, y: y + 3, 'text-anchor': 'end', fill: '#9fb2c5', 'font-size': 10 })) text.setAttribute(key, value);
-      text.setAttribute('class', 'plot-y-tick'); text.textContent = tick.label; items.push(line, text);
+      text.setAttribute('class', 'plot-y-tick'); text.textContent = tick.label; items.push(line); labels.push(text);
     }
-    tickGroup.replaceChildren(...items);
+    tickGroup.replaceChildren(...items); labelGroup.replaceChildren(...labels);
   };
   drawTicks(); scaled.push(drawTicks);
   for (const span of spec.spans || []) {
@@ -152,7 +169,7 @@ export function renderPlot(container, spec, options = {}) {
     });
     else node('path', { d: path, stroke: color, fill: 'none', 'stroke-width': 1.6, 'vector-effect': 'non-scaling-stroke' }, null, data);
   });
-  svg.append(clipped);
+  svg.append(clipped, labelGroup);
   const xLabels = [];
   const axisTitle = axis => [axis?.label || axis?.identity?.replaceAll('_', ' '), axis?.unit ? `(${axis.unit})` : ''].filter(Boolean).join(' ');
   if (!options.linked) {
@@ -207,7 +224,7 @@ export function renderPlot(container, spec, options = {}) {
   }
   root.append(svg, readout); container.replaceChildren(root);
   let cursorValue = options.cursor;
-  const updateCursor = value => { cursorValue = value; const visible = Number.isFinite(value) && value >= viewRange[0] && value <= viewRange[1]; cursor.setAttribute('visibility', visible ? 'visible' : 'hidden'); cursor.setAttribute('x1', cx(value)); cursor.setAttribute('x2', cx(value)); };
+  const updateCursor = value => { cursorValue = value; const visible = Number.isFinite(value) && value >= viewRange[0] && value <= viewRange[1]; cursor.setAttribute('visibility', visible ? 'visible' : 'hidden'); if (!visible) return; cursor.setAttribute('x1', cx(value)); cursor.setAttribute('x2', cx(value)); };
   // Map the base drawing onto the current window with one affine transform,
   // and end the clip at the reveal time (or the plot edge without one).
   const applyFrame = () => {

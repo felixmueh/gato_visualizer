@@ -179,3 +179,49 @@ test('sidebar x-range labels follow the per-frame window', () => {
   handle.setFrame({ window: [2, 8], reveal: 6 });
   assert.deepEqual(container.querySelectorAll('text').filter(item => item.attributes.class === 'plot-x-range').map(item => item.textContent), ['2', '8']);
 });
+
+const allNodes = root => [root, ...root.children.flatMap(child => allNodes(child))];
+const nanAttributes = root => allNodes(root).flatMap(item => Object.entries(item.attributes || {}).filter(([, value]) => /NaN|Infinity/.test(value)));
+test('plots without data render a labelled empty state with no NaN attributes, also while the cursor and frame move', () => {
+  const empties = [
+    { ...base, kind: 'lines', series: [] },
+    { ...base, kind: 'lines', series: [{ label: 'Joint', x: [], y: [] }] },
+    { ...base, kind: 'lines', series: [{ label: 'Joint', x: [1, 2], y: [null, null] }], guides: [{ axis: 'y', value: 1, label: 'Bound' }] },
+    { ...base, kind: 'bars', series: [{ label: 'Counts', x: [], y: [], style: 'bar' }] },
+    { ...base, kind: 'bars', x: { identity: 'wall_time', label: 'Wall time', unit: 'ms' }, series: [{ label: 'Intervals', x: [], y: [], bin_edges: [], style: 'bar' }] },
+    { ...base, kind: 'spans', spans: [] },
+  ];
+  for (const spec of empties) for (const options of [{}, { linked: true, compact: true, cursor: 3 }]) {
+    const { document } = plotDOM(), container = document.createElement('div');
+    const handle = renderPlot(container, spec, options);
+    handle.updateCursor?.(2); handle.setFrame?.({ window: [0, 4], reveal: 1 }); handle.updateCursor?.(undefined);
+    assert.deepEqual(nanAttributes(container), [], `${spec.kind} ${JSON.stringify(options)}`);
+    assert.equal(container.querySelectorAll('svg').length, 0, 'no axes without data');
+    assert(container.querySelectorAll('p').some(item => item.textContent === 'No recorded values available.'));
+  }
+});
+test('the cursor of a plot with data never carries NaN coordinates', () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  const handle = renderPlot(container, { ...base, kind: 'lines', series: [{ label: 'Joint', x: [0, 1], y: [1, 2] }] }, {});
+  handle.updateCursor(undefined); handle.updateCursor(0.5); handle.setFrame({ window: [0, 1] });
+  assert.deepEqual(nanAttributes(container), []);
+});
+test('tables keep words and numbers whole: notes become row titles, labels get a hover title', () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  renderPlot(container, { version: 1, kind: 'table', title: 'Summary', rows: [{ label: 'MPC wall median', value: 240.01, unit: 'ms', note: 'Median of intervals' }, { label: 'MPC wall p95', value: null, unit: 'ms', note: '' }] });
+  assert.deepEqual(container.querySelectorAll('th').map(item => item.textContent), ['Quantity', 'Value', 'Unit']);
+  const rows = container.querySelectorAll('tr');
+  assert.equal(rows[1].getAttribute('title'), 'Median of intervals');
+  const cells = rows[1].children; assert.equal(cells.length, 3);
+  assert.deepEqual(cells.map(item => item.className), ['plot-table-label', 'plot-table-value', 'plot-table-unit']);
+  assert.equal(cells[0].getAttribute('title'), 'MPC wall median'); assert.equal(cells[1].textContent, '240.01');
+  assert.equal(rows[2].children[1].textContent, 'unavailable');
+});
+test('y labels are drawn above guide lines and curves so their outline knocks them out', () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  renderPlot(container, { ...base, kind: 'lines', series: [{ label: 'Joint', x: [0, 1], y: [-1, 1] }], guides: [{ axis: 'y', value: 0, label: 'Bound' }] }, { linked: true, compact: true });
+  const svg = container.querySelector('svg'), order = element => svg.children.findIndex(group => group === element || allNodes(group).includes(element));
+  const label = container.querySelectorAll('text').find(item => item.getAttribute('class') === 'plot-y-tick');
+  const guide = container.querySelectorAll('line').find(item => item.getAttribute('stroke-dasharray') === '4 3');
+  assert(order(label) > order(guide)); assert.equal(label.getAttribute('paint-order'), 'stroke');
+});
