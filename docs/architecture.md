@@ -109,7 +109,7 @@ python_bin="$(python3 scripts/launch_python.py)"
 | Browser logic and bundle | `npm test`; `npm run build` (or `node --test src/live-execution.test.js src/presentation-settings.test.js` for focused playback checks) |
 
 The full CPU suite is `"$python_bin" -m unittest discover -s tests -v`. Model and
-replay tests expect a prepared sibling `../tiago_mpc` and its exporter; fake
+replay tests expect a prepared sibling `../tiago_mpc_vis_baseline` and its exporter; fake
 adapters exercise process/scheduler behavior without proving native solver
 numerics. The opt-in [GPU conformance command](../README.md#development) covers
 the synchronous adapter only. Native/profile qualifications are bounded by the

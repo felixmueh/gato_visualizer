@@ -23,11 +23,12 @@ sys.path.insert(0, str(ROOT))
 # Keep the selected virtualenv path; resolving its Python symlink would lose it.
 os.environ["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
 from live_mpc import GPULocks, MPCAdapter, import_mpc
+from visualizer_config import DEFAULT_MPC_ROOT
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mpc-root", type=Path, default=Path(os.environ.get("TIAGO_MPC_ROOT", ROOT.parent / "tiago_mpc")))
+    parser.add_argument("--mpc-root", type=Path, default=Path(os.environ.get("TIAGO_MPC_ROOT", DEFAULT_MPC_ROOT)))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--steps", type=int, default=3)
     parser.add_argument("--output", type=Path)

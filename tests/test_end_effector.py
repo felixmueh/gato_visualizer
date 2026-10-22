@@ -15,7 +15,7 @@ from replay_format import load_replay
 from server import JOINT_NAMES, RobotKinematics, load_scene, replay_scene
 
 ROOT = Path(__file__).resolve().parents[1]
-MPC_ROOT = ROOT.parent / "tiago_mpc"
+MPC_ROOT = ROOT.parent / "tiago_mpc_vis_baseline"
 spec = importlib.util.spec_from_file_location("tcp_export_tools", MPC_ROOT / "experiments/tools.py")
 tools = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tools)

@@ -17,7 +17,7 @@ from server import make_server
 from live_presentation import LatestPresentation, mutable, render_plan, render_state, snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
-MPC_ROOT = ROOT.parent / "tiago_mpc"
+MPC_ROOT = ROOT.parent / "tiago_mpc_vis_baseline"
 
 
 class SettingsTests(unittest.TestCase):

@@ -11,6 +11,10 @@ from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "visualizer.json"
 DEFAULT_INGEST_DIRECTORY = ROOT.parent / "_expr_data/ingest"
+# Temporary (Felix, 2026-10-22): tiago_mpc main is being restructured without
+# compatibility shims. Until the visualizer is migrated to the new package API,
+# default to a frozen worktree of the last state it supports (branch vis-baseline).
+DEFAULT_MPC_ROOT = ROOT.parent / "tiago_mpc_vis_baseline"
 
 
 @dataclass(frozen=True)
@@ -119,7 +123,7 @@ def effective_source_selection(config, mpc_root=None, environment=None):
     from source_runtime import resolve_selection
     environment = os.environ if environment is None else environment
     saved = config.source or {}
-    root = mpc_root or environment.get("TIAGO_MPC_ROOT") or saved.get("mpc_root") or ROOT.parent / "tiago_mpc"
+    root = mpc_root or environment.get("TIAGO_MPC_ROOT") or saved.get("mpc_root") or DEFAULT_MPC_ROOT
     override = mpc_root is not None or bool(environment.get("TIAGO_MPC_ROOT"))
     return resolve_selection(root,
         python=environment.get("TIAGO_PYTHON") or (None if override else saved.get("python")),

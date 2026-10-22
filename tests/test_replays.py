@@ -20,7 +20,7 @@ from replay_library import ReplayLibrary, UploadConflict
 from server import RobotKinematics, load_scene, make_server, replay_scene
 
 ROOT = Path(__file__).resolve().parents[1]
-MPC_ROOT = ROOT.parent / "tiago_mpc"
+MPC_ROOT = ROOT.parent / "tiago_mpc_vis_baseline"
 MODEL = MPC_ROOT / "models/tiago_pro/tiago_pro.urdf"
 spec = importlib.util.spec_from_file_location("tiago_experiment_tools", MPC_ROOT / "experiments/tools.py")
 tools = importlib.util.module_from_spec(spec)

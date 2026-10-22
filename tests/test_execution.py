@@ -16,7 +16,7 @@ from execution_worker import worker_main
 from live_mpc import parameter_specs
 from server import make_server
 
-MPC_ROOT = Path(__file__).resolve().parents[2] / 'tiago_mpc'
+MPC_ROOT = Path(__file__).resolve().parents[2] / 'tiago_mpc_vis_baseline'
 LOCK_HELD = False
 
 

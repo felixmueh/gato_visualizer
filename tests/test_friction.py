@@ -15,7 +15,7 @@ from inspection_problem import configuration_overrides
 from live_mpc import MPCAdapter, import_mpc, parameter_specs, validate_settings
 from tests.test_execution import FakeAdapter, fake_schema
 
-ROOT = Path(__file__).resolve().parents[2]/'tiago_mpc'
+ROOT = Path(__file__).resolve().parents[2]/'tiago_mpc_vis_baseline'
 
 
 class FrictionTests(unittest.TestCase):

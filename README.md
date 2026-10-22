@@ -6,12 +6,17 @@ inspect its predicted tool path, then play the simulated closed-loop motion.
 
 ## Run
 
-Use a prepared sibling `../tiago_mpc` checkout with canonical models, fetched
+**Temporary default (2026-10-22):** `tiago_mpc` main is being restructured. Until the
+visualizer follows it, the default source is `../tiago_mpc_vis_baseline`, a frozen
+`tiago_mpc` worktree on branch `vis-baseline` (main at `72ca2b0`). Select another
+checkout with `--mpc-root`, `TIAGO_MPC_ROOT` or Source / Build.
+
+Use a prepared sibling `../tiago_mpc_vis_baseline` checkout with canonical models, fetched
 LFS meshes and GATO dependencies. A saved legacy reaching recording is optional;
 without one, the viewer opens at the starting pose, ready for replay uploads.
-The launcher uses `../tiago_mpc/venv-host` on the desktop. `TIAGO_PYTHON` can
+The launcher uses `../tiago_mpc_vis_baseline/venv-host` on the desktop. `TIAGO_PYTHON` can
 select another prepared interpreter; inside the existing container the launcher
-falls back to `../tiago_mpc/.venv`. It does not install Python packages there.
+falls back to the checkout's `.venv`. It does not install Python packages there.
 
 The viewer reuses compatible GATO binaries in the selected checkout’s
 `.cache/gato`. Prepare missing horizon modules explicitly during setup or use
@@ -64,7 +69,7 @@ saved replays and disk history. Restart may wait for an active solve or timing
 window to release the GPU safely.
 
 Startup source precedence is `--mpc-root` > `TIAGO_MPC_ROOT` > saved selection >
-`../tiago_mpc`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
+`../tiago_mpc_vis_baseline`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
 Selecting another source with CLI/environment chooses that project's default
 environment/cache unless explicitly overridden. Apply replaces those launch-time
 overrides for its restart. No packages are installed in the selected environment.
@@ -296,7 +301,7 @@ python_bin="$(python3 scripts/launch_python.py)"
 ```
 
 The resolver above uses the same prepared interpreter as startup; it installs
-no Python packages. Tests use a prepared sibling `../tiago_mpc` for model/replay
+no Python packages. Tests use a prepared sibling `../tiago_mpc_vis_baseline` for model/replay
 fixtures. Run the opt-in GPU conformance check only when the experiment locks
 are free:
 

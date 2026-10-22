@@ -14,7 +14,7 @@ import pinocchio as pin
 
 from server import DEFAULT_RUN, JOINT_NAMES, RobotKinematics, SourceError, decode_prediction, decode_prediction_telemetry, load_scene, make_server
 
-MPC_ROOT = Path(__file__).resolve().parents[2] / "tiago_mpc"
+MPC_ROOT = Path(__file__).resolve().parents[2] / "tiago_mpc_vis_baseline"
 
 
 class PredictionTests(unittest.TestCase):
