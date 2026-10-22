@@ -118,7 +118,7 @@ test('source window checks without compiling, streams explicit build status, the
 test('source and profile refresh preserve typed friction modes and valid predictor smoothing', () => {
   const schema = {
     available_N: [32], available_N_by_friction: { off: [32], on: [] },
-    defaults: { config: { N: 32, friction: { simulation: true, prediction: false, predictor_smoothing_rad_s: .03 } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
+    defaults: { config: { N: 32, friction: { simulation: true, prediction: true, predictor_smoothing_rad_s: .03 } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
     parameters: [
       { path: 'N', kind: 'choice', choices: [32] },
       { path: 'friction.simulation', kind: 'bool' }, { path: 'friction.prediction', kind: 'bool' },
@@ -130,5 +130,5 @@ test('source and profile refresh preserve typed friction modes and valid predict
   saved.config.friction.predictor_smoothing_rad_s = 0;
   assert.equal(restoreCompatibleSettings(schema, saved).config.friction.predictor_smoothing_rad_s, .03);
   saved.config.friction.prediction = 'false';
-  assert.equal(restoreCompatibleSettings(schema, saved).config.friction.prediction, false);
+  assert.equal(restoreCompatibleSettings(schema, saved).config.friction.prediction, true);
 });

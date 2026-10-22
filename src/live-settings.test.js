@@ -1037,9 +1037,9 @@ test('complete metadata cannot release a short buffer before remaining history p
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
-function frictionSchema(h, { N = 32, on = [32] } = {}) {
+function frictionSchema(h, { N = 32, on = [32], prediction = true } = {}) {
   h.schema.defaults.config.N = N;
-  h.schema.defaults.config.friction = { simulation: true, prediction: false, predictor_smoothing_rad_s: .03 };
+  h.schema.defaults.config.friction = { simulation: true, prediction, predictor_smoothing_rad_s: .03 };
   h.schema.available_N_by_friction = { off: [16, 32, 64], on };
   h.schema.friction = { coefficients: { coulomb_nm: [2.1, 2.6, 2, 1.95, .8, 1.1, .3], viscous_nm_s_per_rad: [3.35, 4.15, 2.45, 2.25, .5, .3, .15], provenance: 'Canonical right-arm source' } };
   h.schema.parameters.push(
@@ -1050,7 +1050,7 @@ function frictionSchema(h, { N = 32, on = [32] } = {}) {
   return path => h.created.filter(el => el.dataset.path === path).at(-1);
 }
 
-test('friction controls start simulator-only and submit independent numerical modes from the frozen native anchor', async () => {
+test('friction controls start both enabled and submit independent numerical modes from the frozen native anchor', async () => {
   const h = harness(), field = frictionSchema(h);
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
@@ -1059,7 +1059,7 @@ test('friction controls start simulator-only and submit independent numerical mo
     await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
     assert.equal(field('friction.simulation').checked, true);
-    assert.equal(field('friction.prediction').checked, false);
+    assert.equal(field('friction.prediction').checked, true);
     assert.equal(field('friction.predictor_smoothing_rad_s').value, '0.03');
     assert(h.created.some(el => el.textContent?.includes('hard-sign Coulomb + viscous')));
     assert(h.created.some(el => el.textContent === 'Coulomb (Nm), joints 1–7: 2.1, 2.6, 2, 1.95, 0.8, 1.1, 0.3'));
@@ -1068,16 +1068,17 @@ test('friction controls start simulator-only and submit independent numerical mo
       q: Array(7).fill(time), qd: Array(7).fill(-.2), ee_xyz: [time, 0, 1] });
     h.$('live-history').value = '1'; h.$('live-history').emit('input');
     const anchor = structuredClone(live.displayedState), presentation = live.presentationSettings;
-    field('friction.prediction').checked = true; field('friction.prediction').emit('input');
+    field('friction.prediction').checked = false; field('friction.prediction').emit('input');
     assert.equal(live.playing, false);
     source.emit({ type: 'state', settings_version: 1, sim_time_s: 1.3, q: Array(7).fill(3), qd: Array(7).fill(2), ee_xyz: [3, 0, 1] });
     await new Promise(resolve => setTimeout(resolve, 380));
-    const both = h.commands.at(-1);
-    assert.equal(both.type, 'set_settings');
-    assert.deepEqual(both.config.friction, { simulation: true, prediction: true, predictor_smoothing_rad_s: .03 });
-    assert.deepEqual(both.anchor, { sim_time_s: 1, q: anchor.q, qd: anchor.qd });
-    assert.equal(both.reset, undefined); assert.deepEqual(live.presentationSettings, presentation);
+    const simulatorOnly = h.commands.at(-1);
+    assert.equal(simulatorOnly.type, 'set_settings');
+    assert.deepEqual(simulatorOnly.config.friction, { simulation: true, prediction: false, predictor_smoothing_rad_s: .03 });
+    assert.deepEqual(simulatorOnly.anchor, { sim_time_s: 1, q: anchor.q, qd: anchor.qd });
+    assert.equal(simulatorOnly.reset, undefined); assert.deepEqual(live.presentationSettings, presentation);
     source.emit(plan(2, 2));
+    field('friction.prediction').checked = true; field('friction.prediction').emit('input');
     field('friction.simulation').checked = false; field('friction.simulation').emit('input');
     field('friction.predictor_smoothing_rad_s').value = '.05'; field('friction.predictor_smoothing_rad_s').emit('input');
     await new Promise(resolve => setTimeout(resolve, 380));
@@ -1087,7 +1088,7 @@ test('friction controls start simulator-only and submit independent numerical mo
 });
 
 test('predictor friction keeps unsupported N visible and blocks calculation until the user chooses a compatible mode or N', async () => {
-  const h = harness(), field = frictionSchema(h, { N: 64 });
+  const h = harness(), field = frictionSchema(h, { N: 64, prediction: false });
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
   try {
