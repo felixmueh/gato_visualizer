@@ -45,6 +45,16 @@ stacked rows above the episode timeline using a card button or drag-and-drop.
 Dragging a timeline plot out removes that placement while preserving its sidebar
 instance and configuration. Both placements share one instance's settings.
 
+Presentation (Felix, 2026-10-22): keep cards small and let the design carry the
+information. Descriptions, spec notes and display-reduction details appear on
+hover over the card title and in the ⚙ dialog, not as permanent text. Timeline
+rows put title, unit and legend in one row and keep a y axis inside the plot.
+Plot heights are resizable per placement; the strip's total height is resizable.
+Every graph (lines/bars) has viewer y limits, bottom and top separately a value
+or automatic, with optional outlier clipping of automatic sides; these, like
+heights, are browser presentation settings saved with the plot instance in
+local storage. The catalog previews each plot with its default inputs.
+
 ## Author verification: primary development requirement
 
 Coding agents must be able to exercise a plot and verify its results without

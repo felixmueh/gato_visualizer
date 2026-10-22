@@ -37,12 +37,20 @@ the specification and provides presentation interactions.
   the episode timeline. SQP indices and horizon offsets are not episode time.
 - Python performs derived metrics, aggregation, histogram binning and any
   display reduction. Reduction preserves extrema/gaps; aggregates use full data.
+  The host records it as `display_reduction: [{series, original, displayed}]`
+  (not a note), which the app shows on hover. Plotters do not emit this field.
+- The renderer reports a hovered bar's own bin edges, so histogram specs need
+  no edge list in their notes.
 
 The import-free `src/plot-renderer.js` exports
 `renderPlot(container, spec, options)`. The author CLI embeds this same renderer
 in offline HTML previews rather than maintaining a second plotting renderer.
-The renderer returns a handle with `update`, `setView`, and `destroy`; options
-and handle behavior are exercised in
+Presentation options include `height` (SVG pixels), `notes: false` (the host
+shows notes elsewhere), `legendTarget` (element receiving the unit/legend row),
+and `yLimits: {min, max, clipOutliers}` (null sides are automatic; clipping fits
+automatic sides to the 1st–99th percentile of visible samples). Standalone
+previews keep notes inline. The renderer returns a handle with `update`,
+`setView`, and `destroy`; options and handle behavior are exercised in
 [plot-renderer.test.js](../src/plot-renderer.test.js).
 
 ## Plot inputs and definitions

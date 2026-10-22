@@ -135,12 +135,19 @@ to pan; click or drag to scrub. Arrow keys seek, Shift+arrows seek by 1 ms,
 +/− zoom, and Fit (or 0) shows the full recording. Colored intervals retain the
 same MPC/simulation over-budget meanings as the compact timeline.
 
-Use **+** in Episode or Solve to open the searchable plot catalog. Add several
+Use **+** in Episode or Solve to open the searchable plot catalog; each entry
+previews the plot with default inputs on the active source. Add several
 plots without closing it, configure each instance independently, duplicate them,
 and drag their titles to reorder. **Show on timeline**, or dragging a compatible
 Episode plot to the expanded timeline, docks it above the ruler. Drag it out to
-remove that placement. Docked graphs share the episode window and scrub cursor.
-Aggregates and prediction-horizon/SQP plots stay in the sidebar.
+remove that placement. Docked graphs share the episode window and scrub cursor;
+their title, unit and legend share one row, and y labels sit inside the plot.
+Aggregates and prediction-horizon/SQP plots stay in the sidebar. Hover a plot
+title for its description and notes. Drag a plot's bottom edge to resize it
+(sidebar and timeline heights are separate), and drag the strip's top edge to
+change how much height the timeline rows may take. ⚙ also sets each plot's
+y-axis bottom/top (a value or automatic) and can clip outliers from automatic
+sides. Hover a histogram bar for its bin edges.
 
 Episode analysis defaults to **Entire episode**; select **Through cursor** or
 **Visible window** to change the scope. Sidebar plots fit that selected range:
