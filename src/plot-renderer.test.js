@@ -238,8 +238,8 @@ test('limit bands, a hard guide, a default y span, token colours and per-sample 
   // Default span 0–105 even though the data only reach 60.
   assert.equal(ticks()[0], 0); assert(ticks().at(-1) >= 100 && ticks().at(-1) <= 105);
   const bands = container.querySelectorAll('rect').filter(item => /plot-band/.test(item.attributes.class || ''));
-  assert.equal(bands.length, 2); assert.match(bands[1].style.fill, /^url\(#.*-hatch\)$/); assert.equal(bands[0].style.fill, 'var(--limit-near, #ffd166)');
-  const hard = container.querySelectorAll('line').find(item => item.style.stroke === 'var(--limit-beyond, #ff737b)');
+  assert.equal(bands.length, 2); assert.match(bands[1].style.fill, /^url\(#.*-hatch\)$/); assert.equal(bands[0].style.fill, 'var(--limit-near, #f2b544)');
+  const hard = container.querySelectorAll('line').find(item => item.style.stroke === 'var(--limit-beyond, #ff4b4b)');
   assert(hard && !hard.attributes['stroke-dasharray']);
   assert(container.querySelectorAll('path').some(item => item.attributes['vector-effect'] && item.style.stroke === 'var(--limit-position, #57c7dc)'));
   const svg = container.querySelector('svg');

@@ -16,7 +16,7 @@ function robotWithLink() {
   return { robot, mesh };
 }
 
-test("links take their joint's worst distinct state; within restores the original colour", () => {
+test("links take their joint's worst distinct state; inside restores the original colour", () => {
   const { robot, mesh } = robotWithLink();
   const original = mesh.material.color.getHex();
   const tint = createLimitTint({ robot, jointNames: ["j1"], colors });
@@ -43,7 +43,7 @@ test("settings move the near threshold immediately", () => {
   assert.equal(tint.links[0].state, "near");
 });
 
-test("tooltip lines list non-within quantities worst first", () => {
+test("tooltip lines list non-inside quantities worst first", () => {
   const use = jointLimitUse({ q: [.95], qd: [0], torque: [40.5], limits: one }, 0);
   assert.deepEqual(tintedQuantities(use).map((item) => `${item.quantity}:${item.state}`), ["torque:beyond", "position:near"]);
 });

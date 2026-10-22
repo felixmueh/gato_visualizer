@@ -12,8 +12,8 @@ JOINT_CHOICES = ('all', 'worst', *JOINTS)
 QUANTITY_CHOICES = ('all', 'worst', 'torque', 'velocity', 'position')
 # One colour identity per quantity: the shared CSS tokens, with fallbacks for
 # hosts (offline previews) that do not define them.
-COLORS = dict(position='var(--limit-position, #57c7dc)', velocity='var(--limit-velocity, #e6b961)',
-              torque='var(--limit-torque, #b398f3)')
+COLORS = dict(position='var(--limit-position, #6fb2ee)', velocity='var(--limit-velocity, #b398f3)',
+              torque='var(--limit-torque, #85c99c)')
 WORST_COLOR = '#d7e4ef'
 TITLE = 'Joint limit use'
 

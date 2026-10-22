@@ -155,7 +155,7 @@ export function renderPlot(container, spec, options = {}) {
   // Bands shade a y interval across the plot (end null: to the top). Tones
   // use the limit-state colour tokens; beyond is hatched, so a violation reads
   // differently from merely near. They sit beneath the data and the reveal.
-  const tone = { near: 'var(--limit-near, #ffd166)', beyond: 'var(--limit-beyond, #ff737b)' };
+  const tone = { near: 'var(--limit-near, #f2b544)', beyond: 'var(--limit-beyond, #ff4b4b)' };
   const bandY = value => Math.max(margin.top, Math.min(height - margin.bottom, sy(value)));
   for (const band of spec.bands || []) if (band.axis === 'y' && tone[band.tone]) {
     const top = () => Number.isFinite(band.end) ? bandY(band.end) : margin.top, bottom = () => Number.isFinite(band.start) ? bandY(band.start) : height - margin.bottom;
@@ -165,7 +165,7 @@ export function renderPlot(container, spec, options = {}) {
       stroke.setAttribute('d', 'M0,0V6'); stroke.setAttribute('stroke-width', 2); stroke.style.stroke = tone.beyond; stroke.setAttribute('opacity', .35); pattern.append(stroke); defs.append(pattern);
     }
     const shape = node('rect', { x: margin.left, width: innerWidth, y: top, height: () => Math.max(0, bottom() - top()), class: `plot-band plot-band-${band.tone}` });
-    shape.style.fill = band.tone === 'beyond' ? `url(#${clipId}-hatch)` : tone.near; if (band.tone === 'near') shape.setAttribute('opacity', .14);
+    shape.style.fill = band.tone === 'beyond' ? `url(#${clipId}-hatch)` : tone.near; if (band.tone === 'near') shape.setAttribute('opacity', .22);
     if (band.label) { const title = doc.createElementNS(ns, 'title'); title.textContent = band.label; shape.append(title); }
   }
   for (const guide of spec.guides || []) if (guide.axis === 'y' && Number.isFinite(guide.value)) {

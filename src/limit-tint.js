@@ -16,9 +16,9 @@ function linkMeshes(link) {
   return meshes;
 }
 
-// Quantities of one joint that are not within, worst first.
+// Quantities of one joint that are not inside, worst first.
 export function tintedQuantities(use) {
-  return LIMIT_QUANTITIES.map((quantity) => use?.[quantity]).filter((item) => item && item.state !== "within")
+  return LIMIT_QUANTITIES.map((quantity) => use?.[quantity]).filter((item) => item && item.state !== "inside")
     .sort((a, b) => stateRank(b.state) - stateRank(a.state) || b.utilisation - a.utilisation);
 }
 
@@ -49,7 +49,7 @@ export function createLimitTint({ robot, jointNames, camera, element, tooltip, c
   function apply() {
     links.forEach((link, index) => {
       const use = enabled && last ? jointLimitUse(last, index, settings) : null;
-      const state = use?.worst && use.worst.state !== "within" ? use.worst.state : null;
+      const state = use?.worst && use.worst.state !== "inside" ? use.worst.state : null;
       link.use = state ? use : null; link.state = state;
       link.meshes.forEach((mesh, i) => mesh.material.color.copy(state ? palette[state] : link.colors[i]));
       outline(link, state === "beyond");
