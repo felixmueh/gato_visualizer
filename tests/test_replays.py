@@ -234,6 +234,17 @@ class ReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(ReplayError, "limit|header size"):
             load_replay(archive, model_urdf=MODEL)
 
+    def test_recorded_mpc_params_give_bounds_on_the_displayed_limits(self):
+        params = dict(joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85)
+        path = self.export(self.path, provenance=dict(params=params))
+        scene = replay_scene(load_replay(path, model_urdf=MODEL), path, MPC_ROOT, self.base_scene)
+        limits = scene["joint_limits"]
+        self.assertEqual(limits["source"], "Canonical display URDF limits")
+        self.assertEqual(scene["mpc_bounds"]["upper_position_rad"], [v - .1 for v in limits["upper_position_rad"]])
+        self.assertEqual(scene["mpc_bounds"]["effort_nm"], [.85 * v for v in limits["effort_nm"]])
+        self.assertNotIn("mpc_bounds", replay_scene(load_replay(self.export(self.path), model_urdf=MODEL),
+                                                    self.path, MPC_ROOT, self.base_scene))
+
     def test_figure_eight_sized_replay_loads_and_array_count_has_its_own_limit(self):
         # A default figure eight records 2400 plans with five arrays each; 1100
         # plans already exceed the former 1024-plan and 4096-array limits.

@@ -89,28 +89,29 @@ def canonical_joint_limits(urdf):
 
 
 def provenance_mpc_bounds(provenance, limits):
-    """MPC bounds a replay's recorded configuration states explicitly.
+    """MPC bounds from a replay's recorded tiago_mpc parameters.
 
-    Applies only explicit margin/fractions to the replay's own URDF limits;
-    omitted or null settings (upstream defaults, compiled offsets) stay absent
-    rather than being inferred from the current source.
+    provenance.params is asdict(MpcParams); tiago_mpc's set_bounds applies its
+    joint_margin_rad, velocity_fraction and effort_fraction to the raw URDF
+    limits. Only numeric values count; missing ones are not inferred.
     """
-    bounds = ((provenance or {}).get("configuration") or {}).get("limit_bounds") if isinstance(provenance, dict) else None
-    if not isinstance(bounds, dict) or not limits:
+    params = provenance.get("params") if isinstance(provenance, dict) else None
+    if not isinstance(params, dict) or not limits:
         return None
     number = lambda value: isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    bounds = {key: params[key] for key in ("joint_margin_rad", "velocity_fraction", "effort_fraction")
+              if number(params.get(key))}
     result = {}
-    margin = bounds.get("joint_margin_rad")
-    if number(margin):
+    if "joint_margin_rad" in bounds:
+        margin = bounds["joint_margin_rad"]
         result.update(lower_position_rad=[v + margin for v in limits["lower_position_rad"]],
                       upper_position_rad=[v - margin for v in limits["upper_position_rad"]])
-    for key, fraction in (("velocity_rad_s", bounds.get("velocity_fraction")), ("effort_nm", bounds.get("effort_fraction"))):
-        if number(fraction):
-            result[key] = [fraction * v for v in limits[key]]
+    for key, name in (("velocity_rad_s", "velocity_fraction"), ("effort_nm", "effort_fraction")):
+        if name in bounds:
+            result[key] = [bounds[name] * v for v in limits[key]]
     if not result:
         return None
-    return dict(result, limit_bounds=deepcopy(bounds),
-                source="MPC bounds from the recorded configuration (explicit settings only)")
+    return dict(result, limit_bounds=bounds, source="MPC bounds from the recorded MpcParams")
 
 
 def add_telemetry(item, qd=None, torque=None, torque_times=None, kind="applied"):
@@ -424,7 +425,8 @@ def replay_scene(replay, path, mpc_root, base_scene):
     if "provenance" in replay.metadata:
         result["source"]["provenance"] = deepcopy(replay.metadata["provenance"])
     result.pop("mpc_bounds", None)
-    mpc_bounds = provenance_mpc_bounds(replay.metadata.get("provenance"), replay.joint_limits)
+    # Without recorded limits, the bounds use the displayed URDF's limits.
+    mpc_bounds = provenance_mpc_bounds(replay.metadata.get("provenance"), result["joint_limits"])
     if mpc_bounds:
         result["mpc_bounds"] = mpc_bounds
     json.dumps(result, allow_nan=False)

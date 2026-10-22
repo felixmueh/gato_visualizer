@@ -31,20 +31,23 @@ class LimitUseTests(unittest.TestCase):
 
 
 class ReplayMpcBoundsTests(unittest.TestCase):
-    def test_only_explicit_recorded_settings_become_mpc_bounds(self):
+    def test_recorded_mpc_params_become_mpc_bounds(self):
         from server import provenance_mpc_bounds
-        explicit = provenance_mpc_bounds(dict(configuration=dict(limit_bounds=dict(
-            joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85))), FIXTURE['limits'])
+        params = dict(N=32, dt_s=.03, joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85)
+        explicit = provenance_mpc_bounds(dict(params=params), FIXTURE['limits'])
         self.assertEqual(explicit['lower_position_rad'], [v + .1 for v in FIXTURE['limits']['lower_position_rad']])
+        self.assertEqual(explicit['upper_position_rad'], [v - .1 for v in FIXTURE['limits']['upper_position_rad']])
+        self.assertEqual(explicit['velocity_rad_s'], [.8 * v for v in FIXTURE['limits']['velocity_rad_s']])
         self.assertEqual(explicit['effort_nm'], [.85 * v for v in FIXTURE['limits']['effort_nm']])
-        # An omitted margin is an upstream default at recording time: not inferred.
-        partial = provenance_mpc_bounds(dict(configuration=dict(limit_bounds=dict(
-            velocity_fraction=.8, effort_fraction=None))), FIXTURE['limits'])
+        self.assertEqual(explicit['limit_bounds'], dict(joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85))
+        # Missing or non-numeric values are not inferred.
+        partial = provenance_mpc_bounds(dict(params=dict(velocity_fraction=.8, effort_fraction=None)), FIXTURE['limits'])
         self.assertEqual(set(partial) - {'source', 'limit_bounds'}, {'velocity_rad_s'})
-        self.assertIsNone(provenance_mpc_bounds(dict(configuration={}), FIXTURE['limits']))
+        self.assertIsNone(provenance_mpc_bounds(dict(params={}), FIXTURE['limits']))
         self.assertIsNone(provenance_mpc_bounds(None, FIXTURE['limits']))
-        self.assertIsNone(provenance_mpc_bounds(dict(configuration=dict(limit_bounds=dict(joint_margin_rad=.1))), None))
-
+        self.assertIsNone(provenance_mpc_bounds(dict(params=params), None))
+        # The pre-migration configuration shape is no longer read.
+        self.assertIsNone(provenance_mpc_bounds(dict(configuration=dict(limit_bounds=params)), FIXTURE['limits']))
 
 if __name__ == '__main__':
     unittest.main()
