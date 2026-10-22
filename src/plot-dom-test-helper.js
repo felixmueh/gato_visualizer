@@ -9,7 +9,7 @@ export function plotDOM() {
     addEventListener(type, fn) { const list = this.listeners.get(type) || []; list.push(fn); this.listeners.set(type, list); }
     removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(item => item !== fn)); }
     async emit(type, event = {}) { const ev = { target: this, preventDefault() {}, stopPropagation() {}, ...event }; for (const fn of this.listeners.get(type) || []) await fn(ev); }
-    matches(selector) { if (selector === '[data-instance]') return this.dataset.instance != null; if (selector.startsWith('.')) return this.className.split(' ').includes(selector.slice(1)); return this.tagName.toLowerCase() === selector; }
+    matches(selector) { if (selector === '[data-instance]') return this.dataset.instance != null; if (selector.startsWith('.')) return [...this.className.split(' '), ...(this.attributes.class || '').split(' ')].includes(selector.slice(1)); return this.tagName.toLowerCase() === selector; }
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector); }
     querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
     querySelector(selector) { return this.querySelectorAll(selector)[0]; }
