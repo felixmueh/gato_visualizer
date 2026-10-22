@@ -1224,9 +1224,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 
 /* Compact workbench: the viewport owns the available height. */
 .studio-workbench, .studio-workbench #app { height: 100dvh; overflow: hidden; }
-.studio-workbench .workspace { height: 100dvh; min-height: 0; grid-template-columns: 284px minmax(200px, 1fr) 300px; }
-.studio-workbench .workspace.left-hidden { grid-template-columns: 0 minmax(200px, 1fr) 300px; }
-.studio-workbench .workspace.right-hidden { grid-template-columns: 284px minmax(200px, 1fr) 0; }
+.studio-workbench .workspace { --left-w: 284px; --right-w: 300px; position: relative; height: 100dvh; min-height: 0; grid-template-columns: var(--left-w) minmax(200px, 1fr) var(--right-w); }
+.studio-workbench .workspace.left-hidden { grid-template-columns: 0 minmax(200px, 1fr) var(--right-w); }
+.studio-workbench .workspace.right-hidden { grid-template-columns: var(--left-w) minmax(200px, 1fr) 0; }
 .studio-workbench .workspace.left-hidden.right-hidden { grid-template-columns: 0 minmax(200px, 1fr) 0; }
 .studio-workbench .sidebar { padding: 16px 16px 20px; min-width: 0; gap: 0; scrollbar-width: thin; }
 .studio-workbench .left-sidebar { grid-column: 1; border-right: 1px solid #2a394b; }
@@ -1317,15 +1317,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .joint-limit-note { margin-top: 16px; }
 .studio-workbench:not(.live-mode) .live-metrics, .studio-workbench.live-mode .replay-metrics { display: none; }
 @media (max-width: 1100px) {
-  .studio-workbench .workspace { grid-template-columns: 250px minmax(200px, 1fr) 260px; }
-  .studio-workbench .workspace.left-hidden { grid-template-columns: 0 minmax(200px, 1fr) 260px; }
-  .studio-workbench .workspace.right-hidden { grid-template-columns: 250px minmax(200px, 1fr) 0; }
+  .studio-workbench .workspace { --left-w: 250px; --right-w: 260px; }
   .studio-workbench .transport-bar { gap: 6px; padding: 6px; }
   .studio-workbench .transport-time, .studio-workbench #live-history-position { display: none; }
   .studio-workbench .transport-calculation { gap: 3px; }
   .studio-workbench .transport-calculation select { max-width: 78px; }
 }
+/* Drag handles on the inner sidebar edges (look shared with .plot-resize-handle). */
+.sidebar-resize-handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; touch-action: none; z-index: 16; }
+.sidebar-resize-handle.left { left: calc(var(--left-w) - 3px); }
+.sidebar-resize-handle.right { right: calc(var(--right-w) - 3px); }
+.left-hidden > .sidebar-resize-handle.left, .right-hidden > .sidebar-resize-handle.right { display: none; }
+.sidebar-resize-handle:hover, .sidebar-resize-handle.dragging { background: linear-gradient(90deg, transparent 2px, #57c7dc80 2px, #57c7dc80 4px, transparent 4px); }
 @media (max-width: 960px) {
+  .sidebar-resize-handle { display: none; }
   .studio-workbench .workspace, .studio-workbench .workspace.left-hidden, .studio-workbench .workspace.right-hidden, .studio-workbench .workspace.left-hidden.right-hidden { display: block; position: relative; }
   .studio-workbench .main { height: 100dvh; padding: 0; gap: 0; }
   .studio-workbench .viewport { height: auto; min-height: 0; }

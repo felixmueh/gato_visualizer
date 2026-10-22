@@ -13,6 +13,7 @@ import { workbenchShell } from "./workbench-shell.js";
 import { setupExpandedTimeline } from "./expanded-timeline.js";
 import { setupPlotInspection } from "./plot-inspection.js";
 import { setupWorkbench } from "./workbench-ui.js";
+import { setupSidebarResize } from "./sidebar-width.js";
 import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry } from "./joint-telemetry.js";
 import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartingScene } from "./replay-library.js";
@@ -102,6 +103,7 @@ let lastCameraFit;
 let jointCells = [];
 let auxiliaryViews;
 const workbench = setupWorkbench({ onLayout: () => auxiliaryViews?.invalidate() });
+setupSidebarResize({ shell: document.getElementById("workbench"), onLayout: () => auxiliaryViews?.invalidate() });
 const emptyTimingIntervals = [];
 const expandedTimeline = setupExpandedTimeline({
   onLayout: () => auxiliaryViews?.invalidate(),
