@@ -57,6 +57,16 @@ The producer-side replay exporter is the explicitly requested exception:
 `tiago_mpc/experiments/tools.py`. Keep one lightweight implementation there;
 visualizer tests can use it to create portable recording fixtures.
 
+### Trial changes to tiago_mpc — Felix, 2026-10-22
+
+To try a change to `tiago_mpc` from visualizer work, create a `tiago_mpc`
+worktree; this is always fine. Mark it clearly as a visualizer trial: a sibling
+directory `../tiago_mpc-visualizer-trial-<topic>` on branch
+`visualizer-trial/<topic>`. Select it through Source / Build or `--mpc-root`.
+Never commit, merge, rebase or cherry-pick anything onto `tiago_mpc` main
+without discussing it with Felix first; report what the trial showed and
+propose the change instead.
+
 ### Plotting and solver inspection
 
 Use the typed `gato_visualizer.plotting` API with `@plot_episode` and
