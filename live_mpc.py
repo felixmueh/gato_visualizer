@@ -236,6 +236,38 @@ class GPULocks:
         self.handles.clear()
 
 
+def urdf_joint_limits(model):
+    """Physical URDF limits in native coordinates: the 100 % reference of limit use."""
+    return dict(lower_position_rad=np.asarray(model.lowerPositionLimit, dtype=float).tolist(),
+                upper_position_rad=np.asarray(model.upperPositionLimit, dtype=float).tolist(),
+                velocity_rad_s=np.asarray(model.velocityLimit, dtype=float).tolist(),
+                effort_nm=np.asarray(model.effortLimit, dtype=float).tolist(),
+                source="URDF limits (native coordinates)")
+
+
+def mpc_bounds_from_rows(rows, limit_bounds):
+    """Displayed MPC bounds: the installed native constraint rows, symmetric
+    velocity/torque rows as magnitudes. Unrepresentable rows stay absent."""
+    result = dict(lower_position_rad=[float(v) for v in rows[0]["lo"]],
+                  upper_position_rad=[float(v) for v in rows[0]["hi"]],
+                  source="MPC bounds installed in the Live solver (native coordinates)",
+                  limit_bounds=deepcopy(dict(limit_bounds)))
+    for key, group in (("velocity_rad_s", rows[1]), ("effort_nm", rows[2])):
+        lo, hi = np.asarray(group["lo"], dtype=float), np.asarray(group["hi"], dtype=float)
+        if np.allclose(-lo, hi, rtol=1e-6, atol=1e-9) and np.all(hi > 0):
+            result[key] = hi.tolist()
+    return result
+
+
+def configured_limits(solver, model, signs, limit_bounds):
+    """Install resolved ``limit_bounds`` with upstream ``set_bounds``; return the
+    URDF limits, the MPC bounds the solver holds, and its captured rows."""
+    from inspection_problem import capture_constraint_bounds
+    importlib.import_module("tiago_mpc.controller").set_bounds(solver, model, np.asarray(signs), limit_bounds)
+    rows = capture_constraint_bounds(solver, signs)
+    return urdf_joint_limits(model), mpc_bounds_from_rows(rows, limit_bounds), rows
+
+
 class MPCAdapter:
     """All instances and CUDA calls belong exclusively to the GPU worker."""
     def __init__(self, mpc_root, reach=None):
@@ -312,32 +344,10 @@ class MPCAdapter:
                 self.solver, self.model, self.data, self.fid, self.signs, losses)
         options = settings.get("controller", {})
         self.controller = self.gato.MPCController(self.solver, limits="admm", linsys="pcg", **options)
-        bounds = settings.get("limit_bounds", {})
-        margin = float(bounds.get("joint_margin_rad", 0))
-        self.joint_limits = dict(
-            lower_position_rad=(self.model.lowerPositionLimit + margin).tolist(),
-            upper_position_rad=(self.model.upperPositionLimit - margin).tolist(),
-            velocity_rad_s=(self.model.velocityLimit * bounds.get("velocity_fraction", 1)).tolist(),
-            effort_nm=(self.model.effortLimit * bounds.get("effort_fraction", 1)).tolist(),
-            source="Live configured MPC bounds (native coordinates)")
-        for group, key in ((0, "joint_margin_rad"), (1, "velocity_fraction"), (2, "effort_fraction")):
-            if key not in bounds:
-                continue
-            value = float(bounds[key])
-            if group == 0:
-                if not 0 <= value < .5 * np.min(self.model.upperPositionLimit-self.model.lowerPositionLimit):
-                    raise ValueError("Invalid joint margin")
-                lo = (self.model.lowerPositionLimit + value) * self.signs
-                hi = (self.model.upperPositionLimit - value) * self.signs
-                lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
-            else:
-                if not 0 < value <= 1:
-                    raise ValueError("Limit fractions must be in (0,1]")
-                raw = self.model.velocityLimit if group == 1 else self.model.effortLimit
-                lo, hi = -value * raw, value * raw
-            self.solver.set_row_group_bounds(group, lo, hi)
-        from inspection_problem import capture_constraint_bounds
-        self.constraint_bounds_native = capture_constraint_bounds(self.solver, self.signs)
+        # The resolved bounds, installed exactly as upstream reach_sim does;
+        # the displayed MPC bounds are the rows the solver then holds.
+        self.joint_limits, self.mpc_bounds, self.constraint_bounds_native = configured_limits(
+            self.solver, self.model, self.signs, effective["limit_bounds"])
         self.configure_task(effective, task)
         self.controller.reset(self.x * self.state_signs)
         self.restarted = True
@@ -374,7 +384,7 @@ class MPCAdapter:
                     end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
                     N=self.N, dt_s=self.dt, task_kind=self.task["kind"],
                     task_path_xyz=getattr(self, "task_path_xyz", None),
-                    joint_limits=self.joint_limits,
+                    joint_limits=self.joint_limits, mpc_bounds=getattr(self, "mpc_bounds", None),
                     constraint_bounds_native=getattr(self, "constraint_bounds_native", None))
 
     def solve_snapshot(self, origin, settings_version, reference=None, *, include_context=True):
@@ -466,6 +476,7 @@ class MPCAdapter:
                     settings_version=settings_version,
                     torque_nm=None if self.applied_torque is None else self.applied_torque.tolist(),
                     torque_kind="applied", joint_limits=self.joint_limits,
+                    mpc_bounds=getattr(self, "mpc_bounds", None),
                     task_kind=self.task["kind"], target_xyz=self.target_world_at(self.t).tolist(),
                     _position_tol=self.reach.POSITION_TOL_M, _speed_tol=self.reach.SPEED_L1_TOL_RAD_S,
                     rtf=float(rtf))

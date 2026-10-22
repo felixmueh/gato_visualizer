@@ -49,7 +49,7 @@ def serve(channel, root):
                 result = dict(capabilities=dict(iteration_capture=capture, exact_resume=False),
                     binary=dict(path=str(module_path), sha256=hashlib.sha256(module_path.read_bytes()).hexdigest(),
                         native_source_id=getattr(module, "NATIVE_SOURCE_ID", None)),
-                    joint_limits=adapter.joint_limits,
+                    joint_limits=adapter.joint_limits, mpc_bounds=getattr(adapter, "mpc_bounds", None),
                     constraint_bounds_native=adapter.constraint_bounds_native,
                     configuration=adapter.problem_configuration, model_identity=adapter.model_identity,
                     prediction_joint_dynamics=adapter.problem_configuration.get("prediction_joint_dynamics"),

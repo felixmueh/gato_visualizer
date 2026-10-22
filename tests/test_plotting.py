@@ -75,6 +75,16 @@ class StandardPlotNumericTests(unittest.TestCase):
         self.assertEqual(torque['series'][0]['style'], 'step')
         self.assertEqual([g['value'] for g in torque['guides']], [-5., 5.])
         self.assertEqual(self.plot('episode.joint', show_bounds=False)['guides'], [])
+        self.assertEqual([(g['label'], g.get('style')) for g in q['guides']], [('URDF lower', 'hard'), ('URDF upper', 'hard')])
+
+    def test_joint_plot_labels_mpc_bounds_beside_urdf_limits(self):
+        from gato_visualizer.plotting import EpisodeView
+        raw = dict(self.episode.raw, mpc_bounds=dict(lower_position_rad=[-.9, -1.9], upper_position_rad=[.9, 1.9]))
+        spec = self.registry.evaluate('episode.joint', EpisodeView(raw), {})
+        self.assertEqual([(g['label'], g['value']) for g in spec['guides']],
+                         [('URDF lower', -1.), ('URDF upper', 1.), ('MPC lower', -.9), ('MPC upper', .9)])
+        self.assertEqual(spec['guides'][0]['style'], 'hard')
+        self.assertNotIn('style', spec['guides'][2])
 
     def test_histogram_counts_actual_samples_and_last_edge(self):
         spec = self.plot('episode.timing_histogram', bins=2)

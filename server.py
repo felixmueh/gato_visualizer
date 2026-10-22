@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
 import os
+import math
 import queue
 from pathlib import Path
 import sys
@@ -85,6 +86,31 @@ def canonical_joint_limits(urdf):
               for name, attribute in fields}
     result["source"] = "Canonical display URDF limits"
     return result
+
+
+def provenance_mpc_bounds(provenance, limits):
+    """MPC bounds a replay's recorded configuration states explicitly.
+
+    Applies only explicit margin/fractions to the replay's own URDF limits;
+    omitted or null settings (upstream defaults, compiled offsets) stay absent
+    rather than being inferred from the current source.
+    """
+    bounds = ((provenance or {}).get("configuration") or {}).get("limit_bounds") if isinstance(provenance, dict) else None
+    if not isinstance(bounds, dict) or not limits:
+        return None
+    number = lambda value: isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    result = {}
+    margin = bounds.get("joint_margin_rad")
+    if number(margin):
+        result.update(lower_position_rad=[v + margin for v in limits["lower_position_rad"]],
+                      upper_position_rad=[v - margin for v in limits["upper_position_rad"]])
+    for key, fraction in (("velocity_rad_s", bounds.get("velocity_fraction")), ("effort_nm", bounds.get("effort_fraction"))):
+        if number(fraction):
+            result[key] = [fraction * v for v in limits[key]]
+    if not result:
+        return None
+    return dict(result, limit_bounds=deepcopy(bounds),
+                source="MPC bounds from the recorded configuration (explicit settings only)")
 
 
 def add_telemetry(item, qd=None, torque=None, torque_times=None, kind="applied"):
@@ -396,6 +422,10 @@ def replay_scene(replay, path, mpc_root, base_scene):
         result["source"]["model_warning"] = dict(replay.model_warning)
     if "provenance" in replay.metadata:
         result["source"]["provenance"] = deepcopy(replay.metadata["provenance"])
+    result.pop("mpc_bounds", None)
+    mpc_bounds = provenance_mpc_bounds(replay.metadata.get("provenance"), replay.joint_limits)
+    if mpc_bounds:
+        result["mpc_bounds"] = mpc_bounds
     json.dumps(result, allow_nan=False)
     return result
 

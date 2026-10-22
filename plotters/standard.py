@@ -7,6 +7,23 @@ from gato_visualizer.plotting.views import number, finite, joint_index
 from gato_visualizer.plotting.metrics import joint_value, bound_values, interval_coverage
 
 
+def limit_guides(limits, mpc_bounds, quantity, joint):
+    """URDF limits (hard, the limit-use reference) and MPC bounds (dashed), labelled.
+
+    Live histories before 2026-10-22 stored the MPC bounds as joint_limits."""
+    legacy = 'MPC' in str((limits or {}).get('source', ''))
+    sets = [((limits or {}), 'MPC' if legacy else 'URDF', not legacy)]
+    if mpc_bounds:
+        sets.append((mpc_bounds, 'MPC', False))
+    guides = []
+    for values, name, urdf in sets:
+        for label, value in bound_values(values, quantity, joint):
+            if value is not None:
+                guide = dict(axis='y', value=value, label=f"{name} {label.split()[0].lower()}")
+                guides.append(dict(guide, style='hard') if urdf else guide)
+    return guides
+
+
 def scaled(value, factor=1000):
     value = number(value)
     return value * factor if value is not None else None
@@ -67,8 +84,8 @@ def episode_tracking_error(data: EpisodeView):
 
 
 @plot_episode(id='episode.joint', title='Recorded joint motion and bounds', requires=('states',),
-              optional=('states.qd', 'states.torque_nm', 'joint_limits'),
-              inputs={'joint': Joint(), 'quantity': Choice(('q', 'qd', 'torque_nm'), 'q', 'Quantity'), 'show_bounds': Boolean(True, 'Show recorded bounds')})
+              optional=('states.qd', 'states.torque_nm', 'joint_limits', 'mpc_bounds'),
+              inputs={'joint': Joint(), 'quantity': Choice(('q', 'qd', 'torque_nm'), 'q', 'Quantity'), 'show_bounds': Boolean(True, 'Show URDF limits and MPC bounds')})
 def episode_joint(data: EpisodeView, joint=0, quantity='q', show_bounds=True):
     joint = joint_index(joint, data.raw.get('joint_names', ()))
     states = data.states
@@ -80,12 +97,11 @@ def episode_joint(data: EpisodeView, joint=0, quantity='q', show_bounds=True):
     if not any(value is not None for value in values):
         return unavailable(title, f'No recorded {quantity} values for joint {joint + 1}.')
     units = {'q': 'rad', 'qd': 'rad/s', 'torque_nm': 'Nm'}
-    limits = data.raw.get('joint_limits', {})
-    guides = [dict(axis='y', value=value, label=label) for label, value in bound_values(limits, quantity, joint) if value is not None] if show_bounds else []
+    guides = limit_guides(data.raw.get('joint_limits', {}), data.raw.get('mpc_bounds'), quantity, joint) if show_bounds else []
     return lines(title, [series('Recorded motion' if quantity != 'torque_nm' else 'Recorded actuator torque',
                  [s['sim_time_s'] for s in source], values, style='step' if quantity == 'torque_nm' else 'line')],
                  unit=units[quantity], y_label=quantity, guides=guides,
-                 notes=['Native joint coordinates. Historical limits only; absent bounds are not reconstructed.'])
+                 notes=['Native joint coordinates. Solid: URDF limits; dashed: MPC bounds. Recorded values only; absent bounds are not reconstructed.'])
 
 
 @plot_episode(id='episode.timing_histogram', title='MPC wall-time histogram', requires=('intervals',),
@@ -123,8 +139,8 @@ def episode_summary(data: EpisodeView):
 
 
 @plot_solve(id='solve.prediction_joint', title='Selected prediction joint profile', requires=('prediction',),
-            optional=('joint_limits',),
-            inputs={'joint': Joint(), 'quantity': Choice(('q', 'qd', 'torque_nm'), 'q', 'Quantity'), 'show_bounds': Boolean(True, 'Show recorded bounds')})
+            optional=('joint_limits', 'mpc_bounds'),
+            inputs={'joint': Joint(), 'quantity': Choice(('q', 'qd', 'torque_nm'), 'q', 'Quantity'), 'show_bounds': Boolean(True, 'Show URDF limits and MPC bounds')})
 def solve_prediction_joint(data: SolveView, joint=0, quantity='q', show_bounds=True):
     joint = joint_index(joint, data.raw.get('joint_names', ()))
     prediction = data.prediction
@@ -142,7 +158,8 @@ def solve_prediction_joint(data: SolveView, joint=0, quantity='q', show_bounds=T
             times = list(times) + [end]
             values.append(None)  # End the held nonterminal command at the terminal knot.
     limits = prediction.get('joint_limits', data.raw.get('joint_limits', {}))
-    guides = [dict(axis='y', value=value, label=label) for label, value in bound_values(limits, quantity, joint) if value is not None] if show_bounds else []
+    mpc = prediction.get('mpc_bounds', data.raw.get('mpc_bounds'))
+    guides = limit_guides(limits, mpc, quantity, joint) if show_bounds else []
     return lines(title, [series('Predicted motion' if quantity != 'torque_nm' else 'Predicted actuator torque', times, values,
                   style='step' if quantity == 'torque_nm' else 'line')], identity='prediction_time',
                  x_label='Prediction horizon offset', unit={'q': 'rad', 'qd': 'rad/s', 'torque_nm': 'Nm'}[quantity],

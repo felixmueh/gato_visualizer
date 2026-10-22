@@ -89,6 +89,7 @@ class SimulatorAdapter(MPCAdapter):
                                           simulator_friction_source=effective.get("friction_source"))
         self.configure_task(effective, task)
         self.joint_limits = predictor["joint_limits"]
+        self.mpc_bounds = predictor.get("mpc_bounds")
         self.profile_identity = dict(profile=deepcopy(self.profile), process_epoch=self.remote.epoch,
             predictor=predictor, simulator=self.simulator_identity,
             simulator_joint_dynamics=self.simulator_joint_dynamics, coordinate_contract=self.contract,

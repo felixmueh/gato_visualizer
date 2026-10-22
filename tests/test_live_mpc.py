@@ -58,6 +58,88 @@ class SettingsTests(unittest.TestCase):
             validate_settings(self.config, {**self.task, "target_offset_m": [True, 0, 0]}, self.schema)
 
 
+
+class FakeRowSolver:
+    """Records installed position/velocity/torque rows like GATO's row groups."""
+    def __init__(self, model):
+        # Distinct "compiled" rows, so an uninstalled group would show.
+        self.rows = [[np.asarray(model.lowerPositionLimit)*0, np.asarray(model.upperPositionLimit)*0+9.],
+                     [-np.ones(7), np.ones(7)], [-np.ones(7), np.ones(7)]]
+
+    def set_row_group_bounds(self, group, lo, hi):
+        self.rows[group] = [np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)]
+
+    def get_row_groups(self):
+        return [dict(kind=i, n_rows=7, lo=lo.tolist(), hi=hi.tolist(), active=[1, 1])
+                for i, (lo, hi) in enumerate(self.rows)]
+
+
+class LiveLimitBoundsTests(unittest.TestCase):
+    """Live shows URDF limits as joint_limits and the solver's resolved MPC bounds."""
+    model = SimpleNamespace(lowerPositionLimit=np.array([-4.7, -2.4, -2.6, -2.4, -1.6, -1.9, -2.6]),
+                            upperPositionLimit=np.array([.5, 1.1, 2.6, 1.1, 3.7, 3., 2.6]),
+                            velocityLimit=np.full(7, 2.5), effortLimit=np.array([43., 43, 26, 26, 26, 26, 26]))
+    signs = np.array([1., 1, 1, 1, 1, -1, 1])
+
+    def setUp(self):
+        import sys
+        if str(MPC_ROOT) not in sys.path:
+            sys.path.insert(0, str(MPC_ROOT))
+
+    def resolved_tracking_bounds(self):
+        from tiago_mpc.configuration import resolve_configuration
+        raw = json.loads((MPC_ROOT / "configs/tracking.json").read_text())["limit_bounds"]
+        self.assertNotIn("joint_margin_rad", raw)  # The case that used to display margin 0.
+        return raw, resolve_configuration(dict(limit_bounds=raw))["limit_bounds"]
+
+    def test_configure_displays_resolved_bounds_exactly_as_installed(self):
+        raw, resolved = self.resolved_tracking_bounds()
+        self.assertEqual(resolved["joint_margin_rad"], .1)
+        adapter = MPCAdapter.__new__(MPCAdapter)
+        adapter.mpc_root, adapter.model, adapter.signs = MPC_ROOT, self.model, self.signs
+        adapter.data, adapter.fid, adapter.model_identity = None, 0, {}
+        adapter.x, adapter.state_signs = np.zeros(14), np.tile(self.signs, 2)
+        adapter.reach = SimpleNamespace(PLANT="tiago", check_model=lambda *args: None,
+                                        Q_START_RAD=np.zeros(7), Q_GOAL_DELTA_RAD=np.zeros(7))
+        solver = FakeRowSolver(self.model)
+        adapter.gato = SimpleNamespace(BSQP=lambda *args, **kwargs: solver, SolverParams=lambda **kwargs: kwargs,
+                                       MPCController=lambda *args, **kwargs: SimpleNamespace(reset=lambda x: None))
+        adapter.configure_task = lambda effective, task: None
+        effective = dict(N=32, dt_s=.002, solver_params={}, controller={}, limit_bounds=resolved)
+        from contextlib import contextmanager
+        @contextmanager
+        def prepared(*args, **kwargs):
+            yield None, Path(__file__), None
+        with patch("friction_settings.load_configuration", return_value=(None, dict(limit_bounds=raw), effective)), \
+             patch("source_runtime.discover_compatible_modules", return_value=dict(available_N=[32], modules=[])), \
+             patch("source_runtime.prepared_model", prepared):
+            adapter.configure("tracking.json", {})
+        lower = self.model.lowerPositionLimit + .1
+        upper = self.model.upperPositionLimit - .1
+        # Displayed MPC bounds equal the rows the solver holds, in native coordinates.
+        np.testing.assert_allclose(adapter.mpc_bounds["lower_position_rad"], lower)
+        np.testing.assert_allclose(adapter.mpc_bounds["upper_position_rad"], upper)
+        np.testing.assert_allclose(adapter.mpc_bounds["velocity_rad_s"], .8 * self.model.velocityLimit)
+        np.testing.assert_allclose(adapter.mpc_bounds["effort_nm"], .85 * self.model.effortLimit)
+        self.assertEqual(adapter.mpc_bounds["limit_bounds"], resolved)
+        np.testing.assert_allclose(adapter.constraint_bounds_native[0]["lo"], lower)
+        np.testing.assert_allclose(np.sort(solver.rows[0], axis=0), np.sort([lower*self.signs, upper*self.signs], axis=0))
+        # Limit use is measured against the physical URDF limits.
+        self.assertEqual(adapter.joint_limits["lower_position_rad"], self.model.lowerPositionLimit.tolist())
+        self.assertEqual(adapter.joint_limits["effort_nm"], self.model.effortLimit.tolist())
+        self.assertIn("URDF", adapter.joint_limits["source"])
+
+    def test_legacy_null_fractions_keep_compiled_rows_and_report_them(self):
+        from live_mpc import configured_limits
+        solver = FakeRowSolver(self.model)
+        _, mpc, rows = configured_limits(solver, self.model, self.signs, dict(
+            joint_margin_rad=.1, velocity_fraction=None, effort_fraction=None))
+        self.assertEqual(mpc["velocity_rad_s"], [1.]*7)  # The compiled rows actually held.
+        solver.rows[2] = [-np.ones(7), 2*np.ones(7)]
+        _, mpc, _ = configured_limits(solver, self.model, self.signs, dict(
+            joint_margin_rad=.1, velocity_fraction=None, effort_fraction=None))
+        self.assertNotIn("effort_nm", mpc)  # Asymmetric rows are not shown as a magnitude.
+
 class Figure8Tests(SettingsTests):
     def test_shape_clock_extent_and_native_validation(self):
         task = deepcopy(FIGURE8_DEFAULT_TASK)

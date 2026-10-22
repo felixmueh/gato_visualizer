@@ -97,9 +97,11 @@ class SourceReader:
             raw = dict(self.raw_cache, source=descriptor)
             if raw["plans"]:
                 raw["joint_limits"] = raw["plans"][0].get("joint_limits")
+                raw["mpc_bounds"] = raw["plans"][0].get("mpc_bounds")
             if raw["controls"]:
                 raw["torque_samples"] = raw["controls"]
-            # Physical (scene / URDF) limits; plans carry the tighter MPC bounds.
+            # Physical (scene / URDF) limits. Plans carry the URDF limits plus
+            # mpc_bounds; Live histories before 2026-10-22 carry MPC bounds as joint_limits.
             raw["scene_joint_limits"] = (self.default_scene or {}).get("joint_limits") or {}
             # Preview is retained separately from executed episode history.
             if descriptor.get("preview_source"):
@@ -143,6 +145,7 @@ def scene_records(scene):
                joint_names=scene.get("joint_names", [f"arm_right_{i}_joint" for i in range(1, 8)]),
                joint_limits=scene.get("plot_recorded_joint_limits", scene.get("joint_limits")) or {},
                scene_joint_limits=scene.get("joint_limits") or {},
+               mpc_bounds=scene.get("mpc_bounds"),
                states=[], plans=[], intervals=[], records=[], trajectories=scene.get("trajectories", []))
     recorded = next((t for t in raw["trajectories"] if t.get("kind") == "recorded"), None)
     origin = recorded["time_s"][0] if recorded and recorded.get("time_s") else 0
@@ -162,6 +165,7 @@ def scene_records(scene):
                 plan["iterations"] = plan["stats"]["iterations"]
             raw["plans"].append(plan)
             plan["joint_limits"] = raw["joint_limits"]
+            plan["mpc_bounds"] = raw["mpc_bounds"]
         elif trajectory.get("kind") == "recorded":
             # References retain their own clock, rather than positional zip.
             # Interpolate each axis once: per-state column rebuilding was
