@@ -1,5 +1,4 @@
 """Portable replay data, recursive catalog, original-byte upload and HTTP checks."""
-import importlib.util
 import io
 import json
 import os
@@ -19,12 +18,10 @@ from replay_format import JOINT_NAMES, ReplayError, load_replay, model_sha256
 from replay_library import ReplayLibrary, UploadConflict
 from server import RobotKinematics, load_scene, make_server, replay_scene
 
+from tiago_mpc_source import MODEL, MPC_ROOT, REPLAY_EXPORTER, replay_exporter
+
 ROOT = Path(__file__).resolve().parents[1]
-MPC_ROOT = ROOT.parent / "tiago_mpc_vis_baseline"
-MODEL = MPC_ROOT / "models/tiago_pro/tiago_pro.urdf"
-spec = importlib.util.spec_from_file_location("tiago_experiment_tools", MPC_ROOT / "experiments/tools.py")
-tools = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(tools)
+tools = replay_exporter()
 
 
 @unittest.skipUnless(MODEL.is_file(), "Sibling canonical TIAGo model is not available")
@@ -89,7 +86,7 @@ class ReplayTests(unittest.TestCase):
         for invalid in ([], dict(nonfinite=float("nan"))):
             with self.subTest(provenance=invalid), self.assertRaises(ValueError):
                 self.export(self.path, provenance=invalid)
-        source = (MPC_ROOT / "experiments/tools.py").read_text()
+        source = REPLAY_EXPORTER.read_text()
         self.assertNotIn("from replay_format", source)
         self.assertNotIn("import pinocchio", source)
         self.assertNotIn("import gato", source)

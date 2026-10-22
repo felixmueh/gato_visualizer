@@ -1,6 +1,5 @@
 """CPU FK and recording compatibility for application-defined TCP frames."""
 from dataclasses import replace
-import importlib.util
 import json
 from pathlib import Path
 import tempfile
@@ -14,11 +13,10 @@ from live_presentation import LiveRenderer, snapshot
 from replay_format import load_replay
 from server import JOINT_NAMES, RobotKinematics, load_scene, replay_scene
 
+from tiago_mpc_source import MPC_ROOT, replay_exporter
+
 ROOT = Path(__file__).resolve().parents[1]
-MPC_ROOT = ROOT.parent / "tiago_mpc_vis_baseline"
-spec = importlib.util.spec_from_file_location("tcp_export_tools", MPC_ROOT / "experiments/tools.py")
-tools = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(tools)
+tools = replay_exporter()
 
 
 class EndEffectorTests(unittest.TestCase):
