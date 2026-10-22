@@ -1,7 +1,7 @@
 # Plot API v1 implementation contract
 
-Implementation coordination for the design in [plotting.md](plotting.md) and
-[inspection.md](inspection.md). Root coordinates changes to this contract.
+Implemented contract shared by [plotting.md](plotting.md),
+[inspection.md](inspection.md) and [the author workflow](plot-authoring.md).
 
 ## Plot specifications
 
@@ -41,8 +41,9 @@ the specification and provides presentation interactions.
 The import-free `src/plot-renderer.js` exports
 `renderPlot(container, spec, options)`. The author CLI embeds this same renderer
 in offline HTML previews rather than maintaining a second plotting renderer.
-The renderer returns a handle with `update`, `setView`, and `destroy` (agents
-coordinate exact option/handle details directly).
+The renderer returns a handle with `update`, `setView`, and `destroy`; options
+and handle behavior are exercised in
+[plot-renderer.test.js](../src/plot-renderer.test.js).
 
 ## Plot inputs and definitions
 
@@ -55,7 +56,8 @@ what retained fields can be read. `.solver` is absent/None in web/replay views.
 Input schemas are keyed by parameter name and use `type` values `joint`,
 `boolean`, `number`, or `choice`, plus `default`, `label`, optional `unit`,
 `description`, `min`, `max`, and `choices`. Joint values are stable joint names.
-The SDK agent owns concrete helper class names and typed Python interfaces.
+The SDK exports `Joint`, `Boolean`, `Number`, `Choice`, `EpisodeView`,
+`SolveView` and `InspectionContext`; see [plot-authoring.md](plot-authoring.md).
 
 ## Source, selection and range requests
 
@@ -132,8 +134,8 @@ Keep errors local to their plot/module so other plots and Replay stay usable.
 - `POST /api/plots/settings` accepts `{directory: null | path}`; save top-level
   `plotters_directory` in the visualizer config while retaining other fields.
 - `POST /api/plots/reload` reloads Python plotters without restarting MPC.
-- These actions may acknowledge an async reload job; agents keep this detail
-  consistent. Missing external directories leave bundled plots available.
+- Reload/settings mutations report the updated registry state; missing external
+  directories leave bundled plots available.
 - Frontend reuses the Source/Build floating window for the directory field and
   explicit reload action. Applying a solver source remains a separate action.
 

@@ -9,9 +9,9 @@ Canonical terminology is in [UBIQUITOUS_LANGUAGE.md](../UBIQUITOUS_LANGUAGE.md).
 
 ## Source and inspection context
 
-Keep one active source, obtained through Live computation or Replay. Replace
-the Graphs inspection tab with Episode and Solve tabs. An MPC episode may
-provide saved solves; a standalone solve is also a valid source. Episode
+The main source comes from Live computation or Replay; Episode and Solve have
+separate inspector tabs. An MPC episode may provide saved solves; a standalone
+solve is also a valid source. Episode
 inspection is unavailable when no episode accompanies a standalone solve.
 
 The Episode tab hosts episode plots and aggregates. The Solve tab hosts the
@@ -71,8 +71,8 @@ ordinary solves on iteration manipulation remains a proposed refinement.
 
 ## Run again — implemented 2026-10-21
 
-Replace the proposed exact Continue SQP action with Run again. It creates a
-separate inspection result linked to the selected solve, using its captured
+Run again creates a separate inspection result linked to the selected solve,
+using its captured
 initial state, exact reference, bounds and problem settings. Keep the original
 episode plan immutable; never advance the plant or episode clock, or change
 global Live defaults through this action. Record the implementation/model

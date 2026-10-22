@@ -52,7 +52,7 @@ starting the browser application, running MPC, or requiring a GPU. Code
 completion is useful authoring support; an easy verification path is the higher
 priority.
 
-The design should provide:
+The implementation provides:
 
 - Small, deterministic example Solve and Episode inputs, including known
   expected values, missing optional telemetry and nonzero time origins.
@@ -76,10 +76,8 @@ ordinary numerical plot.
 
 ## Authoring support
 
-Expose decorators, Solve/Episode view types, helpers and plot-spec types through
-a normal, lightweight Python package with type annotations and docstrings.
-Dynamic discovery still uses ordinary imports in author-written plot files.
-Provide a typed starter plot and editor/interpreter setup documentation. Public
-GATO wrapper types can assist completion for an optional runtime solver; dynamic
-native extension members may require additional stubs. No editor installation
-or runtime changes are implied by this design document.
+The lightweight `gato_visualizer.plotting` package exports typed decorators,
+Solve/Episode views, helpers and plot-spec types. Discovery uses ordinary
+imports in author-written plot files. [The author guide](plot-authoring.md)
+links a typed starter and explains interpreter setup and offline checks.
+Native extension completion may still require additional stubs.

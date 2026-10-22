@@ -231,8 +231,9 @@ modules explicitly and Apply the selected source/binaries. See the
 
 Predicted tool path, task reference, and recorded simulated motion have separate
 labels. The display shows solver work, constraint violation and solve time for
-each plan. A finite plan does not establish convergence. A separate persistent
-compute process keeps native solver calls independent of HTTP and rendering.
+each plan. A finite plan does not establish convergence. A persistent simulation
+coordinator and a separate persistent solver child keep native calls independent
+of HTTP and rendering. See [process ownership](docs/architecture.md).
 
 This MVP is a simulation diagnostic. It does not command a physical robot,
 check collisions, or provide experiment/timing evidence. Plotting exposes only
@@ -279,23 +280,33 @@ cache (the selected MPC checkout’s `.cache/gato` by default).
 
 ## Development
 
+Start with [AGENTS.md](AGENTS.md), the [domain glossary](UBIQUITOUS_LANGUAGE.md),
+and the [architecture and code map](docs/architecture.md). The guide links
+accepted architecture decisions, topic contracts and focused checks.
+
 ```bash
 npm ci
 npm test
 npm run build
-../tiago_mpc/.venv/bin/python -m unittest discover -s tests -v
-../tiago_mpc/.venv/bin/python server.py --port 8090
+python_bin="$(python3 scripts/launch_python.py)"
+"$python_bin" -m unittest discover -s tests -v
+"$python_bin" server.py --port 8090
 ```
 
-Use `venv-host/bin/python` for desktop checks. Run the opt-in GPU conformance
-check only when the experiment locks are free:
+The resolver above uses the same prepared interpreter as startup; it installs
+no Python packages. Tests use a prepared sibling `../tiago_mpc` for model/replay
+fixtures. Run the opt-in GPU conformance check only when the experiment locks
+are free:
 
 ```bash
-../tiago_mpc/.venv/bin/python scripts/check_conformance.py --steps 3
+"$python_bin" scripts/check_conformance.py --mpc-root /absolute/path/to/tiago_mpc --steps 3
 ```
 
-It compares three plans and their native plant timestamps, states and controls
-bit for bit against unchanged `reach_sim.py`, retaining both raw outputs below
+It checks the synchronous `MPCAdapter` compatibility path against unchanged
+`reach_sim.py`, comparing three plans and their native plant timestamps, states
+and controls bit for bit. It does not exercise every production multirate,
+profile or inspection path. Pass the actual selected source explicitly; this
+script does not read the saved source selection. Both raw outputs are retained below
 `_expr_data/conformance/`. Solve timings are excluded from that comparison.
 Mesh ownership and model provenance remain with the selected MPC checkout;
 see its `models/README.md` and license files.

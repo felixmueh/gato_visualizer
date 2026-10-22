@@ -1,7 +1,8 @@
 # Visualizer execution and recorded playback
 
-This contract supersedes the worker, pacing and displayed-history portions of
-`live-api.md`. The visualizer owns execution timing. It imports the unchanged
+This contract defines execution and authoritative history; [live-api.md](live-api.md)
+defines task/settings payloads and events. The visualizer owns execution timing
+and imports the unchanged
 `tiago_mpc` models, configuration, `reach_sim.rk4` and GATO MPC controller. The
 adapter's existing synchronous `solve`/`advance` methods remain available for
 the original conformance checks. No upstream warm-start policy is changed.
@@ -89,11 +90,16 @@ at a growing tip regardless of this toggle, until the user pauses.
 
 ## Process and cancellation boundaries
 
-A single persistent `multiprocessing` spawn process owns the controller, CUDA
-objects and plant integration. HTTP remains in the parent process, so a native
-solve holding the child Python GIL cannot block commands or history requests.
-Use the existing experiment GPU locks for construction, solving and disposal.
-No worker is started per solve. No compilation happens on a settings change.
+The HTTP parent spawns one persistent simulation coordinator (`execution_worker`).
+It owns the plant and `MultirateSession`, and calls a separate persistent
+`solver_worker` through `SimulatorAdapter`/`SolverProcess`. The solver child
+owns the upstream controller and CUDA state in its profile's prepared interpreter.
+A native solve holding that child's GIL cannot block HTTP or CPU plotting.
+The coordinator holds experiment GPU leases across construction, calls and
+disposal; the child borrows those leases for each RPC. No worker is started per
+ordinary solve, and settings changes never compile. See [solver profiles](solver-profiles.md)
+for switching and lease lifetimes, and [inspection](inspection.md) for the
+separate temporary Run again child and its explicit Stop behavior.
 
 Commands and output chunks have bounded queues. The parent drains child output
 independently of SSE clients; it retains numerical history before any latest
@@ -119,7 +125,10 @@ GET /api/live/history?generation=G&after=C&limit=256
 ```
 
 The initial cursor is zero. Records are append ordered; `next_cursor` is the
-cursor to pass on the next request. The endpoint returns bounded pages:
+cursor to pass on the next request. Pages default to 256 and allow at most 2048
+records; the browser requests 1024. These limits are independent of the worker's
+256-record IPC packets. [Presentation settings](presentation.md) controls
+report cadence without changing numerical clocks or dropping history:
 
 ```json
 {
@@ -179,8 +188,10 @@ controller warm-start heuristic remains intact.
 
 Precalculation runs unpaced. On Play generation is paced to at most 1x and
 slows when computation cannot keep up. Recorded playback advances at 1x
-simulation time from browser elapsed time, interpolating native positions and
-velocities between saved timestamps. It does not derive playback speed from
+simulation time from browser elapsed time. Live defaults to sample hold; optional
+interpolation blends native positions and velocities between recorded timestamps.
+The default 200 ms playback buffer is a simulation-time lead over the cursor,
+measured from received history. It does not derive playback speed from
 network arrival time. At an unavailable tail, hold position and show that
 generation is pending; do not jump to the latest sample. Scrubbing and replaying
 available history require no solver calls.

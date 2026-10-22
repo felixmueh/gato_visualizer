@@ -1,5 +1,20 @@
 # Agent instructions
 
+## Start here
+
+Read [README.md](README.md) for launch and user workflows,
+[UBIQUITOUS_LANGUAGE.md](UBIQUITOUS_LANGUAGE.md) for domain terms, and
+[the architecture guide](docs/architecture.md) for process ownership, source
+files, checks and accepted decisions. Follow the topic links there for the
+area being changed; update its existing contract when behavior changes.
+
+Current Live uses a simulation coordinator plus a persistent solver child;
+plots run in a separate CPU process. Report frequency and playback buffering
+are presentation settings, independent of simulation/control/TO rates.
+[Presentation settings](docs/presentation.md) documents their defaults and
+lossless reporting. Run again is a separate cold inspection solve; exact
+optimizer continuation remains unavailable.
+
 ## Goal: interactive MPC visualizer — Felix, 2026-10-21
 
 This repository becomes an interactive visualizer for the TIAGo MPC in
@@ -92,18 +107,23 @@ currently the episode loop in `reach_sim.main()`: controller construction, the
 signed limit bounds, and control and plant stepping. A conformance test runs the
 unchanged `reach_sim.py` and the visualizer's loop with the same configuration
 and requires identical GPU outputs, so drift in `tiago_mpc` fails loudly.
+The tracked `scripts/check_conformance.py` checks the synchronous adapter path;
+it does not qualify every production multirate/profile/inspection path.
 
 ## Model and coordinates
 
 The canonical full model is `models/tiago_pro/tiago_pro.urdf` in `tiago_mpc`.
-Recorded plant states use native joint coordinates. Saved solver predictions
-use the GPU convention and require the recorded `signs` conversion, including
-joint 6. Do not apply that conversion to recorded native states.
+Recorded plant states and portable NPZ predictions use native joint coordinates.
+Legacy packed solver predictions and raw inspection XU arrays use the GPU
+convention and require their recorded `signs` conversion, including joint 6.
+The solver child converts ordinary Live predictions to native coordinates
+before returning them. Do not sign-convert native data again.
 
 All displayed points must share the full robot's root frame. Derive the
 reduced arm's torso-to-world transform from the full URDF rather than adding
-a guessed offset. Playback uses sample timestamps, with interpolation between
-samples. Prediction playback is distinct from recorded simulated MPC motion.
+a guessed offset. Playback uses sample timestamps; Live defaults to sample hold
+with optional interpolation, while imported Replay interpolates between samples.
+Prediction playback is distinct from recorded simulated MPC motion.
 
 ## What the display claims
 
@@ -144,8 +164,10 @@ An explicit Apply replaces launch-time source/environment overrides for that
 restart. nvcc 12.9 rejects host GCC 15; Felix's shell uses
 `CUDAHOSTCXX=/usr/bin/g++-14`. Do not change toolchain settings silently.
 
-The GPU is shared with experiment runs. Use one solver process, solve only while
-a view needs it, and pause solving while a GPU timing run holds the locks used by
+The GPU is shared with experiment runs. Use one persistent Live solver process;
+explicit Run again may use a separate temporary child while Live is idle, with
+only one GPU computation at a time. Solve only while a view needs it, and pause
+solving while a GPU timing run holds the locks used by
 `tiago_mpc/experiments/random100/run.py`.
 
 ## Experiment storage and presentation — Felix, 2026-10-21

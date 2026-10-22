@@ -1,10 +1,10 @@
 # Solver profiles against one simulator
 
-Status: backend process boundary and sequential profile switching implemented.
-N32 native verification passed: 15 unchanged-reach comparisons and 34 bounded
-multirate/inspection/switch checks. This is one source/model/horizon qualification,
-not a task-success or all-profile claim. Raw receipts are retained in the
-integration checkout’s `_expr_data/native-inspection-checks/verification.json`.
+Status: backend process boundary, sequential profile switching and isolated
+fresh inspection are implemented. Retained native checks cover selected N32
+source/model configurations; they do not qualify every profile/horizon or task
+success. See [the verification map](architecture.md#verification) for maintained
+checks and their scope.
 Source / Build still selects the complete simulator checkout; its Apply action
 restarts the backend. Solver-profile activation keeps that simulator, HTTP
 service and browser session running.
@@ -25,7 +25,8 @@ terminated by inspection Stop. Inactive profile workers are never kept warm. `Si
 owns simulation, scheduling, exact references and native states; `SolverProcess`
 launches `solver_worker.py` with the selected Python using `subprocess`, which
 works inside the existing daemon coordinator. A private socket carries framed
-JSON requests/replies. Native stdout/stderr go to the owning checkout's ignored
+JSON metadata and typed binary array buffers for ordinary solve replies, avoiding
+q/v/u JSON lists. Native stdout/stderr go to the owning checkout's ignored
 `_expr_data/live/solver-processes/` directory.
 
 The coordinator owns creation, configuration, calls and graceful destruction
@@ -106,7 +107,8 @@ The same request envelope can host inspection work with captured native state,
 exact reference/configuration, explicit cold initialization, a finite SQP cap
 and an optional wall budget. Configuration reports `capabilities.iteration_capture`
 only when both Python and native APIs support it; `exact_resume` is false.
-Native capture hooks and inspection orchestration are separate work.
+Capture support is checked against the actual selected Python/native module.
+The implemented orchestration and cold-start limits are in [inspection.md](inspection.md).
 
 An inspection operation must retain full trajectory traces as binary artifacts
 under this checkout's `_expr_data/solve-inspections/` and return a compact

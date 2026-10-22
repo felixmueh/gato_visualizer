@@ -1,4 +1,8 @@
-"""Spawned numerical worker. No CUDA/controller object enters the HTTP process."""
+"""Persistent simulation coordinator; owns plant clocks and history reporting.
+
+SimulatorAdapter calls a separate solver child that owns controller/CUDA state.
+This process holds the GPU leases; neither owner runs in the HTTP process.
+"""
 from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path

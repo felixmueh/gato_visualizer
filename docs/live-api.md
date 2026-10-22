@@ -1,36 +1,11 @@
-> **Current execution contract:** see [execution-api.md](execution-api.md).
-> Its spawned worker, independent rates, history and calculation modes supersede
-> the original thread/pacing model below. Configuration and legacy event details
-> remain useful where the current contract does not override them.
+# Live settings and event API
 
-# Live MPC API contract (MVP)
-
-Contract between the Python backend and the browser frontend for the live
-modes. Agents change it only through the coordinating agent. Replay endpoints
-(`/api/scene`, `/api/health`, `/assets/...`) stay as they are.
-
-## Process model
-
-- One `server.py` process, stdlib `ThreadingHTTPServer`; no new Python
-  dependencies. Default port 8090; the container's server uses 8080.
-- One GPU worker thread owns every GATO/CUDA object. HTTP threads only enqueue
-  commands and read published events. Consecutive pending settings commands
-  coalesce to the newest one; play/pause/reset ordering is preserved.
-- A separate presentation thread decodes predictions, computes full-model FK,
-  and validates JSON. It owns its own Pinocchio model/data and receives copied,
-  immutable numerical snapshots. Its mailbox holds one pending frame in addition
-  to the frame being rendered; a newer frame replaces the pending frame. Control
-  and plant stepping never wait for presentation or SSE socket writes.
-- Settings, play, pause and reset invalidate obsolete presentation work. Pause
-  sends the exact final native state and last solved plan, followed by paused
-  status. This can repeat the last plan's identity without a new solve.
-- The native solve holds Python's GIL. Pause and settings responses may wait
-  for the current solve to finish. Presentation also shares that GIL, so this
-  removes synchronous work/backpressure from control without promising CPU
-  isolation or hard real-time scheduling. Browser rendering remains independent.
-- MPC code comes from the unchanged `tiago_mpc` checkout (see `AGENTS.md`).
-  `GATO_CACHE_DIR` is this checkout's `.cache/gato`, set before importing
-  `reach_sim`.
+Task/settings payloads and Live events shared by the Python backend and browser.
+[Execution and history](execution-api.md) defines scheduling, calculation modes,
+commands and lossless playback; [presentation settings](presentation.md) defines
+report cadence, buffering and interpolation. [Solver profiles](solver-profiles.md)
+defines the separate simulator and solver processes. HTTP threads enqueue
+commands and read retained records; they own no controller or CUDA state.
 
 ## Transport
 
@@ -62,7 +37,7 @@ the ones `reach_sim.py --config <that file>` would use.
   frame from the default `reach_sim` target, FK(`Q_START_RAD + Q_GOAL_DELTA_RAD`).
   The visualizer defaults to `[0.15, 0.2, 0.2]` m; these are offsets, not absolute XYZ coordinates.
 - `{"kind": "figure8", "target_offset_m": [dx,dy,dz], "width_m": 0.24,
-  "height_m": 0.16, "period_s": 24}`: horizontal world-XY tracking. The loop
+  "height_m": 0.16, "period_s": 24, "orientation_xyzw": [0,0,0,1]}`: horizontal world-XY tracking. The loop
   starts at the comfortable-pose tool position plus the offset, extends
   `width_m` forward (+X), and spans `height_m` laterally (Y). There is no
   position jump at t=0 with the zero offset. Its center is start+offset+
@@ -70,20 +45,21 @@ the ones `reach_sim.py --config <that file>` would use.
 
 For figure8, phase is `2*pi*t/period_s`, X adds
 `width_m/2*(1-cos(phase))`, Y adds `height_m/2*sin(2*phase)`, and Z stays fixed.
+An optional unit quaternion `orientation_xyzw` rotates this local loop about
+its start; translation stays in world axes and identity keeps the XY geometry.
 Every solve builds its reference at exact simulation times `t+k*dt_s`; state
 tracking error compares with the reference at that state's timestamp. Pause
-holds simulation time and phase. Reset returns both to zero. Changing settings
-preserves current time/phase and the deterministic comfortable-pose anchor.
-The reach target drag handles are hidden for figure8; its moving marker is
-read-only. The schema's `tasks` list supplies both task defaults plus editable
-figure8 parameter descriptors. Plans/states include `task_kind` and their
+holds On Play simulation time and phase; Manual/Automatic calculation can
+continue behind paused playback. Reset returns both to zero. Settings changes
+preserve the captured displayed state/time and deterministic task anchor.
+The task transform controls edit the static anchor/orientation; the moving
+reference marker follows task time. The schema's `tasks` list supplies both task
+defaults plus editable figure8 parameter descriptors. Plans/states include `task_kind` and their
 instantaneous world `target_xyz`; tracking does not report target arrival.
 
-This is a simulation diagnostic using the currently selected solver/plant
-settings, with the existing position-reference/orientation semantics. Geometry
-follows `tiago_mpc-larger-fig8/examples/track_figure8.py` and retained 24×16 cm
-examples, but omits their experiment-specific 20 mm initial edge offset. It
-does not reproduce or qualify those historical dynamics/cost settings.
+This is a simulation diagnostic using the selected solver and fixed simulator.
+The figure-eight geometry is defined in `live_mpc.figure8_reference`; it does
+not qualify the dynamics/cost settings of historical experiments.
 
 The solver reference is in the reduced arm's root (torso) frame; the backend
 converts world-frame values with the transform derived from the full URDF.
@@ -116,42 +92,27 @@ building). `kind` is `float`, `int`, `bool` or `choice` (with `choices`);
 has a parameter entry. Fixed adapter fields also have entries with
 `disabled: true` and a single allowed choice: `solver_params.linsys` is null
 (the reaching controller uses PCG), and `solver_params.exact_hessian` is false.
-All numeric ranges are enforced by the backend. MVP work caps are SQP 20,
-PCG 800 and ADMM 200 per solve.
+All numeric ranges are enforced by the backend and published by
+`live_mpc.parameter_specs`; consumers should use the returned schema. Current
+upper bounds are SQP 100000, PCG 1000000 and ADMM 200. Inspection Run again
+has its own cap and capture-memory limits.
 
-## Commands
+## Commands and GPU sharing
 
-- `{"type": "set_settings", "config": {...}, "task": {...}}`: replace both.
-  While paused, the backend recomputes the preview. While playing, the change
-  applies at the next control interval.
-- `{"type": "play"}`, `{"type": "pause"}`.
-- `{"type": "reset"}`: return to the task start state (zero velocity) and
-  recompute the preview.
+Use the complete command definitions in [execution-api.md](execution-api.md).
+`set_settings` supplies `config`, `task` and `execution`; optional native anchors
+start an identified continuation. Preview computes a prediction without plant
+motion. It is distinct from a separate cold Run again inspection and is not a
+promise of the exact first Play plan or a preserved optimizer checkpoint.
+Normal settings/N changes load compatible prebuilt modules and never compile.
 
-An N without a compiled module is rejected; the backend never compiles in
-response to a command.
-
-## Semantics the UI must label
-
-- **Preview:** `controller.reset(x)` at the current state, then one
-  `controller.step`. This is the same as the first plan that Play would
-  compute from that state.
-- **Play:** the fixed pacing of `reach_sim.py`. Each solve is followed by one
-  knot interval `dt_s` of RK4 plant steps of at most `SIM_DT_S`, with solve
-  latency not advancing the plant. The worker paces this to wall-clock real
-  time and runs slower when it cannot keep up; `rtf` reports the ratio. Play
-  keeps running after arrival, holding the target, until paused.
-- **Settings change during Play (MVP):** rebuild the solver and controller as
-  needed and `controller.reset` at the current state. The next plan carries
-  `controller_restarted: true`.
-- **GPU sharing:** before Play and before each preview, try the locks used by
-  `tiago_mpc/experiments/random100/run.py` (non-blocking, exclusive). Hold
-  them while playing, and release them on pause. If a lock is taken, emit
-  `status` with `state: "gpu_busy"` and do not solve.
-- **No active views:** when the last SSE connection disconnects, pause and
-  release the GPU locks. Initial previews wait for a connected view. CUDA
-  controller construction, resets, model checks and graceful disposal also
-  use the locks. Graceful disposal may wait for an experiment lock owner.
+Before constructing, resetting, solving or disposing native solver state, the
+coordinator acquires the canonical experiment locks nonblockingly. While another
+owner holds them it reports `gpu_busy` and waits cooperatively. Losing the last
+SSE subscriber pauses On Play at a numerical boundary; explicit Manual/Automatic
+precalculation may finish without a subscriber. A selected solver child may
+remain idle; no continuous solving is
+required for Replay, camera movement or scrubbing retained history.
 
 ## Events
 
@@ -176,13 +137,14 @@ response to a command.
 
 All positions are in the full robot's root frame. `q` values are native joint
 coordinates, already converted from the GPU convention with the joint-6 sign.
-Presentation publishes matching plan/state/status bundles at most about 60 times
-per second of wall time, with immediate final pause/preview updates. It may skip
-intermediate solves when control is faster than presentation; `seq` still counts
-every solve. This is display-only subsampling: every numerical solve and fixed
-plant interval still executes. Browser history contains the displayed snapshots,
-not a complete experiment recording. SSE writes run on each client's HTTP thread
-against the existing bounded event buffer, without blocking the control worker.
+The current report default is 20 Hz of wall time, with immediate boundary
+flushes; see [presentation.md](presentation.md). SSE latest values/notices may
+coalesce, but all committed numerical records remain in the disk-backed history
+and are fetched through cursor pages. Browser motion uses that history, not SSE
+arrival times. SSE socket writes run on client HTTP threads independently of
+numerical execution. Status fields include execution/job/generation information
+defined in [execution-api.md](execution-api.md); the examples above show core
+fields rather than an exhaustive schema.
 
 Figure-eight plans additionally carry `task_path_xyz`, a complete world-frame
 reference loop. `reference_xyz` remains the reference over the predicted horizon.
@@ -199,5 +161,7 @@ not reconstructed from positions or passive resisting torques.
 Plans and states carry `joint_limits` with native `lower_position_rad`,
 `upper_position_rad`, `velocity_rad_s`, `effort_nm`, and `source`. Live bounds
 are the effective configured MPC bounds, including margin/fractions. Reset
-clears episode plan count (`seq`); its next plan is 1. Settings/controller
-restarts keep counting. SSE transport event IDs remain monotonic independently.
+clears episode plan count (`seq`); its next plan is 1. Settings/profile changes
+start a new history generation and plan sequence; identify a retained solve
+within its source/generation, not by sequence alone. SSE transport event IDs
+remain monotonic independently.
