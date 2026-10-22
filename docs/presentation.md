@@ -1,12 +1,14 @@
 # Presentation settings
 
-`GET /api/presentation/settings` returns the saved preferences. `POST` replaces all four fields and returns the same object:
+`GET /api/presentation/settings` returns the saved preferences. `POST` replaces all eight fields and returns the same object:
 
 ```json
-{"report_hz":20,"buffer_ms":200,"interpolate":false,"limit_tint":true}
+{"report_hz":20,"buffer_ms":200,"interpolate":false,"limit_tint":true,
+ "limit_near_percent":90,"limit_at_position_rad":0.003,
+ "limit_at_velocity_rad_s":0.01,"limit_at_torque_percent":0.2}
 ```
 
-These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, `interpolate` a boolean, and `limit_tint` a boolean. A saved `presentation` key without `limit_tint` takes the default. Source, build, plotting and replay preferences are preserved when saving this key.
+These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, `interpolate` a boolean, `limit_tint` a boolean, `limit_near_percent` within 1–100, `limit_at_position_rad` within 0–0.1, `limit_at_velocity_rad_s` within 0–1 and `limit_at_torque_percent` within 0–10. A saved `presentation` key without any of these fields takes their defaults. Source, build, plotting and replay preferences are preserved when saving this key.
 
 **Settings dialog (UI tab):** no Save button. Checkboxes apply on change. Numeric fields apply on a committed change (change, blur, Enter) or after 700 ms without typing, never per keystroke. A value outside its range is marked on the field with the reason as tooltip; it is neither applied nor saved and the last valid value stays in effect. Valid changes are saved through the POST above after a 400 ms debounce, so a burst (including `report_hz`, whose backend update happens with the POST) sends only the last value, with at most one request in flight. A failed save marks the section heading ("! not saved", reason in the tooltip) while the setting stays applied; the next change retries.
 
@@ -16,7 +18,21 @@ The report window bounds accumulation by elapsed wall time (at most one second a
 
 `buffer_ms` is a browser presentation target in **simulation-time milliseconds**, not a numerical integration delay or a wall-clock reporting interval. `interpolate` selects display interpolation; the default is sample hold. Both are consumed by the frontend and never change recorded values or plant/control calculations. Available buffered motion comes from received history bounds, not a progress status's computational `history_end_s`, which may lead a pending report.
 
-`limit_tint` (default on) tints each robot link by its joint's worst limit use among position (distance from the range centre over the half range), velocity and torque, using only quantities the displayed sample has and the limits resolved for the recording or Live state. Tint starts at 80 % use (`LIMIT_TINT_THRESHOLD` in `src/limit-tint.js`) and is fully red at 100 %; hovering a tinted link names the limit. It is browser-side display only.
+## Joint limit states
+
+Limit use is always measured against the physical URDF limits (`joint_limits` of the scene, a recording or a Live state), never the MPC's tighter bounds, in Replay and Live alike. One definition serves the 3D tint, the Joints gauges and the Joint limit use plot: `gato_visualizer/plotting/limit_use.py`, mirrored for the browser by `src/limit-use.js`; `tests/fixtures/limit_use_cases.json` checks that both agree.
+
+- **Utilisation:** position |q − centre| / half range; velocity |qd| / limit; torque |τ| / effort.
+- **Distance to the bound,** in physical units, to the bound on the value's side: positive inside, negative beyond.
+- **States:** *near* when utilisation × 100 ≥ `limit_near_percent` (default 90); *at* when |distance| ≤ the quantity's at-tolerance, on either side: `limit_at_position_rad` (0.003), `limit_at_velocity_rad_s` (0.01), `limit_at_torque_percent` of the effort limit (0.2); *beyond* when distance < −tolerance; otherwise *inside*. At and beyond take precedence over near.
+
+The **UI** tab edits the four thresholds like the other numeric fields; a change applies at once to the tint, the gauges and the plots. Plot requests carry the browser's current values as `limit_settings` (see [the plot API](plot-api.md#source-selection-and-range-requests)); plotters read them through `limit_settings(raw)`.
+
+`limit_tint` (default on) colours each robot link by its joint's worst state among the quantities the displayed sample has: near amber, at solid red, beyond red with a light edge outline. Hovering a tinted link lists each quantity that is not inside, worst first, for example `arm_right_4_joint position · at · 0.002 rad from lower bound`. It is browser-side display only.
+
+Colours are CSS custom properties on `:root` in `src/style.css`: one per quantity (`--limit-position`, `--limit-velocity`, `--limit-torque`), shared by the gauges and the limit plot, and one per state (`--limit-near`, `--limit-at`, `--limit-beyond`, `--limit-beyond-edge`), shared with the tint.
+
+The MPC's bounds remain visible where they are labelled as such: the scene, Live plans and states carry them as `mpc_bounds` when known (see [the Live API](live-api.md)); gauge tooltips name them, and the recorded and predicted joint plots draw them dashed beside the URDF limits.
 
 Live history HTTP pages accept `limit` from 1 to 2048 records; the API default remains 256. The browser requests 1024 to reduce serial network round trips. This read-only page limit is separate from the 256-record numerical IPC packet limit. Pages preserve every recorded value and cursor; the larger allowance does not establish a throughput guarantee.
 

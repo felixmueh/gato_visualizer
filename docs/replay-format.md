@@ -175,9 +175,14 @@ bounds must be ordered and velocity/effort limits positive. Use the recording's
 actual historical bounds when available; the reader normalizes their order
 along with joint columns. These recorded bounds take precedence over display
 URDF limits. Without them, the scene uses and labels canonical display URDF
-limits. Live uses and labels the effective configured MPC bounds, including
-position margin and velocity/effort fractions. Limit colors describe proximity
-to the identified bounds; they are not a convergence or physical-safety verdict.
+limits. These are the physical limits: limit use (tint, Joints gauges, limit
+plot) is measured against them. When `provenance.configuration.limit_bounds`
+states a numeric `joint_margin_rad`, `velocity_fraction` or `effort_fraction`,
+the scene also carries `mpc_bounds` derived from these limits and only those
+explicit values; omitted or null settings (defaults or compiled offsets at
+recording time) are not inferred. Live carries the MPC bounds installed in its
+solver the same way. Limit colors describe proximity to the URDF limits; they
+are not a convergence or physical-safety verdict.
 
 ## Library and uploads
 

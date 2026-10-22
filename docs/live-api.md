@@ -158,9 +158,14 @@ knot. The terminal knot has no actuator control. Each state includes
 never changes the last applied control. These are actuator torques; they are
 not reconstructed from positions or passive resisting torques.
 
-Plans and states carry `joint_limits` with native `lower_position_rad`,
-`upper_position_rad`, `velocity_rad_s`, `effort_nm`, and `source`. Live bounds
-are the effective configured MPC bounds, including margin/fractions. Reset
+Plans and states carry `joint_limits`, the physical URDF limits, with native
+`lower_position_rad`, `upper_position_rad`, `velocity_rad_s`, `effort_nm`, and
+`source`; limit use is measured against them. They also carry `mpc_bounds`: the
+rows actually installed in the solver after the resolved configuration's
+`limit_bounds` (for example the default 0.1 rad margin when a configuration
+omits `joint_margin_rad`), in the same native fields plus the resolved
+`limit_bounds`. Velocity/torque rows appear only when symmetric. Live histories
+recorded before 2026-10-22 carry the MPC bounds as `joint_limits` instead. Reset
 clears episode plan count (`seq`); its next plan is 1. Settings/profile changes
 start a new history generation and plan sequence; identify a retained solve
 within its source/generation, not by sequence alone. SSE transport event IDs

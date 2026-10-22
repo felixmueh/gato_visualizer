@@ -318,12 +318,16 @@ commands retain the viewing direction and adjust the center and distance with
 margin for the viewport's current shape. Trajectory fitting uses a 40% margin
 (previously 15%); robot fitting retains 15%. They do not run the solver.
 
-The right-arm table shows native position (rad), velocity (rad/s), and actuator
-torque (Nm). Missing telemetry displays “—”. Position values turn yellow within
-10% of either position bound; velocity/torque turn yellow at 90% of their
-magnitude limit. Values at or beyond a limit turn red. Hover for the limit source
-and bounds: recordings can carry their historical limits, otherwise the current
-display URDF supplies them; Live uses the configured MPC bounds. Recorded torque
+The **Joints** tab shows each right-arm joint's limit use against the physical
+URDF limits: a position range bar with a marker for the current value, end
+ticks at the URDF bounds and shaded near bands, and velocity and torque bars of
+|value| up to a 100 % tick, overflowing past it when beyond. Bars use one colour
+per quantity while inside, amber when near, red at the limit and red outlined
+beyond (the states of [Presentation settings](docs/presentation.md#joint-limit-states)).
+Hover a bar for the exact native value, the URDF limit, the state with the
+distance to the bound and, when known, the MPC bound. Missing telemetry displays
+“—”; a value without a known limit shows as a number. Recordings can carry
+their historical limits, otherwise the current display URDF supplies them. Recorded torque
 holds between its saved command timestamps; a prediction's final knot has no
 torque. Live torque reports the last command actually applied to the plant.
 

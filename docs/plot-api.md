@@ -93,9 +93,20 @@ The SDK exports `Joint`, `Boolean`, `Number`, `Choice`, `EpisodeView`,
   "selection": {"solve_seq": 12, "iteration": null},
   "range": {"mode": "entire", "cursor_s": 1.2, "start_s": 0, "end_s": 2},
   "plots": [{"instance_id": "card-1", "plot_id": "builtin.joint_position", "inputs": {}}],
-  "pixels": 800
+  "pixels": 800,
+  "limit_settings": {"limit_near_percent": 90, "limit_at_position_rad": 0.003,
+                     "limit_at_velocity_rad_s": 0.01, "limit_at_torque_percent": 0.2}
 }
 ```
+
+- `limit_settings` is optional: the browser's current [joint limit
+  states](presentation.md#joint-limit-states) thresholds. Omitted fields take
+  the defaults; values outside their ranges are rejected. The plot service
+  validates them, includes them in the cache key, and places them in the
+  view's `raw['limit_settings']`, which plotters read through
+  `gato_visualizer.plotting.limit_use.limit_settings(raw)`. They travel with
+  the request rather than the backend config so a change applies at once,
+  before the debounced settings save.
 
 - Source is Live generation, `{kind: "replay", id, trajectory_index}`, or
   `{kind: "inspection", id}` for a completed standalone Run again result.
