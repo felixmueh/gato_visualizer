@@ -100,7 +100,7 @@ def episode_timing_histogram(data: EpisodeView, bins=10):
         bars['bin_edges'] = edges
     return lines('MPC wall-time histogram', [bars], kind='bars',
                  identity='wall_time', x_label='MPC wall time', x_unit='ms', y_label='Count', unit='intervals',
-                 notes=[f'{sum(counts)} intervals; bin edges in ms: {edges}. Full intersecting interval measurements; no duration weighting.'])
+                 notes=[f'{sum(counts)} intervals. Full intersecting interval measurements; no duration weighting.'])
 
 
 @plot_episode(id='episode.summary', title='Episode aggregates', requires=('states',), optional=('plans', 'intervals'))

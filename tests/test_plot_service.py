@@ -90,6 +90,8 @@ class SourceTests(unittest.TestCase):
             self.assertIn(value, series["y"])
         self.assertIn(4000, series["x"])
         self.assertEqual(len(original["series"][0]["x"]), 10000)
+        self.assertEqual(reduced["display_reduction"], [dict(series="x", original=10000, displayed=len(series["x"]))])
+        self.assertNotIn("notes", reduced)
 
 
 class WorkerTests(unittest.TestCase):
