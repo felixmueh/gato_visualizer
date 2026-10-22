@@ -10,10 +10,18 @@ REPLAY_EXPORTER = MPC_ROOT / "experiments/replay.py"
 
 
 def replay_exporter():
-    """tiago_mpc's experiments/replay.py (save_replay); it imports tiago_mpc.tiago."""
-    if str(MPC_ROOT) not in sys.path:
-        sys.path.append(str(MPC_ROOT))
-    spec = importlib.util.spec_from_file_location("tiago_mpc_replay_exporter", REPLAY_EXPORTER)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """tiago_mpc's experiments/replay.py (save_replay). Its tiago_mpc.tiago import
+    is isolated, so tests that import another checkout's tiago_mpc are unaffected."""
+    ours = lambda name: name == "tiago_mpc" or name.startswith("tiago_mpc.")
+    others = {name: sys.modules.pop(name) for name in list(sys.modules) if ours(name)}
+    sys.path.insert(0, str(MPC_ROOT))
+    try:
+        spec = importlib.util.spec_from_file_location("tiago_mpc_replay_exporter", REPLAY_EXPORTER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(MPC_ROOT))
+        for name in [name for name in sys.modules if ours(name)]:
+            del sys.modules[name]
+        sys.modules.update(others)
