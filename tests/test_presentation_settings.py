@@ -29,7 +29,9 @@ class PresentationConfigTests(unittest.TestCase):
             path.write_text(json.dumps(original))
             self.assertEqual(load_visualizer_config(path).presentation, DEFAULT_PRESENTATION)
             service = PresentationSettings(path)
-            updated = dict(report_hz=10, buffer_ms=1000, interpolate=True, limit_tint=False)
+            updated = dict(DEFAULT_PRESENTATION, report_hz=10, buffer_ms=1000, interpolate=True, limit_tint=False,
+                           limit_near_percent=80, limit_at_position_rad=0, limit_at_velocity_rad_s=.05,
+                           limit_at_torque_percent=1.5)
             self.assertEqual(service.update(updated), updated)
             self.assertEqual(json.loads(path.read_text()), dict(original, presentation=updated))
             save_source_selection(path, dict(mpc_root='/new-source'))
@@ -38,12 +40,26 @@ class PresentationConfigTests(unittest.TestCase):
             self.assertEqual(PresentationSettings(path).settings(), updated)
         for changes in (dict(report_hz=True), dict(report_hz=0), dict(report_hz=121),
                         dict(report_hz=float('nan')), dict(buffer_ms=-1), dict(buffer_ms=10001),
-                        dict(buffer_ms=float('inf')), dict(interpolate=1), dict(limit_tint=1)):
+                        dict(buffer_ms=float('inf')), dict(interpolate=1), dict(limit_tint=1),
+                        dict(limit_near_percent=0), dict(limit_near_percent=101), dict(limit_near_percent=True),
+                        dict(limit_at_position_rad=-.001), dict(limit_at_position_rad=.2),
+                        dict(limit_at_velocity_rad_s=float('nan')), dict(limit_at_torque_percent=11)):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate_presentation(dict(DEFAULT_PRESENTATION, **changes))
         for invalid in ({}, [], dict(DEFAULT_PRESENTATION, extra=1)):
             with self.assertRaises(ValueError):
                 validate_presentation(invalid)
+
+    def test_saved_config_without_limit_use_fields_takes_defaults(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'visualizer.json'
+            older = dict(report_hz=30, buffer_ms=100, interpolate=True, limit_tint=False)
+            path.write_text(json.dumps(dict(presentation=older)))
+            self.assertEqual(load_visualizer_config(path).presentation, dict(DEFAULT_PRESENTATION, **older))
+            self.assertEqual(DEFAULT_PRESENTATION['limit_near_percent'], 90)
+            self.assertEqual(DEFAULT_PRESENTATION['limit_at_position_rad'], .003)
+            self.assertEqual(DEFAULT_PRESENTATION['limit_at_velocity_rad_s'], .01)
+            self.assertEqual(DEFAULT_PRESENTATION['limit_at_torque_percent'], .2)
 
     def test_api_persists_without_live_and_rejects_invalid_or_foreign_origin(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -56,7 +72,7 @@ class PresentationConfigTests(unittest.TestCase):
             url = f'http://127.0.0.1:{server.server_port}/api/presentation/settings'
             try:
                 self.assertEqual(json.load(urlopen(url)), DEFAULT_PRESENTATION)
-                value = dict(report_hz=60, buffer_ms=0, interpolate=False, limit_tint=True)
+                value = dict(DEFAULT_PRESENTATION, report_hz=60, buffer_ms=0, interpolate=False, limit_tint=True)
                 request = Request(url, data=json.dumps(value).encode(), headers={'Content-Type':'application/json'})
                 self.assertEqual(json.load(urlopen(request)), value)
                 self.assertEqual(json.load(urlopen(url)), value)

@@ -4,9 +4,9 @@ import { DEFAULT_PRESENTATION, validatePresentation, setupPresentationSettings }
 
 test('presentation settings validate delivery cadence, simulation buffer and interpolation independently', () => {
   assert.deepEqual(validatePresentation({}), DEFAULT_PRESENTATION);
-  assert.deepEqual(validatePresentation({ report_hz: 1, buffer_ms: 0, interpolate: true }), { report_hz: 1, buffer_ms: 0, interpolate: true, limit_tint: true });
+  assert.deepEqual(validatePresentation({ report_hz: 1, buffer_ms: 0, interpolate: true }), { ...DEFAULT_PRESENTATION, report_hz: 1, buffer_ms: 0, interpolate: true, limit_tint: true });
   assert.equal(validatePresentation({ report_hz: 120, buffer_ms: 10000 }).buffer_ms, 10000);
-  for (const value of [{ report_hz: 0 }, { report_hz: 121 }, { report_hz: NaN }, { buffer_ms: -1 }, { buffer_ms: Infinity }, { buffer_ms: 10001 }, { interpolate: 'false' }, { limit_tint: 1 }]) assert.throws(() => validatePresentation(value));
+  for (const value of [{ report_hz: 0 }, { report_hz: 121 }, { report_hz: NaN }, { buffer_ms: -1 }, { buffer_ms: Infinity }, { buffer_ms: 10001 }, { interpolate: 'false' }, { limit_tint: 1 }, { limit_near_percent: 0 }, { limit_near_percent: 101 }, { limit_at_position_rad: -0.001 }, { limit_at_velocity_rad_s: 2 }, { limit_at_torque_percent: 11 }, { limit_at_torque_percent: '1' }]) assert.throws(() => validatePresentation(value));
 });
 
 class Element {
@@ -35,9 +35,21 @@ async function harness(t, { store = { report_hz: 10, buffer_ms: 350, interpolate
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('limit-state fields apply at once, validate their range and save', async t => {
+  const h = await harness(t);
+  assert.equal(h.field('limit_near_percent').value, '90');
+  h.field('limit_near_percent').value = '80'; h.field('limit_near_percent').listeners.change();
+  assert.equal(h.changes.at(-1).limit_near_percent, 80);
+  h.field('limit_at_torque_percent').value = '12'; h.field('limit_at_torque_percent').listeners.change();
+  assert.equal(h.field('limit_at_torque_percent').dataset.invalid, 'true');
+  assert.equal(h.changes.at(-1).limit_at_torque_percent, 0.2);
+  h.tick(400); await settle();
+  assert.equal(h.posts.at(-1).limit_near_percent, 80); assert.equal(h.posts.at(-1).limit_at_torque_percent, 0.2);
+});
+
 test('presentation loads from its own endpoint and has no Save button', async t => {
   const h = await harness(t);
-  assert.deepEqual(h.ui.settings, { report_hz: 10, buffer_ms: 350, interpolate: true, limit_tint: false });
+  assert.deepEqual(h.ui.settings, { ...DEFAULT_PRESENTATION, report_hz: 10, buffer_ms: 350, interpolate: true, limit_tint: false });
   assert.deepEqual(h.changes, [h.ui.settings]);
   assert.equal(h.section.querySelector('[data-action="save-presentation"]').listeners.click, undefined);
   assert.equal(h.field('report_hz').value, '10'); assert.equal(h.field('limit_tint').checked, false);
@@ -48,7 +60,7 @@ test('checkboxes apply at once and save after a debounce', async t => {
   h.field('limit_tint').checked = true; h.field('limit_tint').listeners.change();
   assert.equal(h.changes.at(-1).limit_tint, true); assert.equal(h.posts.length, 0);
   h.tick(400); await settle();
-  assert.deepEqual(h.posts, [{ report_hz: 10, buffer_ms: 350, interpolate: true, limit_tint: true }]);
+  assert.deepEqual(h.posts, [{ ...DEFAULT_PRESENTATION, report_hz: 10, buffer_ms: 350, interpolate: true, limit_tint: true }]);
 });
 
 test('numeric fields apply on commit or idle, never per keystroke, and rapid changes coalesce', async t => {
@@ -84,7 +96,7 @@ test('a change during an in-flight save is sent afterwards; failures are marked 
   h.state.fail = false;
   h.field('limit_tint').checked = true; h.field('limit_tint').listeners.change(); h.tick(400); await settle();
   assert.equal(h.title.dataset.saveFailed, undefined);
-  assert.deepEqual(h.posts.at(-1), { report_hz: 10, buffer_ms: 350, interpolate: false, limit_tint: true });
+  assert.deepEqual(h.posts.at(-1), { ...DEFAULT_PRESENTATION, report_hz: 10, buffer_ms: 350, interpolate: false, limit_tint: true });
 });
 
 test('settings persist across a reload through the endpoint', async t => {

@@ -189,6 +189,27 @@ class WorkerTests(unittest.TestCase):
         self.service.update_settings(dict(directory=None))
         self.assertIsNone(load_visualizer_config(self.config).plotters_directory)
 
+    def test_limit_settings_reach_plotters_and_are_validated(self):
+        project = self.folder/"limits"
+        project.mkdir()
+        (project/"limits.py").write_text("from gato_visualizer.plotting import plot_episode,table\nfrom gato_visualizer.plotting.limit_use import limit_settings\n@plot_episode(id='custom.limit_use',title='Limits')\ndef custom(data):\n return table('Limits',[dict(label=k,value=v) for k,v in limit_settings(data.raw).items()])\n")
+        self.service.update_settings(dict(directory=str(project)))
+        self.wait_for(lambda: self.service.settings()["ready"])
+        plots = [dict(instance_id="l", plot_id="custom.limit_use", inputs={})]
+        rows = lambda result: {r["label"]: r["value"] for r in result["results"][0]["spec"]["rows"]}
+        default = self.wait_job(self.service.submit(self.request(plots=plots))["job_id"])
+        self.assertEqual(rows(default), dict(limit_near_percent=90, limit_at_position_rad=.003,
+                                             limit_at_velocity_rad_s=.01, limit_at_torque_percent=.2))
+        custom = self.wait_job(self.service.submit(self.request(plots=plots, limit_settings=dict(
+            limit_near_percent=75, limit_at_torque_percent=1)))["job_id"])
+        self.assertEqual(rows(custom)["limit_near_percent"], 75)
+        self.assertEqual(rows(custom)["limit_at_torque_percent"], 1)
+        self.assertEqual(rows(custom)["limit_at_position_rad"], .003)
+        for bad in (dict(limit_near_percent=0), dict(limit_at_position_rad=-1), dict(other=1), [1]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.service.submit(self.request(plots=plots, limit_settings=bad))
+        self.service.update_settings(dict(directory=None))
+
     def test_source_joint_names_reach_catalog_context(self):
         scene = fixture_scene()
         scene["joint_names"] = ["shoulder", "wrist"]

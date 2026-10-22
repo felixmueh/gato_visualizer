@@ -5,9 +5,12 @@ range, velocity |qd| / limit, torque |tau| / effort. Distance to the bound is
 in physical units, positive inside and negative beyond. The tighter MPC bounds
 (``raw['joint_limits']`` in Live) are not the reference.
 
-Interim module of the limit-plot unit; the shared limit definitions (unit K)
-replace or absorb it. ``limit_settings`` is the single seam through which the
-plotters receive the configurable thresholds.
+The single Python definition; ``src/limit-use.js`` mirrors it for the 3D tint
+and the Joints gauges, and ``tests/fixtures/limit_use_cases.json`` checks that
+both agree. ``limit_settings`` is the single seam through which plotters
+receive the configurable thresholds: the browser sends its current
+presentation settings as the plot request's ``limit_settings``, and the plot
+service places them in ``raw['limit_settings']``.
 """
 from __future__ import annotations
 from collections.abc import Mapping
@@ -17,14 +20,29 @@ from .views import finite
 QUANTITIES = ('position', 'velocity', 'torque')
 UNITS = dict(position='rad', velocity='rad/s', torque='Nm')
 
-# Presentation defaults (Felix, 2026-10-22). Unit K makes them configurable.
+# Presentation defaults (Felix, 2026-10-22), configurable in Settings > UI.
 LIMIT_DEFAULTS = dict(limit_near_percent=90., limit_at_position_rad=.003,
                       limit_at_velocity_rad_s=.01, limit_at_torque_percent=.2)
+# Inclusive ranges, shared by the presentation settings and plot requests.
+LIMIT_RANGES = dict(limit_near_percent=(1, 100), limit_at_position_rad=(0, .1),
+                    limit_at_velocity_rad_s=(0, 1), limit_at_torque_percent=(0, 10))
+
+
+def validate_limit_settings(value: Mapping | None = None) -> dict:
+    """Complete thresholds; omitted fields take their defaults, others must be in range."""
+    value = {} if value is None else value
+    if not isinstance(value, Mapping) or set(value) - set(LIMIT_DEFAULTS):
+        raise ValueError('limit settings accept only ' + ', '.join(LIMIT_DEFAULTS))
+    result = {**LIMIT_DEFAULTS, **value}
+    for name, (low, high) in LIMIT_RANGES.items():
+        if not finite(result[name]) or not low <= result[name] <= high:
+            raise ValueError(f'{name} must be finite within [{low}, {high}]')
+    return {name: float(result[name]) for name in LIMIT_DEFAULTS}
 
 
 def limit_settings(raw: Mapping) -> dict:
-    """Thresholds for limit states. TEMPORARY SEAM: defaults until unit K
-    exposes the presentation settings to the plot service; then read them here."""
+    """Thresholds for limit states: the defaults, overridden by the request's
+    current presentation settings in ``raw['limit_settings']``."""
     result = dict(LIMIT_DEFAULTS)
     supplied = raw.get('limit_settings') if isinstance(raw, Mapping) else None
     if isinstance(supplied, Mapping):

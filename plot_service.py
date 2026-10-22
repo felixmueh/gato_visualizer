@@ -108,8 +108,10 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                         selected_solve_id=None if selected is None else selected.get("seq", selected["id"]), sqp_iteration=iteration,
                         clock=clock)
                     scope = request["context"]
-                    view = (EpisodeView(raw, context=context) if scope == "episode" else
-                            SolveView(selected or {}, context=context))
+                    # Part of the request, hence of the cache key; never cached in the source.
+                    thresholds = request.get("limit_settings") or {}
+                    view = (EpisodeView({**raw, "limit_settings": thresholds}, context=context) if scope == "episode" else
+                            SolveView({**(selected or {}), "limit_settings": thresholds} if selected else {}, context=context))
                     if inspection["selected_solve"] is not None:
                         solve = inspection["selected_solve"]
                         solve.update(seq=solve["id"], sim_time_s=solve.get("time_s"),
@@ -302,8 +304,12 @@ class PlotService:
         if not isinstance(body.get("source"), dict):
             raise ValueError("A source selector is required; browser history uploads are not accepted")
         request = deepcopy(body)
-        if set(request)-{"context", "source", "selection", "range", "plots", "pixels", "client_id", "plot_id", "parameters", "instance_id"}:
+        if set(request)-{"context", "source", "selection", "range", "plots", "pixels", "client_id", "plot_id", "parameters", "instance_id", "limit_settings"}:
             raise ValueError("Unknown plot request fields")
+        # The browser's current limit-state presentation settings (near band,
+        # at-tolerances). Plotters read them through limit_settings(raw).
+        from gato_visualizer.plotting.limit_use import validate_limit_settings
+        request["limit_settings"] = validate_limit_settings(request.get("limit_settings"))
         if not isinstance(request.get("selection", {}), dict) or not isinstance(request.get("range", {}), dict):
             raise ValueError("selection and range must be objects")
         selected = request.get("selection", {})

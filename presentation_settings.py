@@ -3,12 +3,17 @@ from copy import deepcopy
 import math
 import threading
 
-DEFAULT_PRESENTATION = dict(report_hz=20, buffer_ms=200, interpolate=False, limit_tint=True)
+from gato_visualizer.plotting.limit_use import LIMIT_DEFAULTS, validate_limit_settings
+
+# Limit-use states (near/at/beyond) share their thresholds with plots; see
+# gato_visualizer/plotting/limit_use.py for definitions and ranges.
+DEFAULT_PRESENTATION = dict(report_hz=20, buffer_ms=200, interpolate=False, limit_tint=True,
+                            **LIMIT_DEFAULTS)
 
 
 def validate_presentation(value):
     if not isinstance(value, dict) or set(value) != set(DEFAULT_PRESENTATION):
-        raise ValueError('presentation requires report_hz, buffer_ms, interpolate and limit_tint')
+        raise ValueError('presentation requires ' + ', '.join(DEFAULT_PRESENTATION))
     result = dict(value)
     for name, minimum, maximum in (('report_hz', 1, 120), ('buffer_ms', 0, 10000)):
         number = value[name]
@@ -19,6 +24,7 @@ def validate_presentation(value):
         raise ValueError('interpolate must be a boolean')
     if not isinstance(value['limit_tint'], bool):
         raise ValueError('limit_tint must be a boolean')
+    validate_limit_settings({name: value[name] for name in LIMIT_DEFAULTS})
     return result
 
 

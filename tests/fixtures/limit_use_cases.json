@@ -1,0 +1,251 @@
+{
+ "description": "Shared limit-use cases: gato_visualizer/plotting/limit_use.py and src/limit-use.js must both reproduce these exactly. Regenerate only together with both implementations.",
+ "limits": {
+  "lower_position_rad": [
+   -1.0,
+   -2.443460952792061,
+   -4.71238898038469
+  ],
+  "upper_position_rad": [
+   1.0,
+   1.1344640137963142,
+   0.5235987755982988
+  ],
+  "velocity_rad_s": [
+   2.0,
+   2.5,
+   2.5
+  ],
+  "effort_nm": [
+   40.0,
+   26.0,
+   43.0
+  ]
+ },
+ "cases": [
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": 0.5,
+   "settings": {},
+   "utilisation": 0.5,
+   "distance": 0.5,
+   "state": "inside"
+  },
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": 0.9,
+   "settings": {},
+   "utilisation": 0.9,
+   "distance": 0.09999999999999998,
+   "state": "near"
+  },
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": 0.8,
+   "settings": {},
+   "utilisation": 0.8,
+   "distance": 0.19999999999999996,
+   "state": "inside"
+  },
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": 0.8,
+   "settings": {
+    "limit_near_percent": 80
+   },
+   "utilisation": 0.8,
+   "distance": 0.19999999999999996,
+   "state": "near"
+  },
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": 0.9975,
+   "settings": {},
+   "utilisation": 0.9975,
+   "distance": 0.0024999999999999467,
+   "state": "at"
+  },
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": 1.0025,
+   "settings": {},
+   "utilisation": 1.0025,
+   "distance": -0.0024999999999999467,
+   "state": "at"
+  },
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": 1.0031,
+   "settings": {},
+   "utilisation": 1.0031,
+   "distance": -0.0031000000000001027,
+   "state": "beyond"
+  },
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": -0.998,
+   "settings": {},
+   "utilisation": 0.998,
+   "distance": 0.0020000000000000018,
+   "state": "at"
+  },
+  {
+   "quantity": "position",
+   "joint": 0,
+   "value": 0.0,
+   "settings": {},
+   "utilisation": 0.0,
+   "distance": 1.0,
+   "state": "inside"
+  },
+  {
+   "quantity": "position",
+   "joint": 1,
+   "value": -2.44,
+   "settings": {},
+   "utilisation": 0.9980653854821548,
+   "distance": 0.003460952792061267,
+   "state": "near"
+  },
+  {
+   "quantity": "position",
+   "joint": 1,
+   "value": 1.2,
+   "settings": {},
+   "utilisation": 1.0366335162507199,
+   "distance": -0.06553598620368573,
+   "state": "beyond"
+  },
+  {
+   "quantity": "position",
+   "joint": 2,
+   "value": -4.5,
+   "settings": {},
+   "utilisation": 0.9188733853924697,
+   "distance": 0.21238898038468967,
+   "state": "near"
+  },
+  {
+   "quantity": "position",
+   "joint": 2,
+   "value": 0.52,
+   "settings": {
+    "limit_at_position_rad": 0
+   },
+   "utilisation": 0.9986253689786853,
+   "distance": 0.003598775598298798,
+   "state": "near"
+  },
+  {
+   "quantity": "velocity",
+   "joint": 0,
+   "value": 1.8,
+   "settings": {},
+   "utilisation": 0.9,
+   "distance": 0.19999999999999996,
+   "state": "near"
+  },
+  {
+   "quantity": "velocity",
+   "joint": 0,
+   "value": -1.991,
+   "settings": {},
+   "utilisation": 0.9955,
+   "distance": 0.008999999999999897,
+   "state": "at"
+  },
+  {
+   "quantity": "velocity",
+   "joint": 0,
+   "value": -2.02,
+   "settings": {},
+   "utilisation": 1.01,
+   "distance": -0.020000000000000018,
+   "state": "beyond"
+  },
+  {
+   "quantity": "velocity",
+   "joint": 1,
+   "value": 2.25,
+   "settings": {},
+   "utilisation": 0.9,
+   "distance": 0.25,
+   "state": "near"
+  },
+  {
+   "quantity": "velocity",
+   "joint": 1,
+   "value": 2.5,
+   "settings": {
+    "limit_at_velocity_rad_s": 0
+   },
+   "utilisation": 1.0,
+   "distance": 0.0,
+   "state": "at"
+  },
+  {
+   "quantity": "torque",
+   "joint": 1,
+   "value": 26.05,
+   "settings": {},
+   "utilisation": 1.001923076923077,
+   "distance": -0.05000000000000071,
+   "state": "at"
+  },
+  {
+   "quantity": "torque",
+   "joint": 1,
+   "value": 26.06,
+   "settings": {},
+   "utilisation": 1.0023076923076923,
+   "distance": -0.05999999999999872,
+   "state": "beyond"
+  },
+  {
+   "quantity": "torque",
+   "joint": 1,
+   "value": -23.4,
+   "settings": {},
+   "utilisation": 0.8999999999999999,
+   "distance": 2.6000000000000014,
+   "state": "inside"
+  },
+  {
+   "quantity": "torque",
+   "joint": 2,
+   "value": -38.7,
+   "settings": {},
+   "utilisation": 0.9,
+   "distance": 4.299999999999997,
+   "state": "near"
+  },
+  {
+   "quantity": "torque",
+   "joint": 2,
+   "value": 10.0,
+   "settings": {
+    "limit_at_torque_percent": 10
+   },
+   "utilisation": 0.23255813953488372,
+   "distance": 33.0,
+   "state": "inside"
+  },
+  {
+   "quantity": "torque",
+   "joint": 0,
+   "value": null,
+   "settings": {},
+   "utilisation": null,
+   "distance": null,
+   "state": null
+  }
+ ]
+}
