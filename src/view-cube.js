@@ -23,6 +23,31 @@ export function viewDirection(name) {
   return new Vector3(...view.direction).normalize();
 }
 
+// The four screen edges of the cube. Clicking one in a principal view turns
+// the view 90 degrees toward that side, as in CAD view cubes: the face that
+// lies beyond the edge on screen becomes the new view.
+export const VIEW_EDGES = [
+  { name: "up", screen: [0, 1, 0] },
+  { name: "down", screen: [0, -1, 0] },
+  { name: "left", screen: [-1, 0, 0] },
+  { name: "right", screen: [1, 0, 0] },
+];
+
+// Face reached from the current camera orientation across a screen edge: the
+// world direction of the edge, snapped to the nearest principal axis.
+export function edgeNeighbor(cameraQuaternion, edge) {
+  const spec = VIEW_EDGES.find((item) => item.name === edge);
+  if (!spec) throw new Error(`Unknown view-cube edge: ${edge}`);
+  const world = new Vector3(...spec.screen).applyQuaternion(cameraQuaternion);
+  let best = VIEW_FACES[0];
+  let bestDot = -Infinity;
+  for (const face of VIEW_FACES) {
+    const dot = Math.round(face.direction[0]) * world.x + Math.round(face.direction[1]) * world.y + Math.round(face.direction[2]) * world.z;
+    if (dot > bestDot) { bestDot = dot; best = face; }
+  }
+  return best.name;
+}
+
 // Match the CSS cube's 60px side and 500px perspective. Corners are ordinary
 // screen-space buttons so their hit areas stay useful when faces are edge-on.
 export function projectCorner(direction, inverseCameraQuaternion) {
@@ -64,7 +89,7 @@ export function setupViewCube({ camera, controls, viewport }) {
   const element = document.createElement("div");
   element.className = "view-cube";
   element.setAttribute("role", "group");
-  element.setAttribute("aria-label", "Camera orientation. Choose a face, or a corner for an isometric view. Arrow keys on faces select other faces.");
+  element.setAttribute("aria-label", "Camera orientation. Choose a face, or a corner for an isometric view; edges turn a principal view by 90 degrees. Arrow keys on faces select other faces.");
   const stage = document.createElement("div");
   stage.className = "view-cube-stage";
   const rotor = document.createElement("div");
@@ -80,6 +105,7 @@ export function setupViewCube({ camera, controls, viewport }) {
   let damping;
   let chosenFace;
   const buttons = [];
+  const edgeButtons = new Map();
   const cornerButtons = [];
   const inverse = new Quaternion();
   const matrix = new Matrix4();
@@ -153,6 +179,18 @@ export function setupViewCube({ camera, controls, viewport }) {
     cornerButtons.push(button);
   }
 
+  // Edge strips only exist while a principal face is exactly in view.
+  for (const edge of VIEW_EDGES) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `view-cube-edge view-cube-edge-${edge.name}`;
+    button.dataset.edge = edge.name;
+    button.hidden = true;
+    button.addEventListener("click", () => { if (button.dataset.target) select(button.dataset.target); });
+    stage.append(button);
+    edgeButtons.set(edge.name, button);
+  }
+
   controls.addEventListener("start", cancel);
 
   function update(timestamp) {
@@ -193,6 +231,19 @@ export function setupViewCube({ camera, controls, viewport }) {
       button.classList.toggle("active", active);
       button.setAttribute("aria-pressed", String(active));
     });
+    const principal = VIEW_FACES.some((face) => face.name === activeFace) && !transition;
+    for (const edge of VIEW_EDGES) {
+      const button = edgeButtons.get(edge.name);
+      button.hidden = !principal;
+      if (!principal) { delete button.dataset.target; continue; }
+      const target = edgeNeighbor(camera.quaternion, edge.name);
+      if (button.dataset.target !== target) {
+        const label = VIEW_FACES.find((face) => face.name === target).label;
+        button.dataset.target = target;
+        button.title = `Rotate to ${label} view`;
+        button.setAttribute("aria-label", `Rotate to ${label} view`);
+      }
+    }
     const captionFace = transition ? chosenFace : activeFace;
     caption.textContent = captionFace
       ? (VIEW_CORNERS.some((corner) => corner.name === captionFace) ? "ISOMETRIC VIEW" : `${captionFace.toUpperCase()} VIEW`)

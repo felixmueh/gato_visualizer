@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { PerspectiveCamera, Vector3 } from "three";
-import { VIEW_CORNERS, VIEW_FACES, cornerVisible, orbitTransition, projectCorner, viewDirection } from "./view-cube.js";
+import { VIEW_CORNERS, VIEW_EDGES, VIEW_FACES, cornerVisible, edgeNeighbor, orbitTransition, projectCorner, viewDirection } from "./view-cube.js";
 
 test("all six views follow robot world axes with finite pole orientations", () => {
   const expected = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
@@ -68,4 +68,41 @@ test("face and corner transitions preserve pan target and orbit radius, even bet
       assert(offsetAt(1).normalize().distanceTo(viewDirection(to.name)) < 1e-12);
     }
   }
+});
+
+function cameraQuaternionFor(name) {
+  const camera = new PerspectiveCamera();
+  camera.up.set(0, 0, 1);
+  camera.position.copy(viewDirection(name).multiplyScalar(4));
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+  return camera.quaternion;
+}
+
+test("edge clicks turn a principal view toward the neighbouring face (Felix's examples)", () => {
+  assert.equal(edgeNeighbor(cameraQuaternionFor("right"), "up"), "top");
+  assert.equal(edgeNeighbor(cameraQuaternionFor("right"), "right"), "front");
+  assert.equal(edgeNeighbor(cameraQuaternionFor("right"), "left"), "back");
+  assert.equal(edgeNeighbor(cameraQuaternionFor("right"), "down"), "bottom");
+});
+
+test("edge neighbours are four distinct adjacent faces for every principal view", () => {
+  for (const face of VIEW_FACES) {
+    const quaternion = cameraQuaternionFor(face.name);
+    const own = viewDirection(face.name);
+    const neighbours = VIEW_EDGES.map((edge) => edgeNeighbor(quaternion, edge.name));
+    assert.equal(new Set(neighbours).size, 4, face.name);
+    for (const name of neighbours) {
+      assert(Math.abs(viewDirection(name).dot(own)) < 1e-3, `${face.name} -> ${name} is a 90 degree turn`);
+    }
+    // Opposite edges lead to opposite faces.
+    assert.equal(viewDirection(neighbours[0]).dot(viewDirection(neighbours[1])) < -0.99, true);
+    assert.equal(viewDirection(neighbours[2]).dot(viewDirection(neighbours[3])) < -0.99, true);
+  }
+  assert.throws(() => edgeNeighbor(cameraQuaternionFor("top"), "diagonal"), /Unknown view-cube edge/);
+});
+
+test("Top view edges follow the cube drawing: screen right is Front", () => {
+  assert.equal(edgeNeighbor(cameraQuaternionFor("top"), "right"), "front");
+  assert.equal(edgeNeighbor(cameraQuaternionFor("top"), "up"), "left");
 });

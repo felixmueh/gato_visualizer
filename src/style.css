@@ -503,6 +503,28 @@ a {
   border-color: #b4fff4;
 }
 .view-cube-corner[hidden] { display: none; }
+.view-cube-edge {
+  position: absolute;
+  z-index: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.view-cube-edge-up, .view-cube-edge-down { left: 38px; width: 44px; height: 12px; }
+.view-cube-edge-up { top: 16px; }
+.view-cube-edge-down { top: 78px; }
+.view-cube-edge-left, .view-cube-edge-right { top: 32px; width: 12px; height: 40px; }
+.view-cube-edge-left { left: 24px; }
+.view-cube-edge-right { left: 84px; }
+.view-cube-edge:hover, .view-cube-edge:focus-visible {
+  background: #75ded3aa;
+  outline: 1px solid #b4fff4;
+  outline-offset: -1px;
+}
+.view-cube-edge[hidden] { display: none; }
 .view-cube-caption {
   display: block;
   padding-top: 6px;
