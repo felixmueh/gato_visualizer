@@ -28,7 +28,11 @@ the specification and provides presentation interactions.
   `line`, `step`, or `bar`. Numeric missing values use null, never NaN/Infinity.
   A `color` may be a CSS token with fallback, `var(--limit-torque, #b398f3)`.
   Optional `hover` holds one text (or null) per sample; the readout shows it
-  instead of `label: value`, and display reduction keeps it aligned.
+  instead of `label: value`, and display reduction keeps it aligned. The
+  readout names the series whose curve is vertically closest to the pointer, in
+  its colour, and a dot marks that sample; the tooltip lists every series. A
+  `step` series holds a sample until the next one, and unrevealed samples are
+  not read.
 - Guides may set `style: "hard"` (solid, in the limit-beyond colour) instead
   of the default dashed line. `bands: [{axis: "y", start, end, tone, label?}]`
   shade a y interval across the plot beneath the data; `end: null` reaches the

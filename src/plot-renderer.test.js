@@ -99,13 +99,59 @@ test('hover readouts retain all recorded values and clear when leaving the plot'
   ] }, { linked: true });
   const svg = container.querySelector('svg'), readout = container.querySelector('.plot-hover');
   await svg.emit('pointermove', { clientX: 600 });
-  assert.equal(readout.textContent, '1 s · A long joint label: 3 · Another joint: 4');
-  assert.equal(readout.getAttribute('title'), readout.textContent);
-  assert.equal(container.querySelector('.plot-renderer').getAttribute('title'), readout.textContent);
+  const all = '1 s · A long joint label: 3 · Another joint: 4';
+  assert.equal(readout.textContent, '1 s · A long joint label: 3');
+  assert.equal(readout.getAttribute('title'), all);
+  assert.equal(container.querySelector('.plot-renderer').getAttribute('title'), all);
   await svg.emit('pointerleave');
   assert.equal(readout.textContent, '');
   assert.equal(readout.getAttribute('title'), '');
   assert.equal(container.querySelector('.plot-renderer').getAttribute('title'), '');
+});
+
+const dotOf = container => container.querySelectorAll('circle')[0];
+
+test('hover snaps to the series whose curve is vertically closest and marks its sample', async () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  renderPlot(container, { ...base, kind: 'lines', series: [
+    { label: 'Low', x: [0, 1], y: [0, 0], color: '#111111' },
+    { label: 'High', x: [0, 1], y: [10, 10], color: 'var(--c, #222222)' },
+  ] }, { linked: true });
+  const svg = container.querySelector('svg'), readout = container.querySelector('.plot-hover'), dot = dotOf(container);
+  assert.equal(dot.getAttribute('visibility'), 'hidden');
+  await svg.emit('pointermove', { clientX: 600, clientY: 5 });
+  assert.equal(readout.textContent, '1 s · High: 10'); assert.equal(readout.style.color, 'var(--c, #222222)');
+  assert.equal(dot.getAttribute('visibility'), 'visible'); assert.equal(dot.style.fill, 'var(--c, #222222)');
+  assert.equal(readout.getAttribute('title'), '1 s · Low: 0 · High: 10');
+  await svg.emit('pointermove', { clientX: 600, clientY: 190 });
+  assert.equal(readout.textContent, '1 s · Low: 0'); assert.equal(readout.style.color, '#111111');
+  await svg.emit('pointerleave');
+  assert.equal(dot.getAttribute('visibility'), 'hidden');
+  assert.equal(readout.textContent, ''); assert.equal(readout.getAttribute('title'), ''); assert.equal(readout.style.color, '');
+});
+
+test('a step series holds the previous sample and a null sample is a gap', async () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  renderPlot(container, { ...base, kind: 'lines', series: [
+    { label: 'Held', x: [0, 1, 2, 3], y: [5, 7, null, 9], style: 'step' },
+  ] }, { linked: true });
+  const svg = container.querySelector('svg'), readout = container.querySelector('.plot-hover');
+  // 0.75 s is nearer the next sample, but the curve still holds the first one.
+  await svg.emit('pointermove', { clientX: 150, clientY: 100 });
+  assert.equal(readout.textContent, '0 s · Held: 5'); assert.equal(readout.getAttribute('title'), '0.75 s · Held: 5');
+  await svg.emit('pointermove', { clientX: 250, clientY: 100 });
+  assert.equal(readout.textContent, '1 s · Held: 7'); assert.equal(readout.getAttribute('title'), '1.25 s · Held: 7');
+  await svg.emit('pointermove', { clientX: 420, clientY: 100 });
+  assert.equal(readout.getAttribute('title'), readout.textContent); assert(!readout.textContent.includes('Held'));
+  assert.equal(dotOf(container).getAttribute('visibility'), 'hidden');
+});
+
+test('hover never reads samples beyond the reveal time', async () => {
+  const { document } = plotDOM(), container = document.createElement('div');
+  renderPlot(container, { ...base, kind: 'lines', series: [{ label: 'A', x: [0, 1, 2, 3], y: [1, 2, 3, 4] }] }, { linked: true, reveal: 1.2 });
+  const svg = container.querySelector('svg'), readout = container.querySelector('.plot-hover');
+  await svg.emit('pointermove', { clientX: 590, clientY: 100 });
+  assert.equal(readout.textContent, '1 s · A: 2');
 });
 
 test('histogram bars report their own bin edges on hover; notes can move out of the plot body', async () => {

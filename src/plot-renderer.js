@@ -218,22 +218,61 @@ export function renderPlot(container, spec, options = {}) {
   const xAt = (event, box = svg.getBoundingClientRect()) => viewRange[0] + Math.max(0, Math.min(1, ((event.clientX - box.left) / box.width * width - margin.left) / innerWidth)) * (viewRange[1] - viewRange[0]);
   let hoveredBar;
   const highlight = bar => { hoveredBar?.rect.setAttribute('stroke', 'none'); hoveredBar = bar; bar?.rect.setAttribute('stroke', '#eefbff'); };
+  // The sample a series shows at x, and the curve's drawn height there. A step
+  // holds sample i until the next sample (a null y is a gap); a line takes the
+  // nearest sample, its height interpolated. Unrevealed samples are not read.
+  const sampleAt = (line, x) => {
+    const xs = line.x || [], ys = line.y || [], drawn = k => Number.isFinite(xs[k]) && (reveal == null || xs[k] <= reveal);
+    if (line.style === 'step') {
+      const limit = reveal == null ? x : Math.min(x, reveal); let at = -1;
+      xs.forEach((value, k) => { if (Number.isFinite(value) && value <= limit) at = k; });
+      return at >= 0 && Number.isFinite(ys[at]) ? { i: at, height: ys[at] } : null;
+    }
+    let i = -1, delta = Infinity;
+    xs.forEach((value, k) => { if (drawn(k) && Number.isFinite(ys[k]) && Math.abs(value - x) < delta) { i = k; delta = Math.abs(value - x); } });
+    if (i < 0) return null;
+    const j = i + (x < xs[i] ? -1 : 1);
+    const height = j >= 0 && j < xs.length && drawn(j) && Number.isFinite(ys[j]) && xs[j] !== xs[i] ? ys[i] + (ys[j] - ys[i]) * Math.max(0, Math.min(1, (x - xs[i]) / (xs[j] - xs[i]))) : ys[i];
+    return { i, height };
+  };
+  // Dot on the snapped sample; it follows the window and the y animation.
+  const dot = node('circle', { r: 3, stroke: '#142130', 'stroke-width': 1, visibility: 'hidden' });
+  let snapped = null;
+  const placeDot = () => {
+    const shown = snapped && snapped.x >= viewRange[0] && snapped.x <= viewRange[1] && (reveal == null || snapped.x <= reveal);
+    dot.setAttribute('visibility', shown ? 'visible' : 'hidden'); if (!shown) return;
+    dot.setAttribute('cx', cx(snapped.x)); dot.setAttribute('cy', sy(snapped.y));
+  };
+  scaled.push(placeDot);
+  const snap = value => { snapped = value; if (value) dot.style.fill = value.color; placeDot(); };
   svg.addEventListener('pointermove', event => {
-    const x = xAt(event), unit = spec.x_axis?.unit ? ` ${spec.x_axis.unit}` : '';
+    const box = svg.getBoundingClientRect(), x = xAt(event, box), unit = spec.x_axis?.unit ? ` ${spec.x_axis.unit}` : '';
     // A bar reports its own bin edges, so histograms need no edge list.
     const bar = !categories && barRects.find(item => x >= item.left && x < item.right);
     highlight(bar || null);
-    if (bar) { readout.textContent = `${fmt(bar.left)}–${fmt(bar.right)}${unit} · ${bar.line.label || 'Value'}: ${fmt(bar.line.y[bar.i])}`; }
-    else {
-      readout.textContent = `${categories ? categories[Math.max(0, Math.min(categories.length - 1, Math.round(x)))] : fmt(x)}${unit}`;
-      series.forEach(line => { let closest = -1, delta = Infinity; (line.x || []).forEach((value, i) => { if (Math.abs(value - x) < delta && Number.isFinite(line.y?.[i])) { closest = i; delta = Math.abs(value - x); } }); if (closest >= 0) readout.textContent += ` · ${line.hover?.[closest] || `${line.label || 'Value'}: ${fmt(line.y[closest])}`}`; });
+    const name = value => categories ? categories[Math.max(0, Math.min(categories.length - 1, Math.round(value)))] : fmt(value);
+    const text = (line, i) => line.hover?.[i] || `${line.label || 'Value'}: ${fmt(line.y[i])}`;
+    let full = `${name(x)}${unit}`;
+    if (bar) {
+      readout.textContent = full = `${fmt(bar.left)}–${fmt(bar.right)}${unit} · ${bar.line.label || 'Value'}: ${fmt(bar.line.y[bar.i])}`;
+      readout.style.color = bar.line.color || colors[series.indexOf(bar.line) % colors.length]; snap(null);
+    } else {
+      const hits = series.map((line, index) => ({ line, index, ...sampleAt(line, x) })).filter(hit => hit.i != null);
+      for (const hit of hits) full += ` · ${text(hit.line, hit.i)}`;
+      // The series whose curve passes closest to the pointer (SVG pixels).
+      const py = (event.clientY - box.top) / box.height * height;
+      const pick = Number.isFinite(py) ? hits.reduce((best, hit) => !best || Math.abs(sy(hit.height) - py) < Math.abs(sy(best.height) - py) ? hit : best, null) : hits[0];
+      if (pick) {
+        const color = pick.line.color || colors[pick.index % colors.length], sampleX = pick.line.x[pick.i];
+        readout.textContent = `${name(sampleX)}${unit} · ${text(pick.line, pick.i)}`; readout.style.color = color;
+        snap({ x: sampleX, y: pick.line.y[pick.i], color });
+      } else { readout.textContent = full; readout.style.color = ''; snap(null); }
     }
-    // The visible readout stays on one line. Retain every series value for
-    // inspection when a narrow card truncates it.
-    readout.setAttribute('title', readout.textContent);
-    root.setAttribute('title', readout.textContent);
+    // The readout names one series; the title keeps every series value.
+    readout.setAttribute('title', full);
+    root.setAttribute('title', full);
   });
-  svg.addEventListener('pointerleave', () => { highlight(null); readout.textContent = ''; readout.setAttribute('title', ''); root.setAttribute('title', ''); });
+  svg.addEventListener('pointerleave', () => { highlight(null); snap(null); readout.textContent = ''; readout.style.color = ''; readout.setAttribute('title', ''); root.setAttribute('title', ''); });
   if (!options.linked && options.onSeek) {
     svg.style.cursor = 'ew-resize';
     svg.addEventListener('pointerdown', event => {
@@ -262,7 +301,7 @@ export function renderPlot(container, spec, options = {}) {
     data.setAttribute('transform', scale === 1 && viewRange[0] === xRange[0] ? '' : `matrix(${scale} 0 0 1 ${cx(xRange[0]) - scale * margin.left} 0)`);
     rect.setAttribute('width', revealWidth(reveal, viewRange, innerWidth));
     if (xLabels.length === 2) { xLabels[0].textContent = fmt(viewRange[0]); xLabels[1].textContent = fmt(viewRange[1]); }
-    updateCursor(cursorValue);
+    updateCursor(cursorValue); placeDot();
   };
   const setFrame = ({ window: next, reveal: until } = {}) => {
     if (!categories && Array.isArray(next) && next.every(Number.isFinite)) viewRange = next[0] === next[1] ? [next[0], next[0] + .001] : [...next];
