@@ -63,7 +63,7 @@ def main():
         duration = args.steps * TIAGO.dt_s
         mpc = Mpc(TIAGO, binary)
         record = reach(SimPlant(substep=.001), mpc, out=output / "reference", duration=duration)
-        expected = record.trajectory
+        expected, expected_status = record.trajectory, record.summary["status"]
         del mpc, record
 
         from solver_adapter import SimulatorAdapter
@@ -89,16 +89,19 @@ def main():
         sent = np.isfinite(expected["command"]).all(axis=1)
         reference = dict(state=expected["state"], command=expected["command"][sent],
                          plan_states=expected["plan_states"], plan_torques=expected["plan_torques"])
+        # reach() stops once the task is done; compare the ticks it ran.
+        actual = {key: value[:len(reference[key])] for key, value in actual.items()}
         checks = {key: dict(shape_equal=reference[key].shape == actual[key].shape,
                             max_abs_difference=float(np.max(np.abs(reference[key] - actual[key])))
                             if reference[key].shape == actual[key].shape else None)
                   for key in reference}
         passed = all(c["shape_equal"] and c["max_abs_difference"] <= args.atol for c in checks.values())
-        result = dict(passed=passed, atol=args.atol, steps=args.steps, checks=checks, binary=str(binary),
+        result = dict(passed=passed, atol=args.atol, steps=args.steps, reference_status=expected_status,
+                      reference_ticks=len(ticks), checks=checks, binary=str(binary),
                       params=json.loads(json.dumps(config)),
                       note="Diagnostic conformance only; no timing or convergence claim")
         (output / "comparison.json").write_text(json.dumps(result, indent=2) + "\n")
-        print(json.dumps(result, indent=2))
+        print(json.dumps({key: value for key, value in result.items() if key != "params"}, indent=2))
         print(f"Raw outputs retained: {output}")
         return 0 if passed else 1
     finally:
