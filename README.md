@@ -131,7 +131,7 @@ as editing it; task pose also has a reset for position and rotation.
 
 Use the chevron at the right of the bottom bar to expand the timestamp ruler
 above the controls. Scroll to zoom around the pointer; Alt-drag or middle-drag
-to pan; click or drag to scrub. Arrow keys seek, Shift+arrows seek by 1 ms,
+to pan; click or drag to scrub; Shift-drag to select the aggregate window. Arrow keys seek, Shift+arrows seek by 1 ms,
 +/− zoom, and Fit (or 0) shows the full recording. Colored intervals retain the
 same MPC/simulation over-budget meanings as the compact timeline.
 
@@ -149,11 +149,14 @@ change how much height the timeline rows may take. ⚙ also sets each plot's
 y-axis bottom/top (a value or automatic) and can clip outliers from automatic
 sides. Hover a histogram bar for its bin edges.
 
-Episode analysis defaults to **Entire episode**; select **Through cursor** or
-**Visible window** to change the scope. Sidebar plots fit that selected range:
-Entire ignores timeline zoom, Through cursor ends at the cursor without its
-marker, and Visible follows zoom. Docked plots retain the timeline window and
-cursor. Drag in a plot to scrub; Y scales hold headroom and expand smoothly as
+Episode plots and aggregates use the **aggregate window**, chosen on the
+expanded timeline: Shift-drag selects one, and its bracket handles adjust either
+bound. Dragging a bound onto its data edge (or double-clicking it) leaves that
+side unbounded; an unbounded end keeps following new Live data. The reset arrow,
+Esc on the timeline, or × on the Episode header's window chip clears it to the
+entire episode. The window is independent of zoom and the playback cursor and
+resets with the recording or Live generation, like zoom. Sidebar episode-time
+plots fit the window; docked plots retain the timeline zoom window and cursor. Drag in a plot to scrub; Y scales hold headroom and expand smoothly as
 new values arrive. The Solve inspector follows the recorded
 plan association. **Pin solve** retains its identity and SQP selection with a
 muted red indicator. Its separate SQP strip selects recorded iterations without

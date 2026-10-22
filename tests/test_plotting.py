@@ -116,6 +116,14 @@ class StandardPlotNumericTests(unittest.TestCase):
         visible = EpisodeView(self.episode.raw, InspectionContext(analysis_range='visible', visible_window=(10.1, 10.2)))
         self.assertEqual(visible.time_s, (10.1, 10.2))
         self.assertEqual(value(self.plot('episode.summary', visible), 'Retained states'), 2)
+        # Aggregate windows: either bound may be open; an open end follows the history tip.
+        open_end = EpisodeView(self.episode.raw, InspectionContext(analysis_range='window', visible_window=(10.1, None)))
+        self.assertEqual(open_end.time_s, (10.1, 10.2, 10.3))
+        open_start = EpisodeView(self.episode.raw, InspectionContext(analysis_range='window', visible_window=(None, 10.15)))
+        self.assertEqual(open_start.time_s, (10., 10.1))
+        self.assertAlmostEqual(value(self.plot('episode.summary', open_start), 'Analysis duration'), .15)
+        unbounded = EpisodeView(self.episode.raw, InspectionContext(analysis_range='window', visible_window=(None, None)))
+        self.assertEqual(unbounded.time_s, self.episode.time_s)
         # Cached bounds are reused rather than scanning every state for every state.
         self.assertIs(data.bounds, data.bounds)
         self.assertEqual(example_episode().time_s, (10., 10.1, 10.2, 10.3))

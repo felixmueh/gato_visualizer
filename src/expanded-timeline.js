@@ -37,6 +37,30 @@ export function timelineTicks(window, width) {
   return ticks;
 }
 
+// Aggregate window: a bound of null is unbounded. An unbounded end follows
+// the history tip, so aggregates grow with Live data; an unbounded start
+// begins at the first retained sample. The playback cursor is independent.
+export const UNBOUNDED_AGGREGATE = Object.freeze({ start: null, end: null });
+export const aggregateBounded = aggregate => Number.isFinite(aggregate?.start) || Number.isFinite(aggregate?.end);
+export function aggregateSpan(aggregate, bounds) {
+  const [low, high] = timelineBounds(bounds);
+  const start = Number.isFinite(aggregate?.start) ? clamp(aggregate.start, low, high) : low;
+  return [start, Number.isFinite(aggregate?.end) ? clamp(aggregate.end, start, high) : high];
+}
+// Moving a bound onto (or past) its outer data edge, within snap seconds,
+// makes it unbounded. A bound never crosses the opposite one.
+export function moveAggregateBound(aggregate, side, time, bounds, snap = 0) {
+  const [low, high] = timelineBounds(bounds), next = { start: aggregate?.start ?? null, end: aggregate?.end ?? null };
+  if (side === 'start') next.start = time <= low + snap ? null : Math.min(time, Number.isFinite(next.end) ? next.end : high);
+  else next.end = time >= high - snap ? null : Math.max(time, Number.isFinite(next.start) ? next.start : low);
+  return next;
+}
+export function aggregateLabel(aggregate, digits = 3) {
+  if (!aggregateBounded(aggregate)) return 'Entire episode';
+  const time = value => `${value.toFixed(digits)} s`;
+  return `${Number.isFinite(aggregate.start) ? time(aggregate.start) : 'start'} → ${Number.isFinite(aggregate.end) ? time(aggregate.end) : 'latest'}`;
+}
+
 // Parse only on interval revision. Prefix maxima allow visible-range lookup
 // even when intervals overlap or arrive in a different order.
 export function indexTimelineIntervals(intervals = []) {
@@ -56,21 +80,24 @@ export function visibleTimelineIntervals(index, [start, end]) {
 
 export function expandedTimelineShell() {
   return `<section id="expanded-timeline" class="expanded-timeline" aria-label="Timeline inspection" hidden>
-    <div class="timeline-inspection-heading"><span id="timeline-clock-label">Recorded time</span><span id="timeline-timing-note">No timing data</span><div class="timeline-zoom-controls"><button id="timeline-zoom-out" aria-label="Zoom timeline out" title="Zoom out (−)">−</button><button id="timeline-zoom-in" aria-label="Zoom timeline in" title="Zoom in (+)">+</button><button id="timeline-fit" title="Fit entire recording (0)">Fit</button></div></div>
+    <div class="timeline-inspection-heading"><span id="timeline-clock-label">Recorded time</span><span id="timeline-timing-note">No timing data</span><div class="timeline-zoom-controls"><button id="timeline-window-clear" class="timeline-window-clear" aria-label="Clear aggregate window" title="Clear aggregate window (Esc)" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg></button><button id="timeline-zoom-out" aria-label="Zoom timeline out" title="Zoom out (−)">−</button><button id="timeline-zoom-in" aria-label="Zoom timeline in" title="Zoom in (+)">+</button><button id="timeline-fit" title="Fit entire recording (0)">Fit</button></div></div>
     <div id="timeline-linked-graphs"></div>
-    <div id="timeline-inspector" class="timeline-inspector" role="slider" tabindex="0" aria-label="Inspect simulation time" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-describedby="timeline-gesture-hint"><canvas id="timeline-bands" aria-hidden="true"></canvas><div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"><span></span></div></div>
-    <div class="timeline-inspection-footer"><span id="timeline-gesture-hint">Scroll to zoom · Alt-drag to pan · drag to scrub</span><span id="timeline-selection">0.000 s</span></div>
+    <div id="timeline-inspector" class="timeline-inspector" role="slider" tabindex="0" aria-label="Inspect simulation time" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-describedby="timeline-gesture-hint"><canvas id="timeline-bands" aria-hidden="true"></canvas><div id="timeline-window-shade-start" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-shade-end" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-start" class="timeline-window-handle" data-side="start" role="slider" tabindex="-1" aria-label="Aggregate window start"></div><div id="timeline-window-end" class="timeline-window-handle" data-side="end" role="slider" tabindex="-1" aria-label="Aggregate window end"></div><div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"><span></span></div></div>
+    <div class="timeline-inspection-footer"><span id="timeline-gesture-hint">Scroll to zoom · Alt-drag to pan · drag to scrub · Shift-drag or edge handles for aggregate window</span><span id="timeline-selection">0.000 s</span></div>
     <div id="timeline-inspection-tooltip" class="timeline-inspection-tooltip" role="tooltip" hidden></div>
   </section>`;
 }
 
-export function setupExpandedTimeline({ document: doc = document, onSeek, onLayout = () => {} }) {
+export function setupExpandedTimeline({ document: doc = document, onSeek, onLayout = () => {}, onAggregate = () => {} }) {
   const $ = id => doc.getElementById(id), panel = $('expanded-timeline'), surface = $('timeline-inspector');
   const canvas = $('timeline-bands'), playhead = $('timeline-playhead'), tooltip = $('timeline-inspection-tooltip');
   const toggles = ['live-timeline-expand', 'replay-timeline-expand'].map($);
   let expanded = false, identity, bounds = [0, 0], window = [0, 0], selected = 0, fitted = true;
   let source, sourceCount = -1, revision, index = [], paintKey = '', width = 0, paints = 0, drag = null, mode = 'replay';
-  const gestureHint = 'Scroll to zoom; Alt-drag, middle-drag or horizontal scroll to pan; drag to scrub. Arrow keys seek, Shift+arrows seek 1 ms, +/− zoom, 0 fits.';
+  let aggregate = { ...UNBOUNDED_AGGREGATE };
+  const handles = { start: $('timeline-window-start'), end: $('timeline-window-end') };
+  const shades = { start: $('timeline-window-shade-start'), end: $('timeline-window-shade-end') }, clearWindow = $('timeline-window-clear');
+  const gestureHint = 'Scroll to zoom; Alt-drag, middle-drag or horizontal scroll to pan; drag to scrub. Shift-drag selects an aggregate window; drag its edge handles to adjust, onto the data end for unbounded; Esc clears it. Arrow keys seek, Shift+arrows seek 1 ms, +/− zoom, 0 fits.';
   surface.title = gestureHint;
   function paint() {
     if (!expanded) return;
@@ -112,7 +139,35 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     surface.setAttribute('aria-valuemin', String(bounds[0])); surface.setAttribute('aria-valuemax', String(bounds[1]));
     surface.setAttribute('aria-valuenow', String(selected)); surface.setAttribute('aria-valuetext', `${selected.toFixed(6)} seconds`);
     $('timeline-selection').textContent = `${selected.toFixed(6)} s`;
+    positionAggregate();
   }
+  // Handles sit at the data edges while unbounded; the open style shows that
+  // the aggregate extends there (and, at the Live tip, keeps growing).
+  function positionAggregate() {
+    const span = window[1] - window[0], [low, high] = aggregateSpan(aggregate, bounds);
+    const at = time => span ? (time - window[0]) / span * 100 : 0;
+    const left = clamp(at(low), 0, 100), right = clamp(at(high), 0, 100);
+    shades.start.style.left = '0%'; shades.start.style.width = `${aggregateBounded(aggregate) ? left : 0}%`;
+    shades.end.style.left = `${right}%`; shades.end.style.width = `${aggregateBounded(aggregate) ? 100 - right : 0}%`;
+    for (const [side, time] of [['start', low], ['end', high]]) {
+      const handle = handles[side], open = !Number.isFinite(aggregate[side]), position = at(time);
+      handle.hidden = position < -1e-9 || position > 100 + 1e-9;
+      handle.style.left = `${clamp(position, 0, 100)}%`;
+      handle.classList.toggle('open', open);
+      handle.classList.toggle('dragging', drag?.aggregate === side);
+      handle.setAttribute('aria-valuenow', String(time)); handle.setAttribute('aria-valuetext', open ? 'Unbounded' : `${time.toFixed(6)} seconds`);
+      handle.title = `Aggregate ${side}: ${open ? side === 'end' ? 'unbounded, follows new data' : 'unbounded, from the first sample' : `${time.toFixed(3)} s`}. Drag to move; drag onto the data ${side === 'end' ? 'end' : 'start'} or double-click for unbounded.`;
+    }
+    clearWindow.hidden = !aggregateBounded(aggregate);
+    clearWindow.title = `Clear aggregate window ${aggregateLabel(aggregate)} (Esc)`;
+  }
+  function setAggregate(next) {
+    next = { start: Number.isFinite(next?.start) ? next.start : null, end: Number.isFinite(next?.end) ? next.end : null };
+    if (next.start === aggregate.start && next.end === aggregate.end) return;
+    aggregate = next; positionAggregate(); onAggregate({ ...aggregate });
+  }
+  const snapSeconds = () => 6 / Math.max(1, width) * (window[1] - window[0]);
+  const rawTimeAt = event => window[0] + (event.clientX - surface.getBoundingClientRect().left) / Math.max(1, surface.clientWidth) * (window[1] - window[0]);
   function redraw() { paint(); position(); }
   function setExpanded(value) {
     expanded = value; panel.hidden = !value;
@@ -131,6 +186,10 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   function hideTooltip() { tooltip.hidden = true; }
   for (const button of toggles) button.addEventListener('click', () => setExpanded(!expanded));
   $('timeline-fit').addEventListener('click', fit);
+  clearWindow.addEventListener('click', () => setAggregate(UNBOUNDED_AGGREGATE));
+  for (const [side, handle] of Object.entries(handles)) {
+    handle.addEventListener('dblclick', event => { event.preventDefault(); event.stopPropagation(); setAggregate({ ...aggregate, [side]: null }); });
+  }
   $('timeline-zoom-in').addEventListener('click', () => zoom(.5));
   $('timeline-zoom-out').addEventListener('click', () => zoom(2));
   function bindSurface(element) {
@@ -144,14 +203,22 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     if (event.target.closest?.('button, input, select, label, [draggable="true"]')) return;
     if (event.button !== 0 && event.button !== 1) return;
     event.preventDefault(); hideTooltip(); surface.focus();
-    drag = { pointer: event.pointerId, pan: event.button === 1 || event.altKey, x: event.clientX, window: [...window], element };
+    const side = event.button === 0 && event.target.closest?.('.timeline-window-handle')?.dataset.side;
+    const select = event.button === 0 && !side && event.shiftKey;
+    drag = { pointer: event.pointerId, pan: !side && !select && (event.button === 1 || event.altKey), x: event.clientX, window: [...window], element, aggregate: side || null, anchor: select ? clamp(timeAt(event), ...bounds) : null };
     element.setPointerCapture(event.pointerId); element.classList.toggle('panning', drag.pan);
-    if (!drag.pan) seek(timeAt(event));
+    if (drag.aggregate) positionAggregate();
+    else if (!drag.pan && drag.anchor == null) seek(timeAt(event));
   });
   element.addEventListener('pointermove', event => {
     if (drag) {
       if (event.pointerId !== drag.pointer) return;
-      if (drag.pan) {
+      if (drag.aggregate) setAggregate(moveAggregateBound(aggregate, drag.aggregate, rawTimeAt(event), bounds, snapSeconds()));
+      else if (drag.anchor != null) {
+        // Shift-drag selects [press, pointer]; reaching an outer data edge leaves that side open.
+        const time = rawTimeAt(event), low = Math.min(drag.anchor, time), high = Math.max(drag.anchor, time);
+        if (high - low > snapSeconds()) setAggregate(moveAggregateBound(moveAggregateBound(UNBOUNDED_AGGREGATE, 'end', high, bounds, snapSeconds()), 'start', low, bounds, snapSeconds()));
+      } else if (drag.pan) {
         const delta = (event.clientX - drag.x) / Math.max(1, surface.clientWidth) * (drag.window[1] - drag.window[0]);
         window = clampTimelineWindow(drag.window.map(time => time - delta), bounds); fitted = false; redraw();
       } else seek(timeAt(event));
@@ -165,7 +232,8 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   });
   function endDrag(event) {
     if (!drag || event.pointerId !== drag.pointer) return;
-    const target = drag.element; drag = null; target.classList.remove('panning');
+    const target = drag.element, wasAggregate = drag.aggregate; drag = null; target.classList.remove('panning');
+    if (wasAggregate) positionAggregate();
     if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
   }
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) element.addEventListener(type, endDrag);
@@ -173,6 +241,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   element.addEventListener('keydown', event => {
     if (timelineTypingTarget(event.target)) return;
     const span = window[1] - window[0], step = event.shiftKey ? .001 : span / 100;
+    if (event.key === 'Escape' && aggregateBounded(aggregate)) { event.preventDefault(); event.stopPropagation(); setAggregate(UNBOUNDED_AGGREGATE); return; }
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End', '+', '=', '-', '_', '0'].includes(event.key)) {
       event.preventDefault(); event.stopPropagation(); hideTooltip();
       if (event.key === 'Home') seek(bounds[0]);
@@ -188,14 +257,15 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   bindSurface(surface);
   const observer = new ResizeObserver(() => redraw()); observer.observe(surface);
   return {
-    seek, zoom, pan, bindSurface,
+    seek, zoom, pan, bindSurface, setAggregate, clearAggregate: () => setAggregate(UNBOUNDED_AGGREGATE),
     refreshLayout: redraw,
     update(next) {
       const reset = identity !== next.identity || mode !== next.mode;
       identity = next.identity; mode = next.mode; bounds = timelineBounds(next.bounds);
       selected = clamp(Number.isFinite(next.time) ? next.time : bounds[0], ...bounds);
       if (reset) {
-        fitted = true; paintKey = ''; hideTooltip();
+        // Window times belong to one recording/generation, like the zoom.
+        fitted = true; paintKey = ''; hideTooltip(); setAggregate(UNBOUNDED_AGGREGATE);
         if (drag) {
           const previous = drag; drag = null; previous.element.classList.remove('panning');
           if (previous.element.hasPointerCapture(previous.pointer)) previous.element.releasePointerCapture(previous.pointer);
@@ -210,6 +280,6 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       }
       redraw();
     },
-    get snapshot() { return { expanded, mode, bounds: [...bounds], visible: [...window], selectedTime: selected, intervalCount: index.length, paints }; },
+    get snapshot() { return { expanded, mode, bounds: [...bounds], visible: [...window], selectedTime: selected, intervalCount: index.length, paints, aggregate: { ...aggregate } }; },
   };
 }

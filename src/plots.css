@@ -72,3 +72,7 @@
 .timeline-plot-hint button { float: right; margin-left: 5px; padding: 0 9px; font-size: 11px; }
 .timeline-plot-rows { scrollbar-width: none; }
 .timeline-plot-rows::-webkit-scrollbar { width: 0; }
+.aggregate-window { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 8px; border: 1px solid #3a4d61; border-radius: 12px; color: #8ea3b6; font: 11px 'IBM Plex Mono', monospace; white-space: nowrap; cursor: help; }
+.aggregate-window.bounded { color: #c9f6ff; border-color: #3d6a72; background: #1d3640; }
+.plot-inspector-heading .aggregate-window button { padding: 0 4px; border: 0; background: none; color: inherit; font-size: 13px; line-height: 1; cursor: pointer; }
+.plot-inspector-heading .aggregate-window button[hidden] { display: none; }

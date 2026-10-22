@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPlotState, timelineEligible, awaitPlotJob, displayLimits } from './plot-state.js';
+import { createPlotState, timelineEligible, awaitPlotJob, displayLimits, aggregateAxis } from './plot-state.js';
 
 test('independent duplicate configs, reorder, shared placements and persistence', () => {
   let stored; const state = createPlotState({}, value => { stored = structuredClone(value); });
@@ -24,8 +24,11 @@ test('episode range changes only with selected scope; pin fixes solve and actual
   state.selectIteration(3); state.pin(); state.follow(b); assert.equal(state.selected.id, 'a'); assert.equal(state.iteration, 3);
   let view = { cursor: 5, window: [2, 8] };
   assert.deepEqual(state.range(view), { mode: 'entire', cursor_s: 5 });
-  view.window = [4, 6]; assert.deepEqual(state.range(view), { mode: 'entire', cursor_s: 5 });
-  state.rangeMode = 'visible'; assert.deepEqual(state.range(view), { mode: 'visible', cursor_s: 5, start_s: 4, end_s: 6 });
+  // Zoom never changes the aggregate scope; only the aggregate window does.
+  view.window = [4, 6]; view.aggregate = { start: null, end: null }; assert.deepEqual(state.range(view), { mode: 'entire', cursor_s: 5 });
+  view.aggregate = { start: 4, end: null }; assert.deepEqual(state.range(view), { mode: 'window', cursor_s: 5, start_s: 4 });
+  view.aggregate = { start: null, end: 6 }; assert.deepEqual(state.range(view), { mode: 'window', cursor_s: 5, end_s: 6 });
+  view.aggregate = { start: 4, end: 6 }; assert.deepEqual(state.range(view), { mode: 'window', cursor_s: 5, start_s: 4, end_s: 6 });
   state.pin(false); state.follow(b); assert.equal(state.selected.id, 'b'); assert.equal(state.iteration, null);
   state.setSource('replay:recording'); assert.equal(state.selected, null);
 });
@@ -66,4 +69,12 @@ test('display limits and placement heights persist per instance and survive dupl
   const restored = createPlotState(stored); assert.equal(restored.timelineHeight, 400); assert.equal(restored.height(item.id, 'timeline'), 140);
   // An inverted pair keeps the bottom and returns the top to automatic.
   assert.deepEqual(displayLimits({ min: 3, max: 1 }), { min: 3, max: null, clipOutliers: false });
+});
+
+test('sidebar aggregate axes clip the window to the retained data bounds', () => {
+  assert.deepEqual(aggregateAxis(undefined, [1, 9]), [1, 9]);
+  assert.deepEqual(aggregateAxis({ start: 3, end: null }, [1, 9]), [3, 9]);
+  assert.deepEqual(aggregateAxis({ start: null, end: 12 }, [1, 9]), [1, 9]);
+  assert.deepEqual(aggregateAxis({ start: 10, end: null }, [1, 9]), [10, 10]);
+  assert.equal(aggregateAxis({ start: 3, end: 4 }, null), undefined);
 });

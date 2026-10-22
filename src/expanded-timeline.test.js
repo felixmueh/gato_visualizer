@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { timelineTypingTarget, timelineBounds, clampTimelineWindow, zoomTimeline, timelineTicks, indexTimelineIntervals, visibleTimelineIntervals } from './expanded-timeline.js';
+import { aggregateSpan, moveAggregateBound, aggregateLabel, aggregateBounded, timelineTypingTarget, timelineBounds, clampTimelineWindow, zoomTimeline, timelineTicks, indexTimelineIntervals, visibleTimelineIntervals } from './expanded-timeline.js';
 
 test('timeline windows clamp pan, empty recordings and fine zoom to retained time', () => {
   assert.deepEqual(timelineBounds([NaN, Infinity]), [0, 0]);
@@ -50,4 +50,26 @@ test('metric form controls and inherited editable descendants keep their keyboar
   assert.equal(timelineTypingTarget({ tagName: 'SPAN', isContentEditable: true }), true);
   assert.equal(timelineTypingTarget({ tagName: 'DIV', isContentEditable: false }), false);
   assert.equal(timelineTypingTarget({ tagName: 'CANVAS' }), false);
+});
+
+test('aggregate window bounds snap open at the data edges and never cross', () => {
+  const bounds = [2, 12], open = { start: null, end: null };
+  assert.deepEqual(aggregateSpan(open, bounds), [2, 12]);
+  assert.equal(aggregateBounded(open), false);
+  let window = moveAggregateBound(open, 'start', 4, bounds, .1);
+  assert.deepEqual(window, { start: 4, end: null });
+  window = moveAggregateBound(window, 'end', 8, bounds, .1);
+  assert.deepEqual(window, { start: 4, end: 8 }); assert.equal(aggregateLabel(window), '4.000 s → 8.000 s');
+  // Dragging an end onto (or past) the data edge leaves it unbounded.
+  assert.deepEqual(moveAggregateBound(window, 'end', 11.95, bounds, .1), { start: 4, end: null });
+  assert.deepEqual(moveAggregateBound(window, 'end', 30, bounds, .1), { start: 4, end: null });
+  assert.deepEqual(moveAggregateBound(window, 'start', -5, bounds, .1), { start: null, end: 8 });
+  // A bound is stopped by the opposite bound rather than swapping sides.
+  assert.deepEqual(moveAggregateBound(window, 'start', 10, bounds, .1), { start: 8, end: 8 });
+  assert.deepEqual(moveAggregateBound(window, 'end', 3, bounds, .1), { start: 4, end: 4 });
+  // An open end follows growing data; fixed bounds clamp to retained history.
+  assert.deepEqual(aggregateSpan({ start: 4, end: null }, [2, 20]), [4, 20]);
+  assert.deepEqual(aggregateSpan({ start: 0, end: 30 }, bounds), [2, 12]);
+  assert.equal(aggregateLabel({ start: null, end: 8 }), 'start → 8.000 s');
+  assert.equal(aggregateLabel({ start: 4, end: null }), '4.000 s → latest');
 });

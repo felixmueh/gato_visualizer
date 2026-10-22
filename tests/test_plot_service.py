@@ -134,6 +134,12 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result["context"]["time_origin_s"], 20)
         self.assertEqual(result["context"]["joint_names"], fixture_scene()["joint_names"])
         self.assertEqual(result["results"][1]["spec"]["kind"], "unavailable")
+        window = self.wait_job(self.service.submit(self.request(range=dict(mode="window", start_s=1),
+            plots=[dict(instance_id="one", plot_id="episode.summary", inputs={})]))["job_id"])
+        rows = {r["label"]: r["value"] for r in window["results"][0]["spec"]["rows"]}
+        self.assertEqual(rows["Retained states"], 2)
+        with self.assertRaisesRegex(ValueError, "start_s <= end_s"):
+            self.service.submit(self.request(range=dict(mode="window", start_s=2, end_s=1)))
         solve = dict(source=dict(kind="replay", id="default", trajectory_index=1), context="solve",
             selection=dict(iteration=1), plots=[dict(instance_id="p", plot_id="solve.prediction_joint", inputs={})])
         result = self.wait_job(self.service.submit(solve)["job_id"])

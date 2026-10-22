@@ -31,6 +31,7 @@
 | **TO frequency** | The trajectory-optimization/replanning rate requesting new solves. | Control frequency, reporting frequency |
 | **Knot interval** | The time spacing of states in a prediction horizon. | Control period |
 | **Report frequency** | The wall-clock cadence for publishing batches of completed numerical records. | Simulation frequency, sample reduction |
+| **Aggregate window** | The episode time range, selected on the timeline with independently unbounded left/right bounds, over which episode plots and aggregates are computed; an unbounded end follows new history. | Visible window, zoom, analysis range selector |
 | **Playback buffer** | The desired amount of received simulation-time history ahead of the Live cursor. | Integration delay, reporting interval |
 
 ## Simulator and predictor
@@ -76,7 +77,7 @@ For the current version, the continuation replaces the active episode history in
 - A **Solve** is not one SQP, PCG or ADMM iteration: those iterations belong inside a solve and require their own labels.
 - “Trajectory” can mean a task reference, a solve prediction, or recorded executed motion; qualify it whenever the distinction matters.
 - “Continue” must distinguish extending an unchanged episode at its history tip from starting a **Continuation** after editing settings at the episode cursor.
-- Episode/Solve inspection, pinning, SQP iteration selection, analysis ranges and cold **Run again** are implemented; see [the inspection contract](docs/inspection.md). Ordinary solves may lack intermediate snapshots.
+- Episode/Solve inspection, pinning, SQP iteration selection, the aggregate window and cold **Run again** are implemented; see [the inspection contract](docs/inspection.md). Ordinary solves may lack intermediate snapshots.
 - Prediction-horizon time, episode time, SQP iteration index and measured wall time are distinct axes; horizon scrubbing is deferred and the plotting contract must preserve their identities.
 - Exact **Solve continuation** requires a retained optimizer checkpoint; supplying a previous trajectory as a new solve's initial guess is a **new warm-seeded solve**, not an exact resume.
 - “MPC frequency” is ambiguous: specify **TO frequency** for replanning or **Control frequency** for actuator updates.

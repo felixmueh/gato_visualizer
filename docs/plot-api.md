@@ -89,8 +89,11 @@ The SDK exports `Joint`, `Boolean`, `Number`, `Choice`, `EpisodeView`,
   to distinguish them from controller solves. Keep identities opaque in the UI.
 - Null/omitted `iteration` selects the final result; integer indices select
   only actual recorded SQP data. Seed index 0 requires a recorded seed.
-- Episode range modes: `entire`, `through_cursor`, `visible` with cursor/window
-  coordinates in the active episode's existing UI clock.
+- Episode range modes: `entire`, `window` (optional `start_s`/`end_s`; an
+  omitted bound is unbounded, so an open end follows growing history),
+  `through_cursor`, and `visible` (both bounds required), with cursor/window
+  coordinates in the active episode's existing UI clock. The browser sends
+  `entire` or `window` from the timeline's aggregate window.
 - Live clock values remain task/simulation times, including nonzero segment
   starts. Replay values use elapsed times matching its existing playback clock;
   retain original time origin/basis in context metadata and raw records.

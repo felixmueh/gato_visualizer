@@ -2,10 +2,9 @@
 export function createPlotState(saved = {}, persist = () => {}) {
   let sequence = 0;
   const instances = (saved.instances || []).filter(item => item.id && item.plot_id && ['episode', 'solve'].includes(item.context)).map(item => ({ ...item, parameters: { ...item.parameters } }));
-  let rangeMode = ['entire', 'through_cursor', 'visible'].includes(saved.rangeMode) ? saved.rangeMode : 'entire';
   let timelineHeight = plotHeight(saved.timelineHeight, 60, 900);
   let sourceKey, pinned = null, selected = null, iteration = null;
-  const save = () => persist({ instances, rangeMode, ...(timelineHeight ? { timelineHeight } : {}) });
+  const save = () => persist({ instances, ...(timelineHeight ? { timelineHeight } : {}) });
   const find = id => instances.find(item => item.id === id);
   return {
     instances,
@@ -33,9 +32,8 @@ export function createPlotState(saved = {}, persist = () => {}) {
     },
     pin(value = true) { pinned = value && selected ? { ...selected } : null; },
     selectIteration(index) { if (index == null || selected?.iterations?.some(item => item.index === index)) iteration = index; },
-    set rangeMode(value) { if (['entire', 'through_cursor', 'visible'].includes(value)) { rangeMode = value; save(); } },
-    get rangeMode() { return rangeMode; }, get selected() { return pinned || selected; }, get pinned() { return Boolean(pinned); }, get iteration() { return iteration; },
-    range(view) { return { mode: rangeMode, cursor_s: view.cursor, ...(rangeMode === 'visible' ? { start_s: view.window[0], end_s: view.window[1] } : {}) }; },
+    get selected() { return pinned || selected; }, get pinned() { return Boolean(pinned); }, get iteration() { return iteration; },
+    range(view) { return aggregateRange(view.aggregate, view.cursor); },
   };
 }
 
@@ -47,6 +45,21 @@ export function displayLimits(value = {}) {
 }
 
 function plotHeight(value, low = 40, high = 900) { return Number.isFinite(value) && value > 0 ? Math.round(Math.max(low, Math.min(high, value))) : undefined; }
+
+
+/** The timeline's aggregate window as an episode analysis range. Omitted
+ * bounds are unbounded; an open end follows newly retained history. */
+export function aggregateRange(aggregate, cursor) {
+  const start = Number.isFinite(aggregate?.start) ? aggregate.start : null, end = Number.isFinite(aggregate?.end) ? aggregate.end : null;
+  if (start == null && end == null) return { mode: 'entire', cursor_s: cursor };
+  return { mode: 'window', cursor_s: cursor, ...(start != null ? { start_s: start } : {}), ...(end != null ? { end_s: end } : {}) };
+}
+/** Sidebar episode-time axes show the aggregate window within the data bounds. */
+export function aggregateAxis(aggregate, bounds) {
+  if (!bounds) return undefined;
+  const start = Number.isFinite(aggregate?.start) ? Math.max(bounds[0], aggregate.start) : bounds[0];
+  return [start, Math.max(start, Number.isFinite(aggregate?.end) ? Math.min(bounds[1], aggregate.end) : bounds[1])];
+}
 
 export function timelineEligible(definition, spec) {
   return (definition?.scope || definition?.context) === 'episode' && (spec ? ['lines', 'bars', 'spans'].includes(spec.kind) && spec.x?.identity === 'episode_time' : definition.timeline_eligible === true);

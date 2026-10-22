@@ -49,7 +49,8 @@ SQP iterations use their recorded indices. If the selected iteration has no
 snapshot, `.prediction` is `None`: final data is never substituted.
 
 `InspectionContext` carries `episode_cursor_s`, `analysis_range` (`entire`,
-`through_cursor`, `visible`), `visible_window`, `selected_solve_id`,
+`window`, `through_cursor`, `visible`), `visible_window` (for `window`, either
+bound may be `None` = unbounded), `selected_solve_id`,
 `sqp_iteration`, and `clock`. These are host selection, separate from plot user
 inputs. Registry evaluation attaches the host clock to episode-time axes so the
 UI can check timeline compatibility. Prediction horizon offsets and SQP indices

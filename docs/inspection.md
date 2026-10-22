@@ -20,13 +20,28 @@ tabs does not itself start computation, pause execution, or change the main
 timeline's clock. Selecting a solve changes the inspected prediction without
 rewriting recorded episode motion.
 
-## Episode analysis range
+## Episode analysis range: the aggregate window
 
-The Episode header selects Entire episode (default), Through cursor, or Visible
-window. Entire episode means all currently available active history, including
-precalculated samples beyond the playback cursor. Through cursor begins at the
-active segment's first sample. Visible window follows the explicitly selected
-timeline window. Zoom otherwise changes presentation, not aggregate scope.
+Felix, 2026-10-22: select the aggregate window as left and right bounds on the
+timeline, either of which may be unbounded. Every episode plot and aggregate
+uses it (`EpisodeView.states/plans/intervals/bounds`); there is no separate
+range selector.
+
+The expanded timeline owns the window. Shift-drag selects it; bracket handles
+move each bound; dragging a bound onto its outer data edge, or double-clicking
+it, makes that side unbounded, shown by a muted open bracket at the edge. An
+unbounded end follows newly retained Live history, so aggregates keep growing;
+an unbounded start begins at the first retained sample. Both unbounded (the
+default) is the entire episode: all currently available active history,
+including precalculated samples beyond the playback cursor. Excluded time is
+dimmed on the timeline; the Episode header mirrors the window in a chip with a
+clear button. The reset arrow or Esc on the timeline also clears it.
+
+The playback cursor and zoom are independent of the window: moving either never
+re-evaluates aggregates. Like zoom, the window is per-source presentation state
+and resets when the recording or Live generation changes; it is not saved. The
+earlier Through cursor mode was removed with the selector; the backend still
+accepts `through_cursor` for API clients.
 
 ## Solve selection and pinned state
 

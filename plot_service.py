@@ -102,7 +102,7 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                     context = InspectionContext(episode_cursor_s=analysis.get("cursor_s"),
                         analysis_range=analysis.get("mode", "entire"),
                         visible_window=((analysis.get("start_s"), analysis.get("end_s"))
-                                        if analysis.get("mode") == "visible" else None),
+                                        if analysis.get("mode") in ("visible", "window") else None),
                         selected_solve_id=None if selected is None else selected.get("seq", selected["id"]), sqp_iteration=iteration,
                         clock=clock)
                     scope = request["context"]
@@ -312,7 +312,7 @@ class PlotService:
         if paths is not None and (type(paths) is not int or paths < 0):
             raise ValueError("iteration_paths must be null or a nonnegative SQP iteration index")
         analysis = request.get("range", {})
-        if analysis.get("mode", "entire") not in ("entire", "through_cursor", "visible"):
+        if analysis.get("mode", "entire") not in ("entire", "through_cursor", "visible", "window"):
             raise ValueError("Unknown episode analysis range")
         import math
         for key in ("cursor_s", "start_s", "end_s"):
@@ -320,6 +320,9 @@ class PlotService:
                 raise ValueError(f"range.{key} must be a finite time")
         if analysis.get("mode") == "visible" and (analysis.get("start_s") is None or analysis.get("end_s") is None or analysis["start_s"] > analysis["end_s"]):
             raise ValueError("Visible range requires start_s <= end_s")
+        # An aggregate window may omit either bound; omitted means unbounded.
+        if analysis.get("mode") == "window" and analysis.get("start_s") is not None and analysis.get("end_s") is not None and analysis["start_s"] > analysis["end_s"]:
+            raise ValueError("Aggregate window requires start_s <= end_s")
         if type(request.get("pixels", 1200)) is not int or not 16 <= request.get("pixels", 1200) <= 2000:
             raise ValueError("pixels must be an integer within [16,2000]")
         if "plot_id" in request:

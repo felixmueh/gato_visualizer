@@ -1,12 +1,13 @@
 import { createFloatingDialog } from './floating-dialog.js';
-import { createPlotState, timelineEligible, awaitPlotJob, displayLimits } from './plot-state.js';
+import { createPlotState, timelineEligible, awaitPlotJob, displayLimits, aggregateAxis } from './plot-state.js';
+import { aggregateBounded, aggregateLabel } from './expanded-timeline.js';
 import { renderPlot } from './plot-renderer.js';
 import { sourceRequest } from './source-settings.js';
 import { setupSolveRun } from './solve-run.js';
 import { createIterationPathCache, iterationPredictionForView } from './prediction-selection.js';
 
 /** One host for both inspectors. Only the episode timeline owns a playback clock. */
-export function setupPlotInspection({ episodeContainer, solveContainer, bottomContainer, getSource, getView, getSolverProfile = () => null, onSeek, onPrediction = () => {}, onInspectionStart = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
+export function setupPlotInspection({ episodeContainer, solveContainer, bottomContainer, getSource, getView, getSolverProfile = () => null, onSeek, onPrediction = () => {}, onInspectionStart = () => {}, onClearAggregate = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
   const doc = episodeContainer.ownerDocument;
   const el = (tag, text, cls) => { const item = doc.createElement(tag); if (text != null) item.textContent = text; if (cls) item.className = cls; return item; };
   const button = (text, action, title = text) => { const item = el('button', text); item.type = 'button'; item.title = title; item.setAttribute('aria-label', title); item.addEventListener('click', action); return item; };
@@ -35,9 +36,19 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   for (const event of viewGestureEvents) doc.addEventListener(event, finishViewGesture);
   const sourceKey = source => source ? JSON.stringify([source.kind, source.generation, source.id, source.trajectory_index, source.revision]) : '';
   const solveSource = () => solveOverride || (state.pinned && pinnedSource ? { source: pinnedSource, solveSeq: state.selected?.seq ?? state.selected?.id } : getSource());
-  const heading = el('div', null, 'plot-inspector-heading'), rangeLabel = el('label', 'Analyze '), range = el('select');
-  for (const [value, text] of [['entire', 'Entire episode'], ['through_cursor', 'Through cursor'], ['visible', 'Visible window']]) { const option = el('option', text); option.value = value; range.append(option); }
-  range.value = state.rangeMode; range.setAttribute('aria-label', 'Episode analysis range'); range.addEventListener('change', () => { state.rangeMode = range.value; invalidate(); }); rangeLabel.append(range); heading.append(rangeLabel, button('+', () => openCatalog('episode'), 'Add episode plot'));
+  // The aggregate window is chosen on the expanded timeline; this chip only mirrors it.
+  const heading = el('div', null, 'plot-inspector-heading'), windowChip = el('span', null, 'aggregate-window'), windowText = el('span');
+  const windowClear = button('×', () => onClearAggregate(), 'Clear aggregate window'); windowChip.append(windowText, windowClear);
+  heading.append(windowChip, button('+', () => openCatalog('episode'), 'Add episode plot'));
+  let windowKey;
+  function renderWindowChip() {
+    const view = getView(), aggregate = view.aggregate, episode = view.episodeClock !== false && metadata.episode?.context?.episode_available !== false;
+    const key = JSON.stringify([aggregate, episode]); if (key === windowKey) return; windowKey = key;
+    const bounded = episode && aggregateBounded(aggregate);
+    windowText.textContent = episode ? aggregateLabel(aggregate) : 'All available history';
+    windowChip.classList.toggle('bounded', bounded); windowClear.hidden = !bounded;
+    windowChip.title = episode ? `Episode aggregates and plots use ${bounded ? 'this' : 'the entire'} window. Set it on the expanded timeline: Shift-drag, or drag its edge handles; an end at the data edge is unbounded and follows new data.` : 'The active timeline is a prediction horizon; episode plots use all available history.';
+  }
   const episodeNote = el('p', '', 'plot-message'), episodeCards = el('div', null, 'plot-cards'); episodeContainer.replaceChildren(heading, episodeNote, episodeCards);
   const solveHeading = el('div', null, 'plot-inspector-heading'), pin = button('Pin solve', () => { if (solveOverride) clearInspection(); else { if (state.pinned) runAgain.invalidateAdoption(); state.pin(!state.pinned); pinnedSource = state.pinned ? structuredClone(getSource()?.source) : null; invalidate(); } });
   pin.setAttribute('aria-pressed', 'false'); solveHeading.append(pin, button('+', () => openCatalog('solve'), 'Add solve plot'));
@@ -107,7 +118,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   async function loadPreviews() {
     const scope = catalogScope, definitions = catalogs[scope].filter(definition => definition.available !== false), body = payload(scope);
     if (!catalogDialog.isOpen || !definitions.length || !body.source) return;
-    const key = JSON.stringify([scope, sourceKey(body.source), definitions.map(definition => definition.id)]);
+    // Previews use the aggregate window, so they show what an added plot will show.
+    const key = JSON.stringify([scope, sourceKey(body.source), scope === 'episode' ? [body.range?.start_s, body.range?.end_s] : null, definitions.map(definition => definition.id)]);
     if (key === previewKey) return;
     previewKey = key; const token = ++previewToken;
     const alive = () => !destroyed && token === previewToken && catalogDialog.isOpen && catalogScope === scope;
@@ -185,16 +197,16 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
           const bounds = metadata.episode?.context?.bounds;
           let window;
           if (episodeTime) {
-            if (linked || view.episodeClock !== false && state.rangeMode === 'visible') window = view.window;
-            else if (view.episodeClock === false || state.rangeMode === 'entire') window = bounds;
-            else if (bounds) window = [bounds[0], Math.max(bounds[0], Math.min(bounds[1], view.cursor))];
+            if (linked) window = view.window;
+            else if (view.episodeClock === false) window = bounds;
+            else window = aggregateAxis(view.aggregate, bounds);
           }
-          const cursor = spec.x?.identity === 'sqp_iteration' ? state.iteration : episodeTime && view.episodeClock !== false && (linked || state.rangeMode !== 'through_cursor') ? view.cursor : undefined;
+          const cursor = spec.x?.identity === 'sqp_iteration' ? state.iteration : episodeTime && view.episodeClock !== false ? view.cursor : undefined;
           const key = `${item.id}:${placement}`; usedPresentations.add(key);
           if (!presentations.has(key)) presentations.set(key, {});
           // A following window can move while Live grows. Only a duration
           // change (zoom), source, scope or plot configuration resets the fit.
-          const fitKey = [item.context === 'solve' ? lastSolveSourceKey : lastSourceKey, item.parameters, episodeTime ? [linked ? 'timeline' : state.rangeMode, linked || state.rangeMode === 'visible' ? view.window?.[1] - view.window?.[0] : null] : state.selected?.id];
+          const fitKey = [item.context === 'solve' ? lastSolveSourceKey : lastSourceKey, item.parameters, episodeTime ? [linked ? 'timeline' : view.aggregate ?? null, linked ? view.window?.[1] - view.window?.[0] : null] : state.selected?.id];
           const handle = renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, notes: false, legendTarget, height: state.height(item.id, placement), yLimits: item.display ? displayLimits(item.display) : undefined, presentation: presentations.get(key), fitKey, window, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined });
           handles.push(handle); cardHandles.set(key, handle);
           if (['lines', 'bars', 'spans'].includes(spec.kind)) card.append(resizeHandle(item, placement, key, linked ? 85 : 170));
@@ -208,7 +220,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     bottomTitle.title = bottomCards.children.length ? 'Drag to resize the timeline plots · drop an episode-time plot to add it' : '';
     if (!state.instances.some(item => item.context === 'episode')) episodeCards.append(el('p', 'Add episode plots and aggregates with +.', 'plot-message'));
     if (!state.instances.some(item => item.context === 'solve')) solveCards.append(el('p', 'Add solve plots with +.', 'plot-message'));
-    renderSolve(); lastRender = JSON.stringify([getView().window, state.rangeMode === 'through_cursor' ? getView().cursor : null]);
+    renderSolve(); lastRender = JSON.stringify([getView().window, getView().aggregate ?? null]);
   }
   function resizeHandle(item, placement, key, fallback) {
     const grip = el('div', null, 'plot-resize-handle'); grip.title = 'Drag to resize';
@@ -332,7 +344,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         if (scope === 'episode' && !episodeNeeded()) continue;
         const body = payload(scope, true);
         const keyBody = structuredClone(body);
-        if (scope === 'episode' && state.rangeMode !== 'through_cursor') delete keyBody.range.cursor_s;
+        if (scope === 'episode') delete keyBody.range.cursor_s;
         if (scope === 'solve') {
           keyBody.selection.solve_seq = state.selected?.seq ?? state.selected?.id ?? null;
           delete keyBody.range;
@@ -346,8 +358,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         for (const result of response.results || []) specs.set(result.instance_id, result.spec || { version: 1, kind: 'unavailable', title: 'Plot error', message: result.error || 'Plot failed.' });
         evaluatedKeys[scope] = signature;
       }
-      range.disabled = getView().episodeClock === false || metadata.episode?.context?.episode_available === false;
-      episodeNote.textContent = metadata.episode?.context?.episode_available === false ? 'No MPC episode accompanies this standalone solve.' : getView().episodeClock === false ? 'Companion episode · all available history. The active timeline is a prediction horizon; episode plots stay in this inspector.' : `${getSource()?.label || 'Active episode'} · ${state.rangeMode === 'entire' ? 'All available history' : state.rangeMode === 'through_cursor' ? 'Segment start through cursor' : 'Visible timeline window'}`;
+      windowKey = undefined; renderWindowChip();
+      episodeNote.textContent = metadata.episode?.context?.episode_available === false ? 'No MPC episode accompanies this standalone solve.' : getView().episodeClock === false ? 'Companion episode · all available history. The active timeline is a prediction horizon; episode plots stay in this inspector.' : getSource()?.label || 'Active episode';
       // Initial data should appear immediately; subsequent streaming data and
       // changing ranges share the same bounded redraw cadence.
       renderSolve();
@@ -373,14 +385,15 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     syncSolveSource();
     const nextPlacement = JSON.stringify([visible(episodeContainer), solveVisible(), visible(bottomContainer), solveNeeded()]);
     if (nextPlacement !== placementKey) { placementKey = nextPlacement; immediateView = true; pending = true; lastPoll = -Infinity; }
-    const key = JSON.stringify([current?.source, current?.revision, lastSolveSourceKey, placementKey, state.rangeMode, state.rangeMode === 'visible' ? view.window : null, state.rangeMode === 'through_cursor' ? view.cursor : null, state.pinned ? state.selected?.id : view.cursor, state.iteration, state.instances]);
+    renderWindowChip();
+    const key = JSON.stringify([current?.source, current?.revision, lastSolveSourceKey, placementKey, view.aggregate ?? null, state.pinned ? state.selected?.id : view.cursor, state.iteration, state.instances]);
     if (key !== lastRequest) { lastRequest = key; pending = true; }
     if (lastInspectActive !== view.inspectSolve) { lastInspectActive = view.inspectSolve; renderSolve(); }
     // Presentation markers update cheaply at RAF; Python is capped at 5 Hz.
-    handles.forEach(handle => handle.updateCursor?.(handle.axisIdentity === 'sqp_iteration' ? state.iteration : handle.axisIdentity === 'episode_time' && view.episodeClock !== false && (handle.linked || state.rangeMode !== 'through_cursor') ? view.cursor : undefined));
-    if (immediateView || cardsPending || lastRender !== JSON.stringify([view.window, state.rangeMode === 'through_cursor' ? view.cursor : null])) { renderCards(immediateView); immediateView = false; }
+    handles.forEach(handle => handle.updateCursor?.(handle.axisIdentity === 'sqp_iteration' ? state.iteration : handle.axisIdentity === 'episode_time' && view.episodeClock !== false ? view.cursor : undefined));
+    if (immediateView || cardsPending || lastRender !== JSON.stringify([view.window, view.aggregate ?? null])) { renderCards(immediateView); immediateView = false; }
     runAgain.update(runContext());
     const now = Date.now(); if ((pending || now - lastPoll > 1500 && current?.source?.kind === 'live') && now - lastPoll >= 200) { lastPoll = now; refresh(); }
   }
-  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, rangeMode: state.rangeMode, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; resizing?.cancel(); for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); runAgain.destroy(); handles.forEach(handle => handle.destroy()); catalogHandles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
+  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, aggregate: getView().aggregate ?? null, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; resizing?.cancel(); for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); runAgain.destroy(); handles.forEach(handle => handle.destroy()); catalogHandles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
 }

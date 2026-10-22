@@ -44,16 +44,16 @@ test('streaming ranges redraw graphs at most five times a second while timeline 
   const request = async (_path, body) => ({ state: 'complete', catalog: [jointDef], context: { clock: 'replay:r', bounds: [0, 20] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'Recorded data', x: { identity: 'episode_time', clock: 'replay:r' }, y: {}, series: [{ x: [0, 20], y: [0, 1] }] } })) });
   const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => view, request, storage: null });
   try {
-    ui.update(); await flush(); const item = ui.state.add(jointDef, 'episode'); item.timeline = true; ui.state.rangeMode = 'through_cursor'; await ui.refresh();
+    ui.update(); await flush(); const item = ui.state.add(jointDef, 'episode'); item.timeline = true; view.aggregate = { start: null, end: 2 }; await ui.refresh();
     const graphs = new Set([episode.querySelector('svg')]), markers = new Set();
     for (let i = 1; i <= 60; i++) {
-      now = 1000 + i * 16; view.cursor = 2 + i * .01; view.window = [i * .001, 10 + i * .001];
+      now = 1000 + i * 16; view.cursor = 2 + i * .01; view.aggregate = { start: null, end: 2 + i * .01 }; view.window = [i * .001, 10 + i * .001];
       ui.update(); await flush(); graphs.add(episode.querySelector('svg'));
       markers.add(bottom.querySelectorAll('line').at(-1).getAttribute('x1'));
     }
     assert(graphs.size >= 4); assert(graphs.size <= 6, `Expected at most 5 redraws, saw ${graphs.size - 1}`);
     assert.equal(markers.size, 60);
-    const beforeGesture = episode.querySelector('svg'); view.cursor = 1.234;
+    const beforeGesture = episode.querySelector('svg'); view.aggregate = { start: null, end: 1.234 };
     await document.emit('pointerup'); ui.update();
     assert.notEqual(episode.querySelector('svg'), beforeGesture);
     assert.deepEqual(episode.querySelectorAll('.plot-x-range').map(item => Number(item.textContent)), [0, 1.234]);
@@ -128,7 +128,7 @@ test('pinned actual SQP iteration persists while episode advances; ranges and so
     const slider = solve.querySelector('input'); slider.value = '1'; await slider.emit('input'); assert.equal(ui.snapshot.iteration, 3); assert.deepEqual(picked.at(-1).prediction, { ee_xyz: [[1, 2, 3]] }); assert.equal(picked.at(-1).predictionSource, 'final-context'); assert.equal(seeks, 0);
     assert.equal(solve.querySelector('.plot-message').textContent, 'Final prediction shown; iteration trajectory not recorded.');
     view.cursor = 12; await ui.refresh(); assert.equal(ui.snapshot.selectedSolve.seq, '7'); assert.equal(ui.snapshot.iteration, 3); assert.equal(requests.at(-1).selection.solve_seq, '7'); assert.equal(picked.at(-1).predictionSource, 'final-context'); assert.equal(view.cursor, 12);
-    const select = episode.querySelector('select'); select.value = 'visible'; await select.emit('change'); await ui.refresh(); assert.deepEqual(requests.at(-1).range, { mode: 'visible', cursor_s: 12, start_s: 5, end_s: 15 });
+    view.aggregate = { start: 5, end: null }; await ui.refresh(); assert.deepEqual(requests.at(-1).range, { mode: 'window', cursor_s: 12, start_s: 5 });
     // A real recorded seed snapshot takes precedence over the final context.
     slider.value = '0'; await slider.emit('input'); assert.equal(ui.snapshot.iteration, 0); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[0, 0, 0]]); assert.equal(picked.at(-1).predictionSource, 'iteration'); assert.equal(view.cursor, 12); assert.equal(seeks, 0);
     assert(!solve.querySelector('.plot-message').textContent.includes('Final prediction shown'));
@@ -142,7 +142,7 @@ test('pinned actual SQP iteration persists while episode advances; ranges and so
   } finally { globalThis.document = original; }
 });
 
-test('Live reset clears pinned inspection; zoom-only Entire mode never reruns Python aggregates', async () => {
+test('Live reset clears pinned inspection; zoom and cursor never rerun Python aggregates, a window change does', async () => {
   const { document, find } = plotDOM(), original = { document: globalThis.document, now: Date.now }; globalThis.document = document;
   const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
   let now = 1000, source = { source: { kind: 'live', generation: 1 }, revision: 1 }, view = { cursor: 5, window: [0, 10], episodeClock: true }; Date.now = () => now;
@@ -157,11 +157,12 @@ test('Live reset clears pinned inspection; zoom-only Entire mode never reruns Py
     await find(solve, 'button', 'Pin solve').emit('click'); ui.state.selectIteration(2); assert.equal(ui.snapshot.pinned, true);
     source = { source: { kind: 'live', generation: 2 }, revision: 1 }; now += 210; ui.update();
     assert.equal(ui.snapshot.pinned, false); assert.equal(ui.snapshot.iteration, null); assert.equal(ui.snapshot.selectedSolve, null); await flush();
-    const range = episode.querySelector('select'); range.value = 'visible'; await range.emit('change'); now += 210; ui.update(); await flush(); assert(evaluations() > initial);
-    range.value = 'through_cursor'; await range.emit('change'); now += 210; ui.update(); await flush();
-    const throughCount = evaluations();
-    view.cursor = 5.08; now += 210; ui.update(); await flush();
-    assert(evaluations() > throughCount); assert(calls.some(item => item.path === '/api/plots/evaluate' && item.body.context === 'episode' && item.body.range.cursor_s === 5.08));
+    const afterReset = evaluations();
+    view.aggregate = { start: 2, end: null }; now += 210; ui.update(); await flush(); assert(evaluations() > afterReset);
+    assert(calls.some(item => item.path === '/api/plots/evaluate' && item.body.context === 'episode' && item.body.range.mode === 'window' && item.body.range.start_s === 2 && !('end_s' in item.body.range)));
+    // The aggregate window is independent of the playback cursor.
+    const windowCount = evaluations();
+    view.cursor = 5.08; now += 210; ui.update(); await flush(); assert.equal(evaluations(), windowCount);
     ui.destroy();
   } finally { globalThis.document = original.document; Date.now = original.now; }
 });
@@ -191,8 +192,8 @@ test('a saved prediction horizon never accepts companion episode plots on its ti
   const request = async (path, body) => { calls.push({ path, body }); return { state: 'complete', catalog: [jointDef], context: { episode_available: true, clock: 'replay:r:1', bounds: [0, 20] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'Recorded motion', x: { identity: 'episode_time', clock: 'replay:r:1' }, y: {}, series: [{ label: 'Position', x: [0, 20], y: [1, 2] }] } })) }; };
   try {
     const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'replay', id: 'r', trajectory_index: 1 } }), getView: () => ({ window: [0, .5], cursor: .2, episodeClock: false }), request, storage: null });
-    ui.update(); await flush(); const item = ui.state.add(jointDef, 'episode'); item.timeline = true; ui.state.rangeMode = 'visible'; await ui.refresh();
-    assert.equal(bottom.querySelectorAll('.plot-card').length, 0); assert.equal(episode.querySelector('select').disabled, true);
+    ui.update(); await flush(); const item = ui.state.add(jointDef, 'episode'); item.timeline = true; await ui.refresh();
+    assert.equal(bottom.querySelectorAll('.plot-card').length, 0); assert.equal(episode.querySelector('.aggregate-window').querySelector('span').textContent, 'All available history');
     assert(calls.filter(item => item.body.context === 'episode').every(item => item.body.range.mode === 'entire'));
     assert(episode.querySelectorAll('text').some(item => item.textContent === '20')); ui.destroy();
   } finally { globalThis.document = original; }
@@ -221,16 +222,22 @@ test('sidebar episode scopes have distinct domains and cursor rules; docked copi
   const domain = root => root.querySelectorAll('.plot-x-range').map(item => Number(item.textContent));
   const cursor = root => root.querySelectorAll('line').at(-1);
   try {
-    const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'replay', id: 'r', trajectory_index: 0 } }), getView: () => view, onSeek: x => { seeks.push(x); view.cursor = x; }, request, storage: null });
+    let cleared = 0;
+    const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'replay', id: 'r', trajectory_index: 0 } }), getView: () => view, onSeek: x => { seeks.push(x); view.cursor = x; }, onClearAggregate: () => cleared++, request, storage: null });
     ui.update(); await flush(); const item = ui.state.add(jointDef, 'episode'); item.timeline = true; await ui.refresh();
     assert.deepEqual(domain(episode), [0, 20]); assert.equal(cursor(episode).getAttribute('visibility'), 'visible');
     const timelineCursor = () => Number(cursor(bottom).getAttribute('x1')); assert.equal(timelineCursor(), 300);
     const evaluationCount = () => requests.filter(item => item.path === '/api/plots/evaluate').length;
     const beforeZoom = evaluationCount(); view.window = [5, 9]; await document.emit('wheel'); ui.update(); await flush(); assert.deepEqual(domain(episode), [0, 20]); assert.equal(evaluationCount(), beforeZoom); assert.equal(timelineCursor(), 150);
-    const scope = episode.querySelector('select'); scope.value = 'through_cursor'; await scope.emit('change'); await ui.refresh();
-    assert.deepEqual(domain(episode), [0, 6]); assert.equal(cursor(episode).getAttribute('visibility'), 'hidden'); assert.equal(cursor(bottom).getAttribute('visibility'), 'visible'); assert.equal(timelineCursor(), 150);
-    view.cursor = 0; await document.emit('change'); ui.update(); assert.deepEqual(domain(episode), [0, .001]); assert.equal(cursor(episode).getAttribute('visibility'), 'hidden');
-    scope.value = 'visible'; await scope.emit('change'); await ui.refresh(); assert.deepEqual(domain(episode), [5, 9]);
+    const chip = episode.querySelector('.aggregate-window'), clear = chip.querySelector('button');
+    assert.equal(chip.querySelector('span').textContent, 'Entire episode'); assert.equal(clear.hidden, true);
+    // An open start begins at the first sample; the cursor stays an independent marker.
+    view.aggregate = { start: null, end: 6 }; await ui.refresh();
+    assert.deepEqual(domain(episode), [0, 6]); assert.equal(cursor(episode).getAttribute('visibility'), 'visible'); assert.equal(cursor(bottom).getAttribute('visibility'), 'visible'); assert.equal(timelineCursor(), 150);
+    assert.equal(chip.querySelector('span').textContent, 'start → 6.000 s'); assert.equal(clear.hidden, false);
+    await clear.emit('click'); assert.equal(cleared, 1);
+    view.aggregate = { start: 15, end: null }; await ui.refresh(); assert.deepEqual(domain(episode), [15, 20]); assert.equal(chip.querySelector('span').textContent, '15.000 s → latest');
+    view.aggregate = { start: 5, end: 9 }; await ui.refresh(); assert.deepEqual(domain(episode), [5, 9]);
     // The async rebuild replaces SVGs, while the active scrub keeps its original domain.
     await episode.querySelector('svg').emit('pointerdown', { pointerId: 12, button: 0, clientX: Number(episode.querySelector('rect').getAttribute('x')) }); assert.equal(seeks.at(-1), 5);
     await ui.refresh(); await document.emit('pointermove', { pointerId: 12, clientX: 588 }); assert.equal(seeks.at(-1), 9);
@@ -387,7 +394,7 @@ test('a recorded trace prefetches its iteration paths once so scrubbing needs no
 test('cards keep notes on hover, resize per placement, configure y limits, and the catalog previews default plots', async () => {
   const { document, find } = plotDOM(), original = globalThis.document; globalThis.document = document;
   const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
-  const source = { source: { kind: 'replay', id: 'r', trajectory_index: 0 } }, view = { window: [0, 5], cursor: 2 }, requests = [], persisted = new Map();
+  const source = { source: { kind: 'replay', id: 'r', trajectory_index: 0 } }, view = { window: [0, 5], cursor: 2, aggregate: { start: 1, end: null } }, requests = [], persisted = new Map();
   const timingDef = { id: 'episode.timing', scope: 'episode', title: 'Timing', description: 'Recorded host wall times.', inputs: {} };
   const request = async (path, body) => { requests.push({ path, body: structuredClone(body) }); return { state: 'complete', catalog: [timingDef, summaryDef], context: { clock: 'replay:r:0', bounds: [0, 5] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: item.plot_id === 'episode.summary' ? { version: 1, kind: 'table', title: 'Summary', rows: [] } : { version: 1, kind: 'lines', title: 'Timing', notes: ['Wall time is not episode time.'], display_reduction: [{ series: 'MPC wall', original: 9000, displayed: 1200 }], x: { identity: 'episode_time', clock: 'replay:r:0' }, y: { unit: 'ms' }, series: [{ label: 'MPC wall', x: [0, 5], y: [1, 2] }] } })) }; };
   const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => view, request, storage: { getItem: key => persisted.get(key), setItem: (key, value) => persisted.set(key, value) } });
@@ -396,6 +403,8 @@ test('cards keep notes on hover, resize per placement, configure y limits, and t
     await find(episode, 'button', '+').emit('click'); await flush();
     const previews = requests.filter(item => item.body.client_id?.endsWith('-catalog'));
     assert.equal(previews.length, 1); assert.deepEqual(previews[0].body.plots.map(item => item.instance_id), ['preview:episode.timing', 'preview:episode.summary']);
+    // Previews show the plot over the current aggregate window, like an added card.
+    assert.equal(previews[0].body.range.mode, 'window'); assert.equal(previews[0].body.range.start_s, 1); assert(!('end_s' in previews[0].body.range));
     const items = ui.catalogDialog.body.querySelectorAll('.plot-catalog-item');
     assert(items[0].querySelector('.plot-catalog-preview').querySelector('svg')); assert(items[1].querySelector('.plot-catalog-preview').querySelector('table'));
     await find(items[0], 'button', 'Add').emit('click'); await ui.refresh();

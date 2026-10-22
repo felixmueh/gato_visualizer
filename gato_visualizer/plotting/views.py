@@ -45,7 +45,9 @@ class InspectionContext:
     """Host selection, separate from a plot's user inputs. Times are episode seconds."""
     episode_cursor_s: float | None = None
     analysis_range: str = 'entire'
-    visible_window: tuple[float, float] | None = None
+    # ``window`` bounds may be None on either side: an unbounded end follows
+    # the retained history (Live growth), an unbounded start its first sample.
+    visible_window: tuple[float | None, float | None] | None = None
     selected_solve_id: str | int | None = None
     sqp_iteration: int | str | None = None
     clock: str = 'episode_time'
@@ -158,8 +160,9 @@ class EpisodeView:
         lo, hi = min(times), max(times)
         if self.context.analysis_range == 'through_cursor' and finite(self.context.episode_cursor_s):
             hi = min(hi, self.context.episode_cursor_s)
-        elif self.context.analysis_range in ('visible_window', 'visible') and self.context.visible_window:
-            lo, hi = max(lo, self.context.visible_window[0]), min(hi, self.context.visible_window[1])
+        elif self.context.analysis_range in ('window', 'visible_window', 'visible') and self.context.visible_window:
+            start, end = self.context.visible_window
+            lo, hi = max(lo, start) if finite(start) else lo, min(hi, end) if finite(end) else hi
         return lo, hi
 
     def in_range(self, timestamp: Any) -> bool:
