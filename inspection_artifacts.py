@@ -7,6 +7,9 @@ from pathlib import Path
 
 import numpy as np
 
+# 2048 snapshots at N=32 (about 2 MB of JSON and 1.5 s of CPU FK).
+PATH_CHUNK_POINTS = 65536
+
 
 def json_metadata(value):
     """Only small metadata/telemetry may use this conversion, never trace.xu."""
@@ -65,6 +68,7 @@ class ReadOnlyIterationTrace:
             array.flags.writeable = False
         self.kinematics = kinematics
         self._prediction_cache = {}
+        self._path_chunk = None
 
     @property
     def iterations_run(self):
@@ -116,3 +120,25 @@ class ReadOnlyIterationTrace:
             # Bound decoded snapshots as the user scrubs; binary is loaded once.
             self._prediction_cache = {index: freeze(result)}
         return self._prediction_cache[index]
+
+    def path_chunk(self, index, max_points=PATH_CHUNK_POINTS):
+        """End-effector paths of the aligned chunk of snapshots containing index.
+
+        The 3D view scrubs through these without a request per iteration. Each
+        chunk holds at most max_points knots, so long traces load piecewise.
+        Coordinates are rounded to 1 µm for transport; plots keep full data.
+        """
+        if self.kinematics is None or type(index) is not int or not 0 <= index <= self.iterations_run:
+            return None
+        from server import decode_prediction_telemetry
+        n = int(self.metadata["N"])
+        size = max(1, int(max_points) // n)
+        start = index // size * size
+        stop = min(self.iterations_run + 1, start + size)
+        if self._path_chunk is None or self._path_chunk["start"] != start:
+            paths = []
+            for i in range(start, stop):
+                q, _, _ = decode_prediction_telemetry(self._xu[i], self.metadata["signs"], n)
+                paths.append(np.round(self.kinematics.ee_positions(q), 6).tolist())
+            self._path_chunk = dict(start=start, stop=stop, ee_xyz=paths)
+        return self._path_chunk

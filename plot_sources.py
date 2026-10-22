@@ -269,5 +269,6 @@ def inspect_source(raw, selection=None, analysis=None):
                 "original_solver_profile", "original_model_identity")} if trace is not None else None),
             capabilities=dict(continue_sqp=False, continue_reason=CONTINUE_REASON,
                 run_again=run_again_capability(selected),
-                iteration_predictions=trace is not None or any(i.get("prediction") is not None for i in selected["iterations"])))
+                iteration_predictions=trace is not None or any(i.get("prediction") is not None for i in selected["iterations"]),
+                iteration_paths=trace is not None))
     return selected, serializable(info)

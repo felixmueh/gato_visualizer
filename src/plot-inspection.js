@@ -3,6 +3,7 @@ import { createPlotState, timelineEligible, awaitPlotJob, displayLimits } from '
 import { renderPlot } from './plot-renderer.js';
 import { sourceRequest } from './source-settings.js';
 import { setupSolveRun } from './solve-run.js';
+import { createIterationPathCache, iterationPredictionForView } from './prediction-selection.js';
 
 /** One host for both inspectors. Only the episode timeline owns a playback clock. */
 export function setupPlotInspection({ episodeContainer, solveContainer, bottomContainer, getSource, getView, getSolverProfile = () => null, onSeek, onPrediction = () => {}, onInspectionStart = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
@@ -18,6 +19,10 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   let catalogHandles = [], previewKey, previewToken = 0, previewSpecs = new Map(), resizing = null;
   let solveOverride = null, lastSolveSourceKey;
   let finalContextKey, finalContextPrediction;
+  // Recorded iteration paths of the selected Solve, prefetched in bounded
+  // chunks so scrubbing the SQP cursor needs no request per iteration.
+  const iterationPaths = createIterationPathCache();
+  let held = null, heldKey, pathsInFlight = false, pathsFailedKey;
   let cardsPending = false, lastCardsAt = -Infinity, immediateView = false, placementKey = '', receivedData = false;
   const visible = container => { for (let node = container; node; node = node.parentElement) if (node.hidden) return false; return true; };
   const solveVisible = () => getView().inspectSolve !== false && visible(solveContainer);
@@ -39,7 +44,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   const identity = el('p', '', 'solve-identity'), strip = el('div', null, 'sqp-strip'), iterationLabel = el('span'), previous = button('‹', () => stepIteration(-1), 'Previous recorded SQP iteration'), next = button('›', () => stepIteration(1), 'Next recorded SQP iteration'), slider = el('input');
   slider.type = 'range'; slider.step = '1'; slider.min = '0'; slider.setAttribute('aria-label', 'Recorded SQP iteration'); slider.addEventListener('input', () => selectIteration(Number(slider.value)));
   strip.append(previous, iterationLabel, next, slider);
-  const final = button('Final result', () => { state.selectIteration(null); invalidate(); });
+  const final = button('Final result', () => { state.selectIteration(null); reselect(); });
   strip.append(final);
   const capability = el('p', '', 'plot-message'), runContainer = el('div');
   const solveCards = el('div', null, 'plot-cards'); solveContainer.replaceChildren(solveHeading, identity, strip, capability, runContainer, solveCards);
@@ -235,21 +240,36 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     }
     strip.hidden = !records.length; slider.max = String(Math.max(0, records.length - 1)); slider.value = String(Math.max(0, index)); slider.disabled = !records.length; previous.disabled = index <= 0; next.disabled = index >= records.length - 1; final.disabled = state.iteration == null;
     const current = records[index]; iterationLabel.textContent = current ? `${current.index === 0 ? 'Seed' : `SQP ${current.index}`} · ${index + 1} of ${records.length} recorded${current.status ? ` · ${current.status}` : ''}` : 'Final result';
-    // A metrics-only iteration has no trajectory snapshot. Keep the selected
-    // solve's final plan visible as explicitly labelled display context, without
-    // attaching it to the iteration record or changing the Python plot inputs.
+    // A recorded snapshot comes from the prefetched paths or the plot response.
+    // While one is still on its way the previous trajectory stays on screen.
+    // A metrics-only iteration has no snapshot: the selected solve's final plan
+    // is shown only as labelled context, never attached to the iteration.
+    iterationPaths.reset(finalKey);
     const snapshot = selected?.selected_iteration === state.iteration ? selected?.selected_prediction : null;
-    const iterationPrediction = current?.prediction || snapshot;
-    const iterationMissing = state.iteration != null && !iterationPrediction;
-    const loading = iterationMissing && current?.has_prediction === true;
-    const finalContext = iterationMissing && Boolean(finalContextPrediction?.ee_xyz?.length);
-    const prediction = state.iteration == null ? snapshot || selected?.final_prediction : finalContext ? finalContextPrediction : iterationPrediction;
-    const predictionSource = finalContext ? 'final-context' : prediction ? state.iteration == null ? 'final' : 'iteration' : null;
-    capability.textContent = finalContext ? loading ? 'Final prediction shown; selected iteration trajectory loading.' : 'Final prediction shown; iteration trajectory not recorded.' : loading ? 'Loading recorded iteration trajectory…' : !records.length ? 'Only the final result is retained; no intermediate SQP records are available.' : iterationMissing ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : 'Recorded SQP inspection leaves the episode clock unchanged.';
+    if (selected?.selected_iteration != null) iterationPaths.addSnapshot(finalKey, selected.selected_iteration, selected.selected_prediction);
+    const finalPrediction = selected?.final_prediction?.ee_xyz?.length ? selected.final_prediction : finalContextPrediction;
+    const shown = iterationPredictionForView({ iteration: state.iteration, record: current, snapshot, cached: iterationPaths.get(state.iteration), finalPrediction, finalContext: finalContextPrediction, held: heldKey === finalKey ? held : null });
+    const { prediction, source: predictionSource } = shown;
+    if (prediction) { held = prediction; heldKey = finalKey; }
+    strip.classList.toggle('loading', shown.status === 'loading'); iterationLabel.title = shown.status === 'loading' ? 'Loading the recorded trajectory of this iteration' : '';
+    capability.textContent = predictionSource === 'final-context' ? 'Final prediction shown; iteration trajectory not recorded.' : !records.length ? 'Only the final result is retained; no intermediate SQP records are available.' : shown.status === 'missing' ? 'Metrics are recorded for this iteration; its prediction trajectory is unavailable.' : 'Recorded SQP inspection leaves the episode clock unchanged.';
     const active = Boolean(selected) && (getView().inspectSolve !== false || state.pinned);
     const key = JSON.stringify([solveSource()?.source, selected?.id, state.iteration, prediction, predictionSource, active, state.pinned]);
     if (key !== lastPrediction) { lastPrediction = key; onPrediction({ active, prediction: prediction || null, predictionSource, pinned: state.pinned, solve: selected, iteration: state.iteration }); }
     runAgain.update(runContext());
+    requestPaths();
+  }
+  function requestPaths() {
+    const selected = state.selected, key = finalContextKey;
+    if (destroyed || pathsInFlight || !selected?.capabilities?.iteration_paths || !solveNeeded() || pathsFailedKey === key) return;
+    const wanted = state.iteration ?? selected.iterations?.at(-1)?.index ?? 0;
+    if (iterationPaths.hasChunk(wanted)) return;
+    pathsInFlight = true;
+    const body = payload('solve'); body.client_id = `${client}-paths`; body.selection = { ...body.selection, iteration: null, iteration_paths: wanted };
+    awaitPlotJob(request, '/api/plots/catalog', body, { alive: () => !destroyed && iterationPaths.key === key })
+      .then(response => { if (!response) return; if (response.iteration_paths) iterationPaths.addChunk(key, response.iteration_paths); else pathsFailedKey = key; })
+      .catch(() => { pathsFailedKey = key; })
+      .finally(() => { pathsInFlight = false; if (!destroyed) renderSolve(); });
   }
   function runContext() {
     const selected = state.selected, source = solveSource()?.source, profile = getSolverProfile();
@@ -278,10 +298,14 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     state.follow(solve, sourceKey(source));
     if (solveOverride && solve) state.pin(true);
   }
-  function selectIteration(position) { const selected = state.selected?.iterations?.[position]; if (!selected) return; state.selectIteration(selected.index); invalidate(); }
+  function selectIteration(position) { const selected = state.selected?.iterations?.[position]; if (!selected) return; state.selectIteration(selected.index); reselect(); }
   function selectIterationByIndex(value) { const records = state.selected?.iterations || []; const nearest = records.reduce((best, item, i) => !best || Math.abs(item.index - value) < best.delta ? { i, delta: Math.abs(item.index - value) } : best, null); if (nearest) selectIteration(nearest.i); }
   function stepIteration(direction) { const records = state.selected?.iterations || []; selectIteration(Math.max(0, Math.min(records.length - 1, records.findIndex(item => item.index === state.iteration) + direction))); }
   function invalidate() { revision++; pending = true; renderCards(); }
+  // The SQP cursor moves within one solve: an in-flight response for an earlier
+  // iteration still lands (its snapshot is cached), and plot cards keep their
+  // SVG so a drag continues. Plot markers follow at RAF in update().
+  function reselect() { pending = true; renderSolve(); }
   function payload(scope, includePlots = false) {
     const source = scope === 'solve' ? solveSource()?.source : getSource()?.source;
     return { client_id: client, source, context: scope, selection: { solve_seq: scope === 'solve' && state.pinned ? state.selected?.seq ?? state.selected?.id : scope === 'solve' ? solveSource()?.solveSeq ?? null : null, iteration: scope === 'solve' ? state.iteration : null }, range: scope === 'episode' && getView().episodeClock === false ? { mode: 'entire' } : state.range(getView()), pixels: Math.max(200, Math.round(bottomContainer.clientWidth || 800)), ...(includePlots ? { plots: state.instances.filter(item => item.context === scope).map(item => ({ instance_id: item.id, plot_id: item.plot_id, inputs: item.parameters })) } : {}) };

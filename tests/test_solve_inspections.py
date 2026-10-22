@@ -107,6 +107,25 @@ class ArtifactTests(unittest.TestCase):
                 with self.assertRaises(ValueError): handle.xu[0,0,0]=100
                 self.assertEqual(load.call_count,1)
 
+    def test_path_chunks_cover_aligned_bounded_snapshots_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            longer=trace(k=4)
+            longer.pcg_iters=np.array([[4]]*3+[[0]],np.int32); longer.line_search_ran=np.array([True]*3+[False])
+            descriptor=write_artifact(folder,longer,metadata())
+            handle=ReadOnlyIterationTrace(descriptor,FakeKinematics())
+            with patch.object(FakeKinematics,'ee_positions',autospec=True,side_effect=lambda self,q:np.asarray(q)[:,:3]) as fk:
+                chunk=handle.path_chunk(3,max_points=6) # two N=3 snapshots per chunk
+                self.assertEqual((chunk['start'],chunk['stop']),(2,4))
+                self.assertEqual(chunk['ee_xyz'][1],[list(row) for row in handle.prediction(3)['ee_xyz']])
+                self.assertIs(handle.path_chunk(2,max_points=6),chunk)
+                self.assertEqual(fk.call_count,3) # two chunk snapshots and one selected prediction
+                last=handle.path_chunk(4,max_points=6)
+                self.assertEqual((last['start'],last['stop']),(4,5))
+            self.assertEqual(len(handle.path_chunk(0)['ee_xyz']),5)
+            self.assertIsNone(handle.path_chunk(5))
+            self.assertIsNone(ReadOnlyIterationTrace(descriptor).path_chunk(0)) # no captured FK
+            json.dumps(chunk,allow_nan=False)
+
     def test_standalone_inspection_default_ignores_episode_cursor_with_null_selector(self):
         retained=dict(plan(),id='standalone-result',origin='inspection',sim_time_s=None,
                       q=[[.25]*7]*3,knot_time_s=[0.,.03,.06])

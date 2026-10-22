@@ -114,12 +114,18 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                                      has_prediction=bool(solve.get("selected_prediction") or solve["final_prediction"]), can_continue=False,
                                      reason=solve["capabilities"]["continue_reason"])
                     states = raw.get("states", [])
+                    wanted = selection.get("iteration_paths")
+                    trace = None if selected is None else selected.get("iteration_trace")
+                    paths = None if wanted is None or trace is None else trace.path_chunk(wanted)
                     payload = dict(catalog=registry.catalog(scope, view), errors=registry.errors,
                         inspection=inspection, context=dict(inspection,
                             clock=clock, time_origin_s=raw.get("time_origin_s", 0),
                             joint_names=list(raw.get("joint_names", [f"arm_right_{i}_joint" for i in range(1, 8)])),
                             bounds=([states[0]["sim_time_s"], states[-1]["sim_time_s"]] if states else None)),
                         results=[])
+                    if paths is not None:
+                        # Top level: the context and inspection share selected_solve.
+                        payload["iteration_paths"] = paths
                     for plot in request.get("plots", []):
                         try:
                             spec = registry.evaluate(plot["plot_id"], view, plot.get("inputs", {}))
@@ -302,6 +308,9 @@ class PlotService:
         iteration = selected.get("iteration", selected.get("iteration_index"))
         if iteration is not None and iteration != "seed" and (type(iteration) is not int or iteration < 0):
             raise ValueError("SQP iteration must be null, seed, or an actual nonnegative integer index")
+        paths = selected.get("iteration_paths")
+        if paths is not None and (type(paths) is not int or paths < 0):
+            raise ValueError("iteration_paths must be null or a nonnegative SQP iteration index")
         analysis = request.get("range", {})
         if analysis.get("mode", "entire") not in ("entire", "through_cursor", "visible"):
             raise ValueError("Unknown episode analysis range")

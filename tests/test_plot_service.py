@@ -139,6 +139,18 @@ class WorkerTests(unittest.TestCase):
         result = self.wait_job(self.service.submit(solve)["job_id"])
         self.assertEqual(result["results"][0]["spec"]["kind"], "unavailable")
 
+    def test_iteration_paths_selector_is_an_index_and_absent_without_a_trace(self):
+        self.wait_for(lambda: self.service.settings()["ready"])
+        for bad in (-1, 1.5, "all", True):
+            with self.assertRaisesRegex(ValueError, "iteration_paths"):
+                self.service.submit(dict(self.request(), context="solve", selection=dict(iteration_paths=bad)), catalog=True)
+        # Recorded episode solves carry no binary trace, so no paths are invented.
+        job = self.service.submit(dict(source=dict(kind="replay", id="default", trajectory_index=1), context="solve",
+                                       selection=dict(iteration_paths=0)), catalog=True)
+        result = self.wait_job(job["job_id"])
+        self.assertEqual(result["state"], "complete", result)
+        self.assertNotIn("iteration_paths", result)
+
     def test_reload_settings_preserve_source_and_isolate_import_failures(self):
         project = self.folder/"custom"
         project.mkdir()

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { livePredictionForView } from './prediction-selection.js';
+import { livePredictionForView, createIterationPathCache, iterationPredictionForView } from './prediction-selection.js';
 import { createLiveHistory } from './live-history.js';
 import { createHistoryClock } from './live-execution.js';
 
@@ -39,4 +39,30 @@ test('explicit pinned solve, fresh result, and recorded SQP selection retain pre
   assert.equal(livePredictionForView(episodePlan, { active: false, pinned: false, iteration: 1, prediction: captured }), episodePlan);
   assert.equal(livePredictionForView(null, { active: true, pinned: false, iteration: null, prediction: captured }), null);
   assert.equal(livePredictionForView(episodePlan, null), episodePlan);
+});
+
+test('iteration path cache is bounded, solve-scoped and serves chunks and snapshots', () => {
+  const cache = createIterationPathCache({ maxChunks: 2, maxSingles: 2 });
+  const chunk = (start, count) => ({ start, ee_xyz: Array.from({ length: count }, (_, i) => [[start + i, 0, 0]]) });
+  cache.reset('a'); cache.addChunk('a', chunk(0, 4));
+  assert.deepEqual(cache.get(3).ee_xyz, [[3, 0, 0]]); assert.equal(cache.get(4), null); assert.equal(cache.get(null), null);
+  cache.addChunk('stale', chunk(4, 4)); assert.equal(cache.hasChunk(4), false); // late response for another solve
+  cache.addChunk('a', chunk(4, 4)); cache.addChunk('a', chunk(8, 4));
+  assert.equal(cache.hasChunk(0), false); assert.equal(cache.hasChunk(9), true); // oldest chunk evicted
+  for (const index of [20, 21, 22]) cache.addSnapshot('a', index, { ee_xyz: [[index, 1, 1]] });
+  assert.equal(cache.get(20), null); assert.deepEqual(cache.get(22).ee_xyz, [[22, 1, 1]]);
+  cache.addSnapshot('a', 23, { ee_xyz: [] }); assert.equal(cache.get(23), null); // a missing trajectory is never cached
+  cache.reset('b'); assert.equal(cache.get(9), null); assert.equal(cache.get(22), null);
+});
+
+test('SQP cursor holds the shown trajectory while loading and never substitutes final for a recorded iteration', () => {
+  const final = { ee_xyz: [[9, 0, 0]] }, held = { ee_xyz: [[1, 0, 0]] }, cached = { ee_xyz: [[2, 0, 0]] };
+  const recorded = { index: 2, has_prediction: true }, metricsOnly = { index: 2, has_prediction: false };
+  assert.deepEqual(iterationPredictionForView({ iteration: null, finalPrediction: final, held }), { prediction: final, source: 'final', status: 'final' });
+  assert.deepEqual(iterationPredictionForView({ iteration: null, held }), { prediction: held, source: 'held', status: 'loading' });
+  assert.deepEqual(iterationPredictionForView({ iteration: 2, record: recorded, cached, finalContext: final, held }), { prediction: cached, source: 'iteration', status: 'recorded' });
+  assert.deepEqual(iterationPredictionForView({ iteration: 2, record: recorded, finalContext: final, held }), { prediction: held, source: 'held', status: 'loading' });
+  assert.deepEqual(iterationPredictionForView({ iteration: 2, record: recorded, finalContext: final }), { prediction: null, source: null, status: 'loading' });
+  assert.deepEqual(iterationPredictionForView({ iteration: 2, record: metricsOnly, finalContext: final, held }), { prediction: final, source: 'final-context', status: 'missing' });
+  assert.deepEqual(iterationPredictionForView({ iteration: 2, record: metricsOnly, held }), { prediction: null, source: null, status: 'missing' });
 });
