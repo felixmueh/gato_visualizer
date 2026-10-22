@@ -50,12 +50,14 @@ def source_command(selection, operation="probe", ns=()):
     return command
 
 
-def build_command(selection, counts, rebuild=False):
+def build_command(selection, counts, rebuild=False, prediction_friction=False):
     """Command/env for a parent-managed streaming build subprocess."""
     ns = list(counts)
     if not ns or any(isinstance(n, bool) or not isinstance(n, int) or not 2 <= n <= 4096 for n in ns):
         raise ValueError("Build knot counts must be integers between 2 and 4096")
     command = source_command(selection, "build", sorted(set(ns)))
+    if prediction_friction:
+        command.append("--prediction-friction")
     if rebuild:
         command.append("--rebuild")
     return command, dict(os.environ, PYTHONUNBUFFERED="1")
@@ -98,12 +100,11 @@ def source_identity(root):
 
 
 @contextmanager
-def prepared_model(reach, retain=False):
-    """Use the upstream transformation unchanged, with local temporary outputs.
+def prepared_model(reach, retain=False, losses=None):
+    """Use upstream model preparation with local temporary outputs.
 
-    runtime_urdf's ROOT is used for manifest reads and generated model outputs;
-    its URDF/MESHES stay attached to the selected checkout. The temporary model
-    has identical bytes, and GATO's codegen key hashes bytes rather than its path.
+    Modern helpers accept the output directory explicitly. Legacy source
+    wrappers retain their original ROOT redirection only for loss-free models.
     """
     directory = ROOT / "_expr_data/source-runtime"
     directory.mkdir(parents=True, exist_ok=True)
@@ -111,12 +112,22 @@ def prepared_model(reach, retain=False):
     try:
         old_root = reach.ROOT
         local = Path(folder)
-        (local / "models").symlink_to(Path(old_root) / "models", target_is_directory=True)
-        reach.ROOT = local
-        try:
-            yield reach.runtime_urdf()
-        finally:
-            reach.ROOT = old_root
+        if (Path(old_root) / "tiago_mpc/model_runtime.py").is_file():
+            import importlib
+            runtime = importlib.import_module("tiago_mpc.model_runtime")
+            if runtime.ROOT.resolve() != Path(old_root).resolve():
+                raise ValueError("Model helpers imported from another selected checkout")
+            path, gpu_path, signs, _, _ = runtime.runtime_urdf(local, losses)
+            yield path, gpu_path, signs
+        else:
+            if losses is not None:
+                raise ValueError("Selected source lacks shared friction-aware model helpers")
+            (local / "models").symlink_to(Path(old_root) / "models", target_is_directory=True)
+            reach.ROOT = local
+            try:
+                yield reach.runtime_urdf()
+            finally:
+                reach.ROOT = old_root
     finally:
         if not retain:
             shutil.rmtree(folder)
@@ -139,7 +150,7 @@ def candidate_ns(cache, plant):
     return sorted(values)
 
 
-def discover_compatible_modules(reach, requested_ns=()):
+def discover_compatible_modules(reach, requested_ns=(), losses=None):
     """CPU-only current-input cache lookup, callable inside the live worker.
 
     No registration, compilation, solver construction, GPU calls or locks.
@@ -150,27 +161,30 @@ def discover_compatible_modules(reach, requested_ns=()):
     from gato import _cache
     from gato.builder import _codegen_key
 
+    plant = reach.PLANT + "_smooth" if losses is not None else reach.PLANT
+    widths = losses["smoothing_rad_s"] if losses is not None else None
     cache = _cache.cache_dir()
-    cached_ns = candidate_ns(cache, reach.PLANT)
+    cached_ns = candidate_ns(cache, plant)
     package = Path(reach.gato.__file__).parent
-    package_ns = {int(match[1]) for path in package_binaries(package, reach.PLANT)
+    package_ns = {int(match[1]) for path in package_binaries(package, plant)
                   if (match := re.match(r"bsqpN(\d+)_", path.name))}
     ns = sorted(set(cached_ns) | package_ns | set(requested_ns))
     arch = _cache.detect_arch()
     result = dict(compatible=False, available_N=[], modules=[], cache=str(cache), arch=arch)
-    with prepared_model(reach) as (_, gpu_path, signs):
-        key = _codegen_key(gpu_path, reach.EE_FRAME, .15, None, False)
+    with prepared_model(reach, losses=losses) as (_, gpu_path, signs):
+        key = _codegen_key(gpu_path, reach.EE_FRAME, .15, None, False,
+                           **({"joint_friction_smoothing": widths} if widths is not None else {}))
         result["model"] = dict(ee_frame=reach.EE_FRAME, codegen_key=key,
                               gpu_urdf_sha256=hashlib.sha256(Path(gpu_path).read_bytes()).hexdigest(),
                               signs=signs.tolist())
         result["toolchain"] = _cache.toolchain_identity(arch)
-        entry = _cache.robot_entry(reach.PLANT)
+        entry = _cache.robot_entry(plant)
         reason = None
         if not arch:
             reason = "GPU architecture is unknown; current binary compatibility cannot be verified"
         elif not entry or entry.get("codegen_key") != key:
             reason = "Robot registration is missing or stale for the selected model/frame/generator"
-        resolved = _cache.resolve(reach.PLANT) if not reason else None
+        resolved = _cache.resolve(plant) if not reason else None
         for n in ns:
             item = dict(N=n, status="missing", path=None, key=None)
             problem = reason
@@ -178,14 +192,14 @@ def discover_compatible_modules(reach, requested_ns=()):
                 robot, plant_root = resolved
                 item["key"], inputs = _cache.module_key(robot, n, "default", plant_root, arch)
                 item["inputs"] = inputs
-                path = _cache.find_module(reach.PLANT, n)
+                path = _cache.find_module(plant, n)
                 # Upstream BSQP prefers package modules before the cache; a package
                 # binary has no current cache-key proof and must not slip through.
-                if package_binaries(package, reach.PLANT, n):
+                if package_binaries(package, plant, n):
                     problem = "A package binary shadows the validated cache; remove/select another checkout"
                 elif path is not None:
                     try:
-                        module = _cache.load_module(reach.PLANT, n, build_if_missing=False)
+                        module = _cache.load_module(plant, n, build_if_missing=False)
                         if Path(module.__file__).resolve() != Path(path).resolve():
                             raise ValueError("A different module is already loaded")
                         if module.NATIVE_SOURCE_ID != inputs["native_source_id"]:

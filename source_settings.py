@@ -90,9 +90,12 @@ class SourceSettings:
         return snapshot
 
     def build(self, body):
-        if not isinstance(body, dict) or set(body) - {"selection", "N", "rebuild"}:
+        if not isinstance(body, dict) or set(body) - {"selection", "N", "rebuild", "prediction_friction"}:
             raise ValueError("Build requires selection, N and optional rebuild")
         selection = selection_from_request(body.get("selection"))
+        prediction_friction = body.get("prediction_friction", False)
+        if type(prediction_friction) is not bool:
+            raise ValueError("prediction_friction must be a boolean")
         counts = body.get("N")
         if not isinstance(counts, list) or not counts or any(type(n) is not int or n < 2 or n > 4096 for n in counts):
             raise ValueError("Choose integer knot counts between 2 and 4096")
@@ -107,14 +110,14 @@ class SourceSettings:
             # Live command belongs here. Numerical work retains its own locks.
             from source_runtime import build_command
             command, environment = build_command(selection, sorted(set(counts)),
-                                                  rebuild=body.get("rebuild", False))
+                                                  rebuild=body.get("rebuild", False), prediction_friction=prediction_friction)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
             folder = ROOT / "_expr_data/source-builds" / stamp
             folder.mkdir(parents=True)
             log_path = folder / "build.log"
             self.job = dict(id=uuid.uuid4().hex, state="running", N=sorted(set(counts)),
                             started_at=stamp, log_path=str(log_path), selection=selection,
-                            rebuild=body.get("rebuild", False))
+                            rebuild=body.get("rebuild", False), prediction_friction=prediction_friction)
             (folder / "request.json").write_text(json.dumps(self.job, indent=2) + "\n")
             thread = threading.Thread(target=self._build, args=(self.job, command, environment, log_path),
                                       name="source-binary-build", daemon=True)

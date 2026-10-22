@@ -115,7 +115,7 @@ class FakeAdapter:
 
 def fake_schema(root):
     config = json.loads((MPC_ROOT/'configs/reaching.json').read_text())
-    config = {k:v for k,v in config.items() if k not in ('description','save_plan_steps')}
+    config = {k:v for k,v in config.items() if k in ('N','dt_s','solver_params','controller','limit_bounds')}
     config['N'] = 16
     return dict(defaults=dict(config=config, task=dict(kind='reach',target_offset_m=[0,0,0]),
                               execution=dict(DEFAULT_EXECUTION)), available_N=[16],

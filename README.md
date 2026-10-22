@@ -152,6 +152,8 @@ coordinates and prebuilt binaries for the chosen knot count. See
 
 ## Live MPC
 
+Independent Simulator and Predictor friction controls use the selected source’s actual joint coefficients. See [friction modes, provenance and prepared binaries](docs/friction.md).
+
 Select Live, adjust the target offset and settings, and inspect the prediction.
 The prediction computes one optimized horizon from the displayed state. It
 does not advance the simulated plant. **Reset state** returns to the comfortable

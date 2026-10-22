@@ -165,3 +165,7 @@ clears episode plan count (`seq`); its next plan is 1. Settings/profile changes
 start a new history generation and plan sequence; identify a retained solve
 within its source/generation, not by sequence alone. SSE transport event IDs
 remain monotonic independently.
+
+## Independent joint friction
+
+`config.friction` contains boolean `simulation` and `prediction`, plus finite `predictor_smoothing_rad_s` in [0.001, 1]. New UI defaults enable both at 0.03 rad/s; legacy configurations without explicit losses preserve the loss-free meaning. `available_N_by_friction.off` / `.on` identify prebuilt predictor variants. See [friction](friction.md) for the retained laws, source provenance and explicit build contract.

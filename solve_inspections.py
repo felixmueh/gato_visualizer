@@ -34,7 +34,7 @@ def profile_fingerprint(profile):
     paths = {python, python.parent.parent / "pyvenv.cfg", cache / "manifest.json",
              gato / "CMakeLists.txt", gato / "pyproject.toml", gato / "setup.py"}
     suffixes = {".py", ".h", ".hpp", ".cuh", ".cu", ".cpp", ".cmake", ".json", ".urdf", ".xml", ".so"}
-    for directory in (root / "examples", root / "configs", root / "models",
+    for directory in (root / "examples", root / "tiago_mpc", root / "configs", root / "models",
                       gato / "python", gato / "gato", gato / "tools",
                       cache / "modules", cache / "robots"):
         for folder, directories, files in os.walk(directory):
@@ -141,9 +141,13 @@ class InspectionService:
         if not checked.get("compatible"):
             raise ValueError(checked.get("error", "Active solver profile is incompatible"))
         n = problem["problem_configuration"]["N"]
-        if n not in checked.get("available_N", []):
+        mode = "on" if problem["problem_configuration"].get("prediction_joint_dynamics") else "off"
+        available = checked.get("available_N_by_friction", {}).get(mode, checked.get("available_N", []))
+        if n not in available:
             raise ValueError(f"Active solver profile has no compatible prebuilt N={n} module")
-        if not checked.get("capabilities", {}).get("iteration_capture_by_N", {}).get(str(n), False):
+        capabilities = checked.get("capabilities", {})
+        capture = capabilities.get("iteration_capture_by_friction", {}).get(mode, capabilities.get("iteration_capture_by_N", {}))
+        if not capture.get(str(n), False):
             raise ValueError("Active solver profile does not support native iteration capture; select a rebuilt capture-capable profile")
         contract = problem["original_solver_profile"].get("coordinate_contract")
         if contract is not None:
@@ -167,7 +171,7 @@ class InspectionService:
                 if profile_fingerprint(profile) != fingerprint:
                     raise ValueError("Solver source or binaries changed while checking capability; select again")
                 self.probe_cache[key] = (fingerprint, {name: result[name] for name in
-                    ("compatible", "available_N", "capabilities", "contract", "error") if name in result})
+                    ("compatible", "available_N", "available_N_by_friction", "capabilities", "contract", "error") if name in result})
                 while len(self.probe_cache) > 8:
                     self.probe_cache.popitem(last=False)
             self.probe_cache.move_to_end(key)

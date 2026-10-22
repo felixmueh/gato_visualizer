@@ -20,6 +20,7 @@ import sys
 import numpy as np
 
 from live_presentation import render_plan, render_state, snapshot
+from friction_settings import DEFAULT_FRICTION
 
 ROOT = Path(__file__).resolve().parent
 
@@ -57,11 +58,12 @@ def parameter_specs(config, available_n):
     specs = []
     labels = {"N": "Knot points", "dt_s": "Knot interval (s)",
               "q_cost": "Tool position cost", "qd_cost": "Joint speed cost",
-              "u_cost": "Control cost", "N_cost": "Terminal position cost"}
+              "u_cost": "Control cost", "N_cost": "Terminal position cost", "simulation": "Simulator friction",
+              "prediction": "Predictor friction", "predictor_smoothing_rad_s": "Predictor smoothing (rad/s)"}
     choices = {"N": list(available_n), "solver_params.linsys": [None], "solver_params.exact_hessian": [False],
                "controller.warm_start": ["shift", "hold"],
                "controller.admm_linsys": ["pcg", "bdsv_factor", "auto"]}
-    limits = {"dt_s": (.001, .1), "solver_params.max_sqp_iters": (1, 100000),
+    limits = {"friction.predictor_smoothing_rad_s": (.001, 1), "dt_s": (.001, .1), "solver_params.max_sqp_iters": (1, 100000),
               "solver_params.max_pcg_iters": (1, 1000000),
               "solver_params.pcg_tol": (1e-8, 1), "solver_params.solve_ratio": (.001, 1),
               "solver_params.mu": (1e-6, 1e5), "solver_params.rho": (1e-8, 1e4),
@@ -77,7 +79,7 @@ def parameter_specs(config, available_n):
                 visit(item, name)
                 continue
             spec = dict(path=name, label=labels.get(key, key.replace("_", " ").capitalize()),
-                        group="Costs" if key.endswith("cost") else (
+                        group="Friction" if name.startswith("friction.") else "Costs" if key.endswith("cost") else (
                             "ADMM" if name.startswith("controller.limits_kw.") else
                             "Limits" if name.startswith("limit_bounds.") else "Solver"),
                         scale="linear")
@@ -163,6 +165,10 @@ def validate_settings(config, task, schema):
                 valid = valid and isinstance(value, int)
         if not valid:
             raise ValueError(f"Invalid {path}: {value!r}")
+    mode = "on" if config.get("friction", {}).get("prediction") else "off"
+    available = schema.get("available_N_by_friction", {}).get(mode)
+    if available is not None and config["N"] not in available:
+        raise ValueError(f"No compatible prebuilt N={config['N']} for predictor friction {mode}; use explicit Source / Build")
     task_kind = task.get("kind")
     required_task_fields = ({"kind", "target_offset_m"} if task_kind == "reach" else
                             (set(FIGURE8_DEFAULT_TASK) - {"orientation_xyzw"}) if task_kind == "figure8" else None)
@@ -233,6 +239,8 @@ class GPULocks:
 class MPCAdapter:
     """All instances and CUDA calls belong exclusively to the GPU worker."""
     def __init__(self, mpc_root, reach=None):
+        self.mpc_root = Path(mpc_root).resolve()
+        self.simulator_joint_dynamics = None
         self.reach = reach or import_mpc(mpc_root)[0]
         self.gato = self.reach.gato
         self.pin = self.reach.pin
@@ -274,24 +282,34 @@ class MPCAdapter:
             self.controller.reset(self.x * self.state_signs)
 
     def configure(self, config_path, task):
-        _, settings, effective = importlib.import_module("reaching_config").load_configuration(config_path)
+        from friction_settings import load_configuration
+        _, settings, effective = load_configuration(config_path, self.mpc_root)
         self.problem_configuration = deepcopy(effective)
-        from gato import _cache
-        entry = _cache.robot_entry(self.reach.PLANT)
-        if entry is None or entry.get("urdf_sha256") != hashlib.sha256(self.gpu_path.read_bytes()).hexdigest():
-            raise ValueError("Prebuilt robot model is missing or stale. Run scripts/prebuild.py during setup")
-        from gato.builder import _codegen_key
-        if entry["codegen_key"] != _codegen_key(self.gpu_path, self.reach.EE_FRAME, .15, None, False):
-            raise ValueError("Prebuilt generated model is stale; run scripts/prebuild.py")
-        module = _cache.load_module(self.reach.PLANT, effective["N"], build_if_missing=False)
-        if module is None:
-            raise ValueError(f"No current prebuilt N={effective['N']} module; run scripts/prebuild.py")
-        # Preloading the verified module ensures BSQP never enters its build fallback.
+        self.simulator_joint_dynamics = effective.get("simulator_joint_dynamics")
+        losses = effective.get("prediction_joint_dynamics")
+        plant = self.reach.PLANT + "_smooth" if losses is not None else self.reach.PLANT
+        from source_runtime import prepared_model, discover_compatible_modules
+        checked = discover_compatible_modules(self.reach, [effective["N"]], losses=losses)
+        if effective["N"] not in checked["available_N"]:
+            detail = next((item.get("reason") for item in checked["modules"] if item["N"] == effective["N"]), checked.get("error"))
+            mode = "smooth-friction" if losses is not None else "loss-free"
+            raise ValueError(f"No current prebuilt {mode} N={effective['N']} module: {detail}. Use explicit Source / Build; settings never compile.")
+        with prepared_model(self.reach, retain=True, losses=losses) as (_, self.gpu_path, _):
+            pass
+        self.model_identity = dict(self.model_identity,
+            gpu_urdf_sha256=hashlib.sha256(self.gpu_path.read_bytes()).hexdigest())
+        # Discovery imports the verified module with build_if_missing=False.
+        # Reuse it; never call upstream register/build_controller here.
+        options = {} if losses is None else dict(joint_friction_smoothing=losses["smoothing_rad_s"])
         self.solver = self.gato.BSQP(str(self.gpu_path), batch_size=1, N=effective["N"],
-                                   dt=effective["dt_s"], plant_type=self.reach.PLANT,
-                                   params=self.gato.SolverParams(**effective["solver_params"]))
-        self.reach.check_model(self.solver, self.model, self.data, self.fid,
-                              self.reach.Q_START_RAD + self.reach.Q_GOAL_DELTA_RAD, self.signs)
+                                   dt=effective["dt_s"], plant_type=plant,
+                                   params=self.gato.SolverParams(**effective["solver_params"]), **options)
+        if losses is None:
+            self.reach.check_model(self.solver, self.model, self.data, self.fid,
+                                  self.reach.Q_START_RAD + self.reach.Q_GOAL_DELTA_RAD, self.signs)
+        else:
+            importlib.import_module("tiago_mpc.model_runtime").check_model(
+                self.solver, self.model, self.data, self.fid, self.signs, losses)
         options = settings.get("controller", {})
         self.controller = self.gato.MPCController(self.solver, limits="admm", linsys="pcg", **options)
         bounds = settings.get("limit_bounds", {})
@@ -416,13 +434,19 @@ class MPCAdapter:
         json.dumps(event, allow_nan=False)
         return event
 
+    def plant_step(self, model, data, q, velocity, torque, dt):
+        if self.simulator_joint_dynamics is None:
+            return self.reach.rk4(model, data, q, velocity, torque, dt)
+        from tiago_mpc.joint_dynamics import plant_rk4
+        return plant_rk4(model, data, q, velocity, torque, dt, self.simulator_joint_dynamics)
+
     def advance(self, end_time=None):
         """The unchanged reach_sim fixed pacing, down to the RK4 substep order."""
         interval_end = self.t + self.dt if end_time is None else min(self.t + self.dt, end_time)
         samples = []
         while self.t < interval_end - 1e-12:
             h = min(self.reach.SIM_DT_S, interval_end - self.t)
-            q, v = self.reach.rk4(self.model, self.data, self.x[:7], self.x[7:], self.u, h)
+            q, v = self.plant_step(self.model, self.data, self.x[:7], self.x[7:], self.u, h)
             self.x = np.r_[q, v]
             if not np.isfinite(self.x).all():
                 raise FloatingPointError("Nonfinite simulated state")
@@ -434,6 +458,7 @@ class MPCAdapter:
     def _state_fields(self, rtf=0, settings_version=0):
         """Borrowed state fields, consumed immediately by one detachment API."""
         return dict(type="state", sim_time_s=self.t, _x=self.x,
+                    simulator_joint_dynamics=getattr(self, "simulator_joint_dynamics", None),
                     end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
                     settings_version=settings_version,
                     torque_nm=None if self.applied_torque is None else self.applied_torque.tolist(),
@@ -470,12 +495,14 @@ class MPCAdapter:
         return render_state(self.state_snapshot(rtf), self.kinematics)
 
 
-def build_schema(mpc_root, available_n=None):
+def build_schema(mpc_root, available_n=None, available_n_by_friction=None, predictor_friction=None):
     """Discover imports/build availability inside the numerical subprocess."""
     from execution_session import DEFAULT_EXECUTION
     mpc_root = Path(mpc_root).expanduser().resolve()
     reach, configuration = import_mpc(mpc_root)
-    if available_n is None:
+    if available_n_by_friction is not None:
+        available = list(available_n_by_friction["off"])
+    elif available_n is None:
         try:
             from source_runtime import discover_compatible_modules
             discovery = discover_compatible_modules(reach)
@@ -485,8 +512,28 @@ def build_schema(mpc_root, available_n=None):
     else:
         available = list(available_n)
     _, settings, _ = configuration.load_configuration()
-    defaults = {k: deepcopy(v) for k, v in settings.items() if k not in ("description", "save_plan_steps")}
-    schema = dict(defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK),
+    defaults = {k: deepcopy(v) for k, v in settings.items()
+                if k in ("N", "dt_s", "solver_params", "controller", "limit_bounds")}
+    from friction_settings import canonical_losses, prediction_losses
+    defaults["friction"] = deepcopy(DEFAULT_FRICTION)
+    smooth = []
+    friction = {}
+    try:
+        losses, source = canonical_losses(mpc_root)
+        friction = dict(coefficients=losses, source=source,
+            simulation_law="coulomb_sign_viscous", prediction_law="coulomb_tanh_viscous")
+        from source_runtime import discover_compatible_modules
+        if available_n_by_friction is None:
+            smooth = discover_compatible_modules(reach, losses=prediction_losses(mpc_root))["available_N"]
+    except (OSError, ValueError, KeyError, ImportError) as exc:
+        friction["error"] = str(exc)
+    if available_n_by_friction is not None:
+        smooth = list(available_n_by_friction["on"])
+    if predictor_friction is not None:
+        friction["predictor"] = deepcopy(predictor_friction)
+    by_mode = dict(off=list(available), on=smooth)
+    available = sorted(set(available) | set(smooth))
+    schema = dict(available_N_by_friction=by_mode, friction=friction, defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK),
                                                 execution=deepcopy(DEFAULT_EXECUTION)),
                        available_N=available, parameters=parameter_specs(defaults, available),
                        tasks=[dict(kind="reach", label="Reach", defaults=deepcopy(REACH_DEFAULT_TASK)),

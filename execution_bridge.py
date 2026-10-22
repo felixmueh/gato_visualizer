@@ -446,6 +446,9 @@ class ProcessLiveService:
                             self.profile_switch = dict(state="idle")
                             for key in ("available_N", "parameters", "source"):
                                 self.schema[key] = deepcopy(packet["schema"].get(key))
+                            self.schema["available_N_by_friction"] = deepcopy(packet["schema"].get(
+                                "available_N_by_friction", dict(off=packet["schema"].get("available_N", []), on=[])))
+                            self.schema.setdefault("friction", {})["predictor"] = deepcopy(packet["schema"].get("friction", {}))
                             self.publish_events([dict(type="solver_profile", state="active",
                                 profile_id=identifier, generation=self.generation), self._history_metadata()])
                         else:

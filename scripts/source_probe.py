@@ -50,32 +50,48 @@ def load_source(selection):
 
 def probe(selection, reach, requested_ns=()):
     data = discover_compatible_modules(reach, requested_ns)
+    try:
+        from friction_settings import prediction_losses, canonical_losses
+        coefficients, source = canonical_losses(selection["mpc_root"])
+        data["friction"] = dict(coefficients=coefficients, source=source,
+            simulation_law="coulomb_sign_viscous", prediction_law="coulomb_tanh_viscous")
+        smooth = discover_compatible_modules(reach, requested_ns, losses=prediction_losses(selection["mpc_root"]))
+    except (ValueError, OSError, KeyError, ImportError) as exc:
+        smooth = dict(compatible=False, available_N=[], modules=[], error=str(exc))
+    data["available_N_by_friction"] = dict(off=list(data["available_N"]), on=smooth["available_N"])
+    data["friction_modules"] = smooth
+    data["available_N"] = sorted(set(data["available_N"]) | set(smooth["available_N"]))
+    data["compatible"] = bool(data["available_N"])
     data.update(selection=selection, source=source_identity(selection["mpc_root"]),
                 python=dict(executable=sys.executable, version=sys.version, prefix=sys.prefix))
     return data
 
 
-def build(selection, reach, ns, emit, rebuild=False):
+def build(selection, reach, ns, emit, rebuild=False, prediction_friction=False):
     """Use upstream registration, cache locking and ensure_module without solvers."""
     from gato import _cache
+    from friction_settings import prediction_losses
+    losses = prediction_losses(selection["mpc_root"]) if prediction_friction else None
+    plant = reach.PLANT + "_smooth" if prediction_friction else reach.PLANT
     if not _cache.detect_arch():
         raise RuntimeError("GPU architecture is unknown; cannot build a verified current binary")
     package = Path(reach.gato.__file__).parent
-    if any(package_binaries(package, reach.PLANT, n) for n in ns):
+    if any(package_binaries(package, plant, n) for n in ns):
         raise RuntimeError("Package binaries shadow the cache for requested N; select another checkout")
     jobs = build_jobs()
     emit(dict(event="progress", stage="starting", jobs=jobs, N=ns))
-    with prepared_model(reach, retain=True) as (_, gpu_path, _):
+    with prepared_model(reach, retain=True, losses=losses) as (_, gpu_path, _):
         emit(dict(event="progress", stage="registering", N=ns))
-        reach.gato.register_robot(reach.PLANT, gpu_path, N=ns,
-                                  ee_frame=reach.EE_FRAME, build=False)
+        reach.gato.register_robot(plant, gpu_path, N=ns,
+                                  ee_frame=reach.EE_FRAME, build=False,
+                                  **({"joint_friction_smoothing": losses["smoothing_rad_s"]} if losses else {}))
         for n in ns:
             if rebuild:
                 # The lookup and removal form one cache mutation. Release this
                 # lock before ensure_module, which acquires the same lock itself.
                 archive = None
                 with _cache._locked(_cache.cache_dir()):
-                    existing = _cache.find_module(reach.PLANT, n)
+                    existing = _cache.find_module(plant, n)
                     if existing is not None:
                         archive_root = ROOT / "_expr_data/source-builds"
                         archive_root.mkdir(parents=True, exist_ok=True)
@@ -87,9 +103,9 @@ def build(selection, reach, ns, emit, rebuild=False):
                 if archive is not None:
                     emit(dict(event="progress", stage="archived", N=n, path=str(archive)))
             emit(dict(event="progress", stage="building", N=n, jobs=jobs))
-            robot, plant_root = _cache.resolve(reach.PLANT)
+            robot, plant_root = _cache.resolve(plant)
             key, _ = _cache.module_key(robot, n, "default", plant_root, _cache.detect_arch())
-            log_path = Path(selection["cache"]) / "modules" / reach.PLANT / key / "build.log"
+            log_path = Path(selection["cache"]) / "modules" / plant / key / "build.log"
             emit(dict(event="progress", stage="building", N=n, log=str(log_path)))
             stop = threading.Event()
             def report():
@@ -111,7 +127,7 @@ def build(selection, reach, ns, emit, rebuild=False):
             thread = threading.Thread(target=report, daemon=True)
             thread.start()
             try:
-                path = _cache.ensure_module(reach.PLANT, n, jobs=jobs)
+                path = _cache.ensure_module(plant, n, jobs=jobs)
             finally:
                 stop.set()
                 thread.join()
@@ -126,6 +142,7 @@ def main(argv=None):
     parser.add_argument("--python")
     parser.add_argument("--cache")
     parser.add_argument("--N", nargs="+", type=int, default=[])
+    parser.add_argument("--prediction-friction", action="store_true", help="Explicitly build the smooth-friction predictor variant")
     parser.add_argument("--rebuild", action="store_true", help="Explicitly rebuild requested current binaries, preserving previous bytes in _expr_data")
     args = parser.parse_args(argv)
     output = sys.stdout
@@ -158,8 +175,8 @@ def main(argv=None):
         with redirect_stdout(sys.stderr):
             reach = load_source(selection)
             if args.operation == "build":
-                result = build(selection, reach, sorted(set(args.N)), emit, args.rebuild)
-                if not set(args.N).issubset(result["available_N"]):
+                result = build(selection, reach, sorted(set(args.N)), emit, args.rebuild, args.prediction_friction)
+                if not set(args.N).issubset(result["available_N_by_friction"]["on" if args.prediction_friction else "off"]):
                     raise RuntimeError("Build finished without all requested current compatible binaries")
             else:
                 result = probe(selection, reach, args.N)
@@ -169,16 +186,19 @@ def main(argv=None):
                     from solver_process import model_contract
                     from gato import _cache
                     python_capture = "capture_iterations" in inspect.signature(reach.gato.BSQP.solve).parameters
-                    iteration_capture = {}
-                    for n in result["available_N"]:
-                        module = _cache.load_module(reach.PLANT, n, build_if_missing=False)
-                        iteration_capture[str(n)] = python_capture and bool(
-                            getattr(module, "ITERATION_CAPTURE_AVAILABLE", False))
-                    result["capabilities"] = dict(iteration_capture_by_N=iteration_capture,
+                    captures = {}
+                    for mode, ns in result["available_N_by_friction"].items():
+                        plant = reach.PLANT + "_smooth" if mode == "on" else reach.PLANT
+                        captures[mode] = {}
+                        for n in ns:
+                            module = _cache.load_module(plant, n, build_if_missing=False)
+                            captures[mode][str(n)] = python_capture and bool(getattr(module, "ITERATION_CAPTURE_AVAILABLE", False))
+                    result["capabilities"] = dict(iteration_capture_by_N=captures["off"],
+                        iteration_capture_by_friction=captures,
                         python_iteration_capture=python_capture, exact_resume=False)
                     adapter = MPCAdapter(Path(selection["mpc_root"]), reach=reach)
                     result.update(contract=model_contract(adapter), model_identity=adapter.model_identity,
-                        schema=build_schema(Path(selection["mpc_root"]), available_n=result["available_N"]))
+                        schema=build_schema(Path(selection["mpc_root"]), available_n_by_friction=result["available_N_by_friction"]))
         emit(dict(event="result", result=result) if args.operation == "build" else result)
         return 0
     except Exception as exc:

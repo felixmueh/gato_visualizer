@@ -183,7 +183,7 @@ class MultirateSession:
             if h <= 0:
                 raise RuntimeError("Multirate scheduler failed to advance")
             physics_start = self.clock()
-            q, v = a.reach.rk4(a.model, a.data, a.x[:7], a.x[7:], a.u, h)
+            q, v = getattr(a, "plant_step", a.reach.rk4)(a.model, a.data, a.x[:7], a.x[7:], a.u, h)
             a.x = np.r_[q, v]
             if not np.isfinite(a.x).all():
                 raise FloatingPointError("Nonfinite simulated state")

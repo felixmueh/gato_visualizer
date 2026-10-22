@@ -71,23 +71,32 @@ class SimulatorAdapter(MPCAdapter):
     def configure(self, config_path, task):
         if self.remote is None:
             raise ValueError("No active solver profile; select a compatible profile")
-        _, _, effective = importlib.import_module("reaching_config").load_configuration(config_path)
+        from friction_settings import load_configuration
+        _, _, effective = load_configuration(config_path, self.mpc_root)
         if effective["N"] not in self.profile_schema["available_N"]:
             raise ValueError(f"Solver profile has no compatible prebuilt N={effective['N']} module")
         predictor = self.remote.request("configure", timeout=120, config_path=str(Path(config_path).resolve()), task=task)
         context = predictor.pop("plan_context")
-        self.problem_configuration = deepcopy(effective)
+        self.simulator_joint_dynamics = effective.get("simulator_joint_dynamics")
+        self.simulator_identity = dict(self.simulator_identity,
+            passive_joint_dynamics=deepcopy(self.simulator_joint_dynamics),
+            friction_source=effective.get("friction_source"),
+            integrator="tiago_mpc.joint_dynamics.plant_rk4" if self.simulator_joint_dynamics else "reach_sim.rk4")
+        self.problem_configuration = deepcopy(predictor["configuration"])
+        self.problem_configuration.update(simulator_joint_dynamics=deepcopy(self.simulator_joint_dynamics),
+                                          simulator_friction_source=effective.get("friction_source"))
         self.configure_task(effective, task)
         self.joint_limits = predictor["joint_limits"]
         self.profile_identity = dict(profile=deepcopy(self.profile), process_epoch=self.remote.epoch,
             predictor=predictor, simulator=self.simulator_identity,
-            simulator_joint_dynamics=None, coordinate_contract=self.contract,
-            physical_model_differs=any(predictor["model_identity"].get(key) != self.simulator_identity.get(key)
+            simulator_joint_dynamics=self.simulator_joint_dynamics, coordinate_contract=self.contract,
+            joint_dynamics_differ=self.simulator_joint_dynamics != predictor.get("prediction_joint_dynamics"),
+            physical_model_differs=(self.simulator_joint_dynamics != predictor.get("prediction_joint_dynamics")) or any(predictor["model_identity"].get(key) != self.simulator_identity.get(key)
                 for key in ("full_urdf_sha256", "gpu_urdf_sha256")))
         # Freeze once per configuration. The session/presenter detaches this
         # shared context when producing public records; old plans keep their
         # original context across settings/profile changes.
-        context.update(task_anchors=self.task_anchors, task_path_xyz=self.task_path_xyz,
+        context.update(problem_configuration=self.problem_configuration, simulator_joint_dynamics=self.simulator_joint_dynamics, task_anchors=self.task_anchors, task_path_xyz=self.task_path_xyz,
                        solver_profile=self.profile_identity, simulator_identity=self.simulator_identity)
         self._plan_context = snapshot(context)
         self.controller.reset(self.x)

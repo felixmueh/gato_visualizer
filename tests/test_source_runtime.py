@@ -62,6 +62,8 @@ class SourceSelectionTests(unittest.TestCase):
             self.assertIn("--rebuild", command)
             self.assertEqual(command[-4:-1], ["--N", "32", "48"])
             self.assertEqual(env["PYTHONUNBUFFERED"], "1")
+            smooth_command, _ = runtime.build_command(selection, [32], prediction_friction=True)
+            self.assertIn("--prediction-friction", smooth_command)
 
     def test_probe_failure_is_structured(self):
         with patch.object(runtime, "source_command", return_value=["unused"]), patch.object(
@@ -117,7 +119,7 @@ class DiscoveryTests(unittest.TestCase):
         self.cache.toolchain_identity.return_value = {"arch": "120", "python_ext_suffix": ".so"}
         self.cache.find_module.side_effect = lambda plant, n: self.root / f"current-{n}.so" if n == 48 else None
         @contextmanager
-        def model(_reach):
+        def model(_reach, losses=None):
             yield self.gpu, self.gpu, SimpleNamespace(tolist=lambda: [1, -1])
         self.addCleanup(patch.stopall)
         patch.object(runtime, "prepared_model", model).start()
@@ -138,6 +140,18 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([entry["N"] for entry in result["modules"]], [32, 48])
         self.assertEqual(result["modules"][0]["status"], "stale")
         self.assertEqual(self.cache.find_module.call_count, 2)
+        self.cache.ensure_module.assert_not_called()
+        self.cache.register_robot.assert_not_called()
+
+    def test_smooth_mode_qualifies_separate_namespace_without_building(self):
+        key = Mock(return_value="correct")
+        losses = dict(model="coulomb_tanh_viscous", smoothing_rad_s=.07)
+        with patch.dict(sys.modules, {"gato.builder": SimpleNamespace(_codegen_key=key)}):
+            result = runtime.discover_compatible_modules(self.reach, [48], losses=losses)
+        self.assertEqual(result["available_N"], [48])
+        self.cache.robot_entry.assert_called_with("arm_smooth")
+        self.cache.load_module.assert_called_with("arm_smooth", 48, build_if_missing=False)
+        self.assertEqual(key.call_args.kwargs, dict(joint_friction_smoothing=.07))
         self.cache.ensure_module.assert_not_called()
         self.cache.register_robot.assert_not_called()
 
@@ -205,7 +219,7 @@ class BuilderTests(unittest.TestCase):
             cache.module_key.return_value = ("current", {})
             cache.ensure_module.side_effect = lambda plant, n, **kwargs: root / f"module-{n}.so"
             @contextmanager
-            def model(_reach, retain=False):
+            def model(_reach, retain=False, losses=None):
                 self.assertTrue(retain)
                 yield root / "native.urdf", root / "gpu.urdf", None
             events = []

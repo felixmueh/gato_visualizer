@@ -12,9 +12,11 @@ service and browser session running.
 ## Ownership and lifecycle
 
 The simulator checkout supplies the prepared TIAGo model, integrator, assets,
-initial posture and task geometry. The current plant remains explicitly
-loss-free, matching existing Live behavior: it uses `reach_sim.rk4`. Profile
-selection never enables passive forces or changes this plant model.
+initial posture and task geometry. The independent simulator friction switch
+selects upstream hard-sign/viscous `plant_rk4` or loss-free `reach_sim.rk4`.
+New UI defaults enable simulator and smooth predictor friction; legacy configurations without explicit
+losses retain loss-free behavior. Profile selection never changes this plant
+selection. See [friction](friction.md) for effective laws and provenance.
 
 Named solver profiles identify a TIAGo checkout/worktree, Python interpreter
 and compiled-module cache. Exactly one persistent Live solver child exists.

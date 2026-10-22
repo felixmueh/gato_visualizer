@@ -43,6 +43,8 @@ class ProfileAdapter(FakeAdapter):
         if profile["id"] == "broken":
             raise ValueError("incompatible native joint order")
         self.profile = profile["id"]
+        self.profile_schema["available_N_by_friction"] = dict(off=[16], on=[32])
+        self.profile_schema["friction"] = dict(source={"predictor": self.profile})
 
     def close_solver(self):
         self.profile = None
@@ -100,6 +102,8 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(live.latest["state"]["q"], [.25]*7)
         self.assertEqual(live.latest["state"]["qd"], [-.4]*7)
         self.assertEqual(live.active_profile_id, "second")
+        self.assertEqual(live.schema["available_N_by_friction"], dict(off=[16], on=[32]))
+        self.assertEqual(live.schema["friction"]["predictor"]["source"]["predictor"], "second")
         self.assertEqual(old_path.read_bytes(), old_bytes)
         self.assertNotEqual(live.history_store.path, old_path)
         self.assertEqual(live.latest["status"]["state"], "paused")

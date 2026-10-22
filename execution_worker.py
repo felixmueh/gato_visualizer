@@ -179,7 +179,8 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             from source_runtime import probe_selection
             selection = {key: solver_profile[key] for key in ("mpc_root", "python", "cache")}
             discovered = probe_selection(selection)
-            schema = build_schema(mpc_root, available_n=discovered["available_N"])
+            schema = build_schema(mpc_root, available_n_by_friction=discovered.get("available_N_by_friction",
+                dict(off=discovered["available_N"], on=[])), predictor_friction=discovered.get("friction"))
         config = deepcopy(schema["defaults"]["config"])
         task = deepcopy(schema["defaults"]["task"])
         execution = deepcopy(schema["defaults"].get("execution", DEFAULT_EXECUTION))

@@ -23,7 +23,7 @@ MPC_ROOT = ROOT.parent / "tiago_mpc"
 class SettingsTests(unittest.TestCase):
     def setUp(self):
         config = json.loads((MPC_ROOT / "configs/reaching.json").read_text())
-        self.config = {k: v for k, v in config.items() if k not in ("description", "save_plan_steps")}
+        self.config = {k: v for k, v in config.items() if k in ("N", "dt_s", "solver_params", "controller", "limit_bounds")}
         self.task = deepcopy(REACH_DEFAULT_TASK)
         self.schema = dict(parameters=parameter_specs(self.config, [16, 32]))
 
@@ -103,6 +103,7 @@ class Figure8Tests(SettingsTests):
 
     def test_tracking_horizon_offsets_and_terminal_reference_remain_aligned(self):
         adapter = MPCAdapter.__new__(MPCAdapter)
+        adapter.simulator_joint_dynamics = None
         adapter.task = {**deepcopy(FIGURE8_DEFAULT_TASK), "orientation_xyzw": [0., np.sqrt(.5), 0., np.sqrt(.5)]}
         adapter.figure8_start_world = np.array([.4, -.3, 1.2])
         adapter.t, adapter.N, adapter.dt = 7.2, 4, .03
@@ -136,6 +137,7 @@ class LockTests(unittest.TestCase):
 class AdapterTelemetryTests(unittest.TestCase):
     def adapter(self):
         adapter = MPCAdapter.__new__(MPCAdapter)
+        adapter.simulator_joint_dynamics = None
         adapter.reach = SimpleNamespace(Q_START_RAD=np.zeros(7), POSITION_TOL_M=.05,
                                         EE_FRAME="arm_right_tool_joint",
                                         SPEED_L1_TOL_RAD_S=1, SIM_DT_S=.005,
