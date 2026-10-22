@@ -139,7 +139,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock({ bufferMs: presentation.buffer_ms }), inputs = [];
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
-  const connected = () => liveReady && !profileSwitching && !profileUnavailable && !profileNError && source?.readyState === EventSource.OPEN && !needsInitialPreview;
+  const transportConnected = () => liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && !needsInitialPreview;
+  const connected = () => transportConnected() && !profileNError;
   const continueAtEnd = () => settings.execution.calculation === 'on_play' || settings.execution.continue_at_end;
   // Completion metadata can precede later history pages. Do not drain a short
   // final tail until the local download is caught up.
@@ -177,7 +178,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     $('live-preview').disabled = unavailable;
     $('live-reset').disabled = unavailable;
     $('live-precalculate').disabled = unavailable;
-    $('live-cancel').disabled = unavailable || (!job.job_active && !pending);
+    $('live-cancel').disabled = !transportConnected() || (!job.job_active && !pending);
     $('live-play').textContent = clock.playing ? 'Pause' : 'Play';
     $('live-play').setAttribute('aria-label', clock.playing ? 'Pause live history' : 'Play live history');
     calculationControls();
@@ -266,6 +267,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   }
   const unavailableFrictionMessage = () => `N=${settings.config.N} is unavailable for this predictor friction mode. Choose an available N or open Source / Build settings to build it explicitly; select smooth-friction predictor modules when Predictor friction is on.`;
   function change() {
+    const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
     const next = readSettings();
     if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); refreshFrictionAvailability(); }
@@ -274,6 +276,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     dirty = true; renderDirty = true; pausePlayback(); refreshPlanLabel();
     controlsEnabled();
     message(profileSwitching ? 'Solver switching · settings draft retained.' : profileUnavailable ? 'No solver is active · settings draft retained.' : profileNError ? unavailableFrictionMessage() : 'Settings changed · replacing obsolete calculation…', profileNError);
+    // An unsupported draft cannot reach set_settings, which normally stops
+    // obsolete numerical work. Cancel it now; keep the frozen edit anchor and
+    // let authoritative status report completion rather than a late HTTP reply.
+    if (wasCompatible && profileNError && obsoleteWork && mode === 'live' && transportConnected()) send({ type: 'cancel' });
     clearTimeout(settingsTimer); if (!profileSwitching && !profileUnavailable) settingsTimer = setTimeout(submitSettings, 350);
   }
   function populate() {

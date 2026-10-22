@@ -1112,3 +1112,42 @@ test('predictor friction keeps unsupported N visible and blocks calculation unti
     assert.equal(h.$('live-play').disabled, false);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
+
+test('unavailable friction transition cancels active work and keeps Cancel available without losing its frozen edit anchor', async () => {
+  const h = harness(), field = frictionSchema(h, { N: 64, prediction: false });
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    for (const time of [1, 1.2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
+      q: Array(7).fill(time), qd: Array(7).fill(-.2), ee_xyz: [time, 0, 1] });
+    h.$('live-history').value = '1'; h.$('live-history').emit('input');
+    source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true });
+    h.$('live-play').emit('click'); await flush();
+    const anchor = structuredClone(live.displayedState), before = h.commands.length;
+    let acknowledgeCancel;
+    h.setCommandHandler((command, version) => command.type === 'cancel'
+      ? new Promise(resolve => { acknowledgeCancel = resolve; })
+      : { ok: true, json: async () => ({ accepted: true, settings_version: version }) });
+    field('friction.prediction').checked = true; field('friction.prediction').emit('input');
+    assert.equal(live.playing, false); assert.equal(h.$('live-play').disabled, true);
+    assert.equal(h.$('live-cancel').disabled, false); // Transport works despite an incompatible numerical draft.
+    assert.deepEqual(h.commands.slice(before), [{ type: 'cancel' }]);
+    field('friction.predictor_smoothing_rad_s').value = '.04'; field('friction.predictor_smoothing_rad_s').emit('input');
+    await new Promise(resolve => setTimeout(resolve, 380));
+    assert.deepEqual(h.commands.slice(before), [{ type: 'cancel' }]); // No repeated cancel or invalid submission.
+    source.emit({ type: 'state', settings_version: 1, sim_time_s: 1.3, q: Array(7).fill(3), qd: Array(7).fill(2), ee_xyz: [3, 0, 1] });
+    field('N').value = '1'; field('N').emit('input');
+    await new Promise(resolve => setTimeout(resolve, 380));
+    const accepted = h.commands.at(-1);
+    assert.equal(accepted.type, 'set_settings'); assert.equal(accepted.config.N, 32);
+    assert.deepEqual(accepted.anchor, { sim_time_s: anchor.sim_time_s, q: anchor.q, qd: anchor.qd });
+    source.emit(plan(2, 2));
+    const retained = live.settings;
+    acknowledgeCancel({ ok: true, json: async () => ({ accepted: true }) }); await flush();
+    assert.deepEqual(live.settings, retained); assert.equal(live.pending, false);
+    assert.equal(live.plan.seq, 2); assert.equal(h.$('live-play').disabled, false);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
