@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Opt-in GPU conformance of the visualizer's Live loop with tiago_mpc's own reach.
 
-Runs experiments.reach.reach(SimPlant(substep=.001), Mpc(TIAGO), run_simulation) in
+Runs experiments.reach.reach(SimPlant(substep=.001), Mpc(params), run_simulation) in
 this process, then the visualizer's SimulatorAdapter, solver child and
-MultirateSession at 1000/100/100 Hz from the same start, target and MpcParams, and
-compares the states at every command tick, the commands and the plans. Both use
-tiago_mpc's Mpc and SimPlant; this checks the visualizer's scheduling, hold law and
-process boundary against run(). Timing is excluded. Run it with the selected
-checkout's interpreter while the GPU is free: it takes the experiment locks.
+MultirateSession at 1000/100/100 Hz from the same start, target and MpcParams (Live's
+defaults, TIAGO), and compares the states at every command tick, the commands and the
+plans. Both use tiago_mpc's Mpc and SimPlant; this checks the visualizer's scheduling,
+hold law and process boundary against run(). The default reach arrives within 0.1 s
+(6.3 cm start distance, 5 cm tolerance), so the reference reach gets a zero position
+tolerance: it never arrives and runs for the whole duration (default 3 s). Timing is
+excluded. Run it with the selected checkout's interpreter while the GPU is free: it takes the experiment locks.
 """
 from __future__ import annotations
 
@@ -31,12 +33,12 @@ from visualizer_config import DEFAULT_MPC_ROOT
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpc-root", type=Path, default=Path(os.environ.get("TIAGO_MPC_ROOT", DEFAULT_MPC_ROOT)))
-    parser.add_argument("--steps", type=int, default=10, help="command ticks of 10 ms")
+    parser.add_argument("--steps", type=int, default=300, help="command ticks of 10 ms")
     parser.add_argument("--atol", type=float, default=1e-9)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if not 1 <= args.steps <= 100:
-        parser.error("--steps must be in [1, 100]")
+    if not 1 <= args.steps <= 800:
+        parser.error("--steps must be in [1, 800] (the reach's 8 s timeout)")
     output = (args.output or ROOT / "_expr_data/conformance" /
               datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")).resolve()
     if not output.is_relative_to(ROOT / "_expr_data"):
@@ -48,11 +50,12 @@ def main():
     import_tiago(root)
     sys.path.insert(0, str(root))  # tiago_mpc's experiments package
     from experiments.reach import Reach, reach
-    from tiago_mpc.mpc import TIAGO, Mpc, find_binary
+    from tiago_mpc.mpc import TIAGO, Mpc, MpcParams, find_binary
     from tiago_mpc.sim import SimPlant
-    if TIAGO.dt_s != .01:
+    params = TIAGO
+    if params.dt_s != .01:
         parser.error("The comparison assumes the default 10 ms knot interval")
-    binary = find_binary(TIAGO)
+    binary = find_binary(params)
     if binary is None:
         parser.exit(2, "Not compiled: build the default N loss-free module first\n")
     locks = GPULocks(root)
@@ -60,9 +63,10 @@ def main():
         parser.exit(2, "GPU is busy: experiment locks are held\n")
     adapter = None
     try:
-        duration = args.steps * TIAGO.dt_s
-        mpc = Mpc(TIAGO, binary)
-        record = reach(SimPlant(substep=.001), mpc, out=output / "reference", duration=duration)
+        duration = args.steps * params.dt_s
+        mpc = Mpc(params, binary)
+        task = Reach(position_tol_m=0.)  # never arrives: compare the whole duration
+        record = reach(SimPlant(substep=.001), mpc, task=task, out=output / "reference", duration=duration)
         expected, expected_status = record.trajectory, record.summary["status"]
         del mpc, record
 
@@ -73,8 +77,10 @@ def main():
         adapter.gpu_locks = locks
         adapter.select_profile(profile, schema)
         config = schema["defaults"]["config"]
+        if MpcParams.from_dict({key: value for key, value in config.items() if key != "plant"}) != params:
+            parser.error("Live's default MpcParams differ from the reference's")
         adapter.configure(config, dict(kind="reach", target_offset_m=[0., 0., 0.]))
-        np.testing.assert_allclose(adapter.target, Reach().target_m, rtol=0, atol=1e-12)
+        np.testing.assert_allclose(adapter.target, task.target_m, rtol=0, atol=1e-12)
         session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000., control_hz=100., to_hz=100.))
         records = [session.initial_state()]
         while adapter.t < duration - 1e-12:
@@ -89,8 +95,6 @@ def main():
         sent = np.isfinite(expected["command"]).all(axis=1)
         reference = dict(state=expected["state"], command=expected["command"][sent],
                          plan_states=expected["plan_states"], plan_torques=expected["plan_torques"])
-        # reach() stops once the task is done; compare the ticks it ran.
-        actual = {key: value[:len(reference[key])] for key, value in actual.items()}
         checks = {key: dict(shape_equal=reference[key].shape == actual[key].shape,
                             max_abs_difference=float(np.max(np.abs(reference[key] - actual[key])))
                             if reference[key].shape == actual[key].shape else None)
