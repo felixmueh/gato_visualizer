@@ -139,14 +139,15 @@ as editing it; task pose also has a reset for position and rotation.
 Use the chevron at the right of the bottom bar to expand the timestamp ruler
 above the controls. Scroll to zoom around the pointer; Alt-drag or middle-drag
 to pan; click or drag to scrub; Shift-drag to select the aggregate window. Arrow keys seek, Shift+arrows seek by 1 ms,
-+/− zoom, and Fit (or 0) shows the full recording. Colored intervals retain the
++/− zoom, and Fit (or 0) shows the full recording; the ruler's **?** lists these
+gestures on hover. Colored intervals retain the
 same MPC/simulation over-budget meanings as the compact timeline.
 
 Use **+** in Episode or Solve to open the searchable plot catalog; each entry
 previews the plot with default inputs on the active source. Add several
 plots without closing it, configure each instance independently, duplicate them,
 and drag their titles to reorder. **Show on timeline**, or dragging a compatible
-Episode plot to the expanded timeline, docks it above the ruler. Drag it out to
+Episode plot to the expanded timeline (outlined as a drop zone while dragging), docks it above the ruler. Drag it out to
 remove that placement. Docked graphs share the episode window and scrub cursor;
 their title, unit and legend share one row, and y labels sit inside the plot.
 Aggregates and prediction-horizon/SQP plots stay in the sidebar. Hover a plot
@@ -171,7 +172,10 @@ moving the episode clock. **Run again** offers a finite SQP cap and optional
 wall budget, creates a separate pinned result with genuine iteration snapshots,
 and preserves the original episode. Initialization is explicitly cold; **Stop**
 terminates only that inspection worker. Older data without captured inputs
-explains why rerunning is unavailable. See [Solve inspection](docs/inspection.md).
+disables it; its tooltip gives the reason. Short badges mark what changes how a
+plan reads (**final only**, **no path**, **cold start**, an unusual cursor
+association); hover one for its reason. Aggregate rows marked * carry a note on
+hover. See [Solve inspection](docs/inspection.md).
 
 Bundled Python plotters cover timing/budgets, iteration counts, tracking error,
 joint motion and bounds, timing histograms, episode aggregates, prediction joint

@@ -30,6 +30,8 @@ the specification and provides presentation interactions.
   increasing boundaries with one more entry than `y`, so histogram widths are
   rendered from the actual bins rather than guessed from their centres.
 - Table `rows`: `{label, value, unit, note}`; value may be numeric, text, or null.
+  A `note` qualifies how its value reads (for example, computed over partial
+  data): the app marks the row with * and shows the note on hover.
 - Span `spans`: `{lane, start, end, label, color?}` with measured axis identity.
 - Unavailable results carry `message` explaining the missing data/capability.
 - `notes` are optional strings. Omit fields irrelevant to the chosen kind.
