@@ -87,7 +87,7 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
                 profile[key] = str(location if location.is_absolute() else selected.parent / location)
     return VisualizerConfig(path=selected, ingest_directory=directory.resolve(), source=source,
                             plotters_directory=plotters, solver_profiles=tuple(profiles),
-                            presentation=validate_presentation(settings.get("presentation", DEFAULT_PRESENTATION)))
+                            presentation=validate_presentation({**DEFAULT_PRESENTATION, **settings.get("presentation", {})}))
 
 
 def save_source_selection(path, source):

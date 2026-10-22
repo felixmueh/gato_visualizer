@@ -4,6 +4,7 @@ import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
 import { livePredictionForView } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
+import { createLimitTint } from "./limit-tint.js";
 import { setupPresentationSettings } from "./presentation-settings.js";
 import { setupSolverProfiles } from "./solver-profiles.js";
 import "./solver-profiles.css";
@@ -79,7 +80,8 @@ let solverProfiles;
 const sourceSettings = setupSourceSettings({ button: $('source-settings-open'), onOpen: () => solverProfiles?.refresh().catch(() => {}), onPlottersReload: () => plotInspection.refresh(), beforeApply: () => {
   try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
 } });
-const presentationSettings = setupPresentationSettings({ container: sourceSettings.dialog.body, onChange: settings => live?.setPresentationSettings(settings) });
+let limitTint, limitTintEnabled = true;
+const presentationSettings = setupPresentationSettings({ container: sourceSettings.dialog.body, onChange: settings => { live?.setPresentationSettings(settings); limitTintEnabled = settings.limit_tint; limitTint?.setEnabled(limitTintEnabled); } });
 solverProfiles = setupSolverProfiles({ liveContainer: $('live-panel'), editorContainer: sourceSettings.dialog.body,
   beforeActivate: () => live?.beginSolverProfileSwitch(),
   onSettled: async item => { await live?.finishSolverProfileSwitch(item); plotInspection.refresh(); },
@@ -136,6 +138,7 @@ function updateExpandedTimeline() {
 
 function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_limits, torqueKind = "applied") {
   updateJointTable(jointCells, {q, qd, torque, limits, torqueKind});
+  limitTint?.update({q, qd, torque, limits});
 }
 const pathColor = 0x34d8d4;
 const targetColor = 0xffb547;
@@ -526,6 +529,8 @@ async function start() {
         object.material.side = THREE.DoubleSide;
       }
     });
+    limitTint = createLimitTint({ robot, jointNames: data.joint_names, camera, element: renderer.domElement, tooltip: $("limit-tint-tooltip") });
+    limitTint.setEnabled(limitTintEnabled);
     jointCells = createJointTable($("joint-list"), data.joint_names);
     populateReplay(data, {name: isStartingScene(data) ? 'Starting pose' : 'Default recording'});
     robot.updateMatrixWorld(true);

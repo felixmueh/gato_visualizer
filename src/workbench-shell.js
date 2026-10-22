@@ -42,6 +42,7 @@ export function workbenchShell(icon) {
           <div class="camera-controls"><button id="source-settings-open" title="Source / Build settings" aria-label="Source / Build settings">${icon('settings')}</button><button id="camera-home" title="Fit robot" aria-label="Fit robot">${icon('robot')}</button><button id="camera-arm" title="Fit trajectory" aria-label="Fit trajectory">${icon('focus')}</button><button id="right-sidebar-toggle" aria-label="Hide inspection sidebar" aria-expanded="true" aria-controls="right-sidebar" title="Toggle inspection sidebar">${icon('panelRight')}</button></div>
         </div>
         <p id="live-message" class="live-message workbench-toast" role="status" aria-live="polite"></p>
+        <div id="limit-tint-tooltip" class="limit-tint-tooltip" role="tooltip" hidden></div>
         <div class="load-overlay" id="load-overlay" role="status"><div class="spinner"></div><strong id="load-title">Opening workspace</strong><p id="load-detail">Loading robot description…</p></div>
         <div hidden><span id="scene-title">TIAGo Pro</span><div id="path-legend"></div></div>
       </section>

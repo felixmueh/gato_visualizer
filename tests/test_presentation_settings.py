@@ -29,7 +29,7 @@ class PresentationConfigTests(unittest.TestCase):
             path.write_text(json.dumps(original))
             self.assertEqual(load_visualizer_config(path).presentation, DEFAULT_PRESENTATION)
             service = PresentationSettings(path)
-            updated = dict(report_hz=10, buffer_ms=1000, interpolate=True)
+            updated = dict(report_hz=10, buffer_ms=1000, interpolate=True, limit_tint=False)
             self.assertEqual(service.update(updated), updated)
             self.assertEqual(json.loads(path.read_text()), dict(original, presentation=updated))
             save_source_selection(path, dict(mpc_root='/new-source'))
@@ -38,7 +38,7 @@ class PresentationConfigTests(unittest.TestCase):
             self.assertEqual(PresentationSettings(path).settings(), updated)
         for changes in (dict(report_hz=True), dict(report_hz=0), dict(report_hz=121),
                         dict(report_hz=float('nan')), dict(buffer_ms=-1), dict(buffer_ms=10001),
-                        dict(buffer_ms=float('inf')), dict(interpolate=1)):
+                        dict(buffer_ms=float('inf')), dict(interpolate=1), dict(limit_tint=1)):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate_presentation(dict(DEFAULT_PRESENTATION, **changes))
         for invalid in ({}, [], dict(DEFAULT_PRESENTATION, extra=1)):
@@ -56,7 +56,7 @@ class PresentationConfigTests(unittest.TestCase):
             url = f'http://127.0.0.1:{server.server_port}/api/presentation/settings'
             try:
                 self.assertEqual(json.load(urlopen(url)), DEFAULT_PRESENTATION)
-                value = dict(report_hz=60, buffer_ms=0, interpolate=False)
+                value = dict(report_hz=60, buffer_ms=0, interpolate=False, limit_tint=True)
                 request = Request(url, data=json.dumps(value).encode(), headers={'Content-Type':'application/json'})
                 self.assertEqual(json.load(urlopen(request)), value)
                 self.assertEqual(json.load(urlopen(url)), value)

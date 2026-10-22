@@ -1,17 +1,19 @@
 # Presentation settings
 
-`GET /api/presentation/settings` returns the saved preferences. `POST` replaces all three fields and returns the same object:
+`GET /api/presentation/settings` returns the saved preferences. `POST` replaces all four fields and returns the same object:
 
 ```json
-{"report_hz":20,"buffer_ms":200,"interpolate":false}
+{"report_hz":20,"buffer_ms":200,"interpolate":false,"limit_tint":true}
 ```
 
-These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, and `interpolate` a boolean. Source, build, plotting and replay preferences are preserved when saving this key.
+These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, `interpolate` a boolean, and `limit_tint` a boolean. A saved `presentation` key without `limit_tint` takes the default. Source, build, plotting and replay preferences are preserved when saving this key.
 
 `report_hz` controls the numerical worker's wall-clock reporting cadence, independently of TO, control and simulation frequencies. Reports retain every plan, state, control sample and per-interval deadline measurement. A report is split into IPC packets of at most 256 records; splitting does not trigger an earlier report. History/latest notifications are published after the final packet. Progress statuses follow the configured cadence. Pause, cancel, inspection pause, settings/profile transitions, completion and errors flush pending records immediately. No reporting wait is added to numerical execution, and changing this preference does not reset the controller, history generation, settings version or warm start.
 
 The report window bounds accumulation by elapsed wall time (at most one second at the minimum reporting frequency, observed at completed numerical boundaries). Existing finite-job state limits and Live pacing remain in force; no extra recording queue or spool is introduced. A slow numerical call can delay a report beyond its target deadline.
 
 `buffer_ms` is a browser presentation target in **simulation-time milliseconds**, not a numerical integration delay or a wall-clock reporting interval. `interpolate` selects display interpolation; the default is sample hold. Both are consumed by the frontend and never change recorded values or plant/control calculations. Available buffered motion comes from received history bounds, not a progress status's computational `history_end_s`, which may lead a pending report.
+
+`limit_tint` (default on) tints each robot link by its joint's worst limit use among position (distance from the range centre over the half range), velocity and torque, using only quantities the displayed sample has and the limits resolved for the recording or Live state. Tint starts at 80 % use (`LIMIT_TINT_THRESHOLD` in `src/limit-tint.js`) and is fully red at 100 %; hovering a tinted link names the limit. It is browser-side display only.
 
 Live history HTTP pages accept `limit` from 1 to 2048 records; the API default remains 256. The browser requests 1024 to reduce serial network round trips. This read-only page limit is separate from the 256-record numerical IPC packet limit. Pages preserve every recorded value and cursor; the larger allowance does not establish a throughput guarantee.

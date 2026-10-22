@@ -3,12 +3,12 @@ from copy import deepcopy
 import math
 import threading
 
-DEFAULT_PRESENTATION = dict(report_hz=20, buffer_ms=200, interpolate=False)
+DEFAULT_PRESENTATION = dict(report_hz=20, buffer_ms=200, interpolate=False, limit_tint=True)
 
 
 def validate_presentation(value):
     if not isinstance(value, dict) or set(value) != set(DEFAULT_PRESENTATION):
-        raise ValueError('presentation requires report_hz, buffer_ms and interpolate')
+        raise ValueError('presentation requires report_hz, buffer_ms, interpolate and limit_tint')
     result = dict(value)
     for name, minimum, maximum in (('report_hz', 1, 120), ('buffer_ms', 0, 10000)):
         number = value[name]
@@ -17,6 +17,8 @@ def validate_presentation(value):
             raise ValueError(f'{name} must be finite within [{minimum}, {maximum}]')
     if not isinstance(value['interpolate'], bool):
         raise ValueError('interpolate must be a boolean')
+    if not isinstance(value['limit_tint'], bool):
+        raise ValueError('limit_tint must be a boolean')
     return result
 
 

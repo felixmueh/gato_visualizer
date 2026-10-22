@@ -1349,3 +1349,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .task-pose-reset-caption { color: #91a8c0; font-size: 10px; }
 .studio-workbench #live-task-parameters > .setting-reset-field { margin-bottom: 10px; }
 .studio-workbench .transport-calculation > .setting-reset-field { gap: 1px; }
+
+.limit-tint-tooltip {
+  position: absolute;
+  z-index: 3;
+  padding: 3px 7px;
+  border: 1px solid #ff7a7a;
+  border-radius: 3px;
+  background: #1b2636ee;
+  color: #ffd9d9;
+  font: 11px 'IBM Plex Mono', monospace;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.limit-tint-tooltip[hidden] { display: none; }
