@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from solver_process import (ARRAY_FRAME, MAX_MESSAGE_BYTES, native_plan, receive_leased_message,
+from solver_process import (ARRAY_FRAME, MAX_MESSAGE_BYTES, receive_leased_message,
                             receive_message, send_lease, send_message)
 
 
@@ -94,21 +94,13 @@ class ArrayTransportTests(unittest.TestCase):
             sender.close()
             receiver.close()
 
-    def test_native_coordinates_and_control_values_are_unchanged(self):
-        signs = np.array([1, 1, 1, 1, 1, -1, 1])
-        raw = np.arange(56, dtype=np.float32)/7
-        original = raw.copy()
-        native = native_plan(dict(N=3, _xu=raw, _signs=signs))
-        self.assertIsInstance(native["_xu"], np.ndarray)
+    def test_native_plan_arrays_cross_unchanged(self):
+        states, torques = np.arange(42.).reshape(3, 14)/7, np.arange(14.).reshape(2, 7)/3
         channel = ByteChannel()
-        send_message(channel, dict(plan=native), array_buffers=True)
+        send_message(channel, dict(plan=dict(_states=states, _torques=torques)), array_buffers=True)
         received = receive_message(channel)["plan"]
-        expected = original * np.tile(signs, 8)
-        np.testing.assert_array_equal(received["_xu"], expected)
-        np.testing.assert_array_equal(raw, original)
-        controls = received["_xu"][:42].reshape(2, 21)[:, 14:21].astype(float)
-        np.testing.assert_array_equal(controls, expected[:42].reshape(2, 21)[:, 14:21])
-        np.testing.assert_array_equal(received["_signs"], np.ones(7))
+        np.testing.assert_array_equal(received["_states"], states)
+        np.testing.assert_array_equal(received["_torques"], torques)
 
     def test_unsupported_dtypes_nonfinite_and_total_limit_rejected_before_send(self):
         invalid = (np.array([object()]), np.zeros(1, dtype=[("x", "f4")]),

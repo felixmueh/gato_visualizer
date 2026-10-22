@@ -19,17 +19,18 @@ import numpy as np
 
 from execution_bridge import ProcessLiveService
 from execution_session import DEFAULT_EXECUTION, MultirateSession
-from solver_process import SolverProcess, native_plan, validate_contract, send_lease, receive_leased_message
+from solver_process import SolverProcess, validate_contract, send_lease, receive_leased_message
 from solver_adapter import SimulatorAdapter, RemoteController
 from solver_profiles import SolverProfiles
 from server import make_server
 from tests.test_execution import FakeAdapter, FakeRenderer, fake_schema, fake_worker, MPC_ROOT
+from tests.tiago_mpc_source import live_probe
 
 
 class ProfileAdapter(FakeAdapter):
     def __init__(self, root):
         super().__init__(root)
-        self.plant_identity = str(id(self.model)) + str(id(self))
+        self.plant_identity = str(id(self))
         self.profile = "simulator"
         self.profile_schema = fake_schema(root)
 
@@ -37,8 +38,9 @@ class ProfileAdapter(FakeAdapter):
         n = config["N"]
         if profile["id"] == "unsupported_n":
             raise ValueError(f"No compatible prebuilt N={n}")
+        return self.profile_schema
 
-    def select_profile(self, profile):
+    def select_profile(self, profile, schema):
         self.close_solver()
         if profile["id"] == "broken":
             raise ValueError("incompatible native joint order")
@@ -49,10 +51,10 @@ class ProfileAdapter(FakeAdapter):
     def close_solver(self):
         self.profile = None
 
-    def configure(self, path, task):
+    def configure(self, config, task):
         if self.profile is None:
             raise ValueError("No active solver profile")
-        super().configure(path, task)
+        super().configure(config, task)
 
     def state_snapshot(self, *args):
         if self.profile == "state_failure":
@@ -103,7 +105,7 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(live.latest["state"]["qd"], [-.4]*7)
         self.assertEqual(live.active_profile_id, "second")
         self.assertEqual(live.schema["available_N_by_friction"], dict(off=[16], on=[32]))
-        self.assertEqual(live.schema["friction"]["predictor"]["source"]["predictor"], "second")
+        self.assertEqual(live.schema["friction"]["source"]["predictor"], "second")
         self.assertEqual(old_path.read_bytes(), old_bytes)
         self.assertNotEqual(live.history_store.path, old_path)
         self.assertEqual(live.latest["status"]["state"], "paused")
@@ -244,13 +246,18 @@ class TransportTests(unittest.TestCase):
             coordinate_units="rad,rad/s,Nm", torque_semantics="actuator_joint_torque",
             reference_frame="torso", end_effector_frame="tcp",
             world_from_reference=np.eye(4).tolist(), tcp_offset=np.eye(4).tolist())
-        schema = fake_schema(MPC_ROOT)
         profile = dict(mpc_root=str(MPC_ROOT), python=sys.executable, cache="unused")
-        checked = dict(compatible=True, available_N=[16], contract=adapter.contract, schema=schema)
+        checked = dict(live_probe(), contract=adapter.contract, available_N=[32], available_N_by_friction=dict(off=[32], on=[]))
         with patch("source_runtime.probe_selection", return_value=checked):
-            adapter.preflight_profile(profile, schema["defaults"]["config"], schema["defaults"]["task"])
-            schema["parameters"].append(dict(path="additional_setting", kind="bool"))
+            schema = adapter.preflight_profile(profile, dict(checked["defaults"], plant=dict(friction=False)),
+                                               dict(kind="reach", target_offset_m=[0, 0, 0]))
+            self.assertEqual(schema["available_N"], [32])
+            checked["defaults"]["additional_setting"] = True
             with self.assertRaisesRegex(ValueError, "Complete config required"):
+                adapter.preflight_profile(profile, schema["defaults"]["config"], schema["defaults"]["task"])
+            del checked["defaults"]["additional_setting"]
+            checked["contract"] = dict(adapter.contract, end_effector_frame="other")
+            with self.assertRaisesRegex(ValueError, "end_effector_frame"):
                 adapter.preflight_profile(profile, schema["defaults"]["config"], schema["defaults"]["task"])
 
     @staticmethod
@@ -401,29 +408,18 @@ with socket.socket(fileno=fd) as channel:
             self.assertEqual(child.process.returncode, 0)
             self.assertIn("native diagnostic output", child.log_path.read_text())
 
-    def test_prediction_conversion_covers_positions_velocities_and_torque(self):
-        signs = np.array([1,1,1,1,1,-1,1])
-        raw = np.arange(56, dtype=np.float32)
-        result = native_plan(dict(_xu=raw, _signs=signs, N=3))
-        expected = raw*np.tile(signs, 8)
-        np.testing.assert_array_equal(result["_xu"], expected)
-        self.assertEqual(result["_signs"], [1.]*7)
-
-    def test_native_joint6_control_is_not_signed_again_by_fixed_simulator(self):
+    def test_native_joint6_control_is_not_signed_by_the_simulator(self):
+        # Plans cross the solver boundary in native coordinates (Plan.torques):
+        # joint 6's native +3 Nm is applied as +3 Nm, whatever its GPU axis sign.
         adapter = FakeAdapter()
-        # The predictor's GPU joint 6 torque is -3, native torque is +3.
-        # Even a simulator adapter exposing its original negative axis must use
-        # the packet's already-native convention for the applied plan.
-        raw = np.zeros(56, dtype=np.float32)
-        raw[19] = raw[40] = -3.
-        plan = native_plan(dict(_xu=raw, _signs=adapter.signs, N=3, dt_s=.02,
-            seq=1, stats=dict(solve_time_ms=0.), sim_time_s=0., type="plan"))
+        torques = np.zeros((2, 7)); torques[:, 5] = 3.
+        plan = dict(_states=np.zeros((3, 14)), _torques=torques, N=3, dt_s=.02,
+                    seq=1, stats=dict(solve_time_ms=0.), sim_time_s=0., type="plan")
         adapter.solve_snapshot = lambda origin, version: deepcopy(plan)
         session = MultirateSession(adapter, dict(DEFAULT_EXECUTION,
             simulation_hz=100., control_hz=100., to_hz=100.))
         records = session.advance_interval(.01)
         control = next(record for record in records if record["type"] == "control")
-        self.assertEqual(adapter.signs[5], -1.)
         self.assertEqual(control["torque_nm"][5], 3.)
         self.assertAlmostEqual(adapter.x[5], .03)
 

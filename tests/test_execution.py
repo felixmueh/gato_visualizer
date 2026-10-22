@@ -1,7 +1,5 @@
 """CPU evidence for the production multirate and spawned-process paths."""
 from copy import deepcopy
-import json
-from pathlib import Path
 import tempfile
 import threading
 import time
@@ -13,10 +11,8 @@ import numpy as np
 from execution_bridge import HistoryStore, HistoryGenerationError, ProcessLiveService
 from execution_session import DEFAULT_EXECUTION, MultirateSession, interval_record, validate_execution
 from execution_worker import worker_main
-from live_mpc import parameter_specs
 from server import make_server
-
-MPC_ROOT = Path(__file__).resolve().parents[2] / 'tiago_mpc_vis_baseline'
+from tests.tiago_mpc_source import MPC_ROOT, live_probe
 LOCK_HELD = False
 
 
@@ -50,6 +46,24 @@ class FakeController:
         self.fresh = True
 
 
+class FakePlant:
+    """SimPlant's interface with an Euler-like toy integrator: one step per advance."""
+    def __init__(self, adapter):
+        self.adapter, self.q, self.qd, self.t = adapter, adapter.x[:7].copy(), adapter.x[7:].copy(), adapter.t
+        self.command = np.zeros(7)
+    def apply(self, command):
+        self.command = np.array(command, dtype=float)
+    def advance(self, t):
+        if self.adapter.clock:
+            self.adapter.clock.value += .0001
+        h, self.t = t-self.t, t
+        if getattr(self.adapter, 'blow_up', False):
+            # Unstable plant: finite in float64, beyond the solver's float32.
+            self.q, self.qd = np.full(7, 1e300), np.full(7, 1e300)
+        else:
+            self.q, self.qd = self.q+self.command*h, self.qd+self.command*h
+
+
 class FakeAdapter:
     def __init__(self, root=None):
         self.x = np.zeros(14)
@@ -57,34 +71,28 @@ class FakeAdapter:
         self.dt = .02
         self.N = 3
         self.sequence = 0
-        self.state_signs = np.tile([1,1,1,1,1,-1,1], 2)
-        self.signs = self.state_signs[:7]
         self.applied_torque = None
+        self.u = np.zeros(7)
         self.controller = FakeController()
-        self.solver = object()
-        self.reach = self
-        self.model = self.data = None
         self.delay = 0
         self.fail = False
-        self.restarted = True
         self.clock = None
-    def configure(self, path, task):
+    def configure(self, config, task):
         if not LOCK_HELD:
             raise AssertionError('Configure outside lock')
-        config = json.loads(Path(path).read_text())
         self.dt, self.N = config['dt_s'], config['N']
-        self.delay = .25 if config['solver_params']['max_sqp_iters'] == 9000 else 0
-        self.fail = config['solver_params']['max_sqp_iters'] == 8000
-        self.blow_up = config['solver_params']['max_sqp_iters'] == 7000
+        self.delay = .25 if config['solver']['max_sqp_iters'] == 9000 else 0
+        self.fail = config['solver']['max_sqp_iters'] == 8000
+        self.blow_up = config['solver']['max_sqp_iters'] == 7000
         self.task = task
-        self.controller.reset(self.x*self.state_signs)
-    def reset_state(self, reset_controller=True):
+        self.controller.reset(self.x)
+    def reset_state(self):
         self.x[:] = 0
         self.t = 0
         self.sequence = 0
         self.applied_torque = None
-        if reset_controller:
-            self.controller.reset(self.x)
+    def new_plant(self, substep):
+        return FakePlant(self)
     def solve_snapshot(self, origin, version):
         if self.fail:
             raise RuntimeError('intentional test solve failure')
@@ -98,28 +106,16 @@ class FakeAdapter:
         if self.clock:
             self.clock.value += .03
         if origin == 'preview':
-            self.controller.reset(self.x*self.state_signs)
+            self.controller.reset(self.x)
         was_fresh = self.controller.fresh
         self.controller.fresh = False
         self.sequence += 1
-        blocks = []
-        for k in range(self.N):
-            blocks.extend((self.x[:7]*self.signs).tolist())
-            blocks.extend((self.x[7:]*self.signs).tolist())
-            if k < self.N-1:
-                blocks.extend((np.ones(7)*(k+1)*self.signs).tolist())
-        return dict(type='plan', _xu=np.array(blocks), _signs=self.signs.copy(),
+        return dict(type='plan', _states=np.tile(self.x, (self.N, 1)),
+                    _torques=np.arange(1., self.N)[:, None]*np.ones(7),
                     _reference=np.zeros((self.N, 6)), N=self.N, dt_s=self.dt,
                     sim_time_s=self.t, seq=self.sequence, origin=origin,
                     settings_version=version, target_xyz=[0,0,0], task_kind='reach',
                     stats=dict(solve_time_ms=2., sqp_iters=1, controller_restarted=was_fresh))
-    def rk4(self, model, data, q, v, u, h):
-        if self.clock:
-            self.clock.value += .0001
-        if getattr(self, 'blow_up', False):
-            # Unstable plant: finite in float64, beyond the solver's float32.
-            return np.full(7, 1e300), np.full(7, 1e300)
-        return q+u*h, v+u*h
     def state_snapshot(self, rtf=0, settings_version=0):
         return dict(type='state', sim_time_s=self.t, _x=self.x.copy(),
                     q=self.x[:7].tolist(), qd=self.x[7:].tolist(),
@@ -128,12 +124,12 @@ class FakeAdapter:
 
 
 def fake_schema(root):
-    config = json.loads((MPC_ROOT/'configs/reaching.json').read_text())
-    config = {k:v for k,v in config.items() if k in ('N','dt_s','solver_params','controller','limit_bounds')}
-    config['N'] = 16
-    return dict(defaults=dict(config=config, task=dict(kind='reach',target_offset_m=[0,0,0]),
-                              execution=dict(DEFAULT_EXECUTION)), available_N=[16],
-                parameters=parameter_specs(config,[16]))
+    from live_mpc import build_schema
+    probe = live_probe()
+    probe['available_N_by_friction'] = dict(off=[16], on=[])
+    schema = build_schema(probe, root or MPC_ROOT)
+    schema['defaults']['config']['N'] = 16
+    return schema
 
 
 def fake_worker(*args):
@@ -151,7 +147,7 @@ class FakeRenderer:
         result=[]
         if plan:
             event=mutable(plan)
-            for key in ('_xu','_signs','_reference'):
+            for key in ('_states','_torques','_reference'):
                 event.pop(key,None)
             result.append(event)
         if state:
@@ -200,11 +196,8 @@ class SchedulerTests(unittest.TestCase):
         original=a.solve_snapshot
         def production_like_solve(origin, version):
             plan=original(origin,version)
-            # MPCAdapter.solve_snapshot assigns step.u for its conformance API.
-            # Make each newly optimized first control observably different.
-            for k in range(a.N-1):
-                plan['_xu'][21*k+14:21*k+21] = np.ones(7)*a.sequence*10*a.signs
-            a.u=np.ones(7)*a.sequence*10
+            # Make each newly optimized control observably different.
+            plan['_torques'][:] = a.sequence*10
             return plan
         a.solve_snapshot=production_like_solve
         session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=1000.,control_hz=23.,to_hz=11.))
@@ -328,7 +321,7 @@ class SpawnTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'anchor'):
             self.service.command(dict(request, anchor=old['anchor']))
     def test_native_solve_cannot_block_http_and_rapid_obsolete_settings_discarded(self):
-        request=self.settings();request['config']['solver_params']['max_sqp_iters']=9000
+        request=self.settings();request['config']['solver']['max_sqp_iters']=9000
         self.service.command(request)
         self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
         self.service.command(dict(type='precalculate'))
@@ -412,7 +405,7 @@ class SpawnTests(unittest.TestCase):
     def test_on_play_pause_during_native_solve_is_reported(self):
         request=self.settings()
         request['execution']['calculation']='on_play'
-        request['config']['solver_params']['max_sqp_iters']=9000
+        request['config']['solver']['max_sqp_iters']=9000
         self.service.command(request)
         self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
         generation=self.service.generation
@@ -429,13 +422,13 @@ class SpawnTests(unittest.TestCase):
     def test_pending_settings_anchor_survives_later_cancel_before_native_return(self):
         request=self.settings()
         request['execution']['calculation']='on_play'
-        request['config']['solver_params']['max_sqp_iters']=9000
+        request['config']['solver']['max_sqp_iters']=9000
         self.service.command(request)
         self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
         self.service.command(dict(type='play'))
         self.wait(lambda:self.service.latest.get('status',{}).get('job_active'))
         replacement=self.settings()
-        replacement['config']['solver_params']['max_sqp_iters']=1
+        replacement['config']['solver']['max_sqp_iters']=1
         replacement['execution']['calculation']='on_play'
         replacement['anchor']=dict(sim_time_s=3.,q=[.7]*7,qd=[.2]*7)
         self.service.command(replacement)
@@ -465,7 +458,7 @@ class SpawnTests(unittest.TestCase):
         self.assertTrue(self.service.latest['history']['complete'])
         self.assertEqual(self.service.latest['history']['history_end_s'],tip)
         self.assertEqual(self.service.latest['plan']['sim_time_s'],.025)
-        self.assertNotIn('_xu',self.service.latest['plan'])
+        self.assertNotIn('_states',self.service.latest['plan'])
         self.service.command(dict(type='play'))
         self.wait(lambda:self.service.latest.get('status',{}).get('history_end_s',0)>=tip+.125-1e-12)
         self.assertAlmostEqual(self.service.latest['history']['history_end_s'],tip+.125)
@@ -477,11 +470,11 @@ class SpawnTests(unittest.TestCase):
         self.service.command(dict(type='pause'))
         self.assertEqual(self.service.generation,generation)
         self.assertEqual(len(self.records()),count)
-        request=self.settings();request['config']['solver_params']['max_sqp_iters']=8000
+        request=self.settings();request['config']['solver']['max_sqp_iters']=8000
         self.service.command(request)
         self.wait(lambda:self.service.latest.get('status',{}).get('state')=='error')
         pid=self.service._process.pid
-        repaired=self.settings();repaired['config']['solver_params']['max_sqp_iters']=1
+        repaired=self.settings();repaired['config']['solver']['max_sqp_iters']=1
         self.service.command(repaired)
         version=self.service.next_version
         self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==version)
@@ -491,7 +484,7 @@ class SpawnTests(unittest.TestCase):
         # The 0.2 s TO interval spans two 0.1 s batches, so the failed solve's
         # restored tip is already the blown-up state that Reset discards.
         request=self.settings(simulation_hz=100.,control_hz=25.,to_hz=5.)
-        request['config']['solver_params']['max_sqp_iters']=7000
+        request['config']['solver']['max_sqp_iters']=7000
         request['execution']['duration_s']=.5
         self.service.command(request)
         version=self.service.next_version

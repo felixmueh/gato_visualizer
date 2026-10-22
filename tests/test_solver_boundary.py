@@ -1,7 +1,11 @@
-"""CPU-only regression coverage of compact solver replies and retained context."""
+"""CPU-only coverage of the solver child around tiago_mpc's Mpc, compact replies
+and the context the coordinator retains. A fake Mpc stands in for the GPU."""
+from contextlib import contextmanager
 from copy import deepcopy
+import importlib
 from pathlib import Path
 import socket
+import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
@@ -11,11 +15,113 @@ import numpy as np
 
 from live_mpc import FIGURE8_DEFAULT_TASK
 from live_presentation import mutable, render_plan, snapshot
-from solver_adapter import SimulatorAdapter, RemoteController
-from solver_process import (native_plan, receive_message, send_lease, send_message,
-                            wire_value)
+from solver_adapter import SimulatorAdapter
+from solver_process import receive_message, send_lease, send_message, wire_value
 from solver_worker import serve
-from tests import test_live_mpc
+from tests.tiago_mpc_source import MPC_ROOT, live_probe
+
+SIGNS = np.array([1., 1., 1., 1., 1., -1., 1.])
+
+
+def float32_finite(x):
+    with np.errstate(over="ignore"):
+        return bool(np.isfinite(np.asarray(x, dtype=np.float32)).all())
+
+
+class FakeSolver:
+    lib = SimpleNamespace(ITERATION_CAPTURE_AVAILABLE=False, NATIVE_SOURCE_ID="fake")
+
+    def __init__(self, n):
+        self.n = n
+
+    def solve(self, x, reference):
+        pass
+
+    def get_row_groups(self):
+        # GPU coordinates: joint 6's position box is mirrored.
+        return [dict(kind=i, n_rows=7, lo=np.full(7, -2.+i)*SIGNS, hi=np.full(7, 2.-i/2)*SIGNS,
+                     active=[127]*self.n) for i in range(3)]
+
+
+class FakeMpc:
+    """tiago_mpc.mpc.Mpc's interface; plans are native, as Mpc.result returns them."""
+    instances = []
+
+    def __init__(self, params, binary):
+        self.params, self.N, self.dt, self.signs = params, params.N, params.dt_s, SIGNS
+        self.resets, self.step, self._plan = [], None, None
+        self.controller = SimpleNamespace(reset=self.reset, solver=FakeSolver(params.N))
+        FakeMpc.instances.append(self)
+
+    def reset(self, x):
+        if not float32_finite(x):
+            raise ValueError("reset x0 must be finite")
+        self.resets.append(np.array(x))
+
+    def request(self, state, reference, updates=None):
+        from tiago_mpc.plan import Plan
+        x = np.r_[state.q, state.qd]
+        if not float32_finite(x):
+            raise FloatingPointError("Nonfinite torque or predicted trajectory")
+        self.reference = reference
+        stats = dict(solve_time_us=1500., wall_s=.002, iterations=1, budget_hit=False, sqp=2, pcg=7,
+                     zero_pcg_rows=0, admm=3, admm_linsys=1, admm_linsys_mode="pcg", row_viol=np.array([0., 1e-3]))
+        self.step = SimpleNamespace(solve=SimpleNamespace(stats=SimpleNamespace(
+            final_merit=1.5, step_size=np.array([1., np.nan]))))
+        self._plan = Plan(state.t, self.dt, np.tile(x, (self.N, 1)),
+                          np.arange(7*(self.N-1), dtype=float).reshape(self.N-1, 7), stats)
+
+    def result(self, block=False):
+        plan, self._plan = self._plan, None
+        return plan
+
+
+@contextmanager
+def fake_gpu():
+    """The real tiago_mpc.mpc on the CPU, with Mpc (the GPU part) replaced."""
+    with tempfile.TemporaryDirectory() as cache:
+        live_probe()  # puts the selected tiago_mpc on sys.path
+        module = importlib.import_module("tiago_mpc.mpc")
+        FakeMpc.instances.clear()
+        with patch.multiple(module, Mpc=FakeMpc, find_binary=lambda params: Path(__file__),
+                            cache_root=lambda: Path(cache)), patch("traceback.print_exc"):
+            yield
+
+
+class Remote:
+    """SolverProcess.request over a socket pair to serve() in a thread."""
+    epoch = "test-epoch"
+
+    def __init__(self):
+        self.sender, receiver = socket.socketpair()
+        self.sequence, self.replies = 0, []
+        self.thread = threading.Thread(target=serve, args=(receiver, MPC_ROOT))
+        self.thread.start()
+        self.receiver = receiver
+
+    def raw(self, operation, **payload):
+        self.sequence += 1
+        send_lease(self.sender, [])
+        send_message(self.sender, dict(protocol=1, epoch=self.epoch, request_id=self.sequence,
+                                       operation=operation, payload=payload), array_buffers=operation == "solve")
+        return receive_message(self.sender)
+
+    def request(self, operation, *, timeout=None, **payload):
+        response = self.raw(operation, **payload)
+        if not response["ok"]:
+            raise ValueError(response["error"])
+        self.replies.append((operation, response["result"]))
+        return response["result"]
+
+    def close(self):
+        self.raw("close")
+        self.thread.join(timeout=3)
+        self.sender.close()
+        self.receiver.close()
+
+
+def config(**changes):
+    return {**live_probe()["defaults"], "N": 4, "plant": dict(friction=False), **changes}
 
 
 class BoundaryTests(unittest.TestCase):
@@ -35,161 +141,107 @@ class BoundaryTests(unittest.TestCase):
             sender.close()
             receiver.close()
 
-    def test_configure_after_failed_solve_ignores_the_rejected_state(self):
-        # Each solve caches its input state in the child. After a plant
-        # blow-up that state overflows GATO's float32 staging; configure must
-        # not seed the new controller from it, or Reset cannot recover.
-        numerical = test_live_mpc.AdapterTelemetryTests().adapter()
-
-        def float32_finite(x):
-            with np.errstate(over="ignore"):
-                return bool(np.isfinite(np.asarray(x, dtype=np.float32)).all())
-
-        def gato_reset(x):
-            if not float32_finite(x):
-                raise ValueError("reset x0 must be finite")
-
-        def gato_step(x, reference):
-            if not float32_finite(x):
-                raise FloatingPointError("Nonfinite torque or predicted trajectory")
-            raise AssertionError("Only the rejected solve is requested")
-
-        numerical.controller = SimpleNamespace(reset=gato_reset, step=gato_step)
-        numerical.model_identity = {}
-        numerical.problem_configuration = {}
-        numerical.constraint_bounds_native = []
-        numerical.solver = SimpleNamespace(lib=SimpleNamespace(__file__=__file__), solve=lambda: None)
-        # MPCAdapter.configure ends by seeding its fresh controller from x.
-        numerical.configure = lambda path, task: numerical.controller.reset(numerical.x * numerical.state_signs)
-        sender, receiver = socket.socketpair()
-        sequence = iter(range(1, 100))
-
-        def request(operation, **payload):
-            send_lease(sender, [])
-            send_message(sender, dict(protocol=1, epoch="test-epoch", request_id=next(sequence),
-                                      operation=operation, payload=payload))
-            return receive_message(sender)
-
-        thread = threading.Thread(target=serve, args=(receiver, Path(__file__).parent))
-        with patch("live_mpc.MPCAdapter", return_value=numerical), \
-             patch("live_mpc.build_schema", return_value={}), \
-             patch("solver_worker.model_contract", return_value={}), \
-             patch("traceback.print_exc"):
-            thread.start()
+    def test_child_configures_mpc_params_and_recovers_after_a_rejected_state(self):
+        with fake_gpu():
+            remote = Remote()
             try:
-                self.assertTrue(request("bootstrap")["ok"])
-                self.assertTrue(request("configure", config_path=__file__, task={})["ok"])
-                rejected = request("solve", state=np.full(14, 1e300), time_s=.01, reference=np.zeros((2, 6)),
-                                   origin="play", settings_version=1)
+                self.assertEqual(remote.request("bootstrap")["contract"]["joint_names"][0], "arm_right_1_joint")
+                params = {key: value for key, value in config().items() if key != "plant"}
+                configured = remote.request("configure", params=params)
+                self.assertEqual(configured["configuration"], params)
+                self.assertIsNone(configured["prediction_friction"])
+                # Installed rows are reported in native coordinates.
+                self.assertEqual(configured["constraint_bounds_native"][0]["lo"][5], -2.)
+                self.assertEqual(configured["mpc_bounds"]["limit_bounds"], dict(
+                    joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85))
+                rejected = remote.raw("solve", state=np.full(14, 1e300), time_s=.01,
+                                      reference=np.zeros((4, 6)), origin="play", settings_version=1)
                 self.assertEqual(rejected["error"], "Nonfinite torque or predicted trajectory")
-                reconfigured = request("configure", config_path=__file__, task={})
-                self.assertTrue(reconfigured["ok"], reconfigured.get("error"))
+                self.assertTrue(remote.raw("configure", params=params)["ok"])
+                capped = remote.request("configure", params=params, max_sqp_iters=17)
+                self.assertEqual(capped["configuration"]["solver"]["max_sqp_iters"], 17)
+                self.assertEqual(FakeMpc.instances[-1].params.solver.max_sqp_iters, 17)
+                missing = remote.raw("configure", params=dict(params, friction=live_probe()["friction"]))
+                self.assertTrue(missing["ok"], missing.get("error"))
+                with patch("tiago_mpc.mpc.find_binary", lambda params: None):
+                    missing = remote.raw("configure", params=params)
+                self.assertRegex(missing["error"], "Not compiled: N=4 without predictor friction.*Build")
             finally:
-                request("close")
-                thread.join(timeout=3)
-                sender.close()
-                receiver.close()
-        self.assertFalse(thread.is_alive())
+                remote.close()
+            self.assertFalse(remote.thread.is_alive())
 
-    def test_worker_compact_reply_restores_full_immutable_simulator_plan(self):
-        numerical = test_live_mpc.AdapterTelemetryTests().adapter()
-        numerical.model_identity = dict(full_urdf_sha256="predictor", gpu_urdf_sha256="gpu")
-        numerical.problem_configuration = dict(N=2, dt_s=.01, solver_params=dict(max_sqp_iters=1),
-                                               controller=dict(warm_start="shift"))
-        numerical.joint_limits = dict(lower_position_rad=[-2.]*7, upper_position_rad=[2.]*7,
-                                      velocity_rad_s=[3.]*7, effort_nm=[4.]*7)
-        numerical.constraint_bounds_native = [dict(kind=i, n_rows=7, lo=[-2.]*7, hi=[2.]*7,
-                                                   active=[True, True]) for i in range(3)]
-        numerical.solver = SimpleNamespace(lib=SimpleNamespace(__file__=__file__), solve=lambda: None)
-        numerical.configure = lambda path, task: numerical.configure_task(numerical.problem_configuration, task)
-        sender, receiver = socket.socketpair()
-        replies = []
-
-        class Remote:
-            epoch = "test-epoch"
-            sequence = 0
-
-            def request(self, operation, *, timeout=None, **payload):
-                self.sequence += 1
-                send_lease(sender, [])
-                send_message(sender, dict(protocol=1, epoch=self.epoch, request_id=self.sequence,
-                                          operation=operation, payload=payload))
-                response = receive_message(sender)
-                if not response["ok"]:
-                    raise AssertionError(response["error"])
-                replies.append((operation, response["result"]))
-                return response["result"]
-
-        simulator = SimulatorAdapter.__new__(SimulatorAdapter)
-        simulator.__dict__.update(numerical.__dict__)
-        del simulator.configure
-        simulator.remote = Remote()
-        simulator.profile_schema = dict(available_N=[2])
-        simulator.profile = dict(id="different-predictor")
-        simulator.simulator_identity = dict(full_urdf_sha256="simulator", gpu_urdf_sha256="gpu")
-        simulator.contract = dict(coordinates="native")
-        simulator.signs, simulator.state_signs = np.ones(7), np.ones(14)
-        simulator.controller = RemoteController(simulator)
-        # Deliberately different simulator geometry: predictor geometry may
-        # never replace these anchors or the simulator's exact reference.
-        simulator.figure8_start_world = numerical.figure8_start_world + 1.
-        simulator.task_anchors = snapshot(dict(figure8=simulator.figure8_start_world.tolist()))
-
-        thread = threading.Thread(target=serve, args=(receiver, Path(__file__).parent))
-        loader = SimpleNamespace(load_configuration=lambda path: (None, None, numerical.problem_configuration))
-        with patch("live_mpc.MPCAdapter", return_value=numerical), \
-             patch("live_mpc.build_schema", return_value={}), \
-             patch("solver_worker.model_contract", return_value={}), \
-             patch("solver_adapter.importlib.import_module", return_value=loader):
-            thread.start()
+    def test_compact_reply_becomes_a_full_immutable_simulator_plan(self):
+        with fake_gpu():
+            remote = Remote()
+            simulator = SimulatorAdapter(MPC_ROOT)
             try:
-                simulator.remote.request("bootstrap")
-                simulator.configure(Path(__file__), deepcopy(FIGURE8_DEFAULT_TASK))
+                schema = dict(available_N_by_friction=dict(off=[4], on=[]))
+                simulator.remote, simulator.profile, simulator.profile_schema = remote, dict(id="different-predictor"), schema
+                remote.request("bootstrap")
+                simulator.configure(config(), deepcopy(FIGURE8_DEFAULT_TASK))
+                mpc = FakeMpc.instances[-1]
+                np.testing.assert_array_equal(mpc.resets[-1], simulator.x*np.tile(SIGNS, 2))
                 simulator.x = np.arange(14, dtype=float)/10
                 simulator.t = 2.
                 captured = simulator.solve_snapshot("play", 7)
-                dynamic = replies[-1][1]["plan"]
+                dynamic = remote.replies[-1][1]["plan"]
                 for name in ("task_path_xyz", "task_anchors", "joint_limits", "problem_configuration",
                              "constraint_bounds_native", "model_identity", "solver_profile"):
                     self.assertNotIn(name, dynamic)
                     self.assertIn(name, captured)
                 self.assertEqual(captured["solver_profile"]["profile"]["id"], "different-predictor")
-                self.assertTrue(captured["solver_profile"]["physical_model_differs"])
-                # All dynamic solver output matches the complete legacy API,
-                # including both terminal joint-6 state components.
-                numerical.restarted = True
-                complete = native_plan(numerical.solve_snapshot("play", 7, reference=simulator.reference))
-                for key in ("_xu", "_reference", "initial_state", "stats", "diagnostics"):
-                    self.assertEqual(wire_value(captured[key]), wire_value(complete[key]))
-                np.testing.assert_array_equal(simulator.u, np.arange(7)*numerical.signs)
-                np.testing.assert_array_equal(captured["_signs"], np.ones(7))
+                self.assertFalse(captured["solver_profile"]["physical_model_differs"])
+                # Native Plan arrays cross unchanged; the plan's stats keep the plotters' keys.
+                np.testing.assert_array_equal(captured["_states"], np.tile(simulator.x, (4, 1)))
+                np.testing.assert_array_equal(captured["_torques"], np.arange(21.).reshape(3, 7))
+                self.assertEqual(mutable(captured["stats"]), dict(
+                    sqp_iters=2, pcg_iters=7, admm_iters=3, admm_linsys_iters=1, admm_linsys_mode="pcg",
+                    zero_pcg_rows=0, budget_hit=False, solve_time_ms=1.5, step_wall_s=.002,
+                    row_violation=[0., 1e-3], controller_restarted=True))
+                self.assertEqual(mutable(captured["diagnostics"]), dict(final_merit=1.5, step_size=[1., None]))
+                np.testing.assert_array_equal(mpc.reference, simulator.reference)
+                self.assertEqual(mpc.reference.dtype, np.float32)
                 expected = render_plan(captured, simulator.kinematics)
+                self.assertEqual(expected["torque_nm"], np.arange(21.).reshape(3, 7).tolist())
                 from inspection_problem import captured_problem
                 problem = captured_problem(expected)
                 self.assertEqual(problem["reference_native"], simulator.reference.tolist())
                 self.assertEqual(expected["task_anchors"], mutable(simulator.task_anchors))
                 self.assertEqual(expected["task_path_xyz"], simulator.task_path_xyz)
+                self.assertFalse(simulator.solve_snapshot("play", 8)["stats"]["controller_restarted"])
                 # Public records may be edited without changing future solves;
-                # retained snapshots survive mutable source/profile/config edits.
+                # retained snapshots survive later reconfiguration.
                 public = mutable(captured)
                 public["solver_profile"]["profile"]["id"] = "edited-record"
-                simulator.last_xu[:] = -99
                 simulator.reference[:] = 99
                 simulator.profile["id"] = "new-profile"
-                numerical.problem_configuration["solver_params"]["max_sqp_iters"] = 9
-                numerical.constraint_bounds_native[0]["lo"][0] = -99
-                simulator.configure(Path(__file__), deepcopy(FIGURE8_DEFAULT_TASK))
+                simulator.configure(config(solver=dict(config()["solver"], max_sqp_iters=9),
+                                           plant=dict(friction=True)), deepcopy(FIGURE8_DEFAULT_TASK))
                 self.assertEqual(render_plan(captured, simulator.kinematics), expected)
-                newer = simulator.solve_snapshot("play", 8)
-                self.assertEqual(newer["problem_configuration"]["solver_params"]["max_sqp_iters"], 9)
+                newer = simulator.solve_snapshot("play", 9)
+                self.assertEqual(newer["problem_configuration"]["solver"]["max_sqp_iters"], 9)
                 self.assertEqual(newer["solver_profile"]["profile"]["id"], "new-profile")
+                self.assertTrue(newer["solver_profile"]["physical_model_differs"])
+                self.assertIsNone(simulator.plant_friction.width_rad_s)  # the plant's hard sign
                 with self.assertRaises(TypeError):
                     captured["solver_profile"]["profile"]["id"] = "mutated"
                 with self.assertRaises(ValueError):
-                    captured["_xu"][0] = 1
+                    captured["_states"][0, 0] = 1
+                with self.assertRaisesRegex(ValueError, "Not compiled: N=4 with predictor friction"):
+                    simulator.configure(config(friction=live_probe()["friction"]), deepcopy(FIGURE8_DEFAULT_TASK))
             finally:
-                simulator.remote.request("close")
-                thread.join(timeout=3)
-                sender.close()
-                receiver.close()
-        self.assertFalse(thread.is_alive())
+                remote.close()
+        self.assertFalse(remote.thread.is_alive())
+
+    def test_simulated_plant_starts_at_the_state_and_time_and_never_rewinds(self):
+        live_probe()
+        simulator = SimulatorAdapter(MPC_ROOT)
+        simulator.x, simulator.t = np.r_[simulator.tiago.Q_START, np.full(7, .1)], 3.
+        plant = simulator.new_plant(.001)
+        np.testing.assert_array_equal(plant.q, simulator.x[:7])
+        self.assertEqual((plant.t, plant.substep, plant.friction), (3., .001, None))
+        plant.apply(np.zeros(7))
+        plant.advance(3.001)
+        self.assertEqual(plant.t, 3.001)
+        with self.assertRaises(ValueError):
+            plant.clock.advance(-1.)

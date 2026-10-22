@@ -8,41 +8,57 @@ import threading
 import unittest
 import numpy as np
 from types import SimpleNamespace
-from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from live_mpc import GPULocks, LiveService, MPCAdapter, figure8_reference, FIGURE8_DEFAULT_TASK, REACH_DEFAULT_TASK, parameter_specs, validate_settings
+from live_mpc import (GPULocks, build_schema, figure8_reference, mpc_bounds_from_rows,
+                      FIGURE8_DEFAULT_TASK, REACH_DEFAULT_TASK, validate_settings)
 from server import make_server
 from live_presentation import LatestPresentation, mutable, render_plan, render_state, snapshot
-
-ROOT = Path(__file__).resolve().parents[1]
-MPC_ROOT = ROOT.parent / "tiago_mpc_vis_baseline"
+from solver_adapter import SimulatorAdapter
+from tests.tiago_mpc_source import MPC_ROOT, live_probe
 
 
 class SettingsTests(unittest.TestCase):
     def setUp(self):
-        config = json.loads((MPC_ROOT / "configs/reaching.json").read_text())
-        self.config = {k: v for k, v in config.items() if k in ("N", "dt_s", "solver_params", "controller", "limit_bounds")}
+        probe = live_probe()
+        probe["available_N_by_friction"] = dict(off=[16, 32], on=[32])
+        self.friction = probe["friction"]
+        self.schema = build_schema(probe, MPC_ROOT)
+        self.config = deepcopy(self.schema["defaults"]["config"])
         self.task = deepcopy(REACH_DEFAULT_TASK)
-        self.schema = dict(parameters=parameter_specs(self.config, [16, 32]))
 
-    def test_complete_config_and_runtime_choices(self):
+    def test_schema_is_mpc_params_plus_the_simulated_plant(self):
         config, task = validate_settings(self.config, self.task, self.schema)
         self.assertEqual(config, self.config)
         self.assertIsNot(config, self.config)
+        self.assertEqual({key: value for key, value in config.items() if key != "plant"}, live_probe()["defaults"])
+        self.assertEqual(config["plant"], dict(friction=False))
+        self.assertIsNone(config["friction"])  # loss-free predictor and plant by default
         specs = {s["path"]: s for s in self.schema["parameters"]}
-        self.assertEqual(specs["controller.warm_start"]["choices"], ["shift", "hold"])
-        self.assertEqual(specs["controller.admm_linsys"]["choices"], ["pcg", "bdsv_factor", "auto"])
-        self.assertTrue(specs["solver_params.exact_hessian"]["disabled"])
-        self.assertTrue(specs["solver_params.linsys"]["disabled"])
+        self.assertEqual(set(specs), {"N", "dt_s", "ee_frame", "warm_start", "reset_rho_each_step", "admm_linsys",
+            "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "warmup", "budget_s",
+            "plant.friction", *(f"solver.{key}" for key in config["solver"]), *(f"admm.{key}" for key in config["admm"])})
+        self.assertEqual(specs["warm_start"]["choices"], ["shift", "hold"])
+        self.assertEqual(specs["admm_linsys"]["choices"], ["pcg", "bdsv_factor", "auto"])
+        for fixed in ("solver.exact_hessian", "solver.linsys", "ee_frame"):
+            self.assertTrue(specs[fixed]["disabled"], fixed)
+        self.assertEqual(specs["N"]["choices"], [16, 32])
+        self.assertNotIn("disabled", specs["N"])
+        self.assertEqual(specs["friction"]["choices"], [dict(value=None, label="Loss-free"), dict(
+            value=self.friction, label="URDF Coulomb + viscous, tanh 0.03 rad/s")])
+        self.assertEqual(self.friction["width_rad_s"], .03)
+        self.assertTrue(specs["budget_s"]["nullable"])
+        self.assertEqual(specs["plant.friction"]["group"], specs["friction"]["group"])
+        validate_settings(dict(self.config, budget_s=.05, warmup=2, friction=self.friction), self.task, self.schema)
 
-    def test_nonfinite_limits_unknown_fields_and_unbuilt_n_rejected(self):
+    def test_nonfinite_limits_unknown_fields_and_uncompiled_n_rejected(self):
         cases = [("N", 128), ("N", True), ("N", 32.5), ("dt_s", float("nan")),
-                 ("dt_s", -1), ("solver_params.max_sqp_iters", 100001),
-                 ("solver_params.exact_hessian", True), ("solver_params.linsys", "qdldl"),
-                 ("controller.warm_start", "repeat"), ("controller.limits_kw.rho", float("inf")),
-                 ("limit_bounds.velocity_fraction", 0)]
+                 ("dt_s", -1), ("solver.max_sqp_iters", 100001),
+                 ("solver.exact_hessian", True), ("solver.linsys", "qdldl"),
+                 ("warm_start", "repeat"), ("admm.rho", float("inf")), ("velocity_fraction", 0),
+                 ("ee_frame", "arm_right_tool_joint"), ("budget_s", 0), ("warmup", -1), ("plant.friction", 1),
+                 ("friction", dict(self.friction, width_rad_s=.05)), ("friction", True)]
         for path, value in cases:
             config = deepcopy(self.config)
             parts = path.split(".")
@@ -56,89 +72,19 @@ class SettingsTests(unittest.TestCase):
             validate_settings({**self.config, "save_plan_steps": 1}, self.task, self.schema)
         with self.assertRaises(ValueError):
             validate_settings(self.config, {**self.task, "target_offset_m": [True, 0, 0]}, self.schema)
+        with self.assertRaisesRegex(ValueError, "Not compiled: N=16 with predictor friction"):
+            validate_settings(dict(self.config, N=16, friction=self.friction), self.task, self.schema)
 
 
+class LimitTests(unittest.TestCase):
+    def test_mpc_bounds_are_the_installed_rows_and_asymmetric_rows_stay_absent(self):
+        rows = [dict(lo=[-1.]*7, hi=[2.]*7), dict(lo=[-.8]*7, hi=[.8]*7), dict(lo=[-1.]*7, hi=[2.]*7)]
+        bounds = mpc_bounds_from_rows(rows, dict(joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85))
+        self.assertEqual((bounds["lower_position_rad"], bounds["upper_position_rad"]), ([-1.]*7, [2.]*7))
+        self.assertEqual(bounds["velocity_rad_s"], [.8]*7)
+        self.assertNotIn("effort_nm", bounds)
+        self.assertEqual(bounds["limit_bounds"]["effort_fraction"], .85)
 
-class FakeRowSolver:
-    """Records installed position/velocity/torque rows like GATO's row groups."""
-    def __init__(self, model):
-        # Distinct "compiled" rows, so an uninstalled group would show.
-        self.rows = [[np.asarray(model.lowerPositionLimit)*0, np.asarray(model.upperPositionLimit)*0+9.],
-                     [-np.ones(7), np.ones(7)], [-np.ones(7), np.ones(7)]]
-
-    def set_row_group_bounds(self, group, lo, hi):
-        self.rows[group] = [np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)]
-
-    def get_row_groups(self):
-        return [dict(kind=i, n_rows=7, lo=lo.tolist(), hi=hi.tolist(), active=[1, 1])
-                for i, (lo, hi) in enumerate(self.rows)]
-
-
-class LiveLimitBoundsTests(unittest.TestCase):
-    """Live shows URDF limits as joint_limits and the solver's resolved MPC bounds."""
-    model = SimpleNamespace(lowerPositionLimit=np.array([-4.7, -2.4, -2.6, -2.4, -1.6, -1.9, -2.6]),
-                            upperPositionLimit=np.array([.5, 1.1, 2.6, 1.1, 3.7, 3., 2.6]),
-                            velocityLimit=np.full(7, 2.5), effortLimit=np.array([43., 43, 26, 26, 26, 26, 26]))
-    signs = np.array([1., 1, 1, 1, 1, -1, 1])
-
-    def setUp(self):
-        import sys
-        if str(MPC_ROOT) not in sys.path:
-            sys.path.insert(0, str(MPC_ROOT))
-
-    def resolved_tracking_bounds(self):
-        from tiago_mpc.configuration import resolve_configuration
-        raw = json.loads((MPC_ROOT / "configs/tracking.json").read_text())["limit_bounds"]
-        self.assertNotIn("joint_margin_rad", raw)  # The case that used to display margin 0.
-        return raw, resolve_configuration(dict(limit_bounds=raw))["limit_bounds"]
-
-    def test_configure_displays_resolved_bounds_exactly_as_installed(self):
-        raw, resolved = self.resolved_tracking_bounds()
-        self.assertEqual(resolved["joint_margin_rad"], .1)
-        adapter = MPCAdapter.__new__(MPCAdapter)
-        adapter.mpc_root, adapter.model, adapter.signs = MPC_ROOT, self.model, self.signs
-        adapter.data, adapter.fid, adapter.model_identity = None, 0, {}
-        adapter.x, adapter.state_signs = np.zeros(14), np.tile(self.signs, 2)
-        adapter.reach = SimpleNamespace(PLANT="tiago", check_model=lambda *args: None,
-                                        Q_START_RAD=np.zeros(7), Q_GOAL_DELTA_RAD=np.zeros(7))
-        solver = FakeRowSolver(self.model)
-        adapter.gato = SimpleNamespace(BSQP=lambda *args, **kwargs: solver, SolverParams=lambda **kwargs: kwargs,
-                                       MPCController=lambda *args, **kwargs: SimpleNamespace(reset=lambda x: None))
-        adapter.configure_task = lambda effective, task: None
-        effective = dict(N=32, dt_s=.002, solver_params={}, controller={}, limit_bounds=resolved)
-        from contextlib import contextmanager
-        @contextmanager
-        def prepared(*args, **kwargs):
-            yield None, Path(__file__), None
-        with patch("friction_settings.load_configuration", return_value=(None, dict(limit_bounds=raw), effective)), \
-             patch("source_runtime.discover_compatible_modules", return_value=dict(available_N=[32], modules=[])), \
-             patch("source_runtime.prepared_model", prepared):
-            adapter.configure("tracking.json", {})
-        lower = self.model.lowerPositionLimit + .1
-        upper = self.model.upperPositionLimit - .1
-        # Displayed MPC bounds equal the rows the solver holds, in native coordinates.
-        np.testing.assert_allclose(adapter.mpc_bounds["lower_position_rad"], lower)
-        np.testing.assert_allclose(adapter.mpc_bounds["upper_position_rad"], upper)
-        np.testing.assert_allclose(adapter.mpc_bounds["velocity_rad_s"], .8 * self.model.velocityLimit)
-        np.testing.assert_allclose(adapter.mpc_bounds["effort_nm"], .85 * self.model.effortLimit)
-        self.assertEqual(adapter.mpc_bounds["limit_bounds"], resolved)
-        np.testing.assert_allclose(adapter.constraint_bounds_native[0]["lo"], lower)
-        np.testing.assert_allclose(np.sort(solver.rows[0], axis=0), np.sort([lower*self.signs, upper*self.signs], axis=0))
-        # Limit use is measured against the physical URDF limits.
-        self.assertEqual(adapter.joint_limits["lower_position_rad"], self.model.lowerPositionLimit.tolist())
-        self.assertEqual(adapter.joint_limits["effort_nm"], self.model.effortLimit.tolist())
-        self.assertIn("URDF", adapter.joint_limits["source"])
-
-    def test_legacy_null_fractions_keep_compiled_rows_and_report_them(self):
-        from live_mpc import configured_limits
-        solver = FakeRowSolver(self.model)
-        _, mpc, rows = configured_limits(solver, self.model, self.signs, dict(
-            joint_margin_rad=.1, velocity_fraction=None, effort_fraction=None))
-        self.assertEqual(mpc["velocity_rad_s"], [1.]*7)  # The compiled rows actually held.
-        solver.rows[2] = [-np.ones(7), 2*np.ones(7)]
-        _, mpc, _ = configured_limits(solver, self.model, self.signs, dict(
-            joint_margin_rad=.1, velocity_fraction=None, effort_fraction=None))
-        self.assertNotIn("effort_nm", mpc)  # Asymmetric rows are not shown as a magnitude.
 
 class Figure8Tests(SettingsTests):
     def test_shape_clock_extent_and_native_validation(self):
@@ -184,8 +130,7 @@ class Figure8Tests(SettingsTests):
                 validate_settings(self.config, {**task, "orientation_xyzw": invalid}, self.schema)
 
     def test_tracking_horizon_offsets_and_terminal_reference_remain_aligned(self):
-        adapter = MPCAdapter.__new__(MPCAdapter)
-        adapter.simulator_joint_dynamics = None
+        adapter = SimulatorAdapter.__new__(SimulatorAdapter)
         adapter.task = {**deepcopy(FIGURE8_DEFAULT_TASK), "orientation_xyzw": [0., np.sqrt(.5), 0., np.sqrt(.5)]}
         adapter.figure8_start_world = np.array([.4, -.3, 1.2])
         adapter.t, adapter.N, adapter.dt = 7.2, 4, .03
@@ -216,119 +161,89 @@ class LockTests(unittest.TestCase):
             locks.release()
 
 
+class FakeRemote:
+    """The solver child's compact solve reply: native plan arrays and stats."""
+    epoch = "test-epoch"
+
+    def request(self, operation, *, timeout=None, **payload):
+        if operation != "solve":
+            return None
+        x, n = np.asarray(payload["state"]), len(payload["reference"])
+        return dict(plan=dict(type="plan", origin=payload["origin"], settings_version=payload["settings_version"],
+            initial_state=dict(q=x[:7].tolist(), qd=x[7:].tolist(), time_s=payload["time_s"]),
+            sim_time_s=payload["time_s"], N=n, dt_s=.01, _states=np.tile(x, (n, 1)),
+            _torques=np.arange(7.)[None].repeat(n-1, 0), stats=dict(sqp_iters=1),
+            diagnostics=dict(initial_merit=12.)))
+
+
 class AdapterTelemetryTests(unittest.TestCase):
     def adapter(self):
-        adapter = MPCAdapter.__new__(MPCAdapter)
-        adapter.simulator_joint_dynamics = None
-        adapter.reach = SimpleNamespace(Q_START_RAD=np.zeros(7), POSITION_TOL_M=.05,
-                                        EE_FRAME="arm_right_tool_joint",
-                                        SPEED_L1_TOL_RAD_S=1, SIM_DT_S=.005,
-                                        rk4=lambda model, data, q, v, u, h: (q+v*h, v+u*h))
-        adapter.kinematics = SimpleNamespace(ee_positions=lambda q: np.zeros((len(q), 3)),
-                                             target_to_world=lambda target: target,
-                                             world_from_torso=SimpleNamespace(actInv=lambda point: point))
-        stats = SimpleNamespace(sqp_iters=[1], pcg_iters=[2], admm_iters=[3], admm_linsys_iters=[4])
-        step = SimpleNamespace(u=np.arange(7), solve=SimpleNamespace(
-            xu=np.arange(35), stats=stats, solve_time_us=10), row_viol=[0])
-        adapter.controller = SimpleNamespace(reset=lambda x: None, step=lambda x, r: step)
-        adapter.signs = np.array([1, 1, 1, 1, 1, -1, 1])
-        adapter.state_signs = np.tile(adapter.signs, 2)
-        adapter.model = adapter.data = None
-        adapter.target = np.zeros(3)
-        adapter.default_target = np.array([.4, -.3, 1.2])
-        adapter.figure8_start_world = np.array([.3, -.4, 1.1])
-        adapter.task_anchors = snapshot(dict(reach=adapter.default_target.tolist(),
-                                             figure8=adapter.figure8_start_world.tolist()))
-        adapter.task = dict(kind="reach", target_offset_m=[0, 0, 0])
-        adapter.reference = np.zeros((2, 6))
-        adapter.N, adapter.dt = 2, .01
+        live_probe()
+        adapter = SimulatorAdapter(MPC_ROOT)
+        adapter.remote, adapter.profile = FakeRemote(), dict(id="simulator")
+        adapter.configure_task(2, .01, deepcopy(REACH_DEFAULT_TASK))
         adapter.joint_limits = dict(source="Test configured bounds")
-        adapter.restarted = False
-        adapter.reset_state()
+        adapter._plan_context = snapshot(dict(joint_limits=adapter.joint_limits, task_anchors=adapter.task_anchors,
+                                              problem_configuration=dict(N=2, solver=dict(max_sqp_iters=3))))
         return adapter
 
     def test_task_anchors_are_public_immutable_and_independent_of_task_edits(self):
         adapter = self.adapter()
-        expected = dict(reach=[.4, -.3, 1.2], figure8=[.3, -.4, 1.1])
+        expected = mutable(adapter.task_anchors)
+        np.testing.assert_allclose(expected["reach"], adapter.kinematics.target_to_world(
+            adapter.tiago.fk(adapter.tiago.Q_REACH)))
         initial_plan = adapter.solve_snapshot("preview", 1)
         self.assertEqual(mutable(initial_plan["task_anchors"]), expected)
-        self.assertEqual(adapter.state_event()["task_anchors"], expected)
+        self.assertEqual(render_state(adapter.state_snapshot(), adapter.kinematics)["task_anchors"], expected)
         with self.assertRaises(TypeError):
             initial_plan["task_anchors"]["reach"][0] = 99
-        adapter.target += [.15, .2, .2]
-        adapter.x[:7] += .1
-        self.assertEqual(adapter.solve("preview", 2)["task_anchors"], expected)
-        adapter.task = {**FIGURE8_DEFAULT_TASK, "target_offset_m": [.1, -.2, .3],
-                        "width_m": .4, "height_m": .3, "orientation_xyzw": [1., 0., 0., 0.]}
+        adapter.configure_task(2, .01, {**FIGURE8_DEFAULT_TASK, "target_offset_m": [.1, -.2, .3],
+                                        "width_m": .4, "height_m": .3, "orientation_xyzw": [1., 0., 0., 0.]})
         adapter.t = 3.
-        transformed = adapter.solve("preview", 3)
-        self.assertEqual(transformed["task_anchors"], expected)
-        self.assertEqual(adapter.state_event()["task_anchors"], expected)
+        self.assertEqual(mutable(adapter.solve_snapshot("preview", 3)["task_anchors"]), expected)
         self.assertEqual(mutable(initial_plan["task_anchors"]), expected)
 
     def test_reset_restarts_plan_count_and_preview_does_not_claim_applied_torque(self):
         adapter = self.adapter()
-        self.assertEqual(adapter.solve("preview", 1)["seq"], 1)
-        self.assertIsNone(adapter.state_event()["torque_nm"])
-        adapter.advance()
-        applied = adapter.state_event()["torque_nm"]
-        np.testing.assert_array_equal(applied, np.arange(7)*adapter.signs)
-        # A preview/controller reset is another plan, not a new episode.
-        self.assertEqual(adapter.solve("preview", 2)["seq"], 2)
-        self.assertEqual(adapter.state_event()["torque_nm"], applied)
-        adapter.reset_state(reset_controller=False)
+        self.assertEqual(adapter.solve_snapshot("preview", 1)["seq"], 1)
+        self.assertIsNone(adapter.state_snapshot()["torque_nm"])
+        adapter.applied_torque = np.arange(7.)
+        self.assertEqual(adapter.solve_snapshot("preview", 2)["seq"], 2)
+        self.assertEqual(adapter.state_snapshot()["torque_nm"], tuple(range(7)))
+        adapter.reset_state()
         self.assertEqual(adapter.t, 0)
-        self.assertIsNone(adapter.state_event()["torque_nm"])
-        plan = adapter.solve("preview", 3)
+        np.testing.assert_array_equal(adapter.x, np.r_[adapter.tiago.Q_START, np.zeros(7)])
+        self.assertIsNone(adapter.state_snapshot()["torque_nm"])
+        plan = render_plan(adapter.solve_snapshot("preview", 3), adapter.kinematics)
         self.assertEqual(plan["seq"], 1)
         self.assertEqual(len(plan["torque_nm"]), 1)
         self.assertEqual(plan["torque_end_time_s"], .01)
         self.assertEqual(plan["torque_kind"], "predicted")
-
-    def test_capture_retains_problem_inputs_and_only_exposed_sqp_metrics(self):
-        adapter = self.adapter()
-        step = adapter.controller.step(None, None)
-        step.solve.stats.initial_merit = np.array([12.])
-        step.solve.stats.final_merit = np.array([8.])
-        step.solve.stats.min_merit = np.array([[8.], [float("nan")]])
-        step.solve.stats.step_size = np.array([[1.], [-1.]])
-        adapter.problem_configuration = dict(N=2, solver_params=dict(max_sqp_iters=3))
-        adapter.x[:] = np.arange(14)
-        adapter.reference[:] = 3.
-        captured = adapter.solve_snapshot("play", 7)
-        adapter.x[:] = 0
-        adapter.reference[:] = 9
-        adapter.problem_configuration["solver_params"]["max_sqp_iters"] = 99
-        step.solve.stats.initial_merit[:] = 99
-        rendered = render_plan(captured, adapter.kinematics)
-        self.assertEqual(rendered["initial_state"]["q"], list(range(7)))
-        self.assertEqual(rendered["initial_state"]["qd"], list(range(7,14)))
-        self.assertEqual(rendered["problem_configuration"]["solver_params"]["max_sqp_iters"], 3)
-        self.assertEqual(rendered["reference_native"][0], [3.]*6)
-        self.assertEqual(rendered["diagnostics"]["initial_merit"], [12.])
-        self.assertIsNone(rendered["diagnostics"]["min_merit"][1][0])
-        self.assertNotIn("iterations", rendered)
-        self.assertNotIn("checkpoint", rendered)
-        json.dumps(rendered, allow_nan=False)
+        state = render_state(adapter.state_snapshot(), adapter.kinematics)
+        self.assertGreater(state["distance_m"], .05)
+        self.assertFalse(state["arrived"])
 
     def test_presentation_snapshots_survive_control_progress_and_settings_mutation(self):
         adapter = self.adapter()
+        adapter.x[:] = np.arange(14)
         plan = adapter.solve_snapshot("play", 3)
         state = adapter.state_snapshot(.9, 3)
         expected_plan = render_plan(plan, adapter.kinematics)
         expected_state = render_state(state, adapter.kinematics)
-        adapter.advance()
-        adapter.last_xu[:] = -123
+        self.assertEqual(expected_plan["initial_state"]["q"], list(range(7)))
+        self.assertEqual(expected_plan["problem_configuration"]["solver"]["max_sqp_iters"], 3)
+        self.assertEqual(expected_plan["diagnostics"]["initial_merit"], 12.)
+        adapter.x[:] = 0
         adapter.reference[:] = 123
-        adapter.signs[:] = -1
         adapter.joint_limits["source"] = "New settings"
-        adapter.reset_state(reset_controller=False)
+        adapter.reset_state()
         self.assertEqual(render_plan(plan, adapter.kinematics), expected_plan)
         self.assertEqual(render_state(state, adapter.kinematics), expected_state)
         with self.assertRaises(ValueError):
-            plan["_xu"][0] = 0
+            plan["_states"][0, 0] = 0
         with self.assertRaises(TypeError):
             plan["joint_limits"]["source"] = "Mutation"
+        json.dumps(expected_plan, allow_nan=False)
 
 
 class PresentationTests(unittest.TestCase):

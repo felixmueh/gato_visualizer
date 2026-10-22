@@ -18,7 +18,7 @@ import numpy as np
 from execution_bridge import HistoryStore
 from gato_visualizer.plotting import InspectionContext, SolveView
 from inspection_artifacts import ReadOnlyIterationTrace, write_artifact
-from inspection_problem import captured_problem, capture_constraint_bounds, configuration_overrides
+from inspection_problem import captured_problem, capture_constraint_bounds
 from inspection_worker import inspect_solve
 from plot_sources import SourceReader, inspect_source
 from solve_inspections import InspectionService
@@ -35,9 +35,8 @@ def groups(n=3):
 def plan():
     return dict(id='chosen', seq=7, origin='controller', N=3, dt_s=.03,
         initial_state=dict(q=[.2]*7, qd=[.1]*7, time_s=1.25), reference_native=[[.1,.2,.3,0,0,0]]*3,
-        problem_configuration=dict(N=3, dt_s=.03, limits='admm', linsys='pcg',
-            solver_params=dict(max_sqp_iters=5), controller=dict(admm_linsys='pcg'),
-            limit_bounds=dict(joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85)),
+        problem_configuration=dict(N=3, dt_s=.03, solver=dict(max_sqp_iters=5), admm=dict(rho=.01),
+            admm_linsys='pcg', joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85, friction=None),
         joint_limits=dict(lower_position_rad=[-2]*7,upper_position_rad=[2]*7,
                           velocity_rad_s=[1]*7,effort_nm=[10]*7),
         constraint_bounds_native=groups(), task=dict(kind='reach',target_offset_m=[0,0,0]),
@@ -154,10 +153,13 @@ class ArtifactTests(unittest.TestCase):
     def test_preserves_explicit_parameters_without_changing_selected_problem(self):
         original=plan();saved=deepcopy(original)
         problem=captured_problem(original)
-        config=configuration_overrides(problem,1000)
-        self.assertEqual(config['solver_params']['max_sqp_iters'],1000)
+        self.assertEqual(problem['problem_configuration'],saved['problem_configuration'])
+        problem['problem_configuration']['solver']['max_sqp_iters']=1000
         self.assertEqual(original,saved)
-        self.assertEqual(config['limit_bounds']['joint_margin_rad'],.1)
+
+    def test_pre_migration_recordings_report_run_again_unavailable(self):
+        p=plan();p['problem_configuration']=dict(N=3,dt_s=.03,solver_params=dict(max_sqp_iters=5),controller={})
+        with self.assertRaisesRegex(ValueError,'unavailable: pre-migration recording'): captured_problem(p)
 
     def test_native_capture_has_finite_shape_validation(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -183,9 +185,10 @@ class NativeOperationTests(unittest.TestCase):
             def reset_dual(self):pass
             def reset_rho(self):pass
         solver=Solver()
-        adapter=SimpleNamespace(solver=solver,signs=np.array([1,1,1,1,1,-1,1]),N=3,dt=.03,
-            controller=SimpleNamespace(admm_linsys='pcg'),model_identity={'actual':'model'},
-            problem_configuration=plan()['problem_configuration'],reach=SimpleNamespace(EE_FRAME='tool'))
+        mpc=SimpleNamespace(signs=np.array([1,1,1,1,1,-1,1]),N=3,dt=.03,params=SimpleNamespace(ee_frame='tool'),
+            controller=SimpleNamespace(admm_linsys='pcg',solver=solver))
+        session=SimpleNamespace(mpc=mpc,model_identity={'actual':'model'},
+            configuration=plan()['problem_configuration'],tiago=SimpleNamespace())
         p=plan()
         # Make the sign conversion observable with asymmetric effective q bounds.
         p['constraint_bounds_native'][0]['lo'][5]=-.7
@@ -195,10 +198,10 @@ class NativeOperationTests(unittest.TestCase):
             (root/'models/tiago_pro').mkdir(parents=True)
             full=root/'models/tiago_pro/tiago_pro.urdf';full.write_text('<robot/>')
             reduced=root/'reduced.urdf';reduced.write_text('<robot/>')
-            adapter.reach.URDF=reduced
-            adapter.model_identity.update(full_urdf_sha256=hashlib.sha256(full.read_bytes()).hexdigest(),
+            session.tiago.FULL_URDF,session.tiago.ARM_URDF=full,reduced
+            session.model_identity.update(full_urdf_sha256=hashlib.sha256(full.read_bytes()).hexdigest(),
                                           native_urdf_sha256=hashlib.sha256(reduced.read_bytes()).hexdigest())
-            result=inspect_solve(adapter,dict(id='native' ,problem=captured_problem(p),sqp_iters=1000,
+            result=inspect_solve(session,dict(id='native' ,problem=captured_problem(p),sqp_iters=1000,
                 budget_s=.02,original={'solve_id':'chosen'},actual_solver_profile={'profile':{'id':'active','mpc_root':str(root)}},
                 artifact_directory=folder))
             self.assertEqual(solver.calls,1)
@@ -242,8 +245,8 @@ class JobTests(unittest.TestCase):
         self.profiles=SimpleNamespace(active_selection=lambda identifier=None:deepcopy(self.profile))
         self.plots=SimpleNamespace(mpc_root='/simulator',default_scene={},
             _descriptor=lambda source:self.history.plot_source(source['generation']))
-        self.probe=lambda selection,operation:dict(compatible=True,available_N=[3],contract=contract(),
-            capabilities=dict(iteration_capture_by_N={'3':True}))
+        self.probe=lambda selection:dict(compatible=True,available_N=[3],available_N_by_friction=dict(off=[3],on=[]),
+            contract=contract(),capabilities=dict(iteration_capture_by_friction=dict(off={'3':True},on={})))
         self.calls=[]
         parent=self
         class Remote:
@@ -294,6 +297,8 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.live.pauses,[result['id']])
         self.assertEqual(self.history.path.read_bytes(),before)
         self.assertEqual([op for op,_ in self.calls],['lock','construct','bootstrap','configure','inspect','close','unlock'])
+        # The captured MpcParams with the requested cap; the child replaces max_sqp_iters.
+        self.assertEqual(dict(self.calls)['configure'],dict(params=plan()['problem_configuration'],max_sqp_iters=1000,timeout=120))
         self.assertLess(len(json.dumps(result)),20000)
         self.assertNotIn('xu',json.dumps(result))
         self.assertTrue(Path(self.service.descriptor(result['id'])['binary_path']).exists())
@@ -306,7 +311,7 @@ class JobTests(unittest.TestCase):
         self.assertTrue(capability['available'],capability)
 
     def test_old_native_profile_capability_is_explicit_and_never_constructs_solver(self):
-        self.service.probe=lambda *args,**kwargs:dict(compatible=True,available_N=[3],capabilities={})
+        self.service.probe=lambda *args,**kwargs:dict(compatible=True,available_N=[3],available_N_by_friction=dict(off=[3],on=[]),capabilities={})
         capability=self.service.capability(self.request())
         self.assertFalse(capability['available'])
         self.assertIn('capture',capability['reason'])
@@ -317,8 +322,8 @@ class JobTests(unittest.TestCase):
 
     def cached_profile(self):
         root = self.folder/'mpc'
-        (root/'examples').mkdir(parents=True)
-        source = root/'examples/reach_sim.py'; source.write_text('# original')
+        (root/'tiago_mpc').mkdir(parents=True)
+        source = root/'tiago_mpc/mpc.py'; source.write_text('# original')
         cache = self.folder/'cache'
         module = cache/'modules/tiago/current/bsqpN3_tiago.so'
         module.parent.mkdir(parents=True); module.write_bytes(b'old native binary')
@@ -327,9 +332,9 @@ class JobTests(unittest.TestCase):
         self.profile.update(mpc_root=str(root), python=str(python), cache=str(cache))
         original = self.probe
         self.probes = []
-        def counted(selection, operation):
+        def counted(selection):
             self.probes.append(deepcopy(selection))
-            return original(selection, operation)
+            return original(selection)
         self.service.probe = counted
         return source, module, python
 
@@ -389,9 +394,9 @@ class JobTests(unittest.TestCase):
     def test_negative_capture_capability_is_cached_until_binary_rebuild(self):
         _, module, _ = self.cached_profile()
         counted = self.service.probe
-        def without_capture(selection, operation):
-            result = counted(selection, operation)
-            result['capabilities']['iteration_capture_by_N']['3'] = False
+        def without_capture(selection):
+            result = counted(selection)
+            result['capabilities']['iteration_capture_by_friction']['off']['3'] = False
             return result
         self.service.probe = without_capture
         for _ in range(3):
@@ -408,11 +413,11 @@ class JobTests(unittest.TestCase):
         self.cached_profile()
         entered, release = threading.Event(), threading.Event()
         counted = self.service.probe
-        def slow(selection, operation):
+        def slow(selection):
             entered.set()
             if not release.wait(3):
                 raise AssertionError('Test did not release source probe')
-            return counted(selection,operation)
+            return counted(selection)
         self.service.probe = slow
         results = []
         threads = [threading.Thread(target=lambda: results.append(self.service.capability(self.request())))
@@ -431,8 +436,8 @@ class JobTests(unittest.TestCase):
     def test_changes_during_probe_are_not_cached_as_current(self):
         source, _, _ = self.cached_profile()
         counted = self.service.probe
-        def changing(selection, operation):
-            result = counted(selection,operation)
+        def changing(selection):
+            result = counted(selection)
             source.write_text('# source changed during probe')
             return result
         self.service.probe = changing

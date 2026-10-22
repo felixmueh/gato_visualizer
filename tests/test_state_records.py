@@ -9,15 +9,12 @@ import numpy as np
 
 from execution_session import DEFAULT_EXECUTION, MultirateSession
 from live_presentation import render_state, snapshot
-from solver_adapter import SimulatorAdapter
 from tests import test_live_mpc
 
 
 class StateRecordTests(unittest.TestCase):
     def adapter(self):
-        base = test_live_mpc.AdapterTelemetryTests().adapter()
-        adapter = SimulatorAdapter.__new__(SimulatorAdapter)
-        adapter.__dict__.update(base.__dict__)
+        adapter = test_live_mpc.AdapterTelemetryTests().adapter()
         adapter.simulator_identity = dict(source=dict(branch='original'),
                                           limits=dict(velocity_rad_s=[2.]*7))
         adapter.profile = dict(id='original-profile')
@@ -48,7 +45,6 @@ class StateRecordTests(unittest.TestCase):
         record = adapter.state_record(.75, 3)
         immutable = adapter.state_snapshot(.75, 3)
         expected = render_state(record, adapter.kinematics)
-        adapter.advance()
         adapter.x[:] = -99
         adapter.applied_torque[:] = 99
         adapter.joint_limits['lower_position_rad'][0] = -99
@@ -97,7 +93,7 @@ class StateRecordTests(unittest.TestCase):
         np.testing.assert_array_equal(record['simulator_identity']['nested'][0]['buffer'], np.arange(3.))
         self.assertFalse(record['simulator_identity']['nested'][0]['buffer'].flags.writeable)
         source = dict(_x=np.arange(14.), context=dict(values=[1, 2]))
-        other = SimpleNamespace(t=0., state_snapshot=lambda *args: snapshot(source))
+        other = SimpleNamespace(t=0., state_snapshot=lambda *args: snapshot(source), new_plant=lambda substep: None)
         fallback = MultirateSession(other, DEFAULT_EXECUTION).initial_state()
         source['_x'][:] = -1
         source['context']['values'][0] = -1

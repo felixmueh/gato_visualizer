@@ -112,9 +112,10 @@ class SourceSettings:
         prediction_friction = body.get("prediction_friction", False)
         if type(prediction_friction) is not bool:
             raise ValueError("prediction_friction must be a boolean")
+        from source_runtime import KNOT_COUNTS
         counts = body.get("N")
-        if not isinstance(counts, list) or not counts or any(type(n) is not int or n < 2 or n > 4096 for n in counts):
-            raise ValueError("Choose integer knot counts between 2 and 4096")
+        if not isinstance(counts, list) or not counts or any(type(n) is not int or n not in KNOT_COUNTS for n in counts):
+            raise ValueError(f"Choose knot counts among {', '.join(map(str, KNOT_COUNTS))}")
         if type(body.get("rebuild", False)) is not bool:
             raise ValueError("rebuild must be a boolean")
         with self.lock:

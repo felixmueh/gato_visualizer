@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 
-from inspection_problem import captured_problem, configuration_overrides
+from inspection_problem import captured_problem
 from plot_sources import SourceReader, inspect_source, serializable
 
 ROOT = Path(__file__).resolve().parent
@@ -34,7 +34,7 @@ def profile_fingerprint(profile):
     paths = {python, python.parent.parent / "pyvenv.cfg", cache / "manifest.json",
              gato / "CMakeLists.txt", gato / "pyproject.toml", gato / "setup.py"}
     suffixes = {".py", ".h", ".hpp", ".cuh", ".cu", ".cpp", ".cmake", ".json", ".urdf", ".xml", ".so"}
-    for directory in (root / "examples", root / "tiago_mpc", root / "configs", root / "models",
+    for directory in (root / "tiago_mpc", root / "models",
                       gato / "python", gato / "gato", gato / "tools",
                       cache / "modules", cache / "robots"):
         for folder, directories, files in os.walk(directory):
@@ -141,12 +141,12 @@ class InspectionService:
         if not checked.get("compatible"):
             raise ValueError(checked.get("error", "Active solver profile is incompatible"))
         n = problem["problem_configuration"]["N"]
-        mode = "on" if problem["problem_configuration"].get("prediction_joint_dynamics") else "off"
-        available = checked.get("available_N_by_friction", {}).get(mode, checked.get("available_N", []))
+        mode = "on" if problem["problem_configuration"].get("friction") is not None else "off"
+        available = checked.get("available_N_by_friction", {}).get(mode, [])
         if n not in available:
             raise ValueError(f"Active solver profile has no compatible prebuilt N={n} module")
         capabilities = checked.get("capabilities", {})
-        capture = capabilities.get("iteration_capture_by_friction", {}).get(mode, capabilities.get("iteration_capture_by_N", {}))
+        capture = capabilities.get("iteration_capture_by_friction", {}).get(mode, {})
         if not capture.get(str(n), False):
             raise ValueError("Active solver profile does not support native iteration capture; select a rebuilt capture-capable profile")
         contract = problem["original_solver_profile"].get("coordinate_contract")
@@ -167,7 +167,7 @@ class InspectionService:
             cached = self.probe_cache.get(key)
             if cached is None or cached[0] != fingerprint:
                 result = (self.probe or probe_selection)(
-                    {name: profile[name] for name in ("mpc_root", "python", "cache")}, operation="profile-probe")
+                    {name: profile[name] for name in ("mpc_root", "python", "cache")})
                 if profile_fingerprint(profile) != fingerprint:
                     raise ValueError("Solver source or binaries changed while checking capability; select again")
                 self.probe_cache[key] = (fingerprint, {name: result[name] for name in
@@ -307,16 +307,18 @@ class InspectionService:
                     return
                 folder = self.directory / identifier
                 folder.mkdir(parents=True, exist_ok=False)
-                config = configuration_overrides(problem, requested["sqp_iters"])
-                path = folder / "configuration.json"
-                path.write_text(json.dumps(config, allow_nan=False, indent=2)+"\n")
+                # The captured MpcParams with the requested SQP cap (a replace in the child).
+                (folder / "configuration.json").write_text(json.dumps(dict(
+                    params=problem["problem_configuration"], max_sqp_iters=requested["sqp_iters"]),
+                    allow_nan=False, indent=2)+"\n")
                 remote = (self.process_factory or SolverProcess)(request["profile"],
                     lease_fds=lambda: [handle.fileno() for handle in locks.handles])
                 self.remote = remote
                 job.update(phase="configuring", message="Constructing isolated inspection solver")
             ready = remote.request("bootstrap", timeout=60)
             validate_contract(checked["contract"], ready["contract"])
-            configured = remote.request("configure", timeout=120, config_path=str(path), task=problem["task"])
+            configured = remote.request("configure", timeout=120, params=problem["problem_configuration"],
+                                        max_sqp_iters=requested["sqp_iters"])
             if not configured["capabilities"].get("iteration_capture"):
                 raise ValueError("Configured solver has no native iteration capture capability")
             actual = dict(profile=request["profile"], process_epoch=remote.epoch,

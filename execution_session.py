@@ -1,7 +1,7 @@
 """Visualizer-owned multirate execution; no browser, CUDA or scheduling policy imports.
 
-The adapter supplies the existing tiago_mpc controller and RK4 plant. All event
-clocks below are simulation clocks; solver latency never advances the plant.
+The adapter supplies the solver and tiago_mpc's SimPlant. All event clocks below
+are simulation clocks; solver latency never advances the plant.
 """
 from __future__ import annotations
 from copy import deepcopy
@@ -48,6 +48,15 @@ def validate_anchor(value):
     return result
 
 
+def hold_last(torques, dt, offset_s):
+    """The visualizer's control law: the knot torque due offset_s after the plan's
+    state (zero-order hold, as tiago_mpc's sample_knot); past the last knot it holds
+    the last torque, where sample_knot raises. Returns the torque and whether the
+    plan is exhausted."""
+    k = math.floor(max(0., offset_s) / dt + 1e-9)
+    return torques[min(k, len(torques) - 1)], k >= len(torques)
+
+
 def interval_record(start, end, budget, solve_wall, physics_wall, total_wall, **extra):
     span = max(end-start, 1e-15)
     severity = "red" if solve_wall > budget else "yellow" if max(physics_wall, total_wall) > span else "none"
@@ -63,7 +72,8 @@ class MultirateSession:
 
     Integer tick counters avoid cumulative clock drift and permit noninteger
     rate ratios. A coincident boundary solves first, then updates control.
-    Last nonterminal torque is held on plan exhaustion, explicitly marked.
+    Last nonterminal torque is held on plan exhaustion, explicitly marked. The
+    plant starts at the adapter's state; whoever moves that state replaces the session.
     """
     def __init__(self, adapter, execution, version=0, clock=time.perf_counter):
         self.adapter = adapter
@@ -71,6 +81,7 @@ class MultirateSession:
         self.version, self.clock = version, clock
         self.origin = float(adapter.t)
         self.sim_tick = self.control_tick = self.to_tick = 0
+        self.plant = adapter.new_plant(1/self.execution["simulation_hz"])
         self.plan = None
         self.plan_origin = self.origin
         self.controls = None
@@ -114,19 +125,12 @@ class MultirateSession:
     def _solve(self):
         started = self.clock()
         from live_presentation import mutable
-        held_control = None if self.controls is None else self.adapter.u.copy()
         plan = mutable(self.adapter.solve_snapshot("play", self.version))
-        # MPCAdapter stores step.u for its legacy fixed-loop API. The visualizer
-        # must hold the currently applied command until its next CONTROL tick.
-        if held_control is not None:
-            self.adapter.u = held_control
         wall = self.clock()-started
-        # Nonterminal packed stages: [q7, v7, u7]. Terminal is [q7,v7].
-        xu = np.asarray(plan["_xu"]).reshape(-1)
-        count = int(plan["N"])-1
-        if count < 1 or len(xu) != count*21+14:
+        # Native knot torques: N-1 controls, none after the terminal state.
+        self.controls = np.asarray(plan["_torques"], dtype=float)
+        if self.controls.ndim != 2 or self.controls.shape[1] != 7 or len(self.controls) != int(plan["N"])-1:
             raise ValueError("Unexpected plan layout: expected N-1 controls and a state-only terminal knot")
-        self.controls = xu[:count*21].reshape(count, 21)[:, 14:21].astype(float)*np.asarray(plan["_signs"])
         self.plan, self.plan_origin = plan, float(self.adapter.t)
         plan["controller_wall_s"] = wall
         self.solves += 1
@@ -162,10 +166,8 @@ class MultirateSession:
                 return []
             if a.t >= self._tick_time(self.control_tick, "control_hz")-1e-12:
                 elapsed = max(0., a.t-self.plan_origin)
-                index = int(math.floor(elapsed/a.dt+1e-9))
-                self.horizon_exhausted = index >= len(self.controls)
-                index = min(index, len(self.controls)-1)
-                a.u = self.controls[index].copy()
+                torque, self.horizon_exhausted = hold_last(self.controls, a.dt, elapsed)
+                a.u = torque.copy()
                 # State torque is the command held over the following interval.
                 # Endpoint states record the torque that produced that endpoint.
                 self.control_updates += 1
@@ -183,8 +185,9 @@ class MultirateSession:
             if h <= 0:
                 raise RuntimeError("Multirate scheduler failed to advance")
             physics_start = self.clock()
-            q, v = getattr(a, "plant_step", a.reach.rk4)(a.model, a.data, a.x[:7], a.x[7:], a.u, h)
-            a.x = np.r_[q, v]
+            self.plant.apply(a.u)
+            self.plant.advance(until)
+            a.x = np.r_[self.plant.q, self.plant.qd]
             if not np.isfinite(a.x).all():
                 raise FloatingPointError("Nonfinite simulated state")
             a.t = until

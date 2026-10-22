@@ -444,11 +444,8 @@ class ProcessLiveService:
                             self.active_profile_id = identifier
                             self.active_profile = deepcopy(packet["profile"])
                             self.profile_switch = dict(state="idle")
-                            for key in ("available_N", "parameters", "source"):
-                                self.schema[key] = deepcopy(packet["schema"].get(key))
-                            self.schema["available_N_by_friction"] = deepcopy(packet["schema"].get(
-                                "available_N_by_friction", dict(off=packet["schema"].get("available_N", []), on=[])))
-                            self.schema.setdefault("friction", {})["predictor"] = deepcopy(packet["schema"].get("friction", {}))
+                            for key in ("available_N", "available_N_by_friction", "parameters", "friction", "source"):
+                                self.schema[key] = deepcopy(packet["schema"][key])
                             self.publish_events([dict(type="solver_profile", state="active",
                                 profile_id=identifier, generation=self.generation), self._history_metadata()])
                         else:
@@ -511,7 +508,7 @@ class ProcessLiveService:
                         rendered_events = []
                         inspection_records = []
                         for event in packet["events"]:
-                            if event.get("type") == "plan" and "_xu" in event:
+                            if event.get("type") == "plan" and "_states" in event:
                                 event = self.renderer((event, None, ()))[0]
                                 event["generation"] = self.generation
                                 if event.get("origin") == "preview":

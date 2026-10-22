@@ -32,9 +32,9 @@ def mutable(value):
 
 
 def render_plan(captured, kinematics):
-    from server import decode_prediction_telemetry
     event = mutable(captured)
-    q, qd, torque = decode_prediction_telemetry(event.pop("_xu"), event.pop("_signs"), event["N"])
+    states, torque = np.asarray(event.pop("_states")), np.asarray(event.pop("_torques"))
+    q, qd = states[:, :7], states[:, 7:]
     reference = event.pop("_reference")
     event["reference_native"] = np.asarray(reference).tolist()
     n, dt = event["N"], event["dt_s"]

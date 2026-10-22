@@ -145,8 +145,7 @@ def wire_value(value):
 
 def send_message(channel, message, *, array_buffers=False):
     # Let the JSON encoder traverse ordinary containers and numeric buffers in
-    # C. Recursively normalizing every float in Python doubled this work for
-    # each solve (native_plan previously walked the same tree first).
+    # C. Recursively normalizing every float in Python doubled this work.
     def encode(value):
         if isinstance(value, np.ndarray):
             return value.tolist()
@@ -283,13 +282,14 @@ class SolverProcess:
         self._stop(reason)
 
 
-def model_contract(adapter):
+def model_contract(kinematics, tiago):
     """Coordinate/semantic compatibility, separate from physical parameters."""
-    return dict(joint_names=list(adapter.model.names)[1:], nq=adapter.model.nq,
-        nv=adapter.model.nv, coordinate_units="rad,rad/s,Nm", torque_semantics="actuator_joint_torque",
-        reference_frame="torso_lift_link", end_effector_frame=adapter.reach.EE_FRAME,
-        world_from_reference=np.asarray(adapter.kinematics.world_from_torso.homogeneous).tolist(),
-        tcp_offset=np.asarray(adapter.kinematics.ee_offset.homogeneous).tolist())
+    joints = list(tiago.RIGHT_ARM_JOINTS)
+    return dict(joint_names=joints, nq=len(joints), nv=len(joints), coordinate_units="rad,rad/s,Nm",
+        torque_semantics="actuator_joint_torque", reference_frame=tiago.ROOT_FRAME,
+        end_effector_frame=kinematics.end_effector_frame,
+        world_from_reference=np.asarray(kinematics.world_from_torso.homogeneous).tolist(),
+        tcp_offset=np.asarray(kinematics.ee_offset.homogeneous).tolist())
 
 
 def validate_contract(simulator, predictor):
@@ -301,16 +301,3 @@ def validate_contract(simulator, predictor):
         a, b = np.asarray(simulator.get(key)), np.asarray(predictor.get(key))
         if a.shape != (4, 4) or b.shape != (4, 4) or not np.allclose(a, b, rtol=0, atol=1e-9):
             raise ValueError(f"Solver profile has incompatible {key}")
-
-
-def native_plan(event):
-    """Convert all packed solver coordinates at the implementation boundary."""
-    event = dict(event)
-    xu, signs = np.asarray(event["_xu"]), np.asarray(event["_signs"])
-    count = event["N"] - 1
-    xu = xu.reshape(-1).copy()
-    xu[:count * 21] *= np.tile(signs, count * 3)
-    xu[count * 21:] *= np.tile(signs, 2)
-    event["_xu"] = xu
-    event["_signs"] = [1.] * 7
-    return event

@@ -1,44 +1,41 @@
-"""Native-coordinate MPC adapter and schema using unchanged tiago_mpc helpers.
+"""Live settings, task geometry and GPU locks around tiago_mpc's MPC.
 
-Visualizer execution timing and process/history transport live in the execution
-modules. The synchronous fixed-loop adapter remains a conformance reference.
+The settings are asdict(MpcParams) plus the visualizer's simulated-plant group.
+The parameter specs and defaults come from the selected interpreter's source
+probe; this module imports no tiago_mpc solver code and no GATO module.
 """
 from __future__ import annotations
 
 from copy import deepcopy
-from collections.abc import Mapping
 import fcntl
-import hashlib
 import importlib
-import json
 import math
-import os
 from pathlib import Path
 import subprocess
 import sys
 
 import numpy as np
 
-from live_presentation import render_plan, render_state, snapshot
-from friction_settings import DEFAULT_FRICTION
-
 ROOT = Path(__file__).resolve().parent
+# The reach task's tolerances (values of tiago_mpc experiments/reach.py:Reach).
+POSITION_TOL_M, SPEED_L1_TOL_RAD_S = .05, 1.
+# Predictor friction is a compiled variant; its tanh width is fixed (Felix, 2026-10-22).
+PREDICTOR_SMOOTHING_RAD_S = .03
 
 
-def import_mpc(mpc_root):
-    """Use the startup-selected cache and import unchanged source in one worker."""
+def import_tiago(mpc_root):
+    """tiago_mpc.tiago from the selected checkout, with its own external/gato first."""
     mpc_root = Path(mpc_root).expanduser().resolve()
-    os.environ.setdefault("GATO_CACHE_DIR", str(mpc_root / ".cache/gato"))
-    for location in (mpc_root / "external/gato/python", mpc_root / "examples"):
+    for location in (mpc_root / "external/gato/python", mpc_root):
         if str(location) not in sys.path:
             sys.path.insert(0, str(location))
-    module = importlib.import_module("reach_sim")
-    if module.ROOT.resolve() != mpc_root:
-        raise ValueError("A different tiago_mpc root was already imported in this process")
-    gato_path = Path(module.gato.__file__).resolve()
-    if not gato_path.is_relative_to(mpc_root / "external/gato"):
-        raise ValueError(f"GATO imports from {gato_path}, outside the selected tiago_mpc checkout")
-    return module, importlib.import_module("reaching_config")
+    tiago = importlib.import_module("tiago_mpc.tiago")
+    if tiago.ROOT.resolve() != mpc_root:
+        raise ValueError(f"tiago_mpc imports from {tiago.ROOT}, not the selected checkout {mpc_root}")
+    gato = importlib.import_module("gato")
+    if not Path(gato.__file__).resolve().is_relative_to(mpc_root / "external/gato"):
+        raise ValueError(f"GATO imports from {gato.__file__}, outside the selected tiago_mpc checkout")
+    return tiago
 
 
 def source_identity(mpc_root):
@@ -53,46 +50,52 @@ def source_identity(mpc_root):
                 gato_commit=git(mpc_root / "external/gato", "rev-parse", "HEAD"))
 
 
-def parameter_specs(config, available_n):
-    """One entry for every leaf in the complete reaching configuration."""
+def mpc_params(config):
+    """The asdict(MpcParams) part of a Live config: everything but the plant group."""
+    return {key: deepcopy(value) for key, value in config.items() if key != "plant"}
+
+
+LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "q_cost": "Tool position cost",
+          "qd_cost": "Joint speed cost", "u_cost": "Control cost", "N_cost": "Terminal position cost",
+          "friction": "Predictor friction", "plant.friction": "Simulator friction",
+          "ee_frame": "End-effector frame", "warmup": "Warm-up solves", "budget_s": "SQP wall budget (s)"}
+RANGES = {"dt_s": (.001, .1), "solver.max_sqp_iters": (1, 100000), "solver.max_pcg_iters": (1, 1000000),
+          "solver.pcg_tol": (1e-8, 1), "solver.solve_ratio": (.001, 1), "solver.mu": (1e-6, 1e5),
+          "solver.rho": (1e-8, 1e4), "admm.iters": (1, 200), "admm.eps_rel": (1e-8, 1),
+          "joint_margin_rad": (0, .5), "velocity_fraction": (.01, 1), "effort_fraction": (.01, 1),
+          "warmup": (0, 100), "budget_s": (1e-4, 10)}
+LIMIT_KEYS = ("joint_margin_rad", "velocity_fraction", "effort_fraction")
+
+
+def parameter_specs(config, available_n, predictor_friction):
+    """One entry per leaf of the Live config; predictor friction is one choice."""
+    friction_label = f"URDF Coulomb + viscous, tanh {predictor_friction['width_rad_s']:g} rad/s"
+    choices = {"N": list(available_n), "solver.linsys": [None], "solver.exact_hessian": [False],
+               "ee_frame": [config["ee_frame"]], "warm_start": ["shift", "hold"],
+               "admm_linsys": ["pcg", "bdsv_factor", "auto"],
+               "friction": [dict(value=None, label="Loss-free"),
+                            dict(value=deepcopy(predictor_friction), label=friction_label)]}
     specs = []
-    labels = {"N": "Knot points", "dt_s": "Knot interval (s)",
-              "q_cost": "Tool position cost", "qd_cost": "Joint speed cost",
-              "u_cost": "Control cost", "N_cost": "Terminal position cost", "simulation": "Simulator friction",
-              "prediction": "Predictor friction", "predictor_smoothing_rad_s": "Predictor smoothing (rad/s)"}
-    choices = {"N": list(available_n), "solver_params.linsys": [None], "solver_params.exact_hessian": [False],
-               "controller.warm_start": ["shift", "hold"],
-               "controller.admm_linsys": ["pcg", "bdsv_factor", "auto"]}
-    limits = {"friction.predictor_smoothing_rad_s": (.001, 1), "dt_s": (.001, .1), "solver_params.max_sqp_iters": (1, 100000),
-              "solver_params.max_pcg_iters": (1, 1000000),
-              "solver_params.pcg_tol": (1e-8, 1), "solver_params.solve_ratio": (.001, 1),
-              "solver_params.mu": (1e-6, 1e5), "solver_params.rho": (1e-8, 1e4),
-              "controller.limits_kw.iters": (1, 200),
-              "controller.limits_kw.eps_rel": (1e-8, 1),
-              "limit_bounds.joint_margin_rad": (0, .5),
-              "limit_bounds.velocity_fraction": (.01, 1),
-              "limit_bounds.effort_fraction": (.01, 1)}
     def visit(value, path=""):
         for key, item in value.items():
             name = f"{path}.{key}" if path else key
-            if isinstance(item, dict):
+            if isinstance(item, dict) and name != "friction":
                 visit(item, name)
                 continue
-            spec = dict(path=name, label=labels.get(key, key.replace("_", " ").capitalize()),
-                        group="Friction" if name.startswith("friction.") else "Costs" if key.endswith("cost") else (
-                            "ADMM" if name.startswith("controller.limits_kw.") else
-                            "Limits" if name.startswith("limit_bounds.") else "Solver"),
+            spec = dict(path=name, label=LABELS.get(name, LABELS.get(key, key.replace("_", " ").capitalize())),
+                        group="Friction" if name in ("friction", "plant.friction") else "Costs" if key.endswith("cost") else (
+                            "ADMM" if name.startswith("admm.") else "Limits" if name in LIMIT_KEYS else "Solver"),
                         scale="linear")
             if name in choices:
                 spec.update(kind="choice", choices=choices[name])
-                if len(choices[name]) == 1:
-                    spec.update(disabled=True, label=spec["label"] + " (fixed by reaching adapter)")
+                if len(choices[name]) == 1 and name != "N":
+                    spec.update(disabled=True, label=spec["label"] + " (fixed)")
             elif isinstance(item, bool):
                 spec["kind"] = "bool"
             else:
                 spec["kind"] = "int" if isinstance(item, int) else "float"
-                lo, hi = limits.get(name, (0, 1e5) if key.endswith("cost") else (1e-8, 1e4))
-                spec.update(min=lo, max=hi)
+                lo, hi = RANGES.get(name, (0, 1e5) if key.endswith("cost") else (1e-8, 1e4))
+                spec.update(min=lo, max=hi, nullable=item is None)
                 if lo > 0 and hi / lo >= 1000:
                     spec["scale"] = "log"
             specs.append(spec)
@@ -131,23 +134,28 @@ def figure8_reference(times, start_xyz, task):
     return xyz
 
 
+def choice_value(choice):
+    """A spec choice is a plain value or {value, label}."""
+    return choice["value"] if isinstance(choice, dict) and set(choice) == {"value", "label"} else choice
+
+
 def validate_settings(config, task, schema):
     """Reject malformed, missing or extra fields before handing work to CUDA."""
     if not isinstance(config, dict) or not isinstance(task, dict):
         raise ValueError("config and task must be JSON objects")
+    expected = {s["path"]: s for s in schema["parameters"]}
     def flatten(value, prefix=""):
         result = {}
         for key, item in value.items():
             if not isinstance(key, str):
                 raise ValueError("Configuration keys must be strings")
             path = f"{prefix}.{key}" if prefix else key
-            if isinstance(item, dict):
+            if isinstance(item, dict) and path not in expected:
                 result.update(flatten(item, path))
             else:
                 result[path] = item
         return result
     values = flatten(config)
-    expected = {s["path"]: s for s in schema["parameters"]}
     if set(values) != set(expected):
         raise ValueError(f"Complete config required; missing={sorted(set(expected)-set(values))}, "
                          f"unknown={sorted(set(values)-set(expected))}")
@@ -157,7 +165,10 @@ def validate_settings(config, task, schema):
         if kind == "bool":
             valid = isinstance(value, bool)
         elif kind == "choice":
-            valid = any(type(value) is type(choice) and value == choice for choice in spec["choices"])
+            valid = any(type(value) is type(choice) and value == choice
+                        for choice in map(choice_value, spec["choices"]))
+        elif value is None:
+            valid = bool(spec.get("nullable"))
         else:
             valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
             valid = valid and spec["min"] <= value <= spec["max"]
@@ -165,10 +176,11 @@ def validate_settings(config, task, schema):
                 valid = valid and isinstance(value, int)
         if not valid:
             raise ValueError(f"Invalid {path}: {value!r}")
-    mode = "on" if config.get("friction", {}).get("prediction") else "off"
+    mode = "on" if config.get("friction") is not None else "off"
     available = schema.get("available_N_by_friction", {}).get(mode)
     if available is not None and config["N"] not in available:
-        raise ValueError(f"No compatible prebuilt N={config['N']} for predictor friction {mode}; use explicit Source / Build")
+        raise ValueError(f"Not compiled: N={config['N']} {'with' if mode == 'on' else 'without'} predictor "
+                         "friction. Build it in Settings › Backend (Build selected N).")
     task_kind = task.get("kind")
     required_task_fields = ({"kind", "target_offset_m"} if task_kind == "reach" else
                             (set(FIGURE8_DEFAULT_TASK) - {"orientation_xyzw"}) if task_kind == "figure8" else None)
@@ -236,12 +248,12 @@ class GPULocks:
         self.handles.clear()
 
 
-def urdf_joint_limits(model):
-    """Physical URDF limits in native coordinates: the 100 % reference of limit use."""
-    return dict(lower_position_rad=np.asarray(model.lowerPositionLimit, dtype=float).tolist(),
-                upper_position_rad=np.asarray(model.upperPositionLimit, dtype=float).tolist(),
-                velocity_rad_s=np.asarray(model.velocityLimit, dtype=float).tolist(),
-                effort_nm=np.asarray(model.effortLimit, dtype=float).tolist(),
+def urdf_joint_limits(limits):
+    """Physical URDF limits (tiago.limits()) in native coordinates: the 100 % reference of limit use."""
+    return dict(lower_position_rad=np.asarray(limits.lower, dtype=float).tolist(),
+                upper_position_rad=np.asarray(limits.upper, dtype=float).tolist(),
+                velocity_rad_s=np.asarray(limits.velocity, dtype=float).tolist(),
+                effort_nm=np.asarray(limits.effort, dtype=float).tolist(),
                 source="URDF limits (native coordinates)")
 
 
@@ -259,306 +271,30 @@ def mpc_bounds_from_rows(rows, limit_bounds):
     return result
 
 
-def configured_limits(solver, model, signs, limit_bounds):
-    """Install resolved ``limit_bounds`` with upstream ``set_bounds``; return the
-    URDF limits, the MPC bounds the solver holds, and its captured rows."""
-    from inspection_problem import capture_constraint_bounds
-    importlib.import_module("tiago_mpc.controller").set_bounds(solver, model, np.asarray(signs), limit_bounds)
-    rows = capture_constraint_bounds(solver, signs)
-    return urdf_joint_limits(model), mpc_bounds_from_rows(rows, limit_bounds), rows
-
-
-class MPCAdapter:
-    """All instances and CUDA calls belong exclusively to the GPU worker."""
-    def __init__(self, mpc_root, reach=None):
-        self.mpc_root = Path(mpc_root).resolve()
-        self.simulator_joint_dynamics = None
-        self.reach = reach or import_mpc(mpc_root)[0]
-        self.gato = self.reach.gato
-        self.pin = self.reach.pin
-        from server import RobotKinematics
-        self.kinematics = RobotKinematics(Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf",
-                                         end_effector_frame=self.reach.EE_FRAME)
-        from source_runtime import prepared_model
-        with prepared_model(self.reach, retain=True) as prepared:
-            path, self.gpu_path, self.signs = prepared
-        self.model_identity = dict(full_urdf_sha256=hashlib.sha256(
-            (Path(mpc_root)/"models/tiago_pro/tiago_pro.urdf").read_bytes()).hexdigest(),
-            gpu_urdf_sha256=hashlib.sha256(self.gpu_path.read_bytes()).hexdigest(),
-            native_urdf_sha256=hashlib.sha256(Path(self.reach.URDF).read_bytes()).hexdigest(),
-            end_effector_frame=self.reach.EE_FRAME, source=source_identity(mpc_root))
-        self.state_signs = np.tile(self.signs, 2)
-        self.model = self.pin.buildModelFromUrdf(str(path))
-        self.data = self.model.createData()
-        self.fid = self.model.getFrameId(self.reach.EE_FRAME)
-        if (self.model.nq, self.model.nv) != (7, 7) or self.fid >= self.model.nframes:
-            raise ValueError("Unexpected reduced TIAGo model or end-effector frame")
-        self.default_target = self.reach.ee_position(
-            self.model, self.data, self.reach.Q_START_RAD + self.reach.Q_GOAL_DELTA_RAD, self.fid)
-        self.figure8_start_world = self.kinematics.target_to_world(self.reach.ee_position(
-            self.model, self.data, self.reach.Q_START_RAD, self.fid))
-        self.task_anchors = snapshot(dict(
-            reach=self.kinematics.target_to_world(self.default_target).tolist(),
-            figure8=self.figure8_start_world.tolist()))
-        self.task = deepcopy(REACH_DEFAULT_TASK)
-        self.solver = self.controller = None
-        self.sequence = 0
-        self.reset_state()
-
-    def reset_state(self, reset_controller=True):
-        self.x = np.r_[self.reach.Q_START_RAD, np.zeros(7)]
-        self.t = 0.0
-        self.sequence = 0
-        self.applied_torque = None
-        if reset_controller and self.controller is not None:
-            self.controller.reset(self.x * self.state_signs)
-
-    def configure(self, config_path, task):
-        from friction_settings import load_configuration
-        _, settings, effective = load_configuration(config_path, self.mpc_root)
-        self.problem_configuration = deepcopy(effective)
-        self.simulator_joint_dynamics = effective.get("simulator_joint_dynamics")
-        losses = effective.get("prediction_joint_dynamics")
-        plant = self.reach.PLANT + "_smooth" if losses is not None else self.reach.PLANT
-        from source_runtime import prepared_model, discover_compatible_modules
-        checked = discover_compatible_modules(self.reach, [effective["N"]], losses=losses)
-        if effective["N"] not in checked["available_N"]:
-            detail = next((item.get("reason") for item in checked["modules"] if item["N"] == effective["N"]), checked.get("error"))
-            mode = "smooth-friction" if losses is not None else "loss-free"
-            raise ValueError(f"No current prebuilt {mode} N={effective['N']} module: {detail}. Use explicit Source / Build; settings never compile.")
-        with prepared_model(self.reach, retain=True, losses=losses) as (_, self.gpu_path, _):
-            pass
-        self.model_identity = dict(self.model_identity,
-            gpu_urdf_sha256=hashlib.sha256(self.gpu_path.read_bytes()).hexdigest())
-        # Discovery imports the verified module with build_if_missing=False.
-        # Reuse it; never call upstream register/build_controller here.
-        options = {} if losses is None else dict(joint_friction_smoothing=losses["smoothing_rad_s"])
-        self.solver = self.gato.BSQP(str(self.gpu_path), batch_size=1, N=effective["N"],
-                                   dt=effective["dt_s"], plant_type=plant,
-                                   params=self.gato.SolverParams(**effective["solver_params"]), **options)
-        if losses is None:
-            self.reach.check_model(self.solver, self.model, self.data, self.fid,
-                                  self.reach.Q_START_RAD + self.reach.Q_GOAL_DELTA_RAD, self.signs)
-        else:
-            importlib.import_module("tiago_mpc.model_runtime").check_model(
-                self.solver, self.model, self.data, self.fid, self.signs, losses)
-        options = settings.get("controller", {})
-        self.controller = self.gato.MPCController(self.solver, limits="admm", linsys="pcg", **options)
-        # The resolved bounds, installed exactly as upstream reach_sim does;
-        # the displayed MPC bounds are the rows the solver then holds.
-        self.joint_limits, self.mpc_bounds, self.constraint_bounds_native = configured_limits(
-            self.solver, self.model, self.signs, effective["limit_bounds"])
-        self.configure_task(effective, task)
-        self.controller.reset(self.x * self.state_signs)
-        self.restarted = True
-
-    def configure_task(self, effective, task):
-        """Fixed simulator owns world-space task geometry and exact references."""
-        self.N, self.dt = effective["N"], effective["dt_s"]
-        self.task = deepcopy(task)
-        self.task_path_xyz = (figure8_reference(np.linspace(0., task["period_s"], 257),
-                                              self.figure8_start_world, task).tolist()
-                              if task["kind"] == "figure8" else None)
-        world_target = self.kinematics.target_to_world(self.default_target) + np.asarray(task["target_offset_m"])
-        self.target = self.kinematics.world_from_torso.actInv(world_target)
-        self.reference = np.zeros((self.N, 6), dtype=np.float32)
-        self.reference[:, :3] = self.target
-        if self.task["kind"] == "figure8":
-            self.update_tracking_reference()
-
-    def target_world_at(self, timestamp):
-        if self.task["kind"] == "figure8":
-            return figure8_reference([timestamp], self.figure8_start_world, self.task)[0]
-        return self.kinematics.target_to_world(self.target)
-
-    def update_tracking_reference(self):
-        world = figure8_reference(self.t+np.arange(self.N)*self.dt,
-                                 self.figure8_start_world, self.task)
-        self.reference[:, :3] = np.asarray([
-            self.kinematics.world_from_torso.actInv(point) for point in world])
-
-    def plan_context(self):
-        """Configuration-static plan fields; sent once by the isolated solver."""
-        return dict(problem_configuration=getattr(self, "problem_configuration", {}),
-                    model_identity=getattr(self, "model_identity", {}), task=self.task,
-                    end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
-                    N=self.N, dt_s=self.dt, task_kind=self.task["kind"],
-                    task_path_xyz=getattr(self, "task_path_xyz", None),
-                    joint_limits=self.joint_limits, mpc_bounds=getattr(self, "mpc_bounds", None),
-                    constraint_bounds_native=getattr(self, "constraint_bounds_native", None))
-
-    def solve_snapshot(self, origin, settings_version, reference=None, *, include_context=True):
-        """Solve numerically and copy buffers; trajectory FK/encoding runs elsewhere."""
-        if reference is not None:
-            self.reference = np.asarray(reference, dtype=np.float32).reshape(self.N, 6).copy()
-        elif self.task["kind"] == "figure8":
-            self.update_tracking_reference()
-        if origin == "preview":
-            self.controller.reset(self.x * self.state_signs)
-        step = self.controller.step(self.x * self.state_signs, self.reference.ravel())
-        self.u = np.asarray(step.u, dtype=float) * self.signs
-        self.last_xu = np.asarray(step.solve.xu).copy()
-        if not np.isfinite(self.u).all() or not np.isfinite(self.last_xu).all():
-            raise FloatingPointError("Nonfinite torque or predicted trajectory")
-        stats = step.solve.stats
-        self.sequence += 1
-        event = dict(type="plan", seq=self.sequence, origin=origin, settings_version=settings_version,
-                     initial_state=dict(q=self.x[:7].tolist(), qd=self.x[7:].tolist(), time_s=self.t),
-                     sim_time_s=self.t, N=self.N,
-                     target_xyz=self.target_world_at(self.t).tolist(),
-                     _xu=self.last_xu, _signs=self.signs, _reference=self.reference,
-                     stats=dict(sqp_iters=int(np.sum(stats.sqp_iters)), pcg_iters=int(np.sum(stats.pcg_iters)),
-                                admm_iters=int(np.sum(stats.admm_iters)),
-                                admm_linsys_iters=int(np.sum(stats.admm_linsys_iters)),
-                                solve_time_ms=float(step.solve.solve_time_us)/1000,
-                                row_violation=np.asarray(step.row_viol).tolist(),
-                                controller_restarted=self.restarted))
-        if include_context:
-            event.update(self.plan_context())
-        # Copy already-returned public telemetry only. No native solver handle,
-        # invented SQP prediction or optimizer checkpoint enters history.
-        def retained(value):
-            if isinstance(value, np.ndarray):
-                return retained(value.tolist())
-            if isinstance(value, (list, tuple)):
-                return [retained(item) for item in value]
-            if isinstance(value, (float, np.floating)) and not np.isfinite(value):
-                return None
-            return value.item() if isinstance(value, np.generic) else value
-        diagnostic_names = ("initial_merit", "final_merit", "min_merit", "step_size", "pcg_iters",
-                            "pcg_times_us", "ls_num_iters", "budget_hit", "linsys",
-                            "admm_r_prim", "admm_r_dual", "row_max_violation", "row_sum_violation")
-        event["diagnostics"] = {name: retained(getattr(stats, name)) for name in diagnostic_names
-                                if hasattr(stats, name)}
-        # Constraint telemetry can be nonfinite even for a finite trajectory.
-        # Report unavailable telemetry explicitly instead of fabricating convergence.
-        violation = np.asarray(step.row_viol)
-        if not np.isfinite(violation).all():
-            event["stats"]["row_violation"] = None
-        self.restarted = False
-        return snapshot(event)
-
-    def solve(self, origin, settings_version):
-        """Synchronous diagnostic/conformance API, sharing the exact numerical path."""
-        event = render_plan(self.solve_snapshot(origin, settings_version), self.kinematics)
-        json.dumps(event, allow_nan=False)
-        return event
-
-    def plant_step(self, model, data, q, velocity, torque, dt):
-        if self.simulator_joint_dynamics is None:
-            return self.reach.rk4(model, data, q, velocity, torque, dt)
-        from tiago_mpc import joint_dynamics
-        # plant_step picks the integrator the law needs (stick/slip or RK4);
-        # sources without it offer only the sign(v) RK4.
-        step = getattr(joint_dynamics, "plant_step", joint_dynamics.plant_rk4)
-        return step(model, data, q, velocity, torque, dt, self.simulator_joint_dynamics)
-
-    def advance(self, end_time=None):
-        """The unchanged reach_sim fixed pacing, down to the RK4 substep order."""
-        interval_end = self.t + self.dt if end_time is None else min(self.t + self.dt, end_time)
-        samples = []
-        while self.t < interval_end - 1e-12:
-            h = min(self.reach.SIM_DT_S, interval_end - self.t)
-            q, v = self.plant_step(self.model, self.data, self.x[:7], self.x[7:], self.u, h)
-            self.x = np.r_[q, v]
-            if not np.isfinite(self.x).all():
-                raise FloatingPointError("Nonfinite simulated state")
-            self.t += h
-            self.applied_torque = self.u.copy()
-            samples.append((self.t, self.x.copy(), self.u.copy()))
-        return samples
-
-    def _state_fields(self, rtf=0, settings_version=0):
-        """Borrowed state fields, consumed immediately by one detachment API."""
-        return dict(type="state", sim_time_s=self.t, _x=self.x,
-                    simulator_joint_dynamics=getattr(self, "simulator_joint_dynamics", None),
-                    end_effector_frame=self.reach.EE_FRAME, task_anchors=self.task_anchors,
-                    settings_version=settings_version,
-                    torque_nm=None if self.applied_torque is None else self.applied_torque.tolist(),
-                    torque_kind="applied", joint_limits=self.joint_limits,
-                    mpc_bounds=getattr(self, "mpc_bounds", None),
-                    task_kind=self.task["kind"], target_xyz=self.target_world_at(self.t).tolist(),
-                    _position_tol=self.reach.POSITION_TOL_M, _speed_tol=self.reach.SPEED_L1_TOL_RAD_S,
-                    rtf=float(rtf))
-
-    def state_snapshot(self, rtf=0, settings_version=0):
-        return snapshot(self._state_fields(rtf, settings_version))
-
-    def state_record(self, rtf=0, settings_version=0):
-        """Detach once into IPC-ready containers; never expose plant buffers.
-
-        This is the numerical session's state-only path. The presentation API
-        above still returns immutable mappings; arbitrary snapshots elsewhere
-        retain their existing conversion behavior.
-        """
-        def detach(value):
-            if value is None or type(value) in (str, int, float, bool):
-                return value
-            if isinstance(value, np.ndarray):
-                copied = value.copy()
-                copied.flags.writeable = False
-                return copied
-            if isinstance(value, Mapping):
-                return {key: detach(item) for key, item in value.items()}
-            if isinstance(value, (list, tuple)):
-                return [detach(item) for item in value]
-            return value
-        return detach(self._state_fields(rtf, settings_version))
-
-    def state_event(self, rtf=0):
-        return render_state(self.state_snapshot(rtf), self.kinematics)
-
-
-def build_schema(mpc_root, available_n=None, available_n_by_friction=None, predictor_friction=None):
-    """Discover imports/build availability inside the numerical subprocess."""
+def build_schema(probe, mpc_root):
+    """The Live schema from a selected-interpreter source probe (scripts/source_probe.py)."""
     from execution_session import DEFAULT_EXECUTION
-    mpc_root = Path(mpc_root).expanduser().resolve()
-    reach, configuration = import_mpc(mpc_root)
-    if available_n_by_friction is not None:
-        available = list(available_n_by_friction["off"])
-    elif available_n is None:
-        try:
-            from source_runtime import discover_compatible_modules
-            discovery = discover_compatible_modules(reach)
-            available = discovery["available_N"]
-        except (OSError, ValueError, KeyError):
-            available = []
-    else:
-        available = list(available_n)
-    _, settings, _ = configuration.load_configuration()
-    defaults = {k: deepcopy(v) for k, v in settings.items()
-                if k in ("N", "dt_s", "solver_params", "controller", "limit_bounds")}
-    from friction_settings import canonical_losses, prediction_losses
-    defaults["friction"] = deepcopy(DEFAULT_FRICTION)
-    smooth = []
-    friction = {}
-    try:
-        losses, source = canonical_losses(mpc_root)
-        friction = dict(coefficients=losses, source=source,
-            simulation_law=losses["model"], prediction_law="coulomb_tanh_viscous")
-        from source_runtime import discover_compatible_modules
-        if available_n_by_friction is None:
-            smooth = discover_compatible_modules(reach, losses=prediction_losses(mpc_root))["available_N"]
-    except (OSError, ValueError, KeyError, ImportError) as exc:
-        friction["error"] = str(exc)
-    if available_n_by_friction is not None:
-        smooth = list(available_n_by_friction["on"])
-    if predictor_friction is not None:
-        friction["predictor"] = deepcopy(predictor_friction)
-    by_mode = dict(off=list(available), on=smooth)
-    available = sorted(set(available) | set(smooth))
-    schema = dict(available_N_by_friction=by_mode, friction=friction, defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK),
-                                                execution=deepcopy(DEFAULT_EXECUTION)),
-                       available_N=available, parameters=parameter_specs(defaults, available),
-                       tasks=[dict(kind="reach", label="Reach", defaults=deepcopy(REACH_DEFAULT_TASK)),
-                              dict(kind="figure8", label="Figure eight", defaults=deepcopy(FIGURE8_DEFAULT_TASK),
-                                   parameters=[dict(path="width_m", label="Width (m)", min=.01, max=.6),
-                                               dict(path="height_m", label="Height (m)", min=.01, max=.6),
-                                               dict(path="period_s", label="Period (s)", min=1., max=120.)])],
-                       source=source_identity(mpc_root))
-    return schema
+    if not probe.get("compatible"):
+        raise ValueError(probe.get("error") or "Selected source is incompatible")
+    defaults = dict(deepcopy(probe["defaults"]), plant=dict(friction=False))
+    by_mode = {mode: list(probe["available_N_by_friction"][mode]) for mode in ("off", "on")}
+    available = sorted(set(by_mode["off"]) | set(by_mode["on"]))
+    predictor = probe["friction"]
+    friction = dict(coefficients={key: predictor[key] for key in ("coulomb_nm", "viscous_nm_s_per_rad")},
+                    predictor=deepcopy(predictor), source="reduced right-arm URDF (tiago.urdf_friction)",
+                    simulation_law="hard-sign Coulomb + viscous (RK4)",
+                    prediction_law=f"tanh Coulomb (width {predictor['width_rad_s']:g} rad/s) + viscous")
+    return dict(available_N_by_friction=by_mode, available_N=available, friction=friction,
+                defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK), execution=deepcopy(DEFAULT_EXECUTION)),
+                parameters=parameter_specs(defaults, available, predictor),
+                tasks=[dict(kind="reach", label="Reach", defaults=deepcopy(REACH_DEFAULT_TASK)),
+                       dict(kind="figure8", label="Figure eight", defaults=deepcopy(FIGURE8_DEFAULT_TASK),
+                            parameters=[dict(path="width_m", label="Width (m)", min=.01, max=.6),
+                                        dict(path="height_m", label="Height (m)", min=.01, max=.6),
+                                        dict(path="period_s", label="Period (s)", min=1., max=120.)])],
+                source=source_identity(Path(mpc_root).expanduser().resolve()))
 
 
-# Numerical controller/plant operations stay above; process/transport/history
-# policy belongs to the visualizer bridge and never initializes CUDA here.
+# Process/transport/history policy belongs to the visualizer bridge and never
+# initializes CUDA here.
 from execution_bridge import ProcessLiveService as LiveService

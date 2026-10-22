@@ -21,8 +21,10 @@ def captured_problem(plan):
     if missing:
         raise ValueError("Run again unavailable: selected solve lacks captured " + ", ".join(missing))
     config = detached(dict(plan["problem_configuration"]))
-    if not isinstance(config.get("solver_params"), dict) or not isinstance(config.get("controller"), dict):
-        raise ValueError("Run again unavailable: captured solver/controller settings are incomplete")
+    if "solver_params" in config or "controller" in config:
+        raise ValueError("Run again unavailable: pre-migration recording")
+    if not isinstance(config.get("solver"), dict) or not isinstance(config.get("admm"), dict):
+        raise ValueError("Run again unavailable: captured MpcParams are incomplete")
     n, dt = config.get("N"), config.get("dt_s")
     if type(n) is not int or n < 2 or isinstance(dt, bool) or not isinstance(dt, (int, float)) or not math.isfinite(dt) or dt <= 0:
         raise ValueError("Run again unavailable: captured horizon settings are incomplete")
@@ -68,22 +70,6 @@ def run_again_capability(plan):
     except (ValueError, TypeError, KeyError) as exc:
         return dict(available=False, reason=str(exc), initialization="cold_state")
     return dict(available=True, reason=None, initialization="cold_state")
-
-
-def configuration_overrides(problem, sqp_iters):
-    """Recreate all recorded solve settings; bounds are set explicitly afterwards."""
-    effective = problem["problem_configuration"]
-    result = {key: deepcopy(effective[key]) for key in ("N", "dt_s", "solver_params", "controller")}
-    result["solver_params"]["max_sqp_iters"] = sqp_iters
-    # Effective bounds have extra descriptive compiled offsets, which are not
-    # input configuration keys. Native rows are overridden by captured bounds.
-    result["limit_bounds"] = {key: value for key, value in effective.get("limit_bounds", {}).items()
-                              if key in ("joint_margin_rad", "velocity_fraction", "effort_fraction") and value is not None}
-    losses = effective.get("prediction_joint_dynamics")
-    if losses is not None:
-        result["joint_dynamics"] = deepcopy(losses)
-        result["predictor_smoothing_rad_s"] = losses["smoothing_rad_s"]
-    return result
 
 
 def capture_constraint_bounds(solver, signs):

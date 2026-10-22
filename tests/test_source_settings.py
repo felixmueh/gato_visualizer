@@ -64,14 +64,12 @@ class SourceSettingsTests(unittest.TestCase):
     def test_apply_stores_non_default_templates_and_load_round_trips_them(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / 'mpc'
-            for name in ('examples/reach_sim.py', 'external/gato/python/gato/_cache.py'):
-                (root / name).parent.mkdir(parents=True, exist_ok=True); (root / name).touch()
             (root / 'tools/bin').mkdir(parents=True); (root / 'tools/bin/python').symlink_to(sys.executable)
             path = Path(folder) / 'viewer.json'; path.write_text('{}')
             service = SourceSettings(SELECTION, path, Mock(), probe=lambda _: dict(compatible=True))
-            selection = selection_from_request(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/gato'))
+            selection = selection_from_request(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/host-gato'))
             self.assertEqual(selection['python'], str(root.resolve() / 'tools/bin/python'))
-            service.apply(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/gato'))
+            service.apply(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/host-gato'))
             stored = json.loads(path.read_text())['source']
             # The default cache template is not stored (it follows the checkout); the override is, verbatim.
             self.assertEqual(stored, dict(mpc_root=str(root.resolve()), python='<checkout>/tools/bin/python'))

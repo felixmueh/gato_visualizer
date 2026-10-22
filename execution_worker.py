@@ -5,8 +5,6 @@ This process holds the GPU leases; neither owner runs in the HTTP process.
 """
 from __future__ import annotations
 from copy import deepcopy
-from pathlib import Path
-import json
 import queue
 import time
 import traceback
@@ -68,7 +66,7 @@ def estimated_states(execution, duration=None):
 
 
 def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory=None, schema_factory=None, solver_profile=None, report_hz=DEFAULT_PRESENTATION["report_hz"]):
-    from live_mpc import build_schema, GPULocks, ROOT
+    from live_mpc import build_schema, GPULocks
     from live_presentation import mutable
     from solver_adapter import SimulatorAdapter
     locks = GPULocks(mpc_root)
@@ -142,18 +140,14 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             adapter = (adapter_factory or SimulatorAdapter)(mpc_root)
             adapter.gpu_locks = locks
             if adapter_factory is None:
-                adapter.select_profile(solver_profile)
+                adapter.select_profile(solver_profile, schema)
         if need_config:
             if initialized_generation != generation and generation_start.get("kind") == "reset":
                 # Configuring seeds the controller from the current state. A
                 # failed run's tip may be beyond the solver's float32 range,
                 # so Reset discards it before, not after, reconfiguring.
-                adapter.reset_state(reset_controller=False)
-            folder = ROOT / "_expr_data/live/configs"
-            folder.mkdir(parents=True, exist_ok=True)
-            path = folder / f"config-{time.time_ns()}-v{version}.json"
-            path.write_text(json.dumps(config, indent=2, allow_nan=False)+"\n")
-            adapter.configure(path, task)
+                adapter.reset_state()
+            adapter.configure(config, task)
             need_config = False
 
     def initialize_history():
@@ -161,12 +155,11 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
         if initialized_generation == generation:
             return
         if generation_start.get("kind") == "reset":
-            adapter.reset_state(reset_controller=False)
+            adapter.reset_state()
             apply_anchor(None)
         else:
             apply_anchor(generation_start.get("anchor"))
-        adapter.controller.reset(adapter.x*adapter.state_signs)
-        adapter.restarted = True
+        adapter.controller.reset(adapter.x)
         history_complete = False
         initial_time = float(adapter.t)
         session = MultirateSession(adapter, execution, version)
@@ -182,10 +175,8 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             # The fixed simulator imports only Python model/plant helpers.
             # Binary loading/ABI discovery stays in an independent interpreter.
             from source_runtime import probe_selection
-            selection = {key: solver_profile[key] for key in ("mpc_root", "python", "cache")}
-            discovered = probe_selection(selection)
-            schema = build_schema(mpc_root, available_n_by_friction=discovered.get("available_N_by_friction",
-                dict(off=discovered["available_N"], on=[])), predictor_friction=discovered.get("friction"))
+            schema = build_schema(probe_selection({key: solver_profile[key] for key in ("mpc_root", "python", "cache")}),
+                                  mpc_root)
         config = deepcopy(schema["defaults"]["config"])
         task = deepcopy(schema["defaults"]["task"])
         execution = deepcopy(schema["defaults"].get("execution", DEFAULT_EXECUTION))
@@ -238,20 +229,20 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                                 adapter = (adapter_factory or SimulatorAdapter)(mpc_root)
                             adapter.gpu_locks = locks
                             saved_state = (adapter.x.copy(), adapter.t, adapter.applied_torque, adapter.sequence)
-                            adapter.preflight_profile(command["profile"], config, task)
+                            profile_schema = adapter.preflight_profile(command["profile"], config, task)
                             anchor = command.get("anchor")
                             if anchor is not None:
                                 apply_anchor(anchor)
                             adapter.applied_torque = None
                             replaced_child = True
-                            adapter.select_profile(command["profile"])
+                            adapter.select_profile(command["profile"], profile_schema)
                             need_config = True
                             ensure_adapter()
                             # Stage reset and first state before committing the
                             # new generation. A failed child/reset leaves the
                             # previous history descriptor and bytes untouched.
                             adapter.sequence = 0
-                            adapter.controller.reset(adapter.x * adapter.state_signs)
+                            adapter.controller.reset(adapter.x)
                             staged_session = MultirateSession(adapter, execution, version)
                             first_state = staged_session.initial_state()
                             generation = command["target_generation"]
@@ -335,8 +326,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             plan = mutable(adapter.solve_snapshot("preview", version))
                         finally:
                             adapter.x, adapter.t, adapter.applied_torque = saved
-                            adapter.controller.reset(adapter.x*adapter.state_signs)
-                            adapter.restarted = True
+                            adapter.controller.reset(adapter.x)
                         job = None
                         session = None
                         if current(token):
@@ -368,8 +358,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             status("playing" if job["paced"] else "calculating", "Calculation is already running", complete=False)
                             continue
                         if session is None:
-                            adapter.controller.reset(adapter.x*adapter.state_signs)
-                            adapter.restarted = True
+                            adapter.controller.reset(adapter.x)
                             session = MultirateSession(adapter, execution, version)
                         paced = kind == "play" and execution["calculation"] == "on_play"
                         job = dict(paced=paced, end=None if paced else adapter.t+execution["duration_s"],
@@ -377,8 +366,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     if job:
                         history_complete = False
                         if session is None:
-                            adapter.controller.reset(adapter.x*adapter.state_signs)
-                            adapter.restarted = True
+                            adapter.controller.reset(adapter.x)
                             session = MultirateSession(adapter, execution, version)
                         job.update(solves=session.solves, controls=session.control_updates, steps=session.steps)
                         status("playing" if job["paced"] else "calculating", "Computing closed-loop MPC motion", complete=False)
@@ -410,8 +398,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     if interval is not None:
                         emit(dict(kind="records", generation=generation, token=token,
                                   records=[interval], complete=False))
-                    adapter.controller.reset(adapter.x*adapter.state_signs)
-                    adapter.restarted = True
+                    adapter.controller.reset(adapter.x)
                     session = None
                     job = None
                     continue
@@ -464,7 +451,5 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                 time.sleep(.05)
             if hasattr(adapter, "close_solver"):
                 adapter.close_solver()
-            adapter.controller = None
-            adapter.solver = None
             adapter = None
         locks.release()

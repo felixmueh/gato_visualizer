@@ -1,5 +1,5 @@
 """CPU/mock compatibility and subprocess boundary checks; no CUDA imports."""
-from contextlib import contextmanager
+from dataclasses import dataclass
 import importlib.util
 import json
 import os
@@ -15,10 +15,6 @@ import source_runtime as runtime
 
 
 def checkout(root):
-    for name in ("examples/reach_sim.py", "external/gato/python/gato/_cache.py"):
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
     for name in ("venv-host/bin/python", ".venv/bin/python"):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,9 +28,13 @@ class SourceSelectionTests(unittest.TestCase):
             checkout(root)
             selected = runtime.resolve_selection(root)
             self.assertEqual(selected["python"], str(root / "venv-host/bin/python"))
-            self.assertEqual(selected["cache"], str(root / ".cache/gato"))
+            self.assertEqual(selected["cache"], str(root / ".cache/host-gato"))
+            # tiago_mpc's convention: the container's .venv uses .cache/gato.
+            self.assertEqual(runtime.resolve_selection(root, python="<checkout>/.venv/bin/python")["cache"],
+                             str(root / ".cache/gato"))
             (root / "venv-host/bin/python").unlink()
             self.assertEqual(runtime.resolve_selection(root)["python"], str(root / ".venv/bin/python"))
+            self.assertEqual(runtime.resolve_selection(root)["cache"], str(root / ".cache/gato"))
             self.assertFalse((root / ".cache").exists())
 
     def test_checkout_token_is_substituted_for_interpreter_and_cache(self):
@@ -73,7 +73,10 @@ class SourceSelectionTests(unittest.TestCase):
             root = Path(directory).resolve()
             checkout(root)
             self.assertEqual(runtime.checkout_defaults(root)["python"], "<checkout>/venv-host/bin/python")
-            self.assertEqual(runtime.checkout_defaults(root)["cache"], "<checkout>/.cache/gato")
+            self.assertEqual(runtime.checkout_defaults(root)["cache"], "<checkout>/.cache/host-gato")
+            container = runtime.resolve_selection(root, python="<checkout>/.venv/bin/python")
+            self.assertEqual(runtime.stored_selection(container), dict(mpc_root=str(root), python="<checkout>/.venv/bin/python"))
+            self.assertEqual(runtime.resolve_templates(root, "<checkout>/.venv/bin/python")["cache"]["path"], str(root / ".cache/gato"))
             (root / "venv-host/bin/python").unlink()
             self.assertEqual(runtime.default_interpreter_template(root), "<checkout>/.venv/bin/python")
             selection = runtime.resolve_selection(root)
@@ -83,8 +86,8 @@ class SourceSelectionTests(unittest.TestCase):
 
     def test_invalid_selection_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(ValueError, "Not a tiago_mpc checkout"):
-                runtime.resolve_selection(directory)
+            with self.assertRaisesRegex(ValueError, "not a directory"):
+                runtime.resolve_selection(Path(directory) / "missing")
             checkout(Path(directory))
             with self.assertRaisesRegex(ValueError, "not executable"):
                 runtime.resolve_selection(directory, python=Path(directory) / "absent")
@@ -108,6 +111,8 @@ class SourceSelectionTests(unittest.TestCase):
             self.assertEqual(env["PYTHONUNBUFFERED"], "1")
             smooth_command, _ = runtime.build_command(selection, [32], prediction_friction=True)
             self.assertIn("--prediction-friction", smooth_command)
+            with self.assertRaisesRegex(ValueError, "among 8, 16"):
+                runtime.build_command(selection, [40])
 
     def test_probe_failure_is_structured(self):
         with patch.object(runtime, "source_command", return_value=["unused"]), patch.object(
@@ -141,189 +146,56 @@ class SourceSelectionTests(unittest.TestCase):
                 self.assertEqual(runtime.build_jobs(), 1)
 
 
-class DiscoveryTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        package = self.root / "package"
-        package.mkdir()
-        self.reach = SimpleNamespace(PLANT="arm", EE_FRAME="grasp", gato=SimpleNamespace(__file__=str(package / "__init__.py")))
-        self.gpu = self.root / "model.urdf"
-        self.gpu.write_text("<robot/>")
-        self.cache = Mock()
-        self.cache.cache_dir.return_value = self.root
-        self.cache.detect_arch.return_value = "120"
-        self.cache.robot_entry.return_value = dict(codegen_key="correct", N=[32])
-        self.cache.resolve.return_value = ({"codegen_key": "correct"}, self.root / "robots")
-        self.cache.module_key.side_effect = lambda robot, n, *args: (f"current-{n}", {"N": n, "toolchain": "current ABI", "native_source_id": "native-id"})
-        self.cache.load_module.side_effect = lambda plant, n, **kwargs: SimpleNamespace(
-            __file__=str(self.root / f"current-{n}.so"), NATIVE_SOURCE_ID="native-id",
-            KNOT_POINTS=n, NQ=7, NV=7, FLOATING_BASE=False)
-        self.cache.toolchain_identity.return_value = {"arch": "120", "python_ext_suffix": ".so"}
-        self.cache.find_module.side_effect = lambda plant, n: self.root / f"current-{n}.so" if n == 48 else None
-        @contextmanager
-        def model(_reach, losses=None):
-            yield self.gpu, self.gpu, SimpleNamespace(tolist=lambda: [1, -1])
-        self.addCleanup(patch.stopall)
-        patch.object(runtime, "prepared_model", model).start()
-        patch.dict(sys.modules, {"gato": SimpleNamespace(_cache=self.cache),
-                               "gato.builder": SimpleNamespace(_codegen_key=lambda *args: "correct")}).start()
+def load_script(name):
+    spec = importlib.util.spec_from_file_location(name, runtime.PROBE_SCRIPT)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    return script
 
-    def binary(self, n, filename=None):
-        path = self.root / "modules/arm/old-key" / (filename or f"bsqpN{n}_arm.cpython-310-x86_64-linux-gnu.so")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
 
-    def test_discovers_N_absent_from_manifest_then_calls_actual_key_and_find(self):
-        self.binary(32)
-        self.binary(48)
-        self.binary(64, "bsqpN64_arm_eh.so")
-        result = runtime.discover_compatible_modules(self.reach)
-        self.assertEqual(result["available_N"], [48])
-        self.assertEqual([entry["N"] for entry in result["modules"]], [32, 48])
-        self.assertEqual(result["modules"][0]["status"], "stale")
-        self.assertEqual(self.cache.find_module.call_count, 2)
-        self.cache.ensure_module.assert_not_called()
-        self.cache.register_robot.assert_not_called()
+@dataclass(frozen=True)
+class Params:
+    N: int = 32
+    friction: object = None
 
-    def test_smooth_mode_qualifies_separate_namespace_without_building(self):
-        key = Mock(return_value="correct")
-        losses = dict(model="coulomb_tanh_viscous", smoothing_rad_s=.07)
-        with patch.dict(sys.modules, {"gato.builder": SimpleNamespace(_codegen_key=key)}):
-            result = runtime.discover_compatible_modules(self.reach, [48], losses=losses)
-        self.assertEqual(result["available_N"], [48])
-        self.cache.robot_entry.assert_called_with("arm_smooth")
-        self.cache.load_module.assert_called_with("arm_smooth", 48, build_if_missing=False)
-        self.assertEqual(key.call_args.kwargs, dict(joint_friction_smoothing=.07))
-        self.cache.ensure_module.assert_not_called()
-        self.cache.register_robot.assert_not_called()
 
-    def test_stale_model_frame_blocks_existing_binary_without_lookup(self):
-        self.binary(48)
-        self.cache.robot_entry.return_value = dict(codegen_key="historical-flange")
-        result = runtime.discover_compatible_modules(self.reach)
-        self.assertEqual(result["available_N"], [])
-        self.assertIn("model/frame", result["error"])
-        self.cache.find_module.assert_not_called()
-
-    def test_unknown_architecture_fails_closed(self):
-        self.cache.detect_arch.return_value = None
-        result = runtime.discover_compatible_modules(self.reach, [48])
-        self.assertFalse(result["compatible"])
-        self.assertIn("architecture", result["error"])
-        self.cache.find_module.assert_not_called()
-
-    def test_corrupt_or_wrong_embedded_binary_fails_closed(self):
-        self.binary(48)
-        self.cache.load_module.side_effect = ImportError("ELF header invalid")
-        result = runtime.discover_compatible_modules(self.reach)
-        self.assertEqual(result["available_N"], [])
-        self.assertIn("ELF header", result["modules"][0]["reason"])
-        self.cache.load_module.assert_called_once_with("arm", 48, build_if_missing=False)
-        self.cache.ensure_module.assert_not_called()
-
-    def test_package_binary_cannot_bypass_cache_identity(self):
-        (Path(self.reach.gato.__file__).parent / "bsqpN48_arm.so").touch()
-        result = runtime.discover_compatible_modules(self.reach)
-        self.assertEqual(result["available_N"], [])
-        self.assertIn("shadows", result["modules"][0]["reason"])
-
-    def test_prepared_model_restores_root_and_keeps_original_asset_paths(self):
-        original = self.root / "source"
-        (original / "models").mkdir(parents=True)
-        reach = SimpleNamespace(ROOT=original, URDF=original / "original.urdf")
-        def generate():
-            self.assertTrue((reach.ROOT / "models").is_symlink())
-            self.assertEqual(reach.URDF, original / "original.urdf")
-            return 1, 2, 3
-        reach.runtime_urdf = generate
-        # Retrieve real helper after this fixture's patch.
-        patch.stopall()
-        with patch.object(runtime, "ROOT", self.root / "visualizer"):
-            with runtime.prepared_model(reach) as model:
-                self.assertEqual(model, (1, 2, 3))
-            self.assertEqual(reach.ROOT, original)
-        self.assertFalse((original / ".cache").exists())
+class ProbeTests(unittest.TestCase):
+    def test_probe_imports_the_selected_mpc_api_and_never_compiles(self):
+        from tests.tiago_mpc_source import MPC_ROOT, live_probe
+        with tempfile.TemporaryDirectory() as cache:
+            result = subprocess.run([sys.executable, str(runtime.PROBE_SCRIPT), "probe", "--mpc-root", str(MPC_ROOT),
+                                     "--python", sys.executable, "--cache", cache], capture_output=True, text=True,
+                                    env=dict(os.environ, CUDA_VISIBLE_DEVICES=""))
+            data = json.loads(result.stdout)
+            self.assertTrue(data["compatible"], data.get("error"))
+            self.assertEqual(data["available_N_by_friction"], dict(off=[], on=[]))  # an empty cache
+            self.assertEqual(len(data["modules"]), 2*len(runtime.KNOT_COUNTS))
+            self.assertFalse(list(Path(cache).glob("modules/*/*/*.so")))
+            expected = live_probe()
+            for key in ("defaults", "friction", "contract"):
+                self.assertEqual(data[key], expected[key], key)
+            self.assertEqual(list(data["defaults"])[:2], ["N", "dt_s"])  # MpcParams field order
 
 
 class BuilderTests(unittest.TestCase):
-    def test_build_uses_only_gato_cache_coordination_and_half_cpu_jobs(self):
-        spec = importlib.util.spec_from_file_location("source_probe_test", runtime.PROBE_SCRIPT)
-        script = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(script)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            package = root / "package"
-            package.mkdir()
-            reach = SimpleNamespace(PLANT="arm", EE_FRAME="grasp", gato=Mock(__file__=str(package / "__init__.py")))
-            cache = Mock()
-            cache.detect_arch.return_value = "120"
-            cache.resolve.return_value = ({}, root / "robots")
-            cache.module_key.return_value = ("current", {})
-            cache.ensure_module.side_effect = lambda plant, n, **kwargs: root / f"module-{n}.so"
-            @contextmanager
-            def model(_reach, retain=False, losses=None):
-                self.assertTrue(retain)
-                yield root / "native.urdf", root / "gpu.urdf", None
-            events = []
-            expected = dict(available_N=[32, 48], compatible=True)
-            with patch.dict(sys.modules, {"gato": SimpleNamespace(_cache=cache)}), patch.object(
-                    script, "prepared_model", model), patch.object(script, "build_jobs", return_value=3), patch.object(
-                    script, "probe", return_value=expected):
-                result = script.build(dict(cache=str(root)), reach, [32, 48], events.append)
-            self.assertEqual(result, expected)
-            self.assertEqual([call.kwargs["jobs"] for call in cache.ensure_module.call_args_list], [3, 3])
-            reach.gato.register_robot.assert_called_once_with("arm", root / "gpu.urdf", N=[32, 48], ee_frame="grasp", build=False)
-            self.assertTrue(any(e["stage"] == "built" for e in events))
-            cache._locked.assert_not_called()  # ensure_module owns its own lock
-
-    def test_rebuild_lookup_and_archive_hold_only_gato_cache_lock(self):
-        spec = importlib.util.spec_from_file_location("source_probe_rebuild_test", runtime.PROBE_SCRIPT)
-        script = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(script)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            current = root / "current.so"
-            current.write_bytes(b"old binary")
-            (root / "meta.json").write_text('{"old": true}')
-            reach = SimpleNamespace(PLANT="arm", EE_FRAME="grasp", gato=Mock(__file__=str(root / "__init__.py")))
-            cache = Mock()
-            cache.cache_dir.return_value = root
-            cache.detect_arch.return_value = "120"
-            cache.resolve.return_value = ({}, root / "robots")
-            cache.module_key.return_value = ("current", {})
-            locked = []
-            @contextmanager
-            def lock(path):
-                self.assertEqual(path, root)
-                locked.append(True)
-                try:
-                    yield
-                finally:
-                    locked.pop()
-            def find(*args):
-                self.assertEqual(locked, [True])
-                return current
-            def ensure(*args, **kwargs):
-                self.assertEqual(locked, [])
-                self.assertFalse(current.exists())
-                return current
-            cache._locked.side_effect = lock
-            cache.find_module.side_effect = find
-            cache.ensure_module.side_effect = ensure
-            @contextmanager
-            def model(*args, **kwargs):
-                yield root / "native.urdf", root / "gpu.urdf", None
-            events = []
-            with patch.dict(sys.modules, {"gato": SimpleNamespace(_cache=cache)}), patch.object(
-                    script, "prepared_model", model), patch.object(script, "build_jobs", return_value=2), patch.object(
-                    script, "ROOT", root / "visualizer"), patch.object(script, "probe", return_value={}):
-                script.build(dict(cache=str(root)), reach, [32], events.append, rebuild=True)
-            cache._locked.assert_called_once_with(root)
-            archived = next(Path(e["path"]) for e in events if e["stage"] == "archived")
-            self.assertEqual((archived / "current.so").read_bytes(), b"old binary")
-            self.assertEqual(json.loads((archived / "meta.json").read_text()), dict(old=True))
+    def test_build_compiles_each_variant_with_half_cpu_jobs_then_probes(self):
+        script = load_script("source_probe_test")
+        friction = SimpleNamespace(width_rad_s=.03)
+        mpc = SimpleNamespace(TIAGO=Params(), compile_binary=Mock(side_effect=lambda params, **kw: Path(f"N{params.N}.so")))
+        events, expected = [], dict(available_N=[32, 48], compatible=True)
+        with patch.object(script, "build_jobs", return_value=3), patch.object(script, "probe", return_value=expected):
+            result = script.build(dict(cache="unused"), (None, mpc, None, friction), [32, 48], events.append,
+                                  rebuild=True, prediction_friction=True)
+        self.assertEqual(result, expected)
+        self.assertEqual([call.args[0] for call in mpc.compile_binary.call_args_list],
+                         [Params(32, friction), Params(48, friction)])
+        self.assertEqual([call.kwargs for call in mpc.compile_binary.call_args_list],
+                         [dict(use_cache=False, jobs=3)]*2)
+        self.assertEqual([e["path"] for e in events if e["stage"] == "built"], ["N32.so", "N48.so"])
+        mpc.compile_binary.reset_mock()
+        with patch.object(script, "build_jobs", return_value=3), patch.object(script, "probe", return_value=expected):
+            script.build(dict(cache="unused"), (None, mpc, None, friction), [16], events.append)
+        self.assertEqual(mpc.compile_binary.call_args, ((Params(16, None),), dict(use_cache=True, jobs=3)))
 
     def test_cli_import_error_retains_resolved_selection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -344,28 +216,43 @@ class BuilderTests(unittest.TestCase):
         data = json.loads(result.stdout)
         self.assertEqual(result.returncode, 1)
         self.assertFalse(data["compatible"])
-        self.assertIn("Not a tiago_mpc checkout", data["error"])
+        self.assertIn("not a directory", data["error"])
+
+    def test_cli_build_accepts_only_the_probed_knot_counts(self):
+        result = subprocess.run([sys.executable, str(runtime.PROBE_SCRIPT), "build", "--mpc-root", str(Path.cwd()),
+                                 "--python", sys.executable, "--N", "40"], capture_output=True, text=True)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["event"], "error")
+        self.assertIn("among 8, 16", data["error"])
+
+class DisplaySourceTests(unittest.TestCase):
+    def test_selected_mpc_api_model_assets_and_grasp_frame_validate_before_use(self):
+        script = load_script('source_probe_display_test')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            selection = dict(mpc_root=str(root), python=sys.executable, cache=str(root/'cache'))
+            tiago = SimpleNamespace(FULL_URDF=root/'full.urdf', ARM_URDF=root/'reduced.urdf', GRASP_FRAME='grasp',
+                                    urdf_friction=lambda width: SimpleNamespace(width_rad_s=width))
+            mpc = SimpleNamespace(MpcParams=1, TIAGO=2, Mpc=3, find_binary=4, compile_binary=5)
+            assets, kinematics = Mock(), Mock()
+            with patch('live_mpc.import_tiago', return_value=tiago) as imported, \
+                 patch.object(script.importlib, 'import_module', return_value=mpc), \
+                 patch.dict(sys.modules, {'server': SimpleNamespace(canonical_model_assets=assets, RobotKinematics=kinematics)}), \
+                 patch.dict(os.environ):
+                loaded = script.load_source(selection)
+                self.assertEqual(loaded[:2], (tiago, mpc))
+                self.assertEqual(loaded[3].width_rad_s, .03)
+                imported.assert_called_once_with(root)
+                assets.assert_called_once_with(root)
+                kinematics.assert_called_once_with(root/'full.urdf', end_effector_frame='grasp', reduced_urdf=root/'reduced.urdf')
+                self.assertEqual(os.environ['GATO_CACHE_DIR'], str(root/'cache'))
+                assets.side_effect = ValueError('canonical mesh is missing')
+                with self.assertRaisesRegex(ValueError, 'canonical mesh is missing'):
+                    script.load_source(selection)
+                del mpc.compile_binary
+                with self.assertRaisesRegex(ValueError, 'lacks compile_binary'):
+                    script.load_source(selection)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-class DisplaySourceTests(unittest.TestCase):
-    def test_selected_model_assets_grasp_frame_and_configuration_validate_before_use(self):
-        spec = importlib.util.spec_from_file_location('source_probe_display_test', runtime.PROBE_SCRIPT)
-        script = importlib.util.module_from_spec(spec); spec.loader.exec_module(script)
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            selection = dict(mpc_root=str(root), python=sys.executable, cache=str(root/'cache'))
-            reach = SimpleNamespace(ROOT=root, EE_FRAME='grasp', URDF=root/'reduced.urdf', gato=SimpleNamespace(__file__=str(root/'external/gato/python/gato/__init__.py')))
-            assets, kinematics, configuration = Mock(), Mock(), Mock()
-            def imported(name):
-                return reach if name == 'reach_sim' else configuration
-            with patch.object(script.importlib, 'import_module', side_effect=imported), patch.dict(sys.modules, {'server':SimpleNamespace(canonical_model_assets=assets, RobotKinematics=kinematics)}), patch.dict(os.environ), patch.object(sys, 'path', list(sys.path)):
-                self.assertIs(script.load_source(selection), reach)
-                assets.assert_called_once_with(root)
-                kinematics.assert_called_once_with(root/'models/tiago_pro/tiago_pro.urdf', end_effector_frame='grasp', reduced_urdf=root/'reduced.urdf')
-                configuration.load_configuration.assert_called_once()
-                assets.side_effect = ValueError('canonical mesh is missing')
-                with self.assertRaisesRegex(ValueError, 'canonical mesh is missing'):
-                    script.load_source(selection)
