@@ -36,6 +36,14 @@ export function replayLinkUrl(href, key) {
   return `${base}${params ? `?${params}` : ''}${url.hash}`;
 }
 
+// Tooltip of the marker shown when a recording names another full-URDF file
+// than the displayed one (joints and frames were still checked).
+export function modelWarningText(warning) {
+  if (!warning) return '';
+  return 'Recorded with a different robot-model file than the one displayed.\n'
+    + `Recorded: ${warning.recorded_model_sha256}\nDisplayed: ${warning.current_model_sha256}`;
+}
+
 export function itemRevision(item) {
   if (!item) return null;
   return JSON.stringify(Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))));
@@ -121,9 +129,14 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
       area.remove();
     }
     const button = $('recording-link');
-    button.textContent = copied ? 'Copied' : 'Copy failed';
-    button.title = text;
-    setTimeout(() => { button.textContent = 'Copy link'; }, 1500);
+    const label = 'Copy a direct link to this recording';
+    button.classList.toggle('copied', copied);
+    button.classList.toggle('copy-failed', !copied);
+    button.title = copied ? `Copied ${text}` : 'Copy failed';
+    setTimeout(() => {
+      button.classList.remove('copied', 'copy-failed');
+      button.title = label;
+    }, 1500);
   };
   const notify = (message, error = false) => {
     $('library-message').textContent = message;
@@ -141,6 +154,10 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
     const displayedPath = duplicate && namespace && namespace !== 'default' ? `${namespace}/${path}` : path;
     $('recording-path').textContent = displayedPath;
     $('recording-path').title = displayedPath;
+    const warning = $('recording-model-warning');
+    warning.hidden = !selectedItem.model_warning;
+    warning.title = modelWarningText(selectedItem.model_warning);
+    warning.setAttribute('aria-label', warning.title);
     if (changed) {
       $('recording-update').textContent = latest.status === 'ready'
         ? 'This recording changed. Reload when ready; playback keeps its loaded copy.'
@@ -156,12 +173,12 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
       if (currentIndex >= 0) listed.splice(currentIndex, 1);
       listed.unshift({ ...selectedItem, status: 'ready', snapshot: true });
     }
-    const descriptor = JSON.stringify(listed.map((item) => [item.id, item.name, item.source, item.status, Boolean(item.snapshot)]));
+    const descriptor = JSON.stringify(listed.map((item) => [item.id, item.name, item.source, item.status, Boolean(item.snapshot), Boolean(item.model_warning)]));
     if (descriptor !== lastChoices) {
       $('recording-select').replaceChildren(...listed.map((item) => {
         const option = document.createElement('option');
         option.value = item.id;
-        option.textContent = `${recordingLabel(item, listed)}${item.snapshot ? ' · loaded copy' : item.status !== 'ready' ? ' · unreadable' : ''}`;
+        option.textContent = `${recordingLabel(item, listed)}${item.snapshot ? ' · loaded copy' : item.status !== 'ready' ? ' · unreadable' : ''}${item.model_warning ? ' ⚠' : ''}`;
         option.disabled = item.status !== 'ready';
         return option;
       }));

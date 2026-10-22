@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { itemRevision, uploadPath, validateReference, referencePosition, playbackClock } from './replay-library.js';
+import { itemRevision, modelWarningText, uploadPath, validateReference, referencePosition, playbackClock } from './replay-library.js';
 
 test('folder uploads preserve relative names and reject unrelated files', () => {
   assert.equal(uploadPath({name:'case.npz',webkitRelativePath:'random100/day1/case.npz'}),'random100/day1/case.npz');
@@ -57,4 +57,12 @@ test('direct replay links use the library path and stay inside the catalog', asy
   assert.equal(replayLinkUrl('http://h:8090/?replay=old',null),'http://h:8090/');
   assert.equal(linkedKey('http://h:8090/?replay=reaching/study/run_017'),'reaching/study/run_017');
   assert.equal(linkedKey('http://h:8090/'),null);
+});
+
+test('model warning tooltip names both full-URDF hashes', () => {
+  assert.equal(modelWarningText(null), '');
+  const text = modelWarningText({recorded_model_sha256: 'f451', current_model_sha256: 'd3be'});
+  assert.match(text, /different robot-model file/);
+  assert.match(text, /Recorded: f451/);
+  assert.match(text, /Displayed: d3be/);
 });

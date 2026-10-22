@@ -88,7 +88,9 @@ class ReplayLibrary:
                                 path=relative, source=source, revision=revision, status="ready",
                                 modified_time_s=signature[3]/1e9)
                     try:
-                        load_replay(path, model_urdf=self.model_urdf)
+                        replay = load_replay(path, model_urdf=self.model_urdf)
+                        if replay.model_warning:
+                            item["model_warning"] = dict(replay.model_warning)
                         if signature != _signature(path):
                             raise ReplayError("File changed while being read; the catalog will retry after it changes")
                     except (ReplayError, OSError) as exc:

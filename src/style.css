@@ -1180,8 +1180,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .recording-path { color: #8fa8bd; font: 9px/1.6 'IBM Plex Mono', monospace; overflow-wrap: anywhere; margin: 8px 0; }
 .recording-path-row { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
 .recording-path-row .recording-path { min-width: 0; }
-.recording-link { flex: none; background: none; border: 0; padding: 0; color: #7fb4e8; font: 9px/1.6 'IBM Plex Mono', monospace; cursor: pointer; text-decoration: underline dotted; }
-.recording-link:hover { color: #b5d6f5; }
+.recording-path-row { align-items: center; }
+.recording-model-warning { flex: none; margin-left: auto; color: #ffb547; font-size: 12px; line-height: 1; cursor: help; }
+.recording-link { flex: none; display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; background: none; border: 0; border-radius: 4px; padding: 0; color: #7fb4e8; cursor: pointer; }
+.recording-link svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.recording-link:hover, .recording-link:focus-visible { color: #b5d6f5; background: rgba(127, 180, 232, .12); }
+.recording-link.copied { color: #34d8d4; }
+.recording-link.copy-failed { color: #efac92; }
 .recording-update { color: #ddbf88; font-size: 10px; line-height: 1.6; margin: 8px 0; }
 .recording-update:empty, .recording-path:empty { display: none; }
 .upload-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }

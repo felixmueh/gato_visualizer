@@ -62,6 +62,8 @@ class Replay:
     torque_nm: np.ndarray | None = None
     torque_time_s: np.ndarray | None = None
     joint_limits: dict | None = None
+    # Recorded and displayed full-URDF hashes when they differ; None when equal.
+    model_warning: dict | None = None
 
 
 def model_sha256(model_urdf):
@@ -242,10 +244,15 @@ def load_replay(source, *, model_urdf):
                     len(names) != 7 or len(set(names)) != 7 or set(names) != set(JOINT_NAMES)):
                 raise ReplayError("joint_names must list each of the seven native right-arm joints exactly once")
             order = [names.index(name) for name in JOINT_NAMES]
+            recorded_hash = metadata.get("model_sha256")
+            if not isinstance(recorded_hash, str) or not recorded_hash:
+                raise ReplayError("model_sha256 must identify the recording's full URDF")
+            # The hash covers raw file bytes, so comment or dynamics edits change
+            # it too. Joint names, fixed joints and frames are checked against
+            # the displayed model; a different file only produces a warning.
             expected_hash = model_sha256(model_urdf)
-            if metadata.get("model_sha256") != expected_hash:
-                raise ReplayError(f"Robot model mismatch: replay model_sha256={metadata.get('model_sha256')!r}; "
-                                  f"visualizer canonical full URDF={expected_hash}")
+            model_warning = None if recorded_hash == expected_hash else dict(
+                recorded_model_sha256=recorded_hash, current_model_sha256=expected_hash)
             if metadata.get("time_basis") not in ("simulation", "wall"):
                 raise ReplayError("time_basis must explicitly be 'simulation' or 'wall'")
             if "label" in metadata and (not isinstance(metadata["label"], str) or not metadata["label"].strip()):
@@ -299,7 +306,8 @@ def load_replay(source, *, model_urdf):
                                         plan_qd, plan_torque, plan_torque_times))
             if total_samples > MAX_TOTAL_SAMPLES:
                 raise ReplayError(f"Replay exceeds the {MAX_TOTAL_SAMPLES} total sample display limit")
-            return Replay(metadata, times, q, reference, tuple(plans), qd, torque, torque_times, limits)
+            return Replay(metadata, times, q, reference, tuple(plans), qd, torque, torque_times, limits,
+                          model_warning)
     except ReplayError:
         raise
     except (OSError, ValueError, TypeError, KeyError, EOFError, zipfile.BadZipFile, ET.ParseError, RuntimeError, NotImplementedError) as exc:

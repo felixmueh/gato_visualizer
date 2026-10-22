@@ -392,6 +392,8 @@ def replay_scene(replay, path, mpc_root, base_scene):
                             replay_format="tiago-replay", replay_version=1,
                             time_basis=replay.metadata["time_basis"],
                             files_sha256={path.name: sha256(path)})
+    if replay.model_warning:
+        result["source"]["model_warning"] = dict(replay.model_warning)
     if "provenance" in replay.metadata:
         result["source"]["provenance"] = deepcopy(replay.metadata["provenance"])
     json.dumps(result, allow_nan=False)

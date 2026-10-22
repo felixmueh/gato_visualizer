@@ -38,7 +38,12 @@ save_replay(
 its SHA-256 is computed by the helper. Omitting this argument uses the main
 `tiago_mpc` canonical full model. Export to a fresh result path: the helper
 writes a temporary file and atomically replaces its destination on success.
-The viewer refuses a different model identity, rather than substituting a model.
+The hash covers the file's raw bytes, so comment or dynamics edits change it
+too. A recording whose hash differs from the displayed model still loads, with
+a ⚠ marker whose tooltip names both hashes; the catalog item and
+`scene.source.model_warning` carry them, and `scene.source.full_urdf_sha256`
+keeps the recorded hash. Joint names, fixed joints and frames are still
+checked against the displayed model and reject an incompatible recording.
 Exporting does not alter the experiment or existing recordings.
 
 `end_effector_frame` identifies the point followed by recorded paths and

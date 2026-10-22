@@ -15,7 +15,7 @@ import zipfile
 
 import numpy as np
 
-from replay_format import JOINT_NAMES, ReplayError, load_replay
+from replay_format import JOINT_NAMES, ReplayError, load_replay, model_sha256
 from replay_library import ReplayLibrary, UploadConflict
 from server import RobotKinematics, load_scene, make_server, replay_scene
 
@@ -172,7 +172,7 @@ class ReplayTests(unittest.TestCase):
     def test_invalid_samples_names_identity_and_reference_are_rejected_without_repair(self):
         cases = [dict(time_s=[0, 0]), dict(time_s=[.03, .01]), dict(q=np.full((2, 7), np.nan)),
                  dict(metadata=dict(joint_names=["unknown"]*7)),
-                 dict(metadata=dict(model_sha256="outdated")),
+                 dict(metadata=dict(model_sha256=None)),
                  dict(metadata=dict(time_basis="solver")), dict(metadata=dict(provenance=[])), dict(reference_xyz_m=[0, 0, 0]),
                  dict(metadata=dict(fixed_joints={"arm_right_1_joint": 0})),
                  dict(metadata=dict(fixed_joints={"unknown": 0})),
@@ -185,6 +185,26 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(replay.q[0, 0], 10)
         with self.assertRaises(ValueError):
             self.export(self.path, time_s=np.array([3, 1], dtype=np.uint64))
+
+    def test_different_model_file_loads_with_warning_but_incompatible_joints_fail(self):
+        warning = dict(recorded_model_sha256="outdated", current_model_sha256=model_sha256(MODEL))
+        self.assertIsNone(load_replay(self.path, model_urdf=MODEL).model_warning)
+        replay = load_replay(self.rewritten(metadata=dict(model_sha256="outdated")), model_urdf=MODEL)
+        self.assertEqual(replay.model_warning, warning)
+        scene = replay_scene(replay, self.path, MPC_ROOT, self.base_scene)
+        self.assertEqual(scene["source"]["full_urdf_sha256"], "outdated")
+        self.assertEqual(scene["source"]["model_warning"], warning)
+        # A different model file never excuses incompatible joints or frames.
+        for changes in (dict(joint_names=["unknown"]*7), dict(fixed_joints={"unknown": 0})):
+            with self.subTest(changes=changes), self.assertRaises(ReplayError):
+                load_replay(self.rewritten(metadata=dict(model_sha256="outdated", **changes)), model_urdf=MODEL)
+        ingest = self.folder / "ingest"
+        ingest.mkdir()
+        (ingest / "older_model.npz").write_bytes(self.rewritten(metadata=dict(model_sha256="outdated")).getvalue())
+        library = self.library()
+        item = next(item for item in library.catalog()["items"] if item["name"] == "older_model")
+        self.assertEqual((item["status"], item["model_warning"]), ("ready", warning))
+        self.assertEqual(library.scene(item["id"])["source"]["model_warning"], warning)
 
     def test_moving_reference_and_fixed_torso_use_full_root_fk(self):
         path = self.export(self.path, time_basis="wall", fixed_joints=dict(torso_lift_joint=.15),
