@@ -63,6 +63,8 @@ class SourceSettings:
         selection = selection_from_request(body) if body is not None else self.selection
         result = self.probe(selection)
         result.setdefault("selection", selection)
+        if "templates" in selection:  # the probe reports resolved paths; the UI shows the templates
+            result["selection"] = dict(result["selection"], templates=selection["templates"])
         from source_runtime import checkout_defaults
         result.setdefault("defaults", checkout_defaults(selection["mpc_root"]))
         if body is None:

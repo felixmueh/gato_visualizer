@@ -83,6 +83,14 @@ class SourceSettingsTests(unittest.TestCase):
             env = effective_source_selection(config, environment={'TIAGO_PYTHON': '<checkout>/tools/bin/python'})
             self.assertEqual(env['python'], str(root.resolve() / 'tools/bin/python'))
 
+    def test_status_selection_reports_templates_even_when_the_probe_reports_resolved_paths(self):
+        selection = dict(SELECTION, templates=dict(python='<checkout>/p', cache='<checkout>/c'))
+        service = SourceSettings(selection, Path('unused.json'), Mock(),
+                                 probe=lambda _: dict(compatible=True, selection=dict(SELECTION)))
+        current = service.status()['current']
+        self.assertEqual(current['selection']['templates']['python'], '<checkout>/p')
+        self.assertEqual(current['selection']['python'], SELECTION['python'])
+
     def test_mismatch_keeps_configuration_and_gives_model_error(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'viewer.json'; path.write_text('{}')
