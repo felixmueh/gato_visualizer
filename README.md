@@ -12,8 +12,8 @@ visualizer follows it, the default source is `../tiago_mpc_vis_baseline`, a froz
 checkout with `--mpc-root`, `TIAGO_MPC_ROOT` or Settings › Backend.
 
 Use a prepared sibling `../tiago_mpc_vis_baseline` checkout with canonical models, fetched
-LFS meshes and GATO dependencies. A saved legacy reaching recording is optional;
-without one, the viewer opens at the starting pose, ready for replay uploads.
+LFS meshes and GATO dependencies. The viewer opens at the starting pose, ready
+for replays from the library or uploads.
 The launcher uses `../tiago_mpc_vis_baseline/venv-host` on the desktop. `TIAGO_PYTHON` can
 select another prepared interpreter; inside the existing container the launcher
 falls back to the checkout's `.venv`. It does not install Python packages there.
@@ -37,7 +37,7 @@ laptop Python environment, or internet connection is needed after setup.
 opens Replay with that library path (shown in the library without `.npz`;
 uploads use an `uploads/` prefix) selected and loaded. Selecting a recording
 keeps the address bar on its link, so the current URL is always shareable;
-**Copy link** beside the path copies it. The default recording and Live carry
+**Copy link** beside the path copies it. The starting pose and Live carry
 no parameter. A missing or unreadable path shows the library's usual message
 and error list, and the link opens the recording once it appears (for example
 when its export finishes). Links match library entries only, never file paths.
@@ -49,12 +49,11 @@ another experiment owns them. Explicit compilation is CPU work: it keeps Live
 running, takes no GPU experiment lock, and uses half the available CPU cores
 while respecting CPU affinity/quota. Replay and camera controls remain available.
 
-Use another MPC checkout, interpreter, or replay recording with:
+Use another MPC checkout or interpreter with:
 
 ```bash
 TIAGO_MPC_ROOT=/workspace/tiago_mpc-other ./scripts/start.sh --port 8090
 TIAGO_PYTHON=/path/to/python ./scripts/start.sh --port 8090
-./scripts/start.sh --port 8090 --run-dir /absolute/path/to/recording
 ```
 
 The gear button opens a movable **Settings** window with two tabs, remembered per
@@ -113,7 +112,7 @@ resolved ingest directory. This is `impl/_expr_data/ingest` on the host and
 The Replay library discovers portable `.npz` files recursively there and accepts
 file/folder uploads from the laptop into `_expr_data/uploads`. Select a recording
 to load it; file changes update the library without replacing current playback.
-The producer-side exporter is `tiago_mpc/experiments/tools.py`;
+The producer-side exporter is `tiago_mpc/experiments/replay.py` (`export_replay`, `save_replay`);
 see the [format and export cookbook](docs/replay-format.md).
 
 ## Workspace
@@ -365,8 +364,10 @@ python_bin="$(python3 scripts/launch_python.py)"
 ```
 
 The resolver above uses the same prepared interpreter as startup; it installs
-no Python packages. Tests use a prepared sibling `../tiago_mpc_vis_baseline` for model/replay
-fixtures. Run the opt-in GPU conformance check only when the experiment locks
+no Python packages. The replay, end-effector and server tests take the model and
+`experiments/replay.py` from `TIAGO_MPC_ROOT` (default `../tiago_mpc`); the other
+tests still use a prepared sibling `../tiago_mpc_vis_baseline` until Live is
+migrated. Run the opt-in GPU conformance check only when the experiment locks
 are free:
 
 ```bash

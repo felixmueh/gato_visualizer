@@ -8,14 +8,20 @@ that snapshot. Use Reload to load a changed recording.
 
 ## Export from tiago_mpc
 
-The single exporter lives in **`tiago_mpc/experiments/tools.py`**, on the
-producer side. It needs only NumPy and Python's standard library. From the
-`tiago_mpc` checkout, an experiment can call:
+The single exporter lives in **`tiago_mpc/experiments/replay.py`**, on the
+producer side. It needs only NumPy and Python's standard library (the TIAGo
+names come from `tiago_mpc.tiago`, which loads only NumPy). An experiment
+run writes `<run>/replay.npz` with `export_replay(record)`: execution-time
+states and commands, the task reference and every plan, with
+`provenance={"params": asdict(MpcParams)}`. Other producers call
+`save_replay` directly from the `tiago_mpc` checkout:
 
 ```python
+from dataclasses import asdict
 from pathlib import Path
 import numpy as np
-from experiments.tools import JOINT_NAMES, save_replay
+from experiments.replay import save_replay
+from tiago_mpc.tiago import GRASP_FRAME, RIGHT_ARM_JOINTS, ROOT_FRAME
 
 save_replay(
     Path("../_expr_data/ingest/my-study/replay.npz"),
@@ -24,19 +30,19 @@ save_replay(
     qd_rad_s=np.asarray(native_states)[:, 7:],  # optional saved velocities
     torque_nm=applied_actuator_torque,     # optional saved actuator controls
     torque_time_s=np.asarray(times)[:-1], # one value per plant interval
-    joint_names=JOINT_NAMES,
-    model_urdf=Path("models/tiago_pro/tiago_pro.urdf"),
+    joint_names=RIGHT_ARM_JOINTS,
     time_basis="simulation",              # use "wall" for wall-clock samples
     label="My reaching run",
-    end_effector_frame="arm_right_grasp_joint",  # position between the fingers
+    end_effector_frame=GRASP_FRAME,       # arm_right_grasp_joint, between the fingers
     reference_xyz_m=target_xyz,            # optional static position
-    reference_frame="torso_lift_link",    # frame of target_xyz
+    reference_frame=ROOT_FRAME,           # torso_lift_link, frame of target_xyz
+    provenance={"params": asdict(params)}, # optional; MpcParams give the MPC bounds
 )
 ```
 
-`model_urdf` identifies the full model used to display the recording;
-its SHA-256 is computed by the helper. Omitting this argument uses the main
-`tiago_mpc` canonical full model. Export to a fresh result path: the helper
+The optional `model_urdf` identifies the full model used to display the recording;
+its SHA-256 is computed by the helper. Omitting it uses `tiago_mpc.tiago.FULL_URDF`,
+the canonical full model. Export to a fresh result path: the helper
 writes a temporary file and atomically replaces its destination on success.
 The hash covers the file's raw bytes, so comment or dynamics edits change it
 too. A recording whose hash differs from the displayed model still loads, with
@@ -47,11 +53,12 @@ checked against the displayed model and reject an incompatible recording.
 Exporting does not alter the experiment or existing recordings.
 
 `end_effector_frame` identifies the point followed by recorded paths and
-references. New grasp-center recordings use `arm_right_grasp_joint`; historical
-recordings without the field retain `arm_right_tool_joint` (the flange).
+references: `arm_right_grasp_joint` (`GRASP_FRAME`, the grasp center that
+`export_replay` records from `MpcParams.ee_frame`) or `arm_right_tool_joint`
+(`FLANGE_FRAME`, the flange). `save_replay` and the viewer default to the flange,
+so recordings without the field keep it.
 The viewer reads application-only fixed TCP offsets from the selected
 `tiago_mpc` reduced URDF without changing the canonical full model or its hash.
-Live MPC uses that checkout's `reach_sim.EE_FRAME` for its solve and display.
 
 For retained historical runs, establish native joint/frame compatibility
 before selecting a newer display model. Preserve original full/reduced model
@@ -75,7 +82,7 @@ Optional predictions are native trajectories with their own knot times:
 ```python
 save_replay(
     "../_expr_data/ingest/my-study/replay-with-plan.npz",
-    time_s=times, q=native_q, joint_names=JOINT_NAMES,
+    time_s=times, q=native_q, joint_names=RIGHT_ARM_JOINTS,
     time_basis="simulation",
     reference_xyz_m=target_xyz, reference_frame="torso_lift_link",
     plans=[{
@@ -135,9 +142,10 @@ archive; prediction timestamps are nonnegative, strictly increasing offsets
 from the explicit origin, and each plan has at least two samples. A plan's
 reference follows the same static/moving array shapes. No solver dt is inferred.
 
-The viewer accepts at most 64 MiB compressed, 256 MiB expanded, 1 MiB of JSON
-metadata, 1,024 prediction descriptors and 200,000 total trajectory/reference
-samples. Excess files receive an explicit error; samples are not filtered.
+The viewer accepts at most 64 MiB compressed, 256 MiB expanded, 65,536 arrays,
+16 MiB of JSON metadata (stored as UCS-4, about 0.8 KiB per plan), 10,000
+prediction descriptors and 200,000 total trajectory/reference samples. A default
+figure eight (2400 plans, 12,008 arrays) fits. Excess files receive an explicit error; samples are not filtered.
 Object arrays and malformed NPY headers are rejected before loading.
 
 ## Optional joint telemetry and limits
@@ -176,11 +184,13 @@ actual historical bounds when available; the reader normalizes their order
 along with joint columns. These recorded bounds take precedence over display
 URDF limits. Without them, the scene uses and labels canonical display URDF
 limits. These are the physical limits: limit use (tint, Joints gauges, limit
-plot) is measured against them. When `provenance.configuration.limit_bounds`
-states a numeric `joint_margin_rad`, `velocity_fraction` or `effort_fraction`,
-the scene also carries `mpc_bounds` derived from these limits and only those
-explicit values; omitted or null settings (defaults or compiled offsets at
-recording time) are not inferred. Live carries the MPC bounds installed in its
+plot) is measured against them. When `provenance.params` (the recorded
+`MpcParams`) states a numeric `joint_margin_rad`, `velocity_fraction` or
+`effort_fraction`, the scene also carries `mpc_bounds` derived from these
+limits as `tiago_mpc`'s `set_bounds` does: the position limits narrowed by the
+margin, the velocity and effort limits scaled by the fractions. Missing values
+are not inferred. Recordings made before the migration keep their settings in
+`provenance.configuration.limit_bounds`, which is no longer read. Live carries the MPC bounds installed in its
 solver the same way. Limit colors describe proximity to the URDF limits; they
 are not a convergence or physical-safety verdict.
 
@@ -210,8 +220,7 @@ API:
 - `GET /api/replays` → `{items, revision}`. Items include `id`, `name`, `path`,
   `source`, `revision`, `status` (`ready` or `error`) and an optional `error`.
 - `GET /api/replays/scene?id=...` → a snapshot in the existing scene shape.
-  `default` retains the initial legacy recording, or a starting pose if no
-  legacy recording is available. `/api/scene` keeps its initial scene.
+  `default` is the starting pose. `/api/scene` keeps that initial scene.
 - `POST /api/replays/upload?path=study/run.npz`, raw body with
   `Content-Type: application/octet-stream` → `{accepted, item, id}`.
   Invalid uploads return `{accepted:false,error}`; collisions use HTTP 409.
