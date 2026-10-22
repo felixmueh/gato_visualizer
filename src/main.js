@@ -601,6 +601,7 @@ async function start() {
 start();
 
 function changeMode(mode) {
+  replayLibrary?.setLive(mode === 'live');
   auxiliaryViews?.invalidate();
   playing = false;
   updatePlaybackState();

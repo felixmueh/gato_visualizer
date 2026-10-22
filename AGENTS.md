@@ -217,9 +217,11 @@ Unless Felix explicitly requests a particular plot, present experiments as:
   the shared ingest directory. Include actual native joint positions and sample
   timestamps, the task reference, and saved predictions when available/useful.
   Include recorded velocity, actuator torque and historical limits when available; these are optional, so position-only exports remain simple. Do not invent motion or rerun a retained experiment just to populate the UI.
-- A clickable viewer URL (normally `http://192.168.178.82:8090`) and the exact
-  library path(s) to select. New files appear through the watched catalog;
-  changed files require explicit Reload so ongoing playback stays intact.
+- A clickable direct link per replay,
+  `http://192.168.178.82:8090/?replay=<library path without .npz>` (for example
+  `?replay=reaching/study/run_017`), instead of a viewer URL plus a path to
+  select. New files appear through the watched catalog; changed files require
+  explicit Reload so ongoing playback stays intact.
 - A brief finding and the relevant recorded outcomes/metrics, including failures
   and material limitations. Distinguish simulated/physical motion, prediction/
   executed motion, and simulation/wall time. Selected examples illustrate a

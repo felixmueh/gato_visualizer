@@ -41,3 +41,20 @@ test('only an explicitly marked empty bootstrap scene is a starting pose', async
   assert.equal(recordingLabel(items[1],items),'uploads/folder/run');
   assert.equal(recordingLabel(items[0],[items[0]]),'folder/run');
 });
+
+test('direct replay links use the library path and stay inside the catalog', async () => {
+  const {replayLinkKey, findLinkedItem, linkedKey, replayLinkUrl}=await import('./replay-library.js');
+  const ingest={id:'a',name:'reaching/study/run_017',source:'ingest'};
+  const upload={id:'b',name:'reaching/study/run_017',source:'upload'};
+  const items=[upload,ingest,{id:'default',name:'Default recording',source:'default'}];
+  assert.equal(replayLinkKey(ingest),'reaching/study/run_017');
+  assert.equal(replayLinkKey(upload),'uploads/reaching/study/run_017');
+  assert.equal(replayLinkKey(items[2]),null);
+  assert.equal(findLinkedItem(items,'reaching/study/run_017'),ingest);
+  assert.equal(findLinkedItem(items,'uploads/reaching/study/run_017'),upload);
+  for(const bad of ['../secret','/etc/passwd','reaching/../study/run_017','',null]) assert.equal(findLinkedItem(items,bad),undefined);
+  assert.equal(replayLinkUrl('http://h:8090/?x=1&replay=old#t','a b/run'),'http://h:8090/?x=1&replay=a%20b/run#t');
+  assert.equal(replayLinkUrl('http://h:8090/?replay=old',null),'http://h:8090/');
+  assert.equal(linkedKey('http://h:8090/?replay=reaching/study/run_017'),'reaching/study/run_017');
+  assert.equal(linkedKey('http://h:8090/'),null);
+});

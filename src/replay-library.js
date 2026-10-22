@@ -8,6 +8,34 @@ export function recordingLabel(item, items = []) {
   return duplicate && namespace && namespace !== 'default' ? `${namespace}/${item.name}` : item.name;
 }
 
+// A direct link names a recording by its library path without ".npz"; uploads
+// carry an "uploads/" prefix. It is only ever matched against the catalog, so a
+// link cannot reach a file outside the configured library roots.
+export function replayLinkKey(item) {
+  if (!item || item.source === 'default' || !item.name) return null;
+  return item.source === 'upload' ? `uploads/${item.name}` : item.name;
+}
+
+export function findLinkedItem(items, key) {
+  if (!key) return undefined;
+  return items.find((item) => item.source === 'ingest' && replayLinkKey(item) === key)
+    || items.find((item) => item.source === 'upload' && replayLinkKey(item) === key);
+}
+
+export function linkedKey(href) {
+  const key = new URL(href).searchParams.get('replay');
+  return key ? key : null;
+}
+
+export function replayLinkUrl(href, key) {
+  const url = new URL(href);
+  url.searchParams.delete('replay');
+  const rest = url.searchParams.toString();
+  const base = `${url.origin}${url.pathname}`;
+  const params = [rest, key ? `replay=${encodeURIComponent(key).replace(/%2F/g, '/')}` : ''].filter(Boolean).join('&');
+  return `${base}${params ? `?${params}` : ''}${url.hash}`;
+}
+
 export function itemRevision(item) {
   if (!item) return null;
   return JSON.stringify(Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))));
@@ -68,6 +96,35 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
   let selectionRequest = 0;
   let lastChoices = '';
   let timer;
+  let pendingLink = linkedKey(location.href);
+  let attemptedLink = '';
+  let liveMode = false;
+  const syncUrl = () => {
+    if (pendingLink) return;
+    const key = liveMode ? null : replayLinkKey(selectedItem);
+    const next = replayLinkUrl(location.href, key);
+    if (next !== location.href) history.replaceState(history.state, '', next);
+    $('recording-link').hidden = !key;
+  };
+  const copyLink = async () => {
+    const text = replayLinkUrl(location.href, replayLinkKey(selectedItem));
+    let copied = false;
+    try { await navigator.clipboard.writeText(text); copied = true; } catch {}
+    if (!copied) {
+      // Plain-HTTP LAN origins are not secure contexts, so the async API is unavailable there.
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.cssText = 'position:fixed;opacity:0';
+      document.body.append(area);
+      area.select();
+      try { copied = document.execCommand('copy'); } catch {}
+      area.remove();
+    }
+    const button = $('recording-link');
+    button.textContent = copied ? 'Copied' : 'Copy failed';
+    button.title = text;
+    setTimeout(() => { button.textContent = 'Copy link'; }, 1500);
+  };
   const notify = (message, error = false) => {
     $('library-message').textContent = message;
     $('library-message').classList.toggle('error', error);
@@ -120,6 +177,7 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
       return row;
     }));
     updateSelection();
+    syncUrl();
   };
   const refresh = async () => {
     if (disposed || refreshPending) return;
@@ -132,16 +190,38 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
       const current = items.find((item) => item.id === selectedId);
       if (selectedRevision == null && current) { selectedItem = current; selectedRevision = itemRevision(current); }
       render();
+      await openLinked();
     } catch (error) {
       if (!uploading) notify(`Library unavailable: ${error.message} Current playback is retained.`, true);
     } finally {
       refreshPending = false;
     }
   };
+  // Opens the recording named by the address bar once the catalog lists it. A
+  // missing or unreadable file keeps the link pending and shows the library's
+  // usual error; it is retried when the catalog entry changes (for example
+  // after a producer finishes writing it).
+  const openLinked = async () => {
+    if (!pendingLink || loading || uploading) return;
+    const key = pendingLink;
+    const item = findLinkedItem(items, key);
+    const state = item ? `${item.id}:${item.revision}` : 'missing';
+    if (state === attemptedLink) return;
+    attemptedLink = state;
+    if (!item) {
+      notify(`Linked recording ${key} is not in the library. The link opens it once it appears.`, true);
+    } else if (item.status !== 'ready') {
+      notify(`Could not open linked recording ${key}: ${item.error || 'invalid recording'}`, true);
+    } else {
+      if (await choose(item.id)) { if (pendingLink === key) pendingLink = null; }
+      else attemptedLink = '';
+      render();
+    }
+  };
   const choose = async (id, reload = false) => {
-    if (loading || (id === selectedId && !reload)) return;
+    if (loading || (id === selectedId && !reload)) return false;
     const item = items.find((entry) => entry.id === id);
-    if (!item || item.status !== 'ready') { $('recording-select').value = selectedId; return; }
+    if (!item || item.status !== 'ready') { $('recording-select').value = selectedId; return false; }
     loading = true;
     updateSelection();
     const request = ++selectionRequest;
@@ -156,8 +236,10 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
       selectedItem = item;
       selectedRevision = itemRevision(item);
       notify(`Opened ${item.name}.`);
+      return true;
     } catch (error) {
       notify(`Could not open ${item.name}: ${error.message} Current playback is retained.`, true);
+      return false;
     } finally {
       loading = false;
       render();
@@ -189,7 +271,8 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
     await refresh();
     notify(`${added} recording${added === 1 ? '' : 's'} added. ${added ? 'Choose one from the library. ' : ''}${errors.join(' · ')}`, errors.length > 0);
   };
-  $('recording-select').addEventListener('change', (event) => choose(event.target.value));
+  $('recording-select').addEventListener('change', (event) => { pendingLink = null; choose(event.target.value); });
+  $('recording-link').addEventListener('click', copyLink);
   $('recording-reload').addEventListener('click', () => choose(selectedId, true));
   $('upload-files').addEventListener('click', () => $('recording-files').click());
   $('upload-folder').addEventListener('click', () => $('recording-folder').click());
@@ -204,6 +287,8 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
     get selectedId() { return selectedId; },
     get items() { return items.map((item) => ({...item})); },
     get loading() { return loading; },
+    // Live mode has no replay selection, so its address carries no replay link.
+    setLive(live) { liveMode = Boolean(live); syncUrl(); },
     dispose() { disposed = true; clearTimeout(timer); selectionRequest++; },
   };
 }

@@ -190,6 +190,11 @@ to an external ingest directory. Existing filenames return an error rather
 than being overwritten. The browser supports selecting multiple files or a
 folder; each file is sent independently.
 
+Direct links: `/?replay=<name>` selects the catalog item whose `name` (the
+relative path without `.npz`) matches, preferring ingest over an upload with
+the same name; `uploads/<name>` addresses an upload explicitly. Resolution is
+client-side against `GET /api/replays`, so no filesystem path is interpreted.
+
 API:
 
 - `GET /api/replays` → `{items, revision}`. Items include `id`, `name`, `path`,

@@ -33,6 +33,15 @@ your desktop's current address). Port 8080 is used by the older container viewer
 Omit `--host 0.0.0.0` to listen only on the desktop itself. No cloud service,
 laptop Python environment, or internet connection is needed after setup.
 
+**Direct replay links:** `http://192.168.178.82:8090/?replay=reaching/study/run_017`
+opens Replay with that library path (shown in the library without `.npz`;
+uploads use an `uploads/` prefix) selected and loaded. Selecting a recording
+keeps the address bar on its link, so the current URL is always shareable;
+**Copy link** beside the path copies it. The default recording and Live carry
+no parameter. A missing or unreadable path shows the library's usual message
+and error list, and the link opens the recording once it appears (for example
+when its export finishes). Links match library entries only, never file paths.
+
 The launcher installs locked frontend dependencies if absent, builds the
 frontend, and serves the application, robot assets and API from one process.
 Numerical solving respects the experiment locks and reports GPU busy while

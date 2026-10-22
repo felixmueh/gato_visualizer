@@ -24,7 +24,7 @@ export function workbenchShell(icon) {
       <section id="replay-section">
         <label class="field-label" for="recording-select">RECORDING</label>
         <div class="select-wrap"><select id="recording-select" aria-label="Recording library"><option value="default">Default recording</option></select></div>
-        <p id="recording-path" class="recording-path"></p><p id="recording-update" class="recording-update" role="status"></p>
+        <div class="recording-path-row"><p id="recording-path" class="recording-path"></p><button id="recording-link" class="recording-link" title="Copy a direct link to this recording" hidden>Copy link</button></div><p id="recording-update" class="recording-update" role="status"></p>
         <button id="recording-reload" class="secondary-action recording-reload" hidden>Reload recording</button>
         <div class="upload-actions"><button id="upload-files" class="secondary-action">Upload .npz</button><button id="upload-folder" class="secondary-action">Upload folder</button></div>
         <input id="recording-files" class="sr-only" type="file" accept=".npz" multiple tabindex="-1" aria-label="Choose recordings to upload">

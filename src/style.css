@@ -1178,6 +1178,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .live-mode .source-section { display: none; }
 @media (max-width: 800px) { .live-mode .pose-section { grid-column: 1 / -1; } }
 .recording-path { color: #8fa8bd; font: 9px/1.6 'IBM Plex Mono', monospace; overflow-wrap: anywhere; margin: 8px 0; }
+.recording-path-row { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.recording-path-row .recording-path { min-width: 0; }
+.recording-link { flex: none; background: none; border: 0; padding: 0; color: #7fb4e8; font: 9px/1.6 'IBM Plex Mono', monospace; cursor: pointer; text-decoration: underline dotted; }
+.recording-link:hover { color: #b5d6f5; }
 .recording-update { color: #ddbf88; font-size: 10px; line-height: 1.6; margin: 8px 0; }
 .recording-update:empty, .recording-path:empty { display: none; }
 .upload-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
