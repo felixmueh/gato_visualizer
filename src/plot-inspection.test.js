@@ -56,7 +56,7 @@ test('streaming ranges redraw graphs at most five times a second while timeline 
     const beforeGesture = episode.querySelector('svg'); view.cursor = 1.234;
     await document.emit('pointerup'); ui.update();
     assert.notEqual(episode.querySelector('svg'), beforeGesture);
-    assert.deepEqual(episode.querySelectorAll('text').slice(5, 7).map(item => Number(item.textContent)), [0, 1.234]);
+    assert.deepEqual(episode.querySelectorAll('.plot-x-range').map(item => Number(item.textContent)), [0, 1.234]);
     // Hidden placements do not retain graph DOM; showing them restores cached data immediately.
     episode.hidden = true; ui.update(); assert.equal(episode.querySelector('svg'), undefined);
     episode.hidden = false; ui.update(); assert(episode.querySelector('svg'));
@@ -218,7 +218,7 @@ test('sidebar episode scopes have distinct domains and cursor rules; docked copi
   const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
   const view = { window: [4, 8], cursor: 6, episodeClock: true }, seeks = [], requests = [];
   const request = async (path, body) => { requests.push({ path, body }); return { state: 'complete', catalog: [jointDef], context: { episode_available: true, clock: 'replay:r:0', bounds: [0, 20] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'Recorded motion', x: { identity: 'episode_time', clock: 'replay:r:0' }, y: {}, series: [{ x: [0, 20], y: [0, 1] }] } })) }; };
-  const domain = root => root.querySelectorAll('text').slice(5, 7).map(item => Number(item.textContent));
+  const domain = root => root.querySelectorAll('.plot-x-range').map(item => Number(item.textContent));
   const cursor = root => root.querySelectorAll('line').at(-1);
   try {
     const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => ({ source: { kind: 'replay', id: 'r', trajectory_index: 0 } }), getView: () => view, onSeek: x => { seeks.push(x); view.cursor = x; }, request, storage: null });
@@ -232,7 +232,7 @@ test('sidebar episode scopes have distinct domains and cursor rules; docked copi
     view.cursor = 0; await document.emit('change'); ui.update(); assert.deepEqual(domain(episode), [0, .001]); assert.equal(cursor(episode).getAttribute('visibility'), 'hidden');
     scope.value = 'visible'; await scope.emit('change'); await ui.refresh(); assert.deepEqual(domain(episode), [5, 9]);
     // The async rebuild replaces SVGs, while the active scrub keeps its original domain.
-    await episode.querySelector('svg').emit('pointerdown', { pointerId: 12, button: 0, clientX: 62 }); assert.equal(seeks.at(-1), 5);
+    await episode.querySelector('svg').emit('pointerdown', { pointerId: 12, button: 0, clientX: Number(episode.querySelector('rect').getAttribute('x')) }); assert.equal(seeks.at(-1), 5);
     await ui.refresh(); await document.emit('pointermove', { pointerId: 12, clientX: 588 }); assert.equal(seeks.at(-1), 9);
     await document.emit('pointerup', { pointerId: 12 }); ui.destroy();
   } finally { globalThis.document = original; }
@@ -344,6 +344,40 @@ test('changing between real SQP snapshots keeps the same solve final context vis
     source = { source: { kind: 'live', generation: 2 } }; ui.update(); await ui.refresh();
     const newSlider = solve.querySelector('input'); newSlider.value = '2'; await newSlider.emit('input');
     assert.equal(picked.at(-1).prediction, null); assert.equal(picked.at(-1).predictionSource, null); assert.equal(solve.querySelector('.plot-message').textContent, 'Loading recorded iteration trajectory…');
+    ui.destroy();
+  } finally { globalThis.document = original; }
+});
+
+test('cards keep notes on hover, resize per placement, configure y limits, and the catalog previews default plots', async () => {
+  const { document, find } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  const source = { source: { kind: 'replay', id: 'r', trajectory_index: 0 } }, view = { window: [0, 5], cursor: 2 }, requests = [], persisted = new Map();
+  const timingDef = { id: 'episode.timing', scope: 'episode', title: 'Timing', description: 'Recorded host wall times.', inputs: {} };
+  const request = async (path, body) => { requests.push({ path, body: structuredClone(body) }); return { state: 'complete', catalog: [timingDef, summaryDef], context: { clock: 'replay:r:0', bounds: [0, 5] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: item.plot_id === 'episode.summary' ? { version: 1, kind: 'table', title: 'Summary', rows: [] } : { version: 1, kind: 'lines', title: 'Timing', notes: ['Wall time is not episode time.'], display_reduction: [{ series: 'MPC wall', original: 9000, displayed: 1200 }], x: { identity: 'episode_time', clock: 'replay:r:0' }, y: { unit: 'ms' }, series: [{ label: 'MPC wall', x: [0, 5], y: [1, 2] }] } })) }; };
+  const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => view, request, storage: { getItem: key => persisted.get(key), setItem: (key, value) => persisted.set(key, value) } });
+  try {
+    ui.update(); await flush();
+    await find(episode, 'button', '+').emit('click'); await flush();
+    const previews = requests.filter(item => item.body.client_id?.endsWith('-catalog'));
+    assert.equal(previews.length, 1); assert.deepEqual(previews[0].body.plots.map(item => item.instance_id), ['preview:episode.timing', 'preview:episode.summary']);
+    const items = ui.catalogDialog.body.querySelectorAll('.plot-catalog-item');
+    assert(items[0].querySelector('.plot-catalog-preview').querySelector('svg')); assert(items[1].querySelector('.plot-catalog-preview').querySelector('table'));
+    await find(items[0], 'button', 'Add').emit('click'); await ui.refresh();
+    let card = episode.querySelector('.plot-card'); const grip = card.querySelector('.plot-card-grip');
+    assert(!card.querySelectorAll('p').some(item => item.textContent.includes('Wall time')));
+    assert.match(grip.title, /Recorded host wall times\.\nWall time is not episode time\.\nDisplay shows 1200 of 9000 points of MPC wall/);
+    // Resizing redraws live and persists once on release.
+    await card.querySelector('.plot-resize-handle').emit('pointerdown', { pointerId: 3, button: 0, clientY: 100 });
+    await document.emit('pointermove', { pointerId: 3, clientY: 160 }); assert.equal(episode.querySelector('svg').style.height, '230px');
+    const before = persisted.get('plot-inspection-v1'); await document.emit('pointerup', { pointerId: 3 });
+    assert.notEqual(persisted.get('plot-inspection-v1'), before); assert.equal(ui.state.height(ui.state.instances[0].id, 'sidebar'), 230);
+    card = episode.querySelector('.plot-card'); await find(card, 'button', '⚙').emit('click');
+    const config = document.body.children.find(item => item.id?.startsWith('config-'));
+    assert(config.querySelectorAll('p').some(item => item.textContent.includes('Wall time is not episode time.')));
+    const [low, high] = config.querySelectorAll('input').filter(item => item.type === 'number'); low.value = '0'; high.value = '';
+    config.querySelectorAll('input').find(item => item.type === 'checkbox').checked = true;
+    await config.querySelector('form').emit('submit');
+    assert.deepEqual(ui.state.instances[0].display, { min: 0, max: null, clipOutliers: true });
     ui.destroy();
   } finally { globalThis.document = original; }
 });

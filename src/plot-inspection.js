@@ -1,5 +1,5 @@
 import { createFloatingDialog } from './floating-dialog.js';
-import { createPlotState, timelineEligible, awaitPlotJob } from './plot-state.js';
+import { createPlotState, timelineEligible, awaitPlotJob, displayLimits } from './plot-state.js';
 import { renderPlot } from './plot-renderer.js';
 import { sourceRequest } from './source-settings.js';
 import { setupSolveRun } from './solve-run.js';
@@ -14,7 +14,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   const client = `plots-${Date.now().toString(36)}`;
   let lastSourceKey, evaluatedKeys = {}, inspectedKey, lastInspectActive, activeConfig;
   let catalogs = { episode: [], solve: [] }, metadata = {}, specs = new Map(), handles = [], revision = 0, busy = false, pending = false, lastRequest = '', lastPoll = -Infinity, lastRender = '', lastPrediction = '', pinnedSource, drag, destroyed = false;
-  const presentations = new Map();
+  const presentations = new Map(), cardHandles = new Map();
+  let catalogHandles = [], previewKey, previewToken = 0, previewSpecs = new Map(), resizing = null;
   let solveOverride = null, lastSolveSourceKey;
   let finalContextKey, finalContextPrediction;
   let cardsPending = false, lastCardsAt = -Infinity, immediateView = false, placementKey = '', receivedData = false;
@@ -46,8 +47,27 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     onStart: () => { onInspectionStart(); pinnedSource = structuredClone(solveSource()?.source); state.pin(true); invalidate(); },
     onComplete: result => setInspection(result),
   });
-  const bottomTitle = el('div', 'Timeline plots · drop an episode-time plot here', 'timeline-plot-hint'), bottomCards = el('div', null, 'timeline-plot-rows'); bottomContainer.replaceChildren(bottomTitle, bottomCards);
+  // The strip header says what to do only while it is empty. With rows it is
+  // a thin handle: drag it to change how much height the rows may take.
+  const bottomTitle = el('div', null, 'timeline-plot-hint'), bottomHint = el('span', 'Drop an episode-time plot here'), bottomCards = el('div', null, 'timeline-plot-rows'); bottomContainer.replaceChildren(bottomTitle, bottomCards);
+  bottomTitle.append(bottomHint);
   for (const [label, amount] of [['↑', -100], ['↓', 100]]) bottomTitle.append(button(label, () => bottomCards.scrollBy({ top: amount, behavior: 'smooth' }), `Scroll timeline plot rows ${amount < 0 ? 'up' : 'down'}`));
+  const applyStripHeight = () => { bottomCards.style.maxHeight = state.timelineHeight ? `${state.timelineHeight}px` : ''; };
+  applyStripHeight();
+  bottomTitle.addEventListener('pointerdown', event => {
+    if (!bottomCards.children.length || event.target.closest?.('button') || event.button != null && event.button !== 0) return;
+    event.preventDefault(); event.stopPropagation();
+    const start = event.clientY, initial = bottomCards.getBoundingClientRect().height || state.timelineHeight || 290;
+    dragResize(event, next => { state.timelineHeight = initial + start - next.clientY; applyStripHeight(); });
+  });
+  /** Document-owned vertical drag that survives card rebuilds. */
+  function dragResize(event, onMove, onEnd = () => {}) {
+    const pointerId = event.pointerId;
+    const move = next => { if (next.pointerId !== pointerId) return; next.preventDefault?.(); onMove(next); };
+    const finish = next => { if (next.pointerId !== pointerId) return; doc.removeEventListener('pointermove', move); doc.removeEventListener('pointerup', finish); doc.removeEventListener('pointercancel', finish); resizing = null; onEnd(); };
+    resizing = { cancel: () => finish({ pointerId }) };
+    doc.addEventListener('pointermove', move); doc.addEventListener('pointerup', finish); doc.addEventListener('pointercancel', finish);
+  }
   bottomContainer.addEventListener('dragover', event => { if (drag && eligible(drag.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
   bottomContainer.addEventListener('drop', event => { if (!drag || !eligible(drag.id)) return; event.preventDefault(); event.stopPropagation(); state.place(drag.id, true); const target = event.target.closest?.('[data-instance]'); if (target) state.reorder(drag.id, target.dataset.instance); drag.accepted = true; renderCards(); });
   function setupDropList(list, context) {
@@ -61,20 +81,47 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   search.addEventListener('input', renderCatalog);
   function openCatalog(scope) { catalogScope = scope; search.value = ''; renderCatalog(); catalogDialog.open(); search.focus(); refresh(true); }
   function renderCatalog() {
+    catalogHandles.forEach(handle => handle.destroy()); catalogHandles = [];
     catalogList.replaceChildren(); catalogNote.textContent = metadata[catalogScope]?.errors?.map(error => typeof error === 'string' ? error : error.error || error.message).join('\n') || '';
     for (const definition of catalogs[catalogScope]) {
       if (!`${definition.title} ${definition.description || ''}`.toLowerCase().includes(search.value.toLowerCase())) continue;
-      const row = el('section', null, 'plot-catalog-item'); row.append(el('strong', definition.title), el('p', definition.description || ''));
-      if (definition.available === false) row.append(el('p', `Unavailable: ${(definition.missing || []).join(', ')}`, 'plot-message'));
-      row.append(button('Add', () => { state.add(definition, catalogScope); invalidate(); }, `Add ${definition.title}`)); catalogList.append(row);
+      const row = el('section', null, 'plot-catalog-item'), head = el('header');
+      head.append(el('strong', definition.title), button('Add', () => { state.add(definition, catalogScope); invalidate(); }, `Add ${definition.title}`)); row.append(head);
+      // A preview with default inputs on the active source shows what the plot is.
+      const preview = el('div', null, 'plot-catalog-preview'), spec = previewSpecs.get(definition.id);
+      if (definition.available === false) preview.append(el('p', `Unavailable: ${(definition.missing || []).join(', ')}`, 'plot-message'));
+      else if (spec) catalogHandles.push(renderPlot(preview, spec, { hideTitle: true, notes: false, height: 90 }));
+      row.append(preview);
+      if (definition.description) row.append(el('p', definition.description));
+      catalogList.append(row);
     }
     if (!catalogList.children.length) catalogList.append(el('p', 'No matching plots. Reload plotters in Settings › Backend.', 'plot-message'));
+    loadPreviews();
   }
+  /** Evaluate each catalog plot once per opened source on its own job channel. */
+  async function loadPreviews() {
+    const scope = catalogScope, definitions = catalogs[scope].filter(definition => definition.available !== false), body = payload(scope);
+    if (!catalogDialog.isOpen || !definitions.length || !body.source) return;
+    const key = JSON.stringify([scope, sourceKey(body.source), definitions.map(definition => definition.id)]);
+    if (key === previewKey) return;
+    previewKey = key; const token = ++previewToken;
+    const alive = () => !destroyed && token === previewToken && catalogDialog.isOpen && catalogScope === scope;
+    try {
+      const response = await awaitPlotJob(request, '/api/plots/evaluate', { ...body, client_id: `${client}-catalog`, pixels: 320, plots: definitions.map(definition => ({ instance_id: `preview:${definition.id}`, plot_id: definition.id, inputs: defaultInputs(definition) })) }, { alive });
+      if (!response || !alive()) { if (token === previewToken) previewKey = undefined; return; }
+      previewSpecs = new Map((response.results || []).map(result => [result.instance_id.replace(/^preview:/, ''), result.spec || { version: 1, kind: 'unavailable', title: 'Plot error', message: result.error || 'Plot failed.' }]));
+      renderCatalog();
+    } catch { if (token === previewToken) previewKey = undefined; }
+  }
+  const defaultInputs = definition => Object.fromEntries(Object.entries(definition.inputs || definition.controls || {}).map(([key, value]) => [key, value.default]));
   const definitionFor = item => catalogs[item.context].find(definition => definition.id === item.plot_id);
   function eligible(id) { const item = state.instances.find(item => item.id === id), spec = specs.get(id); return getView().episodeClock !== false && item?.context === 'episode' && timelineEligible({ ...definitionFor(item), scope: 'episode' }, spec) && Boolean(spec?.x?.clock) && spec.x.clock === metadata.episode?.context?.clock; }
   function configure(item) {
     activeConfig?.destroy();
-    const definition = definitionFor(item); const body = el('form', null, 'plot-config-form'), fields = [];
+    const definition = definitionFor(item), spec = specs.get(item.id); const body = el('form', null, 'plot-config-form'), fields = [];
+    // Settings may explain more than the compact card does.
+    const details = [definition?.description, ...(spec?.notes || []), ...reductionNotes(spec)].filter(Boolean);
+    if (details.length) body.append(el('p', details.join('\n'), 'plot-message plot-config-details'));
     for (const [name, schema] of Object.entries(definition?.inputs || definition?.controls || {})) {
       const label = el('label', `${schema.label || name}${schema.unit ? ` (${schema.unit})` : ''}`), input = el(['joint', 'choice'].includes(schema.type) ? 'select' : 'input');
       if (schema.type === 'joint' || schema.type === 'choice') {
@@ -85,15 +132,28 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       else { input.type = 'number'; input.step = 'any'; if (schema.min != null) input.min = schema.min; if (schema.max != null) input.max = schema.max; input.value = item.parameters[name] ?? schema.default; input.required = true; }
       label.append(input); if (schema.description) label.append(el('small', schema.description)); body.append(label); fields.push({ name, schema, input });
     }
-    if (!fields.length) body.append(el('p', 'This plot has no configurable inputs.'));
+    // Every plotted graph shares viewer-side y limits. Empty sides stay automatic.
+    let display;
+    if (!['table', 'spans', 'unavailable'].includes(spec?.kind)) {
+      const limits = displayLimits(item.display), group = el('fieldset', null, 'plot-display-limits'), legendText = el('legend', 'Y axis');
+      const side = (text, value) => { const label = el('label', text), input = el('input'); input.type = 'number'; input.step = 'any'; input.placeholder = 'auto'; input.value = value ?? ''; label.append(input); return { label, input }; };
+      const bottom = side('Bottom', limits.min), top = side('Top', limits.max), clip = el('label', null, 'plot-display-clip'), clipInput = el('input');
+      clipInput.type = 'checkbox'; clipInput.checked = limits.clipOutliers; clip.title = 'Fit automatic sides to the 1st–99th percentile of visible samples';
+      clip.append(clipInput, el('span', 'Clip outliers'));
+      const check = () => top.input.setCustomValidity?.(bottom.input.value !== '' && top.input.value !== '' && Number(bottom.input.value) >= Number(top.input.value) ? 'Top must be above bottom.' : '');
+      bottom.input.addEventListener('input', check); top.input.addEventListener('input', check);
+      group.append(legendText, bottom.label, top.label, clip); body.append(group);
+      display = () => displayLimits({ min: bottom.input.value, max: top.input.value, clipOutliers: clipInput.checked });
+    }
+    if (!fields.length && !display) body.append(el('p', 'This plot has no configurable inputs.'));
     const apply = el('button', 'Apply'); apply.type = 'submit'; body.append(apply);
     const dialog = createFloatingDialog({ id: `config-${item.id}`, title: definition?.title || item.plot_id, content: body, onClose: () => { dialog.destroy(); if (activeConfig === dialog) activeConfig = null; } }); activeConfig = dialog;
-    body.addEventListener('submit', event => { event.preventDefault(); const parameters = {}; for (const { name, schema, input } of fields) parameters[name] = schema.type === 'boolean' ? input.checked : schema.type === 'number' ? Number(input.value) : input.value; state.configure(item.id, parameters); dialog.close(); invalidate(); }); dialog.open();
+    body.addEventListener('submit', event => { event.preventDefault(); const parameters = {}; for (const { name, schema, input } of fields) parameters[name] = schema.type === 'boolean' ? input.checked : schema.type === 'number' ? Number(input.value) : input.value; state.configure(item.id, parameters, display?.()); dialog.close(); invalidate(); }); dialog.open();
   }
   function renderCards(immediate = true) {
     if (!immediate && Date.now() - lastCardsAt < 200) { cardsPending = true; return; }
     cardsPending = false; lastCardsAt = Date.now();
-    handles.forEach(handle => handle.destroy({ preserveInteraction: true })); handles = []; episodeCards.replaceChildren(); solveCards.replaceChildren(); bottomCards.replaceChildren();
+    handles.forEach(handle => handle.destroy({ preserveInteraction: true })); handles = []; cardHandles.clear(); episodeCards.replaceChildren(); solveCards.replaceChildren(); bottomCards.replaceChildren();
     const usedPresentations = new Set();
     for (const item of state.instances) {
       const definition = definitionFor(item), spec = specs.get(item.id);
@@ -101,9 +161,14 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         const sidebarVisible = item.context === 'solve' ? solveVisible() : visible(episodeContainer);
         if (placement === 'sidebar' && !sidebarVisible || placement === 'timeline' && !visible(bottomContainer)) continue;
         const card = el('section', null, 'plot-card'); card.dataset.instance = item.id;
-        const title = el('header', null, 'plot-card-heading'), grip = el('span', spec?.title || definition?.title || item.plot_id, 'plot-card-grip'); grip.draggable = true; grip.title = 'Drag to reorder or show on timeline';
+        // Notes and descriptions are secondary: they appear on hover only.
+        const title = el('header', null, 'plot-card-heading'), grip = el('span', spec?.title || definition?.title || item.plot_id, 'plot-card-grip'); grip.draggable = true;
+        grip.title = [spec?.title || definition?.title || item.plot_id, definition?.description, ...(spec?.notes || []), ...reductionNotes(spec), placement === 'timeline' ? 'Drag out to remove from the timeline' : 'Drag to reorder or onto the timeline'].filter(Boolean).join('\n');
         grip.addEventListener('dragstart', event => { drag = { id: item.id, from: placement, accepted: false }; event.dataTransfer.setData('text/plain', item.id); event.dataTransfer.effectAllowed = 'move'; });
         grip.addEventListener('dragend', () => { if (drag?.from === 'timeline' && !drag.accepted) { state.place(item.id, false); renderCards(); } drag = null; }); title.append(grip);
+        // Timeline rows carry unit and legend in their title row.
+        const legendTarget = placement === 'timeline' ? el('div', null, 'plot-card-legend') : null;
+        if (legendTarget) title.append(legendTarget);
         if (placement === 'sidebar') {
           if (eligible(item.id)) { const show = button('↧', () => { state.place(item.id, !item.timeline); renderCards(); }, item.timeline ? 'Hide from timeline' : 'Show on timeline'); show.className = 'plot-timeline-toggle'; show.setAttribute('aria-pressed', String(item.timeline)); title.append(show); }
           title.append(button('⚙', () => configure(item), 'Configure plot'), button('⧉', () => { state.duplicate(item.id); invalidate(); }, 'Duplicate plot'), button('×', () => { state.remove(item.id); specs.delete(item.id); invalidate(); }, 'Remove plot'));
@@ -125,17 +190,33 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
           // A following window can move while Live grows. Only a duration
           // change (zoom), source, scope or plot configuration resets the fit.
           const fitKey = [item.context === 'solve' ? lastSolveSourceKey : lastSourceKey, item.parameters, episodeTime ? [linked ? 'timeline' : state.rangeMode, linked || state.rangeMode === 'visible' ? view.window?.[1] - view.window?.[0] : null] : state.selected?.id];
-          handles.push(renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, presentation: presentations.get(key), fitKey, window, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined }));
+          const handle = renderPlot(graph, spec, { compact: linked, linked, hideTitle: true, notes: false, legendTarget, height: state.height(item.id, placement), yLimits: item.display ? displayLimits(item.display) : undefined, presentation: presentations.get(key), fitKey, window, cursor, onSeek: episodeTime && view.episodeClock !== false ? onSeek : spec.x?.identity === 'sqp_iteration' ? x => selectIterationByIndex(x) : undefined });
+          handles.push(handle); cardHandles.set(key, handle);
+          if (['lines', 'bars', 'spans'].includes(spec.kind)) card.append(resizeHandle(item, placement, key, linked ? 85 : 170));
         }
         else graph.append(el('p', 'Waiting for plot data…', 'plot-message'));
         (placement === 'timeline' ? bottomCards : item.context === 'episode' ? episodeCards : solveCards).append(card);
       }
     }
     for (const [key, presentation] of presentations) if (!usedPresentations.has(key)) { presentation.cancelScrub?.(); presentations.delete(key); }
+    bottomHint.hidden = bottomCards.children.length > 0; bottomTitle.classList.toggle('resizable', bottomCards.children.length > 0);
+    bottomTitle.title = bottomCards.children.length ? 'Drag to resize the timeline plots · drop an episode-time plot to add it' : '';
     if (!state.instances.some(item => item.context === 'episode')) episodeCards.append(el('p', 'Add episode plots and aggregates with +.', 'plot-message'));
     if (!state.instances.some(item => item.context === 'solve')) solveCards.append(el('p', 'Add solve plots with +.', 'plot-message'));
     renderSolve(); lastRender = JSON.stringify([getView().window, state.rangeMode === 'through_cursor' ? getView().cursor : null]);
   }
+  function resizeHandle(item, placement, key, fallback) {
+    const grip = el('div', null, 'plot-resize-handle'); grip.title = 'Drag to resize';
+    grip.addEventListener('pointerdown', event => {
+      if (event.button != null && event.button !== 0) return;
+      event.preventDefault(); event.stopPropagation();
+      const start = event.clientY, initial = state.height(item.id, placement) ?? fallback;
+      dragResize(event, next => { state.resize(item.id, placement, initial + next.clientY - start, false); cardHandles.get(key)?.setView({ height: state.height(item.id, placement) }); },
+        () => { state.resize(item.id, placement, state.height(item.id, placement)); renderCards(); });
+    });
+    return grip;
+  }
+  function reductionNotes(spec) { return (spec?.display_reduction || []).map(item => `Display shows ${item.displayed} of ${item.original} points${item.series ? ` of ${item.series}` : ''}; peaks and gaps kept.`); }
   function renderSolve() {
     const selected = state.selected, records = selected?.iterations || [], index = records.findIndex(item => item.index === state.iteration);
     const finalKey = selected ? JSON.stringify([lastSolveSourceKey, selected.id]) : null;
@@ -277,5 +358,5 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     runAgain.update(runContext());
     const now = Date.now(); if ((pending || now - lastPoll > 1500 && current?.source?.kind === 'live') && now - lastPoll >= 200) { lastPoll = now; refresh(); }
   }
-  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, rangeMode: state.rangeMode, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); runAgain.destroy(); handles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
+  return { update, refresh: () => { evaluatedKeys = {}; inspectedKey = undefined; runAgain.refresh(); invalidate(); return refresh(true); }, state, catalogDialog, runAgain, clearInspection, get snapshot() { return { instances: structuredClone(state.instances), pinned: state.pinned, selectedSolve: state.selected, iteration: state.iteration, rangeMode: state.rangeMode, solveSource: structuredClone(solveSource()?.source), inspection: solveOverride?.result || null }; }, destroy() { destroyed = true; resizing?.cancel(); for (const event of viewGestureEvents) doc.removeEventListener(event, finishViewGesture); runAgain.destroy(); handles.forEach(handle => handle.destroy()); catalogHandles.forEach(handle => handle.destroy()); activeConfig?.destroy(); catalogDialog.destroy(); } };
 }

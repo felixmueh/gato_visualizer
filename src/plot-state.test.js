@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPlotState, timelineEligible, awaitPlotJob } from './plot-state.js';
+import { createPlotState, timelineEligible, awaitPlotJob, displayLimits } from './plot-state.js';
 
 test('independent duplicate configs, reorder, shared placements and persistence', () => {
   let stored; const state = createPlotState({}, value => { stored = structuredClone(value); });
@@ -51,4 +51,19 @@ test('async jobs poll job_id, reject local errors and discard stale completions'
   assert.deepEqual(result.results, []); assert.equal(calls[1][0], '/api/plots/jobs/abc');
   await assert.rejects(awaitPlotJob(async () => ({ state: 'failed', error: 'Bad plugin' }), '/api/plots/evaluate', {}), /Bad plugin/);
   assert.equal(await awaitPlotJob(request, '/api/plots/evaluate', {}, { alive: () => false }), null);
+});
+
+test('display limits and placement heights persist per instance and survive duplication', () => {
+  let stored; const state = createPlotState({}, value => { stored = structuredClone(value); });
+  const item = state.add({ id: 'episode.timing', inputs: {} }, 'episode');
+  state.configure(item.id, {}, { min: '', max: '50', clipOutliers: true });
+  assert.deepEqual(item.display, { min: null, max: 50, clipOutliers: true });
+  state.resize(item.id, 'timeline', 140); state.resize(item.id, 'sidebar', 10);
+  assert.equal(state.height(item.id, 'timeline'), 140); assert.equal(state.height(item.id, 'sidebar'), 40);
+  state.timelineHeight = 400;
+  const copy = state.duplicate(item.id); assert.deepEqual(copy.display, item.display); assert.equal(state.height(copy.id, 'timeline'), 140);
+  state.resize(item.id, 'timeline', 90, false); assert.equal(stored.instances[0].sizes.timeline, 140, 'drag moves do not persist each step');
+  const restored = createPlotState(stored); assert.equal(restored.timelineHeight, 400); assert.equal(restored.height(item.id, 'timeline'), 140);
+  // An inverted pair keeps the bottom and returns the top to automatic.
+  assert.deepEqual(displayLimits({ min: 3, max: 1 }), { min: 3, max: null, clipOutliers: false });
 });
