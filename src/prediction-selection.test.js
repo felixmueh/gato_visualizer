@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { livePredictionForView, createIterationPathCache, iterationPredictionForView } from './prediction-selection.js';
+import { livePredictionForView, createIterationPathCache, iterationPredictionForView, inspectedPathStyle } from './prediction-selection.js';
 import { createLiveHistory } from './live-history.js';
 import { createHistoryClock } from './live-execution.js';
 
@@ -65,4 +65,15 @@ test('SQP cursor holds the shown trajectory while loading and never substitutes 
   assert.deepEqual(iterationPredictionForView({ iteration: 2, record: recorded, finalContext: final }), { prediction: null, source: null, status: 'loading' });
   assert.deepEqual(iterationPredictionForView({ iteration: 2, record: metricsOnly, finalContext: final, held }), { prediction: final, source: 'final-context', status: 'missing' });
   assert.deepEqual(iterationPredictionForView({ iteration: 2, record: metricsOnly, held }), { prediction: null, source: null, status: 'missing' });
+});
+
+test('only the pinned Solve\'s own prediction is drawn in the pin colour; final context is faded', () => {
+  const captured = plan(0, 1), episodePlan = plan(1, 2);
+  const pinned = { active: true, pinned: true, iteration: null, prediction: captured, predictionSource: 'final' };
+  assert.deepEqual(inspectedPathStyle(pinned, livePredictionForView(episodePlan, pinned)), { pinned: true, context: false });
+  assert.deepEqual(inspectedPathStyle({ ...pinned, pinned: false, iteration: 1 }, captured), { pinned: false, context: false });
+  assert.deepEqual(inspectedPathStyle({ ...pinned, predictionSource: 'final-context' }, captured), { pinned: true, context: true });
+  assert.deepEqual(inspectedPathStyle(pinned, episodePlan), { pinned: false, context: false });
+  assert.deepEqual(inspectedPathStyle({ ...pinned, active: false }, captured), { pinned: false, context: false });
+  assert.deepEqual(inspectedPathStyle(null, episodePlan), { pinned: false, context: false });
 });

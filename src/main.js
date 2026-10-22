@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import { setupLive } from "./live.js";
-import { livePredictionForView } from "./prediction-selection.js";
+import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
 import { createLimitTint } from "./limit-tint.js";
 import { setupPresentationSettings } from "./presentation-settings.js";
@@ -639,6 +639,13 @@ function disposeLiveObject(object) {
   object.material.dispose();
 }
 
+// A pinned Solve's prediction uses the pin's red from the inspector styles.
+function makePredictionLine(points, inspection) {
+  const style = inspectedPathStyle(inspection, inspection?.prediction);
+  const color = style.pinned ? new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue('--pin-red').trim()) : pathColor;
+  return createPathLine(points, { color, opacity: style.context ? .4 : .95, name: 'live-path' });
+}
+
 function showLivePlan(plan) {
   displayedLivePlan = plan;
   renderInspectedPrediction();
@@ -648,14 +655,14 @@ function renderInspectedPrediction() {
   auxiliaryViews?.invalidate();
   if (live?.mode !== 'live') {
     if (replayInspectionPrediction) { scene?.remove(replayInspectionPrediction); replayInspectionPrediction.geometry.dispose(); replayInspectionPrediction.material.dispose(); replayInspectionPrediction = undefined; }
-    if (inspectedPrediction?.active && inspectedPrediction.prediction?.ee_xyz?.length && scene) { replayInspectionPrediction = makeLiveLine(inspectedPrediction.prediction.ee_xyz, pathColor, false); replayInspectionPrediction.name = 'inspected-solve-prediction'; scene.add(replayInspectionPrediction); }
+    if (inspectedPrediction?.active && inspectedPrediction.prediction?.ee_xyz?.length && scene) { replayInspectionPrediction = makePredictionLine(inspectedPrediction.prediction.ee_xyz, inspectedPrediction); replayInspectionPrediction.name = 'inspected-solve-prediction'; scene.add(replayInspectionPrediction); }
     return;
   }
   if (replayInspectionPrediction) replayInspectionPrediction.visible = false;
   if (!liveGroup) return;
   disposeLiveObject(livePrediction); livePrediction = undefined;
   const plan = livePredictionForView(displayedLivePlan, inspectedPrediction);
-  if (plan?.ee_xyz?.length) { livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false); liveGroup.add(livePrediction); }
+  if (plan?.ee_xyz?.length) { livePrediction = plan === inspectedPrediction?.prediction ? makePredictionLine(plan.ee_xyz, inspectedPrediction) : makeLiveLine(plan.ee_xyz, pathColor, false); liveGroup.add(livePrediction); }
   refreshFitAvailability();
 }
 

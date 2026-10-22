@@ -7,6 +7,14 @@ export function livePredictionForView(episodePlan, inspection) {
   return explicitInspection ? inspection.prediction : episodePlan;
 }
 
+/** How the scene draws a shown prediction: in the pin's red when it belongs
+ * to the pinned Solve, faded when it is only the final plan shown as context
+ * for an iteration without a recorded trajectory. */
+export function inspectedPathStyle(inspection, plan) {
+  const own = Boolean(plan) && Boolean(inspection?.active) && plan === inspection.prediction;
+  return { pinned: own && Boolean(inspection.pinned), context: own && inspection.predictionSource === 'final-context' };
+}
+
 /** Bounded cache of one Solve's recorded SQP-iteration 3D paths.
  * Chunks arrive from the backend's binary trace; single selected snapshots
  * fill in as plot responses arrive. A new solve key discards everything. */

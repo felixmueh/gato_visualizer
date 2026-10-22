@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-# 2048 snapshots at N=32 (about 2 MB of JSON and 1.5 s of CPU FK).
-PATH_CHUNK_POINTS = 65536
+# 1024 snapshots at N=32: about 2 MB of JSON and 0.7 s of CPU FK per chunk.
+PATH_CHUNK_POINTS = 32768
 
 
 def json_metadata(value):

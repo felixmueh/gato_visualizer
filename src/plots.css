@@ -1,3 +1,4 @@
+:root { --pin-red: #bd8488; } /* also the pinned Solve's 3D prediction */
 .plot-inspector-heading { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 12px; }
 .plot-inspector-heading label { display: grid; gap: 5px; color: #a9bbcc; font-size: 11px; }
 .plot-inspector-heading select { max-width: 205px; }
@@ -47,9 +48,10 @@
 .solve-identity { font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .solve-pinned { border: 1px solid #986366; background: #392b31; padding: 10px; border-radius: 6px; }
 .solve-pinned .solve-identity { color: #edb6b9; font-weight: 600; }
-.solve-pinned .plot-inspector-heading button[aria-pressed='true'] { border-color: #bd8488; color: #f0c9cc; background: #51343b; }
+.solve-pinned .plot-inspector-heading button[aria-pressed='true'] { border-color: var(--pin-red); color: #f0c9cc; background: #51343b; }
 .sqp-strip { display: grid; grid-template-columns: auto 1fr auto; gap: 7px; align-items: center; margin: 12px 0; }
-.sqp-strip span { text-align: center; font-size: 10px; }
+.sqp-strip span { text-align: center; font-size: 10px; transition: opacity .15s; }
+.sqp-strip.loading span { opacity: .55; cursor: progress; }
 .sqp-strip input, .sqp-strip > button:last-child { grid-column: 1 / -1; width: 100%; }
 .sqp-strip[hidden] { display: none; }
 .timeline-plot-hint { color: #8199af; font-size: 10px; padding: 4px 0 7px; }
