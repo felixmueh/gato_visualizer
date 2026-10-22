@@ -437,8 +437,11 @@ class MPCAdapter:
     def plant_step(self, model, data, q, velocity, torque, dt):
         if self.simulator_joint_dynamics is None:
             return self.reach.rk4(model, data, q, velocity, torque, dt)
-        from tiago_mpc.joint_dynamics import plant_rk4
-        return plant_rk4(model, data, q, velocity, torque, dt, self.simulator_joint_dynamics)
+        from tiago_mpc import joint_dynamics
+        # plant_step picks the integrator the law needs (stick/slip or RK4);
+        # sources without it offer only the sign(v) RK4.
+        step = getattr(joint_dynamics, "plant_step", joint_dynamics.plant_rk4)
+        return step(model, data, q, velocity, torque, dt, self.simulator_joint_dynamics)
 
     def advance(self, end_time=None):
         """The unchanged reach_sim fixed pacing, down to the RK4 substep order."""
@@ -521,7 +524,7 @@ def build_schema(mpc_root, available_n=None, available_n_by_friction=None, predi
     try:
         losses, source = canonical_losses(mpc_root)
         friction = dict(coefficients=losses, source=source,
-            simulation_law="coulomb_sign_viscous", prediction_law="coulomb_tanh_viscous")
+            simulation_law=losses["model"], prediction_law="coulomb_tanh_viscous")
         from source_runtime import discover_compatible_modules
         if available_n_by_friction is None:
             smooth = discover_compatible_modules(reach, losses=prediction_losses(mpc_root))["available_N"]

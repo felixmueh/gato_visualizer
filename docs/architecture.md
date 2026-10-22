@@ -68,7 +68,7 @@ happens once inside the solver boundary. Packed stages contain N−1 q/v/u knots
 and one terminal q/v knot, with no terminal torque. Legacy raw XU and inspection
 arrays retain their own signs; portable NPZ already contains native coordinates.
 All displayed positions use the full robot root frame derived from the URDF.
-The simulator’s independent friction switch selects upstream hard-sign/viscous `plant_rk4` or loss-free `reach_sim.rk4`; predictor/profile changes do not replace the plant. The separate predictor switch selects a qualified smooth-friction module with runtime tanh width. See [friction](friction.md) for defaults and provenance.
+The simulator’s independent friction switch selects the source's `plant_step` (stick/slip Coulomb with implicit viscous damping where available, else hard-sign/viscous `plant_rk4`) or loss-free `reach_sim.rk4`; predictor/profile changes do not replace the plant. The separate predictor switch selects a qualified smooth-friction module with runtime tanh width. See [friction](friction.md) for defaults and provenance.
 
 A generation identifies active history, a settings version identifies the
 accepted settings, and cancellation revision rejects obsolete work. Changing

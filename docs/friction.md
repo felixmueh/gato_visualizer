@@ -10,9 +10,9 @@ Live has two independent switches in the **Friction** group. New UI defaults ena
 }
 ```
 
-The switches belong to the numerical `config`, not presentation preferences. Editing them uses the ordinary settings transaction: a new history segment starts from the displayed native q/qd and task time. Use Reset between comparisons when the same initial state is desired. To inspect mismatch first, enable Simulator friction and disable Predictor friction; then enable both and Reset for the matched-coefficient comparison. Both enabled still means **different Coulomb laws**: hard sign in the simulator and smooth tanh in the predictor.
+The switches belong to the numerical `config`, not presentation preferences. Editing them uses the ordinary settings transaction: a new history segment starts from the displayed native q/qd and task time. Use Reset between comparisons when the same initial state is desired. To inspect mismatch first, enable Simulator friction and disable Predictor friction; then enable both and Reset for the matched-coefficient comparison. Both enabled still means **different Coulomb laws**: stick/slip (or hard sign, see below) in the simulator and smooth tanh in the predictor.
 
-Simulator friction calls the selected checkout's `tiago_mpc.joint_dynamics.plant_rk4`, recomputing viscous plus hard-sign Coulomb torque at every RK4 stage. Sign(0)=0; this is not a stiction model. Predictor friction uses its existing smooth-friction generated module, with tanh velocity width configurable from 0.001 to 1 rad/s. The width is a runtime solver parameter and does not require a different binary. Passive torque is subtracted once from actuator torque. Armature remains inactive metadata in both models; no inertia is added.
+Simulator friction calls the selected checkout's `tiago_mpc.joint_dynamics.plant_step` when it exists, with the law `coulomb_stick_slip_viscous` (accepted by Felix on 2026-10-22; currently only on the `tiago_mpc` trial branch `visualizer-trial/stick-slip-plant`). That step is a semi-implicit Euler step with implicit viscous damping and Coulomb friction solved as a stick/slip constraint for the end-of-step velocity: a joint holds exactly while the remaining torque stays within ±c and slips with friction c otherwise. It is stable at the default 1 ms step without armature. Sources without that step fall back to `plant_rk4`, viscous plus hard-sign Coulomb torque recomputed at every RK4 stage (sign(0)=0), which diverges at 1 ms for the light wrist. Neither law models stiction. Predictor friction uses its existing smooth-friction generated module, with tanh velocity width configurable from 0.001 to 1 rad/s. The width is a runtime solver parameter and does not require a different binary. Passive torque is subtracted once from actuator torque. Armature remains inactive metadata in both models; no inertia is added.
 
 Coefficients come from the selected checkout's `configs/tracking.json` joint-dynamics payload, checked against its canonical reduced right-arm URDF. Exact upstream provenance is retained so generated model identity matches the prepared cache. At the current source, Coulomb Nm is `[1.66, 1.15, 1.16, 0.912, 1.25, 0.473, 0.56]`; viscous Nm·s/rad is `[4.7, 9.69, 5.3, 4.2, 3.66, 2.95, 2.95]`. These are Felix's actual supplied values; no guessed arm parameters are introduced. Source paths/hashes, effective laws/vectors/widths, and simulator/predictor mismatch are retained in plans, simulator metadata and captured inspection problems. Historical records retain their original metadata.
 
@@ -85,3 +85,26 @@ which overflows GATO's float32 staging. Both now discard it first.
 
 Scripts: `_expr_data/reset-nonfinite/` (`plant_loop*.py`, `predictor_stability.py`,
 `armature_bound.py` for CPU checks; `repro.py`, `friction_matrix.py` for Live).
+
+## Stick/slip simulator step, 2026-10-22
+
+Felix accepted the semi-implicit simulator step with Coulomb friction solved as
+a constraint. Checks on the trial branch `visualizer-trial/stick-slip-plant`
+(worktree `impl/tiago_mpc-visualizer-trial-stick-slip`):
+
+- **Correctness:** CPU tests check the stick/slip optimality conditions over
+  random states, exact holding below breakaway, stability at 1 ms, and
+  agreement of 1 ms steps with a 0.05 ms reference (`tests/test_plant_stick_slip.py`).
+- **Accuracy:** with the supplied armature at 1 ms, a 2 s replay of MPC
+  torques stays within 0.17 mrad of a 0.02 ms reference; sign RK4 is 1.3 mrad
+  off and creeps 1 mrad per second where the joint should hold. Without
+  armature, sign RK4 diverges and the stick/slip step stays within 0.6 mrad.
+- **Cost:** about 110 µs per step with armature and 150 µs without (sign RK4:
+  60 µs), using an exact active-set solve with a coordinate-descent fallback.
+- **Live:** with the trial checkout as simulator and main's GATO as solver
+  profile, simulator friction on at 1 kHz, a 2 s reach completed (2001 states,
+  max |qd| 0.54 rad/s) in 1.65 s of wall time; the same setting with the sign
+  law diverged within 10 ms.
+
+Scripts: `_expr_data/reset-nonfinite/stick_slip_compare.py`,
+`stick_slip_no_armature.py`, `stick_slip_live.py`.

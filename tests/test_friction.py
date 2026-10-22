@@ -112,6 +112,24 @@ class FrictionTests(unittest.TestCase):
         actual = adapter.plant_step(model,model.createData(),q,v,u,.001)
         for a,b in zip(actual,expected): np.testing.assert_array_equal(a,b)
 
+    def test_sources_with_stick_slip_step_select_it_and_dispatch_through_plant_step(self):
+        import tiago_mpc.joint_dynamics as joint_dynamics
+        self.assertEqual(canonical_losses(ROOT)[0]['model'], 'coulomb_sign_viscous')
+        calls = []
+        def plant_step(*args):
+            calls.append(args)
+            return args[2], args[3]
+        with patch.object(joint_dynamics, 'STICK_SLIP', 'coulomb_stick_slip_viscous', create=True), \
+             patch.object(joint_dynamics, 'plant_step', plant_step, create=True):
+            losses = canonical_losses(ROOT)[0]
+            self.assertEqual(losses['model'], 'coulomb_stick_slip_viscous')
+            adapter = MPCAdapter.__new__(MPCAdapter)
+            adapter.reach = self.reach
+            adapter.simulator_joint_dynamics = losses
+            q, v, u = self.reach.Q_START_RAD.copy(), np.zeros(7), np.ones(7)
+            adapter.plant_step('model', 'data', q, v, u, .001)
+        self.assertEqual(calls[0][4:], (u, .001, losses))
+
     def test_multirate_execution_uses_adapter_hook_for_every_native_step(self):
         import tests.test_execution as fixtures
         fixtures.LOCK_HELD = True

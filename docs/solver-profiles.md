@@ -13,7 +13,7 @@ service and browser session running.
 
 The simulator checkout supplies the prepared TIAGo model, integrator, assets,
 initial posture and task geometry. The independent simulator friction switch
-selects upstream hard-sign/viscous `plant_rk4` or loss-free `reach_sim.rk4`.
+selects the source's `plant_step` (stick/slip Coulomb with implicit viscous damping where available, else hard-sign/viscous `plant_rk4`) or loss-free `reach_sim.rk4`.
 New UI defaults enable simulator and smooth predictor friction; legacy configurations without explicit
 losses retain loss-free behavior. Profile selection never changes this plant
 selection. See [friction](friction.md) for effective laws and provenance.

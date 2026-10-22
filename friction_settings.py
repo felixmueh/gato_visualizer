@@ -27,14 +27,17 @@ def canonical_losses(mpc_root):
     config_path = root/'configs/tracking.json'
     urdf_path = root/'models/tiago_right/tiago_right_arm.urdf'
     losses = deepcopy(json.loads(config_path.read_text())['joint_dynamics'])
-    importlib.import_module('tiago_mpc.joint_dynamics').validate(losses)
+    joint_dynamics = importlib.import_module('tiago_mpc.joint_dynamics')
+    joint_dynamics.validate(losses)
     joints = {joint.get('name'): joint for joint in ET.parse(urdf_path).iter('joint')}
     for index in range(7):
         dynamics = joints[f'arm_right_{index+1}_joint'].find('dynamics')
         if dynamics is None or (float(dynamics.get('friction', '0')) != losses['coulomb_nm'][index]
                                 or float(dynamics.get('damping', '0')) != losses['viscous_nm_s_per_rad'][index]):
             raise ValueError('Selected tracking loss coefficients differ from the canonical right-arm URDF')
-    losses['model'] = 'coulomb_sign_viscous'
+    # Sources with the stick/slip plant step get it; sign(v) with explicit RK4
+    # diverges for the light wrist at the default 1 ms step.
+    losses['model'] = getattr(joint_dynamics, 'STICK_SLIP', 'coulomb_sign_viscous')
     return losses, dict(configuration_path=str(config_path),
         configuration_sha256=hashlib.sha256(config_path.read_bytes()).hexdigest(),
         urdf_path=str(urdf_path), urdf_sha256=hashlib.sha256(urdf_path.read_bytes()).hexdigest(),

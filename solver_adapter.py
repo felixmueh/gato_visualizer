@@ -78,10 +78,12 @@ class SimulatorAdapter(MPCAdapter):
         predictor = self.remote.request("configure", timeout=120, config_path=str(Path(config_path).resolve()), task=task)
         context = predictor.pop("plan_context")
         self.simulator_joint_dynamics = effective.get("simulator_joint_dynamics")
+        law = (self.simulator_joint_dynamics or {}).get("model")
         self.simulator_identity = dict(self.simulator_identity,
             passive_joint_dynamics=deepcopy(self.simulator_joint_dynamics),
             friction_source=effective.get("friction_source"),
-            integrator="tiago_mpc.joint_dynamics.plant_rk4" if self.simulator_joint_dynamics else "reach_sim.rk4")
+            integrator=("tiago_mpc.joint_dynamics.plant_stick_slip_step" if law == "coulomb_stick_slip_viscous"
+                        else "tiago_mpc.joint_dynamics.plant_rk4" if law else "reach_sim.rk4"))
         self.problem_configuration = deepcopy(predictor["configuration"])
         self.problem_configuration.update(simulator_joint_dynamics=deepcopy(self.simulator_joint_dynamics),
                                           simulator_friction_source=effective.get("friction_source"))

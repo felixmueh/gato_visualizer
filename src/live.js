@@ -381,7 +381,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         const fields = document.createElement('div'); fields.className = 'settings-fields'; details.append(summary);
         if (name === 'Friction') {
           const note = document.createElement('p'); note.className = 'settings-note';
-          note.textContent = 'Simulator: hard-sign Coulomb + viscous friction. Predictor: smooth tanh Coulomb + viscous friction. Uses the selected source’s canonical right-arm coefficients. Changes start a new segment from the displayed state.';
+          const simulatorLaw = schema.friction?.simulation_law === 'coulomb_stick_slip_viscous'
+            ? 'stick/slip Coulomb (solved per step) + implicit viscous friction'
+            : 'hard-sign Coulomb + viscous friction (explicit RK4)';
+          note.textContent = `Simulator: ${simulatorLaw}. Predictor: smooth tanh Coulomb + viscous friction. Uses the selected source’s canonical right-arm coefficients. Changes start a new segment from the displayed state.`;
           details.append(note);
           const coefficients = schema.friction?.coefficients;
           for (const [key, unit] of [['coulomb_nm', 'Coulomb (Nm)'], ['viscous_nm_s_per_rad', 'Viscous (Nm s/rad)']]) {

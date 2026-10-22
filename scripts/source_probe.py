@@ -54,7 +54,7 @@ def probe(selection, reach, requested_ns=()):
         from friction_settings import prediction_losses, canonical_losses
         coefficients, source = canonical_losses(selection["mpc_root"])
         data["friction"] = dict(coefficients=coefficients, source=source,
-            simulation_law="coulomb_sign_viscous", prediction_law="coulomb_tanh_viscous")
+            simulation_law=coefficients["model"], prediction_law="coulomb_tanh_viscous")
         smooth = discover_compatible_modules(reach, requested_ns, losses=prediction_losses(selection["mpc_root"]))
     except (ValueError, OSError, KeyError, ImportError) as exc:
         smooth = dict(compatible=False, available_N=[], modules=[], error=str(exc))
