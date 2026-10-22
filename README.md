@@ -67,12 +67,21 @@ Invalid numbers are marked (the tooltip gives the reason) and neither applied no
 
 In **Backend**, enter a `tiago_mpc` checkout or worktree path; Check source shows
 its branch, commit/dirty state and compatible knot counts. The Python interpreter
-and binary cache fields are prefilled with the checkout's own resolved paths
-(`venv-host/bin/python`, else `.venv/bin/python`; `<checkout>/.cache/gato`;
-`POST /api/source/defaults` with `{"mpc_root": …}` returns them). An
-unedited field follows a checkout change; an edited one is a highlighted override
-with a reset arrow that restores the checkout default. Values equal to the
-default are sent as "follow the checkout". The previous visualizer cache can be
+and binary cache fields hold path templates. The literal token `<checkout>`
+stands for the selected checkout and is substituted when the path is used, so a
+saved template such as `<checkout>/.venv/bin/python` stays valid when the checkout
+changes (`~` is expanded too; absolute paths without the token keep working;
+any other `<…>` token is an error). The defaults are
+`<checkout>/venv-host/bin/python` when that interpreter exists, else
+`<checkout>/.venv/bin/python`, and `<checkout>/.cache/gato`. The resolved
+absolute path is the field's tooltip; a template that cannot be resolved is marked
+invalid, with the reason as tooltip. An edited template is a highlighted override
+with a reset arrow that restores the default. A value equal to the default is sent
+as "follow the checkout" and not saved; overrides are saved as typed, templates
+included. `POST /api/source/defaults` with `{"mpc_root": …}` (optionally
+`python`/`cache` templates) returns the default templates, their resolution and
+the resolution of the entered templates. Existing configs with absolute paths are
+not rewritten. The previous visualizer cache can be
 reused by entering `/workspace/tiago_mpc_visualizer/.cache/gato` as the cache
 override; it is never copied into the selected project cache. Compatibility checks include the current
 URDF/grasp frame, generated/native GATO sources, toolchain, Python ABI, GPU
@@ -189,7 +198,7 @@ offline numerical checks with shared-renderer HTML previews.
 ## Solver profiles
 
 Settings › Backend also saves named solver checkout/interpreter/cache
-profiles (same prefilled defaults and reset arrows). Select one in Live to switch solver implementations without reloading
+profiles (same `<checkout>` templates, defaults and reset arrows). Select one in Live to switch solver implementations without reloading
 the browser or replacing the simulator. Switching pauses at the displayed native
 state and starts a new history segment. Profiles must have compatible model
 coordinates and prebuilt binaries for the chosen knot count. See

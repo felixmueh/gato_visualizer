@@ -19,43 +19,50 @@ export async function sourceRequest(path, body, fetcher = fetch) {
 }
 
 /**
- * Prefill interpreter/cache fields with the checkout's own resolved paths.
- * A field still holding the checkout default follows a checkout change; an
- * edited value stays as a visible override until its reset arrow restores the
- * default. Overrides equal to the default are sent as null (follow checkout).
+ * Interpreter and cache fields hold path templates; `<checkout>` stands for the
+ * selected checkout. Saved templates stay valid when the checkout changes, so
+ * only a field still holding the default text follows the default (the default
+ * interpreter can differ between checkouts). An edited template stays as a
+ * visible override until its reset arrow restores the default; a template
+ * equal to the default is sent as null. The tooltip shows the resolved path and
+ * an unresolvable template is marked invalid with the reason as its tooltip.
  */
-export function trackCheckoutDefaults({ fields, resets, request = sourceRequest, group = 'checkout-defaults', label = '' }) {
+export function trackCheckoutDefaults({ fields, resets, request = sourceRequest, group = 'checkout-defaults', label = '', delay = 250, schedule = setTimeout, unschedule = clearTimeout }) {
   const defaults = { python: null, cache: null };
-  let token = 0;
+  let token = 0, root = '', timer;
   const names = { python: `${label}Python interpreter`, cache: `${label}binary cache` };
+  const value = key => { const text = fields[key].value.trim(); return text && text !== defaults[key] ? text : null; };
   for (const key of Object.keys(defaults)) {
     resets.bind({ key: `${group}.${key}`, name: names[key], input: fields[key], host: fields[key], group,
       getValue: () => fields[key].value.trim(), getDefault: () => defaults[key] ?? fields[key].value.trim(),
-      reset: value => { fields[key].value = value; fields[key].dispatchEvent?.(new Event('input', { bubbles: true })); } });
+      reset: text => { fields[key].value = text; fields[key].dispatchEvent?.(new Event('input', { bubbles: true })); } });
   }
   function apply(next) {
     for (const key of Object.keys(defaults)) {
-      const value = fields[key].value.trim();
-      if (!value || value === defaults[key]) fields[key].value = next?.[key] || '';
+      const text = fields[key].value.trim();
+      if (!text || text === defaults[key]) fields[key].value = next?.[key] || '';
       defaults[key] = next?.[key] || null;
+      const entered = next?.entered?.[key];
+      fields[key].title = entered?.error || entered?.path || next?.resolved?.[key] || '';
+      fields[key].dataset.invalid = String(Boolean(entered?.error));
       const reset = resets.entries.find(entry => entry.key === `${group}.${key}`)?.button;
-      if (reset) reset.title = defaults[key] ? `Reset to checkout default ${defaults[key]}` : 'Reset to checkout default';
+      if (reset) reset.title = defaults[key] ? `Reset to ${defaults[key]}` : 'Reset to the checkout default';
     }
     resets.update();
   }
-  return {
-    defaults,
-    apply,
-    /** Load defaults for a checkout path; stale answers for an older path are ignored. */
-    async follow(root) {
-      const attempt = ++token;
-      if (!root) { apply(null); return; }
-      let next = null;
-      try { next = await request('/api/source/defaults', { mpc_root: root }); } catch { next = null; }
-      if (attempt === token) apply(next);
-    },
-    value(key) { const value = fields[key].value.trim(); return value && value !== defaults[key] ? value : null; },
-  };
+  /** Load defaults and the resolution of the edited templates; stale answers are ignored. */
+  async function follow(path) {
+    root = path;
+    const attempt = ++token;
+    if (!root) { apply(null); return; }
+    let next = null;
+    try { next = await request('/api/source/defaults', { mpc_root: root, python: value('python'), cache: value('cache') }); } catch { next = null; }
+    if (attempt === token) apply(next);
+  }
+  for (const key of Object.keys(defaults)) {
+    fields[key].addEventListener?.('input', () => { unschedule(timer); timer = schedule(() => follow(root), delay); });
+  }
+  return { defaults, apply, follow, value };
 }
 
 const textField = (name, title, attrs = '') => `<div class="dialog-field"><label for="source-${name}">${title}</label><input id="source-${name}" name="${name}" type="text" spellcheck="false" autocomplete="off" ${attrs}></div>`;
@@ -115,11 +122,11 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
       if (!initialized) {
         const selected = result.current?.selection || {};
         field('mpc_root').value = selected.mpc_root || result.current?.source?.mpc_root || '';
-        // Show the effective paths so an existing explicit cache/environment
+        // Show the effective templates so an existing explicit cache/environment
         // override survives Apply; checkout defaults decide what counts as one.
-        field('python').value = selected.python || '';
-        field('cache').value = selected.cache || '';
-        if (result.current?.defaults) checkout.apply(result.current.defaults); else await checkout.follow(field('mpc_root').value.trim());
+        field('python').value = selected.templates?.python || selected.python || '';
+        field('cache').value = selected.templates?.cache || selected.cache || '';
+        await checkout.follow(field('mpc_root').value.trim());
         describe(result.current || {}); initialized = true; field('mpc_root').placeholder = '';
       }
       if (!plottersInitialized) {

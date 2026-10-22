@@ -13,7 +13,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from source_settings import SourceSettings, restart_arguments
+from source_settings import SourceSettings, restart_arguments, selection_from_request
 from visualizer_config import effective_source_selection, load_visualizer_config
 from presentation_settings import DEFAULT_PRESENTATION
 from server import make_server
@@ -27,11 +27,21 @@ class SourceSettingsTests(unittest.TestCase):
             root = Path(folder)
             service = SourceSettings(SELECTION, root / 'config.json', Mock(), probe=lambda _: dict(compatible=True))
             (root / '.venv/bin').mkdir(parents=True); (root / '.venv/bin/python').symlink_to(sys.executable)
-            self.assertEqual(service.defaults(dict(mpc_root=str(root))),
-                             dict(mpc_root=str(root.resolve()), python=str(root.resolve() / '.venv/bin/python'), cache=str(root.resolve() / '.cache/gato')))
+            resolved = lambda name: str(root.resolve() / name)
+            defaults = service.defaults(dict(mpc_root=str(root)))
+            self.assertEqual({key: defaults[key] for key in ('mpc_root', 'python', 'cache', 'resolved')},
+                             dict(mpc_root=str(root.resolve()), python='<checkout>/.venv/bin/python', cache='<checkout>/.cache/gato',
+                                  resolved=dict(python=resolved('.venv/bin/python'), cache=resolved('.cache/gato'))))
             (root / 'venv-host/bin').mkdir(parents=True); (root / 'venv-host/bin/python').symlink_to(sys.executable)
-            self.assertEqual(service.defaults(dict(mpc_root=str(root)))['python'], str(root.resolve() / 'venv-host/bin/python'))
-            for body in (None, {}, dict(mpc_root=' '), dict(mpc_root=str(root), python='x')):
+            host = service.defaults(dict(mpc_root=str(root)))
+            self.assertEqual(host['python'], '<checkout>/venv-host/bin/python')
+            self.assertEqual(host['resolved']['python'], resolved('venv-host/bin/python'))
+            # The entered templates resolve against the checkout; unknown tokens and bad paths report why.
+            entered = service.defaults(dict(mpc_root=str(root), python='<checkout>/.venv/bin/python', cache='<home>/c'))['entered']
+            self.assertEqual(entered['python'], dict(path=resolved('.venv/bin/python')))
+            self.assertIn('Unknown token <home>', entered['cache']['error'])
+            self.assertIn('not executable', service.defaults(dict(mpc_root=str(root), python='<checkout>/nope'))['entered']['python']['error'])
+            for body in (None, {}, dict(mpc_root=' '), dict(mpc_root=str(root), python=3), dict(python='x')):
                 with self.assertRaises(ValueError):
                     service.defaults(body)
 
@@ -43,13 +53,35 @@ class SourceSettingsTests(unittest.TestCase):
             service = SourceSettings(SELECTION, path, restart, probe=lambda _: dict(compatible=True, available_N=[48]))
             with patch('source_settings.selection_from_request', return_value=SELECTION):
                 self.assertTrue(service.apply(SELECTION)['restarting'])
-            self.assertEqual(json.loads(path.read_text()), dict(ingest_directory='recordings', source=SELECTION))
+            self.assertEqual(json.loads(path.read_text()), dict(ingest_directory='recordings', source=dict(mpc_root='/prepared/source')))
             restart.assert_not_called()
             service.finish_apply()
             restart.assert_called_once()
             with patch('source_settings.selection_from_request', return_value=SELECTION):
                 with self.assertRaisesRegex(ValueError, 'already in progress'):
                     service.apply(SELECTION)
+
+    def test_apply_stores_non_default_templates_and_load_round_trips_them(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'mpc'
+            for name in ('examples/reach_sim.py', 'external/gato/python/gato/_cache.py'):
+                (root / name).parent.mkdir(parents=True, exist_ok=True); (root / name).touch()
+            (root / 'tools/bin').mkdir(parents=True); (root / 'tools/bin/python').symlink_to(sys.executable)
+            path = Path(folder) / 'viewer.json'; path.write_text('{}')
+            service = SourceSettings(SELECTION, path, Mock(), probe=lambda _: dict(compatible=True))
+            selection = selection_from_request(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/gato'))
+            self.assertEqual(selection['python'], str(root.resolve() / 'tools/bin/python'))
+            service.apply(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/gato'))
+            stored = json.loads(path.read_text())['source']
+            # The default cache template is not stored (it follows the checkout); the override is, verbatim.
+            self.assertEqual(stored, dict(mpc_root=str(root.resolve()), python='<checkout>/tools/bin/python'))
+            config = load_visualizer_config(path)
+            self.assertEqual(config.source, stored)
+            self.assertEqual(effective_source_selection(config, environment={})['templates']['python'], '<checkout>/tools/bin/python')
+            self.assertEqual(effective_source_selection(config, environment={})['python'], str(root.resolve() / 'tools/bin/python'))
+            # TIAGO_PYTHON takes precedence and may itself be a template.
+            env = effective_source_selection(config, environment={'TIAGO_PYTHON': '<checkout>/tools/bin/python'})
+            self.assertEqual(env['python'], str(root.resolve() / 'tools/bin/python'))
 
     def test_mismatch_keeps_configuration_and_gives_model_error(self):
         with tempfile.TemporaryDirectory() as folder:

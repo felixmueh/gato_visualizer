@@ -20,33 +20,99 @@ ROOT = Path(__file__).resolve().parent
 PROBE_SCRIPT = ROOT / "scripts/source_probe.py"
 
 
+CHECKOUT_TOKEN = "<checkout>"
+_TOKEN = re.compile(r"<[^<>]*>")
+
+
+def default_interpreter_template(root):
+    """Default interpreter template: the host `venv-host` when usable, else the container's `.venv`.
+
+    This is the one place that decides the preference; change it here only.
+    """
+    host = Path(root) / "venv-host/bin/python"
+    usable = host.is_file() and os.access(host, os.X_OK)
+    return f"{CHECKOUT_TOKEN}/{'venv-host' if usable else '.venv'}/bin/python"
+
+
+DEFAULT_CACHE_TEMPLATE = f"{CHECKOUT_TOKEN}/.cache/gato"
+
+
+def expand_template(value, root):
+    """Substitute `<checkout>` with the checkout root and expand `~`; unknown `<...>` tokens are errors."""
+    for token in _TOKEN.findall(value):
+        if token != CHECKOUT_TOKEN:
+            raise ValueError(f"Unknown token {token} in {value!r}; only {CHECKOUT_TOKEN} is supported")
+    expanded = Path(value.replace(CHECKOUT_TOKEN, str(root))).expanduser()
+    return Path(os.path.abspath(expanded))
+
+
+def has_token(value):
+    return isinstance(value, str) and _TOKEN.search(value) is not None
+
+
+def _check_interpreter(path):
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ValueError(f"Selected Python is not executable: {path}")
+
+
+def _check_cache(path):
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"GATO cache is not a directory: {path}")
+
+
 def checkout_defaults(mpc_root):
-    """Interpreter and cache a checkout uses without overrides; never raises for missing paths."""
+    """Default interpreter/cache templates of a checkout and their resolution; never raises for missing paths."""
     root = Path(mpc_root).expanduser().resolve()
-    candidates = [root / name / "bin/python" for name in ("venv-host", ".venv")]
-    interpreter = next((p for p in candidates if p.is_file() and os.access(p, os.X_OK)), candidates[0])
-    return dict(mpc_root=str(root), python=str(interpreter), cache=str(root / ".cache/gato"))
+    python, cache = default_interpreter_template(root), DEFAULT_CACHE_TEMPLATE
+    return dict(mpc_root=str(root), python=python, cache=cache,
+                resolved=dict(python=str(expand_template(python, root)), cache=str(expand_template(cache, root))))
+
+
+def resolve_templates(mpc_root, python=None, cache=None):
+    """Per field the resolved path or the reason it is invalid, for the UI tooltip and mark."""
+    root = Path(mpc_root).expanduser().resolve()
+    defaults = checkout_defaults(root)
+    result = {}
+    for key, value, check in (("python", python, _check_interpreter), ("cache", cache, _check_cache)):
+        try:
+            path = expand_template((value or "").strip() or defaults[key], root)
+            check(path)
+            result[key] = dict(path=str(path))
+        except ValueError as exc:
+            result[key] = dict(error=str(exc))
+    return result
+
+
+def stored_selection(selection):
+    """Persisted form: the checkout plus templates that differ from the defaults (defaults keep following it)."""
+    defaults = checkout_defaults(selection["mpc_root"])
+    stored = dict(mpc_root=selection["mpc_root"])
+    for key, value in selection.get("templates", {}).items():
+        if value and value != defaults[key]:
+            stored[key] = value
+    return stored
 
 
 def resolve_selection(mpc_root, python=None, cache=None):
+    """Resolved absolute selection plus the `templates` it came from (defaults filled in)."""
     root = Path(mpc_root).expanduser().resolve()
     if not (root / "examples/reach_sim.py").is_file():
         raise ValueError(f"Not a tiago_mpc checkout: {root} (missing examples/reach_sim.py)")
     if not (root / "external/gato/python/gato/_cache.py").is_file():
         raise ValueError(f"Selected checkout lacks GATO cache APIs: {root / 'external/gato'}")
     defaults = checkout_defaults(root)
-    interpreter = Path(os.path.abspath(Path(python).expanduser())) if python else Path(defaults["python"])
+    templates = dict(python=str(python) if python else defaults["python"],
+                     cache=str(cache) if cache else defaults["cache"])
     # Keep the virtualenv executable path: resolving the symlink loses its environment.
-    if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
-        raise ValueError(f"Selected Python is not executable: {interpreter}")
-    directory = Path(cache).expanduser().resolve() if cache else Path(defaults["cache"])
-    if directory.exists() and not directory.is_dir():
-        raise ValueError(f"GATO cache is not a directory: {directory}")
-    return dict(mpc_root=str(root), python=str(interpreter), cache=str(directory))
+    interpreter = expand_template(templates["python"], root)
+    _check_interpreter(interpreter)
+    directory = expand_template(templates["cache"], root).resolve()
+    _check_cache(directory)
+    return dict(mpc_root=str(root), python=str(interpreter), cache=str(directory), templates=templates)
 
 
 def source_command(selection, operation="probe", ns=()):
-    selected = resolve_selection(**selection)
+    selected = resolve_selection(selection["mpc_root"], python=selection.get("python"), cache=selection.get("cache"))
     command = [selected["python"], str(PROBE_SCRIPT), operation,
                "--mpc-root", selected["mpc_root"], "--python", selected["python"],
                "--cache", selected["cache"]]

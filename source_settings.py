@@ -10,6 +10,7 @@ import signal
 import threading
 import uuid
 
+from source_runtime import stored_selection
 from visualizer_config import save_source_selection
 
 ROOT = Path(__file__).resolve().parent
@@ -71,11 +72,14 @@ class SourceSettings:
 
     def defaults(self, body):
         """Checkout default interpreter/cache, so the UI can show overrides against them."""
-        from source_runtime import checkout_defaults
-        if not isinstance(body, dict) or set(body) != {"mpc_root"} or not isinstance(body["mpc_root"], str) \
-                or not body["mpc_root"].strip():
+        from source_runtime import checkout_defaults, resolve_templates
+        if not isinstance(body, dict) or set(body) - {"mpc_root", "python", "cache"} or "mpc_root" not in body \
+                or not isinstance(body["mpc_root"], str) or not body["mpc_root"].strip() \
+                or any(not isinstance(body.get(key) or "", str) for key in ("python", "cache")):
             raise ValueError("Defaults require a source checkout path")
-        return checkout_defaults(body["mpc_root"].strip())
+        root = body["mpc_root"].strip()
+        # `entered` resolves the current field templates, so the UI can show paths and errors.
+        return dict(checkout_defaults(root), entered=resolve_templates(root, body.get("python"), body.get("cache")))
 
     def status(self):
         with self.lock:
@@ -171,7 +175,7 @@ class SourceSettings:
             if not result.get("compatible", result.get("ok", False)):
                 errors = result.get("errors") or [result.get("error", "Selected source is incompatible")]
                 raise ValueError("; ".join(errors))
-            save_source_selection(self.config_path, selection)
+            save_source_selection(self.config_path, stored_selection(selection))
             self.restarting = True
             self.selection = selection
         return dict(accepted=True, restarting=True, selection=selection)

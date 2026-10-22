@@ -37,6 +37,50 @@ class SourceSelectionTests(unittest.TestCase):
             self.assertEqual(runtime.resolve_selection(root)["python"], str(root / ".venv/bin/python"))
             self.assertFalse((root / ".cache").exists())
 
+    def test_checkout_token_is_substituted_for_interpreter_and_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            checkout(root)
+            (root / "tools/bin").mkdir(parents=True)
+            (root / "tools/bin/python").symlink_to(sys.executable)
+            selected = runtime.resolve_selection(root, python="<checkout>/tools/bin/python", cache="<checkout>/c/../cache")
+            self.assertEqual(selected["python"], str(root / "tools/bin/python"))
+            self.assertEqual(selected["cache"], str(root / "cache"))
+            self.assertEqual(selected["templates"], dict(python="<checkout>/tools/bin/python", cache="<checkout>/c/../cache"))
+            # Absolute paths without the token keep working; the template is the path itself.
+            absolute = runtime.resolve_selection(root, python=str(root / "tools/bin/python"))
+            self.assertEqual(absolute["python"], str(root / "tools/bin/python"))
+            self.assertEqual(absolute["templates"]["python"], str(root / "tools/bin/python"))
+            # The same template follows a different checkout.
+            other = Path(directory).resolve() / "other"
+            checkout(other); (other / "tools/bin").mkdir(parents=True); (other / "tools/bin/python").symlink_to(sys.executable)
+            self.assertEqual(runtime.resolve_selection(other, python="<checkout>/tools/bin/python")["python"], str(other / "tools/bin/python"))
+            with patch.dict(os.environ, HOME=str(root)):
+                self.assertEqual(runtime.resolve_selection(root, python="~/tools/bin/python")["python"], str(root / "tools/bin/python"))
+
+    def test_unknown_tokens_are_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout(root)
+            for value in ("<home>/python", "<Checkout>/.venv/bin/python", "<checkout>/<x>/python"):
+                with self.assertRaisesRegex(ValueError, "Unknown token"):
+                    runtime.resolve_selection(root, python=value)
+            with self.assertRaisesRegex(ValueError, "Unknown token <root>"):
+                runtime.resolve_selection(root, cache="<root>/cache")
+
+    def test_default_templates_prefer_host_environment_and_store_only_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            checkout(root)
+            self.assertEqual(runtime.checkout_defaults(root)["python"], "<checkout>/venv-host/bin/python")
+            self.assertEqual(runtime.checkout_defaults(root)["cache"], "<checkout>/.cache/gato")
+            (root / "venv-host/bin/python").unlink()
+            self.assertEqual(runtime.default_interpreter_template(root), "<checkout>/.venv/bin/python")
+            selection = runtime.resolve_selection(root)
+            self.assertEqual(runtime.stored_selection(selection), dict(mpc_root=str(root)))
+            selection = runtime.resolve_selection(root, cache="<checkout>/other")
+            self.assertEqual(runtime.stored_selection(selection), dict(mpc_root=str(root), cache="<checkout>/other"))
+
     def test_invalid_selection_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "Not a tiago_mpc checkout"):

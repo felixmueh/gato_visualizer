@@ -2,7 +2,7 @@
 from copy import deepcopy
 import re
 
-from source_runtime import resolve_selection
+from source_runtime import resolve_selection, stored_selection
 from visualizer_config import save_local_settings
 
 
@@ -59,7 +59,8 @@ class SolverProfiles:
                 raise ValueError("A solver profile switch is in progress")
             updated = dict(self.profiles, **{profile["id"]: profile})
             save_local_settings(self.config_path,
-                solver_profiles=[value for key, value in updated.items() if key != "simulator"])
+                solver_profiles=[dict(id=value["id"], name=value["name"], **stored_selection(value))
+                                 for key, value in updated.items() if key != "simulator"])
             self.profiles = updated
         return self.status()
 

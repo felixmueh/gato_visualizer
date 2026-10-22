@@ -19,7 +19,12 @@ losses retain loss-free behavior. Profile selection never changes this plant
 selection. See [friction](friction.md) for effective laws and provenance.
 
 Named solver profiles identify a TIAGo checkout/worktree, Python interpreter
-and compiled-module cache. Exactly one persistent Live solver child exists.
+and compiled-module cache. The interpreter and cache are saved as templates in
+which the literal `<checkout>` stands for the profile's checkout (for example
+`<checkout>/.venv/bin/python`); the backend substitutes it, expands `~` and
+rejects other `<…>` tokens. Defaults are not saved, so they keep following the
+checkout; absolute paths still work. Profile status carries both the resolved
+paths and the stored `templates`. Exactly one persistent Live solver child exists.
 An explicit inspection may temporarily start a separate child while Live is
 paused/idle, under the same canonical GPU lease. Only one GPU job runs at a
 time; the temporary child preserves private Live controller state and can be

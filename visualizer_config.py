@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from source_runtime import has_token
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 
 ROOT = Path(__file__).resolve().parent
@@ -61,6 +62,8 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
                 continue
             if not isinstance(value, str) or not value.strip() or "\x00" in value:
                 raise ValueError(f"source.{key} must be a nonempty path string")
+            if key != "mpc_root" and has_token(value):
+                continue  # `<checkout>` template: resolved against the selected checkout later.
             source_path = Path(value).expanduser()
             if not source_path.is_absolute():
                 source_path = selected.parent / source_path
@@ -83,6 +86,8 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
             if value is not None:
                 if not isinstance(value, str) or not value.strip() or "\x00" in value:
                     raise ValueError(f"solver_profiles.{key} must be a path string")
+                if key != "mpc_root" and has_token(value):
+                    continue
                 location = Path(value).expanduser()
                 profile[key] = str(location if location.is_absolute() else selected.parent / location)
     return VisualizerConfig(path=selected, ingest_directory=directory.resolve(), source=source,

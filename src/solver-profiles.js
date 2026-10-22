@@ -39,7 +39,7 @@ export function setupSolverProfiles({ liveContainer, editorContainer, beforeActi
   }
   function fillEditor() {
     const profile = catalog.profiles.find(item => item.id === editorId);
-    for (const key of Object.keys(fields)) fields[key].value = profile?.[key] || '';
+    for (const key of Object.keys(fields)) fields[key].value = profile?.templates?.[key] || profile?.[key] || '';
     checkout.apply(null); checkout.follow(fields.mpc_root.value.trim());
     editorDirty = false;
   }
