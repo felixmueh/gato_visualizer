@@ -62,8 +62,34 @@ the configurable path (`--mpc-root` / `TIAGO_MPC_ROOT`, default
 decides so.
 
 The producer-side replay exporter is the explicitly requested exception:
-`tiago_mpc/experiments/tools.py`. Keep one lightweight implementation there;
-visualizer tests can use it to create portable recording fixtures.
+`tiago_mpc/experiments/replay.py` (`export_replay`, `save_replay`; it moved
+there from `experiments/tools.py` with the 2026-10-22 `tiago_mpc` refactor).
+Keep one lightweight implementation there; visualizer tests can use it to
+create portable recording fixtures.
+
+### The tiago_mpc API the visualizer uses — Felix, 2026-10-22
+
+Supersedes the 2026-10-21 import list under "Visualizer timing ownership"
+(`reach_sim.py`, `reaching_config`). Reason: the `tiago_mpc` refactor removed
+`reach_sim.py`, the JSON configurations and their resolver; the visualizer
+follows the package API that experiments use, without shims.
+
+- **Compilation is explicit in `tiago_mpc`.** `find_binary(params)` is a
+  read-only lookup; `compile_binary(params, use_cache=True, jobs=…)` compiles on
+  the CPU (a no-op when cached); `Mpc(params, binary)` only loads and never
+  compiles. Live constructs `Mpc` from `find_binary(params)` and reports
+  "not compiled" otherwise. The visualizer has no module discovery or plant
+  naming of its own.
+- **Settings are `asdict(MpcParams)`** plus the visualizer's `plant` group
+  (simulator friction); `task` and `execution` are unchanged. No configuration
+  files are written.
+- **Live** steps `tiago_mpc.sim.SimPlant` in the simulation coordinator (a
+  fresh plant on Reset, anchor or rollback, on a simulation clock) and runs
+  `Mpc` in the visualizer's own solver child (ADR 002 unchanged). The
+  coordinator imports no compiled GATO module. Diagnostics come from
+  `mpc.step`, plan statistics from `Plan.stats`.
+- **Default `tiago_mpc` root is `../tiago_mpc`.** The frozen
+  `tiago_mpc_vis_baseline` worktree is no longer used.
 
 ### Trial changes to tiago_mpc — Felix, 2026-10-22
 
@@ -115,18 +141,19 @@ automatic jobs use a frozen displayed starting state. History playback follows
 recorded simulation timestamps at 1x, with a separate "Continue simulation at
 end" toggle. Imported Replay recordings remain independent of Live settings.
 
-Import `tiago_mpc` code unchanged instead of re-implementing it. With
-`examples/` on `sys.path`, `reach_sim.py` imports without running and provides
-the model preparation and joint-6 GPU signs (`runtime_urdf`), the model check
-(`check_model`), the task constants and the plant integrator (`rk4`).
-`reaching_config.load_configuration` resolves complete configuration files, so
-live settings become such a file. Re-implement only what cannot be imported,
-currently the episode loop in `reach_sim.main()`: controller construction, the
-signed limit bounds, and control and plant stepping. A conformance test runs the
-unchanged `reach_sim.py` and the visualizer's loop with the same configuration
-and requires identical GPU outputs, so drift in `tiago_mpc` fails loudly.
-The tracked `scripts/check_conformance.py` checks the synchronous adapter path;
-it does not qualify every production multirate/profile/inspection path.
+Import `tiago_mpc` code unchanged instead of re-implementing it. Which code
+that is changed on 2026-10-22; see "The tiago_mpc API the visualizer uses"
+above. Re-implement only what the visualizer's own clocks need: the multirate
+schedule and its zero-order hold of a plan's knot torques (as `tiago_mpc`'s
+`sample_knot`, except that it holds the last torque past the horizon).
+
+Conformance (Felix, 2026-10-22, replaces the comparison with `reach_sim.py`):
+the opt-in GPU script `scripts/check_conformance.py` runs
+`experiments.reach.reach` with `SimPlant` and `Mpc` in-process, then the
+visualizer's adapter, solver child and multirate session at the same rates,
+start, target and `MpcParams`, and compares states at every command tick,
+commands and plans, so drift in `tiago_mpc` fails loudly. It covers the
+default loss-free reach, not every profile, friction or inspection path.
 
 ## Model and coordinates
 
@@ -134,8 +161,10 @@ The canonical full model is `models/tiago_pro/tiago_pro.urdf` in `tiago_mpc`.
 Recorded plant states and portable NPZ predictions use native joint coordinates.
 Legacy packed solver predictions and raw inspection XU arrays use the GPU
 convention and require their recorded `signs` conversion, including joint 6.
-The solver child converts ordinary Live predictions to native coordinates
-before returning them. Do not sign-convert native data again.
+Live plans arrive native from `tiago_mpc`'s `Plan` (states and knot torques);
+the solver child applies the GPU signs only where it touches GATO directly
+(controller reset, installed bounds, inspection). Do not sign-convert native
+data again.
 
 All displayed points must share the full robot's root frame. Derive the
 reduced arm's torso-to-world transform from the full URDF rather than adding
@@ -155,6 +184,14 @@ The supplied arm friction, damping and armature values are questionable.
 Develop with them, keep coefficients configurable, and make plant/predictor
 coefficient mismatch easy to set up for robustness checks; identified values
 come later and matter for tuning, not for the design.
+
+**Friction defaults — Felix, 2026-10-22** (supersedes the both-on UI default
+and the stick/slip plant of `visualizer-trial/stick-slip-plant`): plant and
+predictor are loss-free by default, matching `tiago_mpc`'s friction opt-in.
+Simulator friction is `SimPlant`'s hard-sign Coulomb plus viscous law; there
+is no stick/slip plant. Predictor friction is a compiled variant whose tanh
+width is fixed at 0.03 rad/s and not settable, since each width is its own
+compiled plant.
 
 ## What the display claims
 
@@ -182,11 +219,16 @@ diagnostics, not experiment or timing evidence.
 
 Do not hide the defaults we rely on. A setting the visualizer can change is
 shown with the value actually in effect, including any default we choose or
-resolve (for example through the configuration resolver), never as an empty
+resolve (for example `tiago_mpc`'s `MpcParams` defaults), never as an empty
 field that silently means "whatever the code does". A value we cannot change,
 such as a solver-internal default, is simply used and needs no display or
 report. Display what was resolved and handed to the solver, not what was
 requested, so display and solver cannot disagree.
+
+Since the settings became `asdict(MpcParams)` (Felix, 2026-10-22), every
+`MpcParams` field is shown with its value, including `ee_frame`, `warmup`,
+`budget_s` and `warm_start`; values the visualizer cannot change appear as
+fixed choices.
 
 ## Host environment and GPU
 
@@ -196,18 +238,24 @@ packages into these environments. Source / Build settings may select a different
 prepared interpreter and persist that selection in the visualizer config.
 
 **Source/build update — Felix, 2026-10-21:** reuse the selected project's
-`.cache/gato` by default, with an explicit optional cache override (including
-this visualizer's existing `.cache/gato`). Do not copy compatible binaries or
-build duplicates. Validate actual current GATO model/frame/native/toolchain/
-Python ABI/GPU architecture identities and loadability; do not trust manifest.N
-as the complete built set. Source checks and normal settings/N changes never
-compile. Explicit Build selected N uses half the usable CPU cores and GATO's
-internal cache-write coordination; it does not pause Live or acquire GPU
-experiment locks. Only missing/stale selected modules build unless the user
-explicitly requests rebuilding. The user authorizes these selected project-cache
-writes; older private-cache-only/container-cache prohibitions are superseded.
-Keep compiler logs, receipts, temporary models and rebuild backups beneath this
-checkout's ignored `_expr_data/`. Do not modify upstream sources or packages.
+GATO cache by default, with an explicit optional cache override. Do not copy
+compatible binaries or build duplicates. Source checks and normal settings/N
+changes never compile. Explicit Build selected N uses half the usable CPU cores
+and GATO's internal cache-write coordination; it does not pause Live or acquire
+GPU experiment locks. The user authorizes these selected project-cache writes;
+older private-cache-only/container-cache prohibitions are superseded. Keep
+compiler logs and receipts beneath this checkout's ignored `_expr_data/`. Do
+not modify upstream sources or packages.
+
+**Build through tiago_mpc — Felix, 2026-10-22** (supersedes the visualizer's
+own identity validation and module discovery, and the rebuild backups): the
+default cache follows `tiago_mpc`'s convention, `<checkout>/.cache/host-gato`
+for host interpreters and `<checkout>/.cache/gato` for the container's `.venv`.
+The source probe asks `find_binary` for each offered N, with and without
+predictor friction; `tiago_mpc` and GATO own the cache keys. Build selected N
+calls `compile_binary` per N in a CPU-only subprocess of the selected
+interpreter. Rebuild passes `use_cache=False`, which unlinks the old module
+(processes that loaded it keep their mapping); there are no backups.
 
 Applying a source/cache/interpreter or newly built set fully restarts the backend
 and its numerical worker; never swap Python/CUDA imports in an existing worker.
@@ -244,8 +292,9 @@ not move or rewrite them for this change. The frozen master-thesis archive
 
 Unless Felix explicitly requests a particular plot, present experiments as:
 
-- A portable replay exported with main `tiago_mpc/experiments/tools.py` into
-  the shared ingest directory. Include actual native joint positions and sample
+- A portable replay exported with main `tiago_mpc/experiments/replay.py`
+  (`export_replay`, `save_replay`; formerly `experiments/tools.py`) into the
+  shared ingest directory. Include actual native joint positions and sample
   timestamps, the task reference, and saved predictions when available/useful.
   Include recorded velocity, actuator torque and historical limits when available; these are optional, so position-only exports remain simple. Do not invent motion or rerun a retained experiment just to populate the UI.
 - A clickable direct link per replay,
