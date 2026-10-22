@@ -1,4 +1,5 @@
 import { createFloatingDialog } from './floating-dialog.js';
+import { createSettingResets } from './setting-resets.js';
 
 export function parseBuildCounts(value) {
   const parts = value.trim().split(/[\s,]+/).filter(Boolean);
@@ -17,29 +18,81 @@ export async function sourceRequest(path, body, fetcher = fetch) {
   return result;
 }
 
-export function setupSourceSettings({ button, beforeApply = () => {}, reload = () => location.reload(), onPlottersReload = () => {}, onOpen = () => {}, request = sourceRequest } = {}) {
+/**
+ * Prefill interpreter/cache fields with the checkout's own resolved paths.
+ * A field still holding the checkout default follows a checkout change; an
+ * edited value stays as a visible override until its reset arrow restores the
+ * default. Overrides equal to the default are sent as null (follow checkout).
+ */
+export function trackCheckoutDefaults({ fields, resets, request = sourceRequest, group = 'checkout-defaults', label = '' }) {
+  const defaults = { python: null, cache: null };
+  let token = 0;
+  const names = { python: `${label}Python interpreter`, cache: `${label}binary cache` };
+  for (const key of Object.keys(defaults)) {
+    resets.bind({ key: `${group}.${key}`, name: names[key], input: fields[key], host: fields[key], group,
+      getValue: () => fields[key].value.trim(), getDefault: () => defaults[key] ?? fields[key].value.trim(),
+      reset: value => { fields[key].value = value; fields[key].dispatchEvent?.(new Event('input', { bubbles: true })); } });
+  }
+  function apply(next) {
+    for (const key of Object.keys(defaults)) {
+      const value = fields[key].value.trim();
+      if (!value || value === defaults[key]) fields[key].value = next?.[key] || '';
+      defaults[key] = next?.[key] || null;
+      const reset = resets.entries.find(entry => entry.key === `${group}.${key}`)?.button;
+      if (reset) reset.title = defaults[key] ? `Reset to checkout default ${defaults[key]}` : 'Reset to checkout default';
+    }
+    resets.update();
+  }
+  return {
+    defaults,
+    apply,
+    /** Load defaults for a checkout path; stale answers for an older path are ignored. */
+    async follow(root) {
+      const attempt = ++token;
+      if (!root) { apply(null); return; }
+      let next = null;
+      try { next = await request('/api/source/defaults', { mpc_root: root }); } catch { next = null; }
+      if (attempt === token) apply(next);
+    },
+    value(key) { const value = fields[key].value.trim(); return value && value !== defaults[key] ? value : null; },
+  };
+}
+
+const textField = (name, title, attrs = '') => `<div class="dialog-field"><label for="source-${name}">${title}</label><input id="source-${name}" name="${name}" type="text" spellcheck="false" autocomplete="off" ${attrs}></div>`;
+
+export function setupSourceSettings({ button, beforeApply = () => {}, reload = () => location.reload(), onPlottersReload = () => {}, onOpen = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
   const content = document.createElement('div'); content.className = 'source-settings-form';
-  content.innerHTML = `<h3>Simulator source</h3><label>tiago_mpc checkout<input name="mpc_root" type="text" spellcheck="false" autocomplete="off" required></label>
-    <label>Python interpreter override<input name="python" type="text" spellcheck="false" autocomplete="off" placeholder="Selected checkout environment"></label>
-    <label>Binary cache override<input name="cache" type="text" spellcheck="false" autocomplete="off" placeholder="Selected checkout/.cache/gato"></label>
-    <p class="source-identity"></p><div class="source-actions"><button type="button" data-action="inspect">Check source and binaries</button><button type="button" class="source-apply" data-action="apply">Apply and restart backend</button></div>
-    <hr><label>Python plotting directory<input name="plotters" type="text" spellcheck="false" autocomplete="off" placeholder="Selected checkout/_visualizer"></label>
-    <p class="plotters-default settings-note"></p><div class="source-actions"><button type="button" data-action="plotters">Reload plotters</button></div>
-    <p class="settings-note">Bundled plots are always available. Reload saves this directory and reloads Python plotters without restarting MPC. Clear it to follow the selected checkout.</p>
-    <hr><label>Additional knot counts N<input name="counts" type="text" inputmode="numeric" placeholder="e.g. 48 96"></label>
-    <label class="source-rebuild"><input name="prediction_friction" type="checkbox">Build smooth-friction predictor modules</label>
-    <p class="settings-note">Off builds loss-free predictors. On builds tanh Coulomb + viscous predictors for the selected N; the smoothing width remains a runtime setting.</p>
-    <label class="source-rebuild"><input name="rebuild" type="checkbox">Rebuild selected counts even when already compatible</label>
-    <div class="source-actions"><button type="button" data-action="build">Build selected N</button></div>
-    <p>Compilation uses half the available CPU cores and keeps Live running. Normal setting changes never compile. Apply starts a fresh Live session; saved replays and disk history remain.</p>
-    <p class="source-message" role="status" aria-live="polite"></p><pre class="source-build-log" hidden></pre>`;
-  const dialog = createFloatingDialog({ id: 'source-build-settings', title: 'Source / Build settings', content });
+  content.innerHTML = `<section class="dialog-section"><h3>Simulator source</h3>
+    ${textField('mpc_root', 'tiago_mpc checkout', 'required')}
+    ${textField('python', 'Python interpreter')}
+    ${textField('cache', 'Binary cache')}
+    <dl class="source-identity"></dl>
+    <div class="source-actions"><button type="button" data-action="inspect" title="Check the environment and binary identities; never compiles">Check source</button><button type="button" class="source-apply" data-action="apply" title="Restart the backend with this source. Starts a fresh Live session; saved replays and disk history remain.">Apply and restart backend</button></div></section>
+    <div class="solver-profile-slot"></div>
+    <section class="dialog-section"><h3>Binaries</h3>
+    <div class="dialog-field"><label for="source-counts">Additional knot counts N</label><input id="source-counts" name="counts" type="text" inputmode="numeric" placeholder="e.g. 48 96"></div>
+    <label class="source-rebuild" title="Off builds loss-free predictors. On builds tanh Coulomb + viscous predictors; the smoothing width remains a runtime setting."><input name="prediction_friction" type="checkbox">Smooth-friction predictor modules</label>
+    <label class="source-rebuild" title="Rebuild selected counts even when already compatible; prior binaries are kept under _expr_data/source-builds/"><input name="rebuild" type="checkbox">Rebuild compatible counts</label>
+    <div class="source-actions"><button type="button" data-action="build" title="Compiles with half the CPU cores and keeps Live running. Normal setting changes never compile.">Build selected N</button></div>
+    <pre class="source-build-log" hidden></pre></section>
+    <section class="dialog-section"><h3>Plotting</h3>
+    <div class="dialog-field" title="Bundled plots are always available. Reload saves this directory and reloads Python plotters without restarting MPC."><label for="source-plotters">Python plotting directory</label><input id="source-plotters" name="plotters" type="text" spellcheck="false" autocomplete="off"></div>
+    <div class="source-actions"><button type="button" data-action="plotters">Reload plotters</button></div></section>
+    <p class="source-message" role="status" aria-live="polite"></p>`;
+  const dialog = createFloatingDialog({ id: 'source-build-settings', title: 'Settings', content: null, storage,
+    tabs: [{ id: 'backend', label: 'Backend', title: 'Source, solver, binaries and plotting: computation and backend processes' }, { id: 'ui', label: 'UI', title: 'Presentation and display preferences' }] });
+  const backend = dialog.panels.backend || dialog.body, ui = dialog.panels.ui || dialog.body;
+  backend.append(content);
   const field = name => content.querySelector(`[name="${name}"]`);
   const action = name => content.querySelector(`[data-action="${name}"]`);
   const message = content.querySelector('.source-message'), identity = content.querySelector('.source-identity'), log = content.querySelector('.source-build-log');
+  const resets = createSettingResets({ document });
+  const checkout = trackCheckoutDefaults({ fields: { python: field('python'), cache: field('cache') }, resets, request, group: 'source' });
   let plottersInitialized = false, plottersDefault = null;
+  resets.bind({ key: 'source.plotters', name: 'Python plotting directory', input: field('plotters'), host: field('plotters'), group: 'source',
+    getValue: () => field('plotters').value.trim(), getDefault: () => plottersDefault ?? field('plotters').value.trim(), reset: value => { field('plotters').value = value; } });
   let initialized = false, busy = false, buildRunning = false, restarting = false, timer;
-  const selection = () => ({ mpc_root: field('mpc_root').value.trim(), python: field('python').value.trim() || null, cache: field('cache').value.trim() || null });
+  const selection = () => ({ mpc_root: field('mpc_root').value.trim(), python: checkout.value('python'), cache: checkout.value('cache') });
   function say(text, error = false) { message.textContent = text; message.dataset.error = String(error); }
   function controls() {
     action('inspect').disabled = busy || restarting;
@@ -48,29 +101,34 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
     action('build').disabled = busy || buildRunning || restarting;
   }
   function describe(result) {
-    const source = result.source || {}, resolved = result.selection || {};
-    identity.textContent = `${source.mpc_branch || 'Detached / unknown branch'} · ${source.mpc_commit || 'Unknown commit'}${source.mpc_dirty ? ' · modified checkout' : ''}\nPython: ${resolved.python || result.python || 'Unknown'}\nCache: ${resolved.cache || result.cache || 'Unknown'}\nCompatible N: ${(result.available_N || []).join(', ') || 'none'}`;
+    const source = result.source || {};
+    const rows = [['Revision', `${source.mpc_branch || 'detached'} · ${source.mpc_commit || 'unknown'}${source.mpc_dirty ? ' · modified' : ''}`], ['Compatible N', (result.available_N || []).join(', ') || 'none']];
+    identity.replaceChildren?.(...rows.flatMap(([term, value]) => { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = term; dd.textContent = value; return [dt, dd]; }));
+    identity.dataset.compatible = String(Boolean(result.compatible));
     if (!result.compatible) say(result.error || (result.errors || []).join('; ') || 'Selected source is incompatible.', true);
-    else say(result.available_N?.length ? 'Source checked. Apply reloads the model and compatible binaries.' : 'Source checked. No compatible binaries found; build selected N explicitly.');
+    else say(result.available_N?.length ? '' : 'No compatible binaries found; build selected N explicitly.');
   }
   async function refresh() {
+    if (!initialized) field('mpc_root').placeholder = 'Checking selected source…';
     try {
       const result = await request('/api/source');
       if (!initialized) {
         const selected = result.current?.selection || {};
         field('mpc_root').value = selected.mpc_root || result.current?.source?.mpc_root || '';
         // Show the effective paths so an existing explicit cache/environment
-        // override survives Apply. Changing checkout clears project defaults.
+        // override survives Apply; checkout defaults decide what counts as one.
         field('python').value = selected.python || '';
         field('cache').value = selected.cache || '';
-        describe(result.current || {}); initialized = true;
+        if (result.current?.defaults) checkout.apply(result.current.defaults); else await checkout.follow(field('mpc_root').value.trim());
+        describe(result.current || {}); initialized = true; field('mpc_root').placeholder = '';
       }
       if (!plottersInitialized) {
         const plots = await request('/api/plots/settings');
-        plottersDefault = plots.default_directory;
-        field('plotters').value = plots.override || plots.directory || '';
-        content.querySelector('.plotters-default').textContent = `Default: ${plots.default_directory || `${field('mpc_root').value}/_visualizer`}`;
-        plottersInitialized = true;
+        plottersDefault = plots.default_directory || null;
+        field('plotters').value = plots.override || plots.directory || plottersDefault || '';
+        const reset = resets.entries.find(entry => entry.key === 'source.plotters')?.button;
+        if (reset && plottersDefault) reset.title = `Reset to ${plottersDefault} (follows the applied checkout)`;
+        resets.update(); plottersInitialized = true;
       }
       const build = result.build;
       buildRunning = build?.state === 'running';
@@ -92,10 +150,10 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
     const directory = field('plotters').value.trim();
     await request('/api/plots/settings', { directory: directory && directory !== plottersDefault ? directory : null });
     const result = await request('/api/plots/reload', {});
-    say(result.errors?.length ? `Plotters reloaded with errors: ${result.errors.join('; ')}` : 'Plotters reloaded. MPC continues unchanged.');
+    say(result.errors?.length ? `Plotters reloaded with errors: ${result.errors.join('; ')}` : 'Plotters reloaded.');
     onPlottersReload();
   }));
-  action('inspect').addEventListener('click', () => run(async () => { say('Checking selected environment and binary identities…'); describe(await request('/api/source/inspect', selection())); }));
+  action('inspect').addEventListener('click', () => run(async () => { say('Checking selected environment and binary identities…'); describe(await request('/api/source/inspect', selection())); if (!message.textContent) say('Source checked.'); }));
   action('build').addEventListener('click', () => run(async () => {
     const counts = parseBuildCounts(field('counts').value);
     await request('/api/source/build', { selection: selection(), N: counts, rebuild: field('rebuild').checked, prediction_friction: field('prediction_friction').checked });
@@ -115,16 +173,7 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
     }
     restarting = false; throw new Error('Backend has not returned yet; it may be waiting for an active solve or GPU timing window. Check its terminal output, then reload this page.');
   }));
-  let priorRoot;
-  field('mpc_root').addEventListener('focus', () => { priorRoot = field('mpc_root').value.trim(); });
-  field('mpc_root').addEventListener('change', () => {
-    if (priorRoot && field('mpc_root').value.trim() !== priorRoot) {
-      if ([`${priorRoot}/venv-host/bin/python`, `${priorRoot}/.venv/bin/python`].includes(field('python').value)) field('python').value = '';
-      if (field('cache').value === `${priorRoot}/.cache/gato`) field('cache').value = '';
-      if (field('plotters').value === `${priorRoot}/_visualizer`) field('plotters').value = '';
-      content.querySelector('.plotters-default').textContent = `Default after Apply: ${field('mpc_root').value.trim()}/_visualizer`;
-    }
-  });
+  field('mpc_root').addEventListener('change', () => checkout.follow(field('mpc_root').value.trim()));
   button?.addEventListener('click', () => { dialog.open(); clearTimeout(timer); refresh(); onOpen(); });
-  return { dialog, refresh, get selection() { return selection(); } };
+  return { dialog, refresh, panels: { backend, ui, solverProfiles: content.querySelector('.solver-profile-slot') || backend }, get selection() { return selection(); } };
 }

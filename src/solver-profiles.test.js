@@ -11,6 +11,7 @@ const fixture = ({ beforeActivate = () => undefined, onSettled = () => {}, activ
     requests.push({ path, body: structuredClone(body) });
     if (path === '/api/solver-profiles' && body) { catalog.profiles = [...catalog.profiles.filter(item => item.id !== body.profile.id), body.profile]; return structuredClone(catalog); }
     if (path === '/api/solver-profiles') return structuredClone(catalog);
+    if (path === '/api/source/defaults') return { mpc_root: body.mpc_root, python: `${body.mpc_root}/venv-host/bin/python`, cache: `${body.mpc_root}/.cache/gato` };
     if (path === '/api/solver-profiles/activate') { catalog.switch = { state: 'switching', profile_id: body.profile_id }; return activate ? activate(body) : { state: 'switching' }; }
     throw new Error(`Unexpected request ${path}`);
   };
@@ -22,18 +23,21 @@ test('profile editor saves named choices separately from simulator Apply and act
   const anchor = { sim_time_s: 1.25, q: [0, 1, -.2], qd: [.1, 0, -.3] }; let captures = 0; const events = [];
   const h = fixture({ beforeActivate: () => { captures++; return structuredClone(anchor); }, onSettled: item => events.push(item) });
   await h.ui.refresh(); assert.equal(h.ui.select.value, 'main'); assert.equal(h.ui.fields.name.value, 'Main');
-  assert(h.ui.editor.querySelectorAll('p').some(item => item.textContent.includes('Simulator source: /simulator')));
+  // The active profile is shown by the select alone; no duplicate status text.
+  assert.equal(h.liveContainer.querySelector('p').textContent, '');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.ui.fields.cache.value, '/solvers/main/.cache/gato');
   const editorSelect = h.ui.editor.querySelector('select'); editorSelect.value = ''; await editorSelect.emit('change');
   h.ui.fields.name.value = 'New revision'; h.ui.fields.mpc_root.value = '/solvers/revision'; h.ui.fields.python.value = '/env/bin/python'; await h.ui.fields.name.emit('input');
   assert.equal(h.ui.activateButton.disabled, true); await h.ui.save.emit('click');
-  assert.deepEqual(h.requests.at(-1).body, { profile: { id: 'new-revision', name: 'New revision', mpc_root: '/solvers/revision', python: '/env/bin/python', cache: null } });
+  assert.deepEqual(h.requests.filter(item => item.path === '/api/solver-profiles' && item.body).at(-1).body, { profile: { id: 'new-revision', name: 'New revision', mpc_root: '/solvers/revision', python: '/env/bin/python', cache: null } });
   assert.equal(h.ui.snapshot.catalog.active_profile_id, 'main'); assert.equal(h.ui.activateButton.disabled, false);
   await h.ui.activateButton.emit('click'); assert.equal(captures, 1); assert.equal(h.ui.select.disabled, true); assert.equal(h.ui.save.disabled, true);
-  assert.deepEqual(h.requests.at(-1).body, { profile_id: 'new-revision', anchor });
+  assert.deepEqual(h.requests.filter(item => item.path.endsWith('/activate')).at(-1).body, { profile_id: 'new-revision', anchor });
   h.catalog.active_profile_id = 'new-revision'; h.catalog.switch = { state: 'idle' }; h.catalog.generation = 5;
   await h.ui.handleEvent({ type: 'solver_profile', state: 'active', profile_id: 'new-revision', generation: 5 });
   assert.equal(h.ui.select.value, 'new-revision'); assert.equal(h.ui.select.disabled, false); assert.equal(events.length, 1); assert.equal(h.timers.size, 0);
-  assert(h.requests.every(item => item.path.startsWith('/api/solver-profiles'))); h.ui.destroy();
+  assert(h.requests.every(item => item.path.startsWith('/api/solver-profiles') || item.path === '/api/source/defaults')); h.ui.destroy();
 });
 
 test('SSE completion before activation HTTP reply cannot re-lock UI or schedule stale polling', async () => {

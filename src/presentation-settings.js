@@ -15,15 +15,11 @@ export function validatePresentation(value) {
 // settings, replace a history generation, or request a preview.
 export function setupPresentationSettings({ container, onChange = () => {}, request = sourceRequest } = {}) {
   const content = document.createElement('section'); content.className = 'source-settings-form presentation-settings';
-  content.innerHTML = `<hr><h3>Presentation / Playback</h3>
-    <label>Reporting Hz<input name="report_hz" type="number" min="1" max="120" step="any" required></label>
-    <p class="settings-note">Batches per wall-clock second. Each batch retains every simulation sample; simulation, control and replanning rates stay independent.</p>
-    <label>Playback buffer (ms)<input name="buffer_ms" type="number" min="0" max="10000" step="any" required></label>
-    <p class="settings-note">Recorded simulation time to collect before starting or resuming a starved Live view. Fully downloaded recordings start immediately.</p>
-    <label class="source-rebuild"><input name="interpolate" type="checkbox">Interpolate motion</label>
-    <p class="settings-note">Off: display the recorded sample at the cursor. On: interpolate motion between recorded samples. Imported Replay playback is independent.</p>
-    <label class="source-rebuild"><input name="limit_tint" type="checkbox">Tint links near joint limits</label>
-    <p class="settings-note">Colours each link red as its joint nears a position, velocity or torque limit (from 80 % use). Hover a tinted link for the limit.</p>
+  content.innerHTML = `<h3>Presentation / Playback</h3>
+    <label title="Batches per wall-clock second. Each batch retains every simulation sample; simulation, control and replanning rates stay independent.">Reporting Hz<input name="report_hz" type="number" min="1" max="120" step="any" required></label>
+    <label title="Recorded simulation time to collect before starting or resuming a starved Live view. Fully downloaded recordings start immediately.">Playback buffer (ms)<input name="buffer_ms" type="number" min="0" max="10000" step="any" required></label>
+    <label class="source-rebuild" title="Off: display the recorded sample at the cursor. On: interpolate motion between recorded samples. Imported Replay playback is independent."><input name="interpolate" type="checkbox">Interpolate motion</label>
+    <label class="source-rebuild" title="Colours each link red as its joint nears a position, velocity or torque limit (from 80 % use). Hover a tinted link for the limit."><input name="limit_tint" type="checkbox">Tint links near joint limits</label>
     <div class="source-actions"><button type="button" data-action="save-presentation">Save presentation settings</button></div>
     <p class="presentation-message settings-note" role="status" aria-live="polite"></p>`;
   container.append(content);

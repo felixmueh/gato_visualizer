@@ -45,7 +45,9 @@ test('backend reload restores only supported typed settings and fresh defaults f
 
 function dialogDOM() {
   class Element {
-    constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = new Map(); this.attributes = {}; this.dataset = {}; this.style = {}; this.value = ''; this.checked = false; this.open = false; }
+    constructor(tag = 'div') { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = new Map(); this.attributes = {}; this.dataset = {}; this.style = {}; this.value = ''; this.checked = false; this.open = false; this.classes = new Set(); this.classList = { toggle: (name, force) => { const on = force ?? !this.classes.has(name); on ? this.classes.add(name) : this.classes.delete(name); return on; } }; }
+    replaceChildren(...nodes) { this.children = nodes; }
+    dispatchEvent(event) { this.emit(event.type); return true; }
     append(...nodes) { this.children.push(...nodes); }
     setAttribute(key, value) { this.attributes[key] = value; }
     addEventListener(type, fn) { const list = this.listeners.get(type) || []; list.push(fn); this.listeners.set(type, list); }
@@ -70,13 +72,14 @@ test('source window checks without compiling, streams explicit build status, the
   globalThis.clearTimeout = () => { poll = null; };
   const requests = [], button = new Element('button');
   let currentBuild = null, applied = false, beforeApply = 0, reloaded = 0;
-  const current = { compatible: true, selection: { mpc_root: '/source', python: '/source/.venv/bin/python', cache: '/source/.cache/gato' }, source: { mpc_branch: 'main', mpc_commit: 'abc', mpc_dirty: false }, available_N: [48] };
+  const current = { compatible: true, selection: { mpc_root: '/source', python: '/source/.venv/bin/python', cache: '/source/.cache/gato' }, defaults: { mpc_root: '/source', python: '/source/.venv/bin/python', cache: '/source/.cache/gato' }, source: { mpc_branch: 'main', mpc_commit: 'abc', mpc_dirty: false }, available_N: [48] };
   const request = async (path, body) => {
     requests.push({ path, body });
     if (path === '/api/source') return { current, build: currentBuild };
     if (path === '/api/plots/settings') return body === undefined ? { directory: '/source/_visualizer', default_directory: '/source/_visualizer', override: null } : { directory: body.directory };
     if (path === '/api/plots/reload') return { errors: [] };
     if (path === '/api/source/inspect') return current;
+    if (path === '/api/source/defaults') return { mpc_root: body.mpc_root, python: `${body.mpc_root}/venv-host/bin/python`, cache: `${body.mpc_root}/.cache/gato` };
     if (path === '/api/source/build') { currentBuild = { state: 'running', N: body.N, log: 'compiling current key', log_path: '/retained/build.log' }; return currentBuild; }
     if (path === '/api/source/apply') { applied = true; return { accepted: true }; }
     if (path === '/api/health') return { backend_id: applied ? 'new' : 'old' };
@@ -87,7 +90,8 @@ test('source window checks without compiling, streams explicit build status, the
     await button.emit('click'); await new Promise(resolve => setImmediate(resolve));
     assert.equal(ui.dialog.isOpen, true);
     assert.deepEqual(requests.map(item => item.path), ['/api/source', '/api/plots/settings']);
-    const form = ui.dialog.body.children[0], field = name => form.querySelector(`[name="${name}"]`), action = name => form.querySelector(`[data-action="${name}"]`);
+    assert.deepEqual(Object.keys(ui.dialog.panels), ['backend', 'ui']);
+    const form = ui.panels.backend.children[0], field = name => form.querySelector(`[name="${name}"]`), action = name => form.querySelector(`[data-action="${name}"]`);
     field('plotters').value = '/custom/plots';
     await action('plotters').emit('click');
     assert.deepEqual(requests.find(item => item.path === '/api/plots/settings' && item.body).body, { directory: '/custom/plots' });
@@ -108,11 +112,35 @@ test('source window checks without compiling, streams explicit build status, the
     assert.equal(action('apply').disabled, false);
     await action('apply').emit('click');
     assert.equal(beforeApply, 1); assert.equal(reloaded, 1);
-    assert.equal(requests.find(item => item.path.endsWith('/apply')).body.cache, '/source/.cache/gato');
+    // Prefilled checkout defaults are not overrides: Apply lets the checkout resolve them.
+    assert.equal(field('cache').value, '/source/.cache/gato');
+    assert.deepEqual(requests.find(item => item.path.endsWith('/apply')).body, { mpc_root: '/source', python: null, cache: null });
     await ui.dialog.element.emit('keydown', { key: 'Escape' });
     assert.equal(ui.dialog.isOpen, false);
     ui.dialog.destroy();
   } finally { Object.assign(globalThis, original); }
+});
+
+test('checkout defaults follow a checkout change until edited, and an edited override stays until reset', async () => {
+  const { trackCheckoutDefaults } = await import('./source-settings.js');
+  const { createSettingResets } = await import('./setting-resets.js');
+  const { document: doc } = dialogDOM();
+  const fields = { python: doc.createElement('input'), cache: doc.createElement('input') }, resets = createSettingResets({ document: doc });
+  const request = async (path, body) => ({ python: `${body.mpc_root}/venv-host/bin/python`, cache: `${body.mpc_root}/.cache/gato` });
+  const tracked = trackCheckoutDefaults({ fields, resets, request });
+  await tracked.follow('/a');
+  assert.equal(fields.python.value, '/a/venv-host/bin/python'); assert.equal(fields.cache.value, '/a/.cache/gato');
+  assert.equal(tracked.value('python'), null); assert.equal(resets.entries.every(entry => entry.button.disabled), true);
+  fields.cache.value = '/shared/cache'; await fields.cache.emit('input');
+  assert.equal(tracked.value('cache'), '/shared/cache'); assert.equal(resets.entries[1].button.disabled, false);
+  await tracked.follow('/b');
+  assert.equal(fields.python.value, '/b/venv-host/bin/python'); assert.equal(fields.cache.value, '/shared/cache');
+  await resets.entries[1].button.emit('click', { stopPropagation() {} });
+  assert.equal(fields.cache.value, '/b/.cache/gato'); assert.equal(tracked.value('cache'), null);
+  const slow = trackCheckoutDefaults({ fields: { python: doc.createElement('input'), cache: doc.createElement('input') }, resets: createSettingResets({ document: doc }),
+    request: async (_path, body) => { if (body.mpc_root === '/old') await new Promise(resolve => setTimeout(resolve, 5)); return { python: `${body.mpc_root}/py`, cache: `${body.mpc_root}/c` }; } });
+  const stale = slow.follow('/old'); await slow.follow('/new'); await stale;
+  assert.equal(slow.defaults.cache, '/new/c');
 });
 
 test('source and profile refresh preserve typed friction modes and valid predictor smoothing', () => {

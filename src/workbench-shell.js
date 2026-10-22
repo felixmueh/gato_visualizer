@@ -39,7 +39,7 @@ export function workbenchShell(icon) {
       <section class="viewport" id="viewport" aria-label="Interactive 3D robot workspace">
         <div class="viewport-top">
           <button id="left-sidebar-toggle" class="viewport-tool" aria-label="Hide settings sidebar" aria-expanded="true" aria-controls="left-sidebar" title="Toggle settings sidebar">${icon('panelLeft')}</button>
-          <div class="camera-controls"><button id="source-settings-open" title="Source / Build settings" aria-label="Source / Build settings">${icon('settings')}</button><button id="camera-home" title="Fit robot" aria-label="Fit robot">${icon('robot')}</button><button id="camera-arm" title="Fit trajectory" aria-label="Fit trajectory">${icon('focus')}</button><button id="right-sidebar-toggle" aria-label="Hide inspection sidebar" aria-expanded="true" aria-controls="right-sidebar" title="Toggle inspection sidebar">${icon('panelRight')}</button></div>
+          <div class="camera-controls"><button id="source-settings-open" title="Settings" aria-label="Settings">${icon('settings')}</button><button id="camera-home" title="Fit robot" aria-label="Fit robot">${icon('robot')}</button><button id="camera-arm" title="Fit trajectory" aria-label="Fit trajectory">${icon('focus')}</button><button id="right-sidebar-toggle" aria-label="Hide inspection sidebar" aria-expanded="true" aria-controls="right-sidebar" title="Toggle inspection sidebar">${icon('panelRight')}</button></div>
         </div>
         <p id="live-message" class="live-message workbench-toast" role="status" aria-live="polite"></p>
         <div id="limit-tint-tooltip" class="limit-tint-tooltip" role="tooltip" hidden></div>

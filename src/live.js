@@ -31,7 +31,7 @@ export function availableKnotCounts(schema, config) {
 
 export function initialLiveSettings(schema) {
   if (!Array.isArray(schema.available_N) || !schema.available_N.length) {
-    throw new Error('No knot counts are ready. Open Source / Build settings to select a compatible cache or build them. Replay is available.');
+    throw new Error('No knot counts are ready. Open Settings › Backend to select a compatible cache or build them. Replay is available.');
   }
   if (!schema.available_N.every((value) => Number.isInteger(value) && value > 1)) {
     throw new Error('The live knot-count list is invalid. Restart the visualizer server and reload this page.');
@@ -265,7 +265,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const commit = schema.source?.mpc_commit;
     $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · prebuilt N${schema.available_N_by_friction ? settings.config.friction?.prediction ? ' (predictor friction)' : ' (loss-free predictor)' : ''}: ${available.join(', ') || 'none'}`;
   }
-  const unavailableFrictionMessage = () => `N=${settings.config.N} is unavailable for this predictor friction mode. Choose an available N or open Source / Build settings to build it explicitly; select smooth-friction predictor modules when Predictor friction is on.`;
+  const unavailableFrictionMessage = () => `N=${settings.config.N} is unavailable for this predictor friction mode. Choose an available N or open Settings › Backend to build it explicitly; select smooth-friction predictor modules when Predictor friction is on.`;
   function change() {
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
     if (!dirty && !pending) frozenAnchor = displayedAnchor();

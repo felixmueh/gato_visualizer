@@ -1100,7 +1100,7 @@ test('predictor friction keeps unsupported N visible and blocks calculation unti
     assert.equal(live.settings.config.N, 64); assert.equal(live.settings.config.friction.prediction, true);
     assert.equal(field('N').children[2].disabled, true); assert.match(field('N').children[2].textContent, /unavailable/);
     assert.equal(h.$('live-play').disabled, true); assert.equal(h.$('live-preview').disabled, true);
-    assert.match(h.$('live-message').textContent, /N=64.*Source \/ Build.*explicitly/);
+    assert.match(h.$('live-message').textContent, /N=64.*Settings › Backend.*explicitly/);
     await new Promise(resolve => setTimeout(resolve, 380)); assert.equal(h.commands.length, before);
     field('N').value = '1'; field('N').emit('input');
     assert.equal(live.settings.config.N, 32); assert.equal(h.$('live-play').disabled, false);

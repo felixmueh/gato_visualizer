@@ -68,7 +68,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       if (definition.available === false) row.append(el('p', `Unavailable: ${(definition.missing || []).join(', ')}`, 'plot-message'));
       row.append(button('Add', () => { state.add(definition, catalogScope); invalidate(); }, `Add ${definition.title}`)); catalogList.append(row);
     }
-    if (!catalogList.children.length) catalogList.append(el('p', 'No matching plots. Reload plotters in Source / Build settings.', 'plot-message'));
+    if (!catalogList.children.length) catalogList.append(el('p', 'No matching plots. Reload plotters in Settings › Backend.', 'plot-message'));
   }
   const definitionFor = item => catalogs[item.context].find(definition => definition.id === item.plot_id);
   function eligible(id) { const item = state.instances.find(item => item.id === id), spec = specs.get(id); return getView().episodeClock !== false && item?.context === 'episode' && timelineEligible({ ...definitionFor(item), scope: 'episode' }, spec) && Boolean(spec?.x?.clock) && spec.x.clock === metadata.episode?.context?.clock; }

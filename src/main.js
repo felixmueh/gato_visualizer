@@ -81,8 +81,8 @@ const sourceSettings = setupSourceSettings({ button: $('source-settings-open'), 
   try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
 } });
 let limitTint, limitTintEnabled = true;
-const presentationSettings = setupPresentationSettings({ container: sourceSettings.dialog.body, onChange: settings => { live?.setPresentationSettings(settings); limitTintEnabled = settings.limit_tint; limitTint?.setEnabled(limitTintEnabled); } });
-solverProfiles = setupSolverProfiles({ liveContainer: $('live-panel'), editorContainer: sourceSettings.dialog.body,
+const presentationSettings = setupPresentationSettings({ container: sourceSettings.panels.ui, onChange: settings => { live?.setPresentationSettings(settings); limitTintEnabled = settings.limit_tint; limitTint?.setEnabled(limitTintEnabled); } });
+solverProfiles = setupSolverProfiles({ liveContainer: $('live-panel'), editorContainer: sourceSettings.panels.solverProfiles,
   beforeActivate: () => live?.beginSolverProfileSwitch(),
   onSettled: async item => { await live?.finishSolverProfileSwitch(item); plotInspection.refresh(); },
 });

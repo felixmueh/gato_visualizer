@@ -1,25 +1,34 @@
-import { sourceRequest } from './source-settings.js';
+import { sourceRequest, trackCheckoutDefaults } from './source-settings.js';
+import { createSettingResets } from './setting-resets.js';
 
 /** Named solver choices are independent of the simulator source and page life. */
 export function setupSolverProfiles({ liveContainer, editorContainer, beforeActivate = () => undefined, onSettled = () => {}, request = sourceRequest, schedule = setTimeout, unschedule = clearTimeout } = {}) {
   const doc = liveContainer.ownerDocument || document;
   const el = (tag, text) => { const node = doc.createElement(tag); if (text != null) node.textContent = text; return node; };
   const button = (text, action) => { const node = el('button', text); node.type = 'button'; node.addEventListener('click', action); return node; };
+  // Same label/select idiom as Task and Recording; status only for transitions and failures.
   const compact = el('div'); compact.className = 'solver-profile-selector';
-  const label = el('label', 'Solver '), select = el('select'), status = el('p'); status.className = 'settings-note'; status.setAttribute('role', 'status'); select.setAttribute('aria-label', 'Active solver profile'); label.append(select); compact.append(label, status);
+  const label = el('label', 'SOLVER'), wrap = el('div'), select = el('select'), status = el('p');
+  label.className = 'field-label'; label.htmlFor = 'live-solver-profile'; select.id = 'live-solver-profile'; wrap.className = 'select-wrap';
+  status.className = 'settings-note solver-profile-status'; status.setAttribute('role', 'status'); select.setAttribute('aria-label', 'Active solver profile'); wrap.append(select); compact.append(label, wrap, status);
   if (liveContainer.prepend) liveContainer.prepend(compact); else liveContainer.append(compact);
   const editor = el('section'); editor.className = 'source-settings-form solver-profile-editor';
-  editor.append(el('hr'), el('h3', 'Solver profiles'));
-  const simulator = el('p'); simulator.className = 'settings-note'; editor.append(simulator);
-  const editorLabel = el('label', 'Saved profile'), editorSelect = el('select'); editorSelect.setAttribute('aria-label', 'Edit solver profile'); editorLabel.append(editorSelect); editor.append(editorLabel);
+  editor.className += ' dialog-section'; editor.append(el('h3', 'Solver profiles'));
+  const editorRow = el('div'), editorLabel = el('label', 'Saved profile'), editorWrap = el('div'), editorSelect = el('select');
+  editorRow.className = 'dialog-field'; editorWrap.className = 'select-wrap'; editorSelect.id = 'solver-profile-edit'; editorLabel.htmlFor = editorSelect.id;
+  editorSelect.setAttribute('aria-label', 'Edit solver profile'); editorWrap.append(editorSelect); editorRow.append(editorLabel, editorWrap); editor.append(editorRow);
   const fields = {};
-  for (const [name, title, placeholder] of [['name', 'Profile name', 'e.g. Current main'], ['mpc_root', 'Solver tiago_mpc checkout', 'Absolute checkout path'], ['python', 'Solver Python override', 'Selected checkout environment'], ['cache', 'Solver binary cache override', 'Selected checkout/.cache/gato']]) {
-    const row = el('label', title), input = el('input'); input.type = 'text'; input.name = `profile_${name}`; input.spellcheck = false; input.placeholder = placeholder;
-    input.addEventListener('input', () => { editorDirty = true; controls(); }); row.append(input); editor.append(row); fields[name] = input;
+  for (const [name, title, placeholder] of [['name', 'Profile name', 'e.g. Current main'], ['mpc_root', 'tiago_mpc checkout', 'Absolute checkout path'], ['python', 'Python interpreter', ''], ['cache', 'Binary cache', '']]) {
+    const row = el('div'), rowLabel = el('label', title), input = el('input'); row.className = 'dialog-field';
+    input.type = 'text'; input.name = `profile_${name}`; input.id = `solver-profile-${name}`; rowLabel.htmlFor = input.id; input.spellcheck = false; input.autocomplete = 'off'; if (placeholder) input.placeholder = placeholder;
+    input.addEventListener('input', () => { editorDirty = true; controls(); }); row.append(rowLabel, input); editor.append(row); fields[name] = input;
   }
+  const resets = createSettingResets({ document: doc });
+  const checkout = trackCheckoutDefaults({ fields, resets, request, group: 'solver-profile', label: 'solver ' });
+  fields.mpc_root.addEventListener('change', () => checkout.follow(fields.mpc_root.value.trim()));
   const actions = el('div'); actions.className = 'source-actions';
   const save = button('Save profile', saveProfile), activateButton = button('Use this solver', () => activate(editorId)); actions.append(save, activateButton); editor.append(actions);
-  const note = el('p'); note.className = 'settings-note'; note.textContent = 'Switching pauses calculation and uses the displayed native robot state. The simulator, replay library and page stay open. Source Apply above restarts the full simulator.'; editor.append(note);
+  activateButton.title = 'Pauses calculation and continues from the displayed native robot state; simulator, replay library and page stay open';
   const feedback = el('p'); feedback.className = 'source-message'; feedback.setAttribute('role', 'status'); feedback.setAttribute('aria-live', 'polite'); editor.append(feedback); editorContainer.append(editor);
   let catalog = { profiles: [], active_profile_id: null, switch: { state: 'idle' } }, editorId = null, editorDirty = false, saving = false, switching = false, timer, epoch = 0, settledKey, settling;
   function say(text, error = false) { status.textContent = text; feedback.textContent = text; feedback.dataset.error = String(error); }
@@ -31,6 +40,7 @@ export function setupSolverProfiles({ liveContainer, editorContainer, beforeActi
   function fillEditor() {
     const profile = catalog.profiles.find(item => item.id === editorId);
     for (const key of Object.keys(fields)) fields[key].value = profile?.[key] || '';
+    checkout.apply(null); checkout.follow(fields.mpc_root.value.trim());
     editorDirty = false;
   }
   function render() {
@@ -38,8 +48,6 @@ export function setupSolverProfiles({ liveContainer, editorContainer, beforeActi
     select.value = catalog.active_profile_id || '';
     if (editorId == null) { editorId = catalog.active_profile_id || ''; fillEditor(); }
     editorSelect.replaceChildren(...[{ id: '', name: 'New profile…' }, ...catalog.profiles].map(profile => { const option = el('option', profile.name); option.value = profile.id; return option; })); editorSelect.value = editorId;
-    const source = catalog.simulator_source || {};
-    simulator.textContent = `Simulator source: ${source.mpc_root || 'unavailable'}${source.python ? ` · ${source.python}` : ''}${source.cache ? ` · cache ${source.cache}` : ''}`;
     const active = catalog.profiles.find(item => item.id === catalog.active_profile_id);
     select.title = active ? `Solver: ${active.mpc_root}${active.python ? ` · ${active.python}` : ''}` : 'Select a prepared solver profile';
     controls();
@@ -54,7 +62,8 @@ export function setupSolverProfiles({ liveContainer, editorContainer, beforeActi
       say('Switching solver · calculation paused…'); controls(); poll();
     } else if (!switching) {
       const active = catalog.profiles.find(profile => profile.id === catalog.active_profile_id);
-      say(catalog.switch?.state === 'failed' ? `Solver switch failed: ${catalog.switch.error || 'No solver is active.'}` : active ? `Active solver: ${active.name}` : 'No solver is active. Select a prepared profile.', catalog.switch?.state === 'failed');
+      // The select already names the active solver; status text only for failures or none.
+      say(catalog.switch?.state === 'failed' ? `Solver switch failed: ${catalog.switch.error || 'No solver is active.'}` : active ? '' : 'No solver is active. Select a prepared profile.', catalog.switch?.state === 'failed');
     }
     return catalog;
   }
@@ -75,7 +84,7 @@ export function setupSolverProfiles({ liveContainer, editorContainer, beforeActi
     if (!editorId) { const base = id; let suffix = 2; while (catalog.profiles.some(item => item.id === id)) id = `${base}-${suffix++}`; }
     saving = true; controls();
     try {
-      catalog = await request('/api/solver-profiles', { profile: { id, name, mpc_root, python: fields.python.value.trim() || null, cache: fields.cache.value.trim() || null } });
+      catalog = await request('/api/solver-profiles', { profile: { id, name, mpc_root, python: checkout.value('python'), cache: checkout.value('cache') } });
       editorId = id; editorDirty = false; render(); fillEditor(); say('Solver profile saved. Select Use this solver to activate it.');
     } catch (error) { say(error.message, true); }
     finally { saving = false; controls(); }
