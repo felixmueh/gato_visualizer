@@ -22,6 +22,19 @@ SELECTION = dict(mpc_root='/prepared/source', python=sys.executable, cache='/pre
 
 
 class SourceSettingsTests(unittest.TestCase):
+    def test_checkout_defaults_follow_resolution_order_and_reject_malformed_requests(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            service = SourceSettings(SELECTION, root / 'config.json', Mock(), probe=lambda _: dict(compatible=True))
+            (root / '.venv/bin').mkdir(parents=True); (root / '.venv/bin/python').symlink_to(sys.executable)
+            self.assertEqual(service.defaults(dict(mpc_root=str(root))),
+                             dict(mpc_root=str(root.resolve()), python=str(root.resolve() / '.venv/bin/python'), cache=str(root.resolve() / '.cache/gato')))
+            (root / 'venv-host/bin').mkdir(parents=True); (root / 'venv-host/bin/python').symlink_to(sys.executable)
+            self.assertEqual(service.defaults(dict(mpc_root=str(root)))['python'], str(root.resolve() / 'venv-host/bin/python'))
+            for body in (None, {}, dict(mpc_root=' '), dict(mpc_root=str(root), python='x')):
+                with self.assertRaises(ValueError):
+                    service.defaults(body)
+
     def test_persistent_apply_validates_before_write_and_defers_restart_until_response(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'viewer.json'
@@ -137,6 +150,7 @@ class SourceHTTPTests(unittest.TestCase):
         self.sources = SimpleNamespace(status=lambda: dict(current=dict(compatible=True, available_N=[48])),
             inspect=lambda body: dict(compatible=False, error='wrong grasp frame'),
             build=lambda body: dict(state='running', N=body['N']), apply=apply,
+            defaults=lambda body: dict(mpc_root=body['mpc_root'], python=f"{body['mpc_root']}/venv-host/bin/python", cache=f"{body['mpc_root']}/.cache/gato"),
             finish_apply=lambda: self.events.append(('restart', None)))
         self.server = make_server(dict(trajectories=[]), b'<robot/>', {}, port=0, sources=self.sources)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
@@ -156,6 +170,7 @@ class SourceHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/api/source')['current']['available_N'], [48])
         self.assertEqual(self.request('/api/source/inspect', SELECTION)['error'], 'wrong grasp frame')
         self.assertEqual(self.request('/api/source/build', dict(N=[96]))['state'], 'running')
+        self.assertEqual(self.request('/api/source/defaults', dict(mpc_root='/other'))['cache'], '/other/.cache/gato')
         self.assertEqual(self.events, [])
         self.assertTrue(self.request('/api/source/apply', SELECTION)['accepted'])
         deadline = time.monotonic()+2

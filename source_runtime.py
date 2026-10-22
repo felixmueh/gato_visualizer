@@ -20,21 +20,26 @@ ROOT = Path(__file__).resolve().parent
 PROBE_SCRIPT = ROOT / "scripts/source_probe.py"
 
 
+def checkout_defaults(mpc_root):
+    """Interpreter and cache a checkout uses without overrides; never raises for missing paths."""
+    root = Path(mpc_root).expanduser().resolve()
+    candidates = [root / name / "bin/python" for name in ("venv-host", ".venv")]
+    interpreter = next((p for p in candidates if p.is_file() and os.access(p, os.X_OK)), candidates[0])
+    return dict(mpc_root=str(root), python=str(interpreter), cache=str(root / ".cache/gato"))
+
+
 def resolve_selection(mpc_root, python=None, cache=None):
     root = Path(mpc_root).expanduser().resolve()
     if not (root / "examples/reach_sim.py").is_file():
         raise ValueError(f"Not a tiago_mpc checkout: {root} (missing examples/reach_sim.py)")
     if not (root / "external/gato/python/gato/_cache.py").is_file():
         raise ValueError(f"Selected checkout lacks GATO cache APIs: {root / 'external/gato'}")
-    if python:
-        interpreter = Path(os.path.abspath(Path(python).expanduser()))
-    else:
-        candidates = [root / name / "bin/python" for name in ("venv-host", ".venv")]
-        interpreter = next((p for p in candidates if p.is_file() and os.access(p, os.X_OK)), candidates[0])
+    defaults = checkout_defaults(root)
+    interpreter = Path(os.path.abspath(Path(python).expanduser())) if python else Path(defaults["python"])
     # Keep the virtualenv executable path: resolving the symlink loses its environment.
     if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
         raise ValueError(f"Selected Python is not executable: {interpreter}")
-    directory = Path(cache).expanduser().resolve() if cache else root / ".cache/gato"
+    directory = Path(cache).expanduser().resolve() if cache else Path(defaults["cache"])
     if directory.exists() and not directory.is_dir():
         raise ValueError(f"GATO cache is not a directory: {directory}")
     return dict(mpc_root=str(root), python=str(interpreter), cache=str(directory))

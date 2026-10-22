@@ -62,10 +62,20 @@ class SourceSettings:
         selection = selection_from_request(body) if body is not None else self.selection
         result = self.probe(selection)
         result.setdefault("selection", selection)
+        from source_runtime import checkout_defaults
+        result.setdefault("defaults", checkout_defaults(selection["mpc_root"]))
         if body is None:
             with self.lock:
                 self.current = result
         return result
+
+    def defaults(self, body):
+        """Checkout default interpreter/cache, so the UI can show overrides against them."""
+        from source_runtime import checkout_defaults
+        if not isinstance(body, dict) or set(body) != {"mpc_root"} or not isinstance(body["mpc_root"], str) \
+                or not body["mpc_root"].strip():
+            raise ValueError("Defaults require a source checkout path")
+        return checkout_defaults(body["mpc_root"].strip())
 
     def status(self):
         with self.lock:

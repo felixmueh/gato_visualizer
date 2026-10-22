@@ -586,11 +586,11 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                     raise ValueError("Expected a JSON source command under 64 KiB")
                 body = json.loads(self.rfile.read(length))
                 action = urlsplit(self.path).path.removeprefix("/api/source/")
-                methods = {"inspect": sources.inspect, "build": sources.build, "apply": sources.apply}
-                if action not in methods:
+                method = getattr(sources, action, None) if action in ("inspect", "build", "apply", "defaults") else None
+                if method is None:
                     self.send_error(404)
                     return
-                result, status = methods[action](body), 200
+                result, status = method(body), 200
             except (ValueError, TypeError, OSError, RuntimeError) as exc:
                 result, status = dict(error=str(exc)), 400
             self.send_payload(json.dumps(result, allow_nan=False).encode(),
