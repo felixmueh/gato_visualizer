@@ -1,8 +1,10 @@
 # Architecture and continuation guide
 
 The application is a local simulation and inspection diagnostic. It imports
-`tiago_mpc` physics/controller code unchanged and owns browser interaction,
-execution scheduling and retained history. Read [AGENTS.md](../AGENTS.md) for
+`tiago_mpc`'s model (`tiago_mpc.tiago`), MPC (`tiago_mpc.mpc`: `MpcParams`,
+`find_binary`, `compile_binary`, `Mpc`) and plant (`tiago_mpc.sim.SimPlant`)
+unchanged and owns browser interaction, execution scheduling and retained
+history. Read [AGENTS.md](../AGENTS.md) for
 project constraints and [the glossary](../UBIQUITOUS_LANGUAGE.md) for domain terms.
 [README.md](../README.md) contains startup, prepared-environment/source selection,
 cache/build policy and user workflows.
@@ -21,8 +23,9 @@ flowchart LR
 `server.py` wires the services. The HTTP parent drains numerical output and
 retains every committed record before publishing latest-value notices. It also
 renders FK for those records; it owns no live controller/CUDA objects. The
-simulation coordinator owns native plant state/time, integration and GPU leases.
-Its persistent solver child owns the upstream controller and private warm state
+simulation coordinator owns native plant state/time, the `SimPlant` it steps and
+the GPU leases; it imports no compiled GATO module. Its persistent solver child
+holds `tiago_mpc`'s `Mpc(params, find_binary(params))` and its private warm state,
 using the selected profile's interpreter. Normal solves reuse that child.
 CPU plotting loads committed sources independently. Explicit Run again pauses
 Live at a committed boundary and uses a separate temporary solver child; only
@@ -35,9 +38,9 @@ one GPU computation runs at a time. Live's private controller remains idle.
 | HTTP, scene/model/FK, service wiring | [server.py](../server.py) | [Live payloads](live-api.md) |
 | History, generations, SSE publication | [execution_bridge.py](../execution_bridge.py), [execution_worker.py](../execution_worker.py) | [Execution/history](execution-api.md), [reporting](presentation.md) |
 | Simulation clocks, held torque, interval costs | [execution_session.py](../execution_session.py), [solver_adapter.py](../solver_adapter.py) | [Execution](execution-api.md) |
-| Upstream imports, config, reference geometry, synchronous adapter | [live_mpc.py](../live_mpc.py) | [Live settings/tasks](live-api.md) |
+| `tiago_mpc` import, settings schema and validation, reference geometry, GPU locks | [live_mpc.py](../live_mpc.py) | [Live settings/tasks](live-api.md) |
 | Solver RPC, native conversion, leases, child lifetime | [solver_process.py](../solver_process.py), [solver_worker.py](../solver_worker.py), [solver_lifecycle.py](../solver_lifecycle.py) | [Solver profiles](solver-profiles.md) |
-| Source/interpreter/cache discovery and explicit builds | [source_runtime.py](../source_runtime.py), [source_settings.py](../source_settings.py), [visualizer_config.py](../visualizer_config.py), [scripts/source_probe.py](../scripts/source_probe.py) | [README source setup](../README.md#run) |
+| Source/interpreter/cache selection, source probe (`find_binary`) and explicit builds (`compile_binary`) | [source_runtime.py](../source_runtime.py), [source_settings.py](../source_settings.py), [visualizer_config.py](../visualizer_config.py), [scripts/source_probe.py](../scripts/source_probe.py) | [README source setup](../README.md#run) |
 | Run again, exact captured problem, binary SQP trace | [solve_inspections.py](../solve_inspections.py), [inspection_problem.py](../inspection_problem.py), [inspection_worker.py](../inspection_worker.py), [inspection_artifacts.py](../inspection_artifacts.py) | [Inspection](inspection.md) |
 | Plot jobs, source views, standard plots | [plot_service.py](../plot_service.py), [plot_sources.py](../plot_sources.py), [gato_visualizer/plotting/](../gato_visualizer/plotting), [plotters/standard.py](../plotters/standard.py) | [Plot API](plot-api.md), [author workflow](plot-authoring.md) |
 | NPZ validation, watched library, uploads | [replay_format.py](../replay_format.py), [replay_library.py](../replay_library.py) | [Replay/export cookbook](replay-format.md) |
@@ -45,9 +48,9 @@ one GPU computation runs at a time. Live's private controller remains idle.
 | Browser Live history, playback, settings | [src/live.js](../src/live.js), [src/live-history.js](../src/live-history.js), [src/live-execution.js](../src/live-execution.js), [src/presentation-settings.js](../src/presentation-settings.js) | [Execution](execution-api.md), [presentation](presentation.md) |
 | Episode/Solve selection and shared plot rendering | [src/plot-inspection.js](../src/plot-inspection.js), [src/plot-state.js](../src/plot-state.js), [src/solve-run.js](../src/solve-run.js), [src/plot-renderer.js](../src/plot-renderer.js) | [Inspection](inspection.md), [plotting](plotting.md) |
 
-`MPCAdapter.solve/advance` retains the synchronous compatibility path used by
-`scripts/check_conformance.py`; production Live uses `SimulatorAdapter` and
-`MultirateSession`. `LatestPresentation` and `src/live-playout.js` retain older
+Production Live uses `SimulatorAdapter`, the solver child and
+`MultirateSession`; `scripts/check_conformance.py` compares exactly that path
+with `tiago_mpc`'s `experiments.reach.reach`. `LatestPresentation` and `src/live-playout.js` retain older
 presentation helpers; the current motion clock is `createHistoryClock` in
 `src/live-execution.js`, driven by fetched history. Do not infer production
 ownership or playback timing from an old helper alone.
@@ -63,12 +66,17 @@ slows wall-clock progress; it does not advance plant time. Live defaults to
 Changing these presentation preferences does not reset settings, generation or
 controller state. See [presentation.md](presentation.md) for packet/page limits.
 
-Native q/v/u crosses the ordinary solver RPC boundary; joint-6 conversion
-happens once inside the solver boundary. Packed stages contain N−1 q/v/u knots
-and one terminal q/v knot, with no terminal torque. Legacy raw XU and inspection
-arrays retain their own signs; portable NPZ already contains native coordinates.
-All displayed positions use the full robot root frame derived from the URDF.
-The simulator’s independent friction switch selects the source's `plant_step` (stick/slip Coulomb with implicit viscous damping where available, else hard-sign/viscous `plant_rk4`) or loss-free `reach_sim.rk4`; predictor/profile changes do not replace the plant. The separate predictor switch selects a qualified smooth-friction module with runtime tanh width. See [friction](friction.md) for defaults and provenance.
+Only native coordinates cross the ordinary solver RPC boundary: a plan is
+`tiago_mpc`'s `Plan`, N knot states (q, qd) and N−1 knot torques, with no
+terminal torque. `Mpc` applies the joint-6 GPU signs; the child applies them
+itself only for controller reset, installed bound rows and inspection. Legacy
+raw XU and inspection arrays retain their own signs; portable NPZ already
+contains native coordinates. All displayed positions use the full robot root
+frame derived from the URDF. The simulator friction switch (`plant.friction`)
+gives `SimPlant` the URDF friction (hard-sign Coulomb plus viscous) or none;
+predictor/profile changes do not change the plant. Predictor friction
+(`friction` in `MpcParams`) selects a compiled variant with a fixed tanh width.
+Both default to loss-free. See [friction](friction.md).
 
 A generation identifies active history, a settings version identifies the
 accepted settings, and cancellation revision rejects obsolete work. Changing
@@ -80,8 +88,9 @@ isolated child and supplies no partial checkpoint. Ordinary Pause is cooperative
 
 Saved source/interpreter/cache selection controls imports. Source Apply restarts
 the backend; profile activation replaces only the solver and starts a new segment.
-Neither ordinary settings nor profile activation compiles. Build selected N is
-the explicit build path, reusing the selected project cache. Logs, binary traces
+Neither ordinary settings nor profile activation compiles: `Mpc(params, binary)`
+only loads. Build selected N is the explicit build path; it calls `compile_binary`
+into the selected project cache. Logs, binary traces
 and local history belong in this checkout's ignored `_expr_data/`; the shared
 ingest directory contains portable replay handoffs only. See AGENTS for storage
 exceptions and preservation rules.
@@ -108,11 +117,12 @@ python_bin="$(python3 scripts/launch_python.py)"
 | Replay validation and export compatibility | `"$python_bin" -m unittest discover -s tests -p 'test_replays.py' -v` |
 | Browser logic and bundle | `npm test`; `npm run build` (or `node --test src/live-execution.test.js src/presentation-settings.test.js` for focused playback checks) |
 
-The full CPU suite is `"$python_bin" -m unittest discover -s tests -v`. Model and
-replay tests expect a prepared sibling `../tiago_mpc_vis_baseline` and its exporter; fake
-adapters exercise process/scheduler behavior without proving native solver
-numerics. The opt-in [GPU conformance command](../README.md#development) covers
-the synchronous adapter only. Native/profile qualifications are bounded by the
+The full CPU suite is `"$python_bin" -m unittest discover -s tests -v`. Tests
+that need `tiago_mpc` take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc`) and
+need no compiled module; fake adapters exercise process/scheduler behavior
+without proving native solver numerics. The opt-in
+[GPU conformance command](../README.md#development) compares the production Live
+loop with `tiago_mpc`'s own reach for the default loss-free reach only. Native/profile qualifications are bounded by the
 actual source, model and horizon checked; no CPU suite establishes all-horizon
 GPU equivalence or performance. Retain new native evidence under `_expr_data/`
 and coordinate an idle GPU window when such work is authorized and relevant.
