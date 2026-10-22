@@ -62,6 +62,8 @@ browser. **Backend** holds what affects computation or backend processes: the
 simulator source, solver profiles, binary builds and the Python plotting
 directory. **UI** holds presentation preferences (reporting, playback buffer,
 interpolation, joint-limit tint); new presentation settings appear there.
+They have no Save button: each change applies at once and is saved automatically.
+Invalid numbers are marked (the tooltip gives the reason) and neither applied nor saved.
 
 In **Backend**, enter a `tiago_mpc` checkout or worktree path; Check source shows
 its branch, commit/dirty state and compatible knot counts. The Python interpreter
