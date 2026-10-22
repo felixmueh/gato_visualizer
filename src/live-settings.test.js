@@ -1037,20 +1037,25 @@ test('complete metadata cannot release a short buffer before remaining history p
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
-function frictionSchema(h, { N = 32, on = [32], prediction = true } = {}) {
+const PREDICTOR_FRICTION = { coulomb_nm: [2.1, 2.6, 2, 1.95, .8, 1.1, .3], viscous_nm_s_per_rad: [3.35, 4.15, 2.45, 2.25, .5, .3, .15], width_rad_s: .03 };
+
+// config.friction is MpcParams' predictor friction (null: loss-free); config.plant.friction the simulator's.
+function frictionSchema(h, { N = 32, on = [32], prediction = false } = {}) {
   h.schema.defaults.config.N = N;
-  h.schema.defaults.config.friction = { simulation: true, prediction, predictor_smoothing_rad_s: .03 };
+  h.schema.defaults.config.friction = prediction ? structuredClone(PREDICTOR_FRICTION) : null;
+  h.schema.defaults.config.plant = { friction: false };
   h.schema.available_N_by_friction = { off: [16, 32, 64], on };
-  h.schema.friction = { coefficients: { coulomb_nm: [2.1, 2.6, 2, 1.95, .8, 1.1, .3], viscous_nm_s_per_rad: [3.35, 4.15, 2.45, 2.25, .5, .3, .15], provenance: 'Canonical right-arm source' } };
+  h.schema.friction = { coefficients: { coulomb_nm: PREDICTOR_FRICTION.coulomb_nm, viscous_nm_s_per_rad: PREDICTOR_FRICTION.viscous_nm_s_per_rad },
+    simulation_law: 'hard-sign Coulomb + viscous (RK4)', prediction_law: 'tanh Coulomb (width 0.03 rad/s) + viscous' };
   h.schema.parameters.push(
-    { path: 'friction.simulation', label: 'Simulator friction', kind: 'bool', group: 'Friction' },
-    { path: 'friction.prediction', label: 'Predictor friction', kind: 'bool', group: 'Friction' },
-    { path: 'friction.predictor_smoothing_rad_s', label: 'Predictor smoothing (rad/s)', kind: 'float', min: .001, max: 1, group: 'Friction' },
+    { path: 'friction', label: 'Predictor friction', kind: 'choice', group: 'Friction',
+      choices: [{ value: null, label: 'Loss-free' }, { value: structuredClone(PREDICTOR_FRICTION), label: 'URDF Coulomb + viscous, tanh 0.03 rad/s' }] },
+    { path: 'plant.friction', label: 'Simulator friction', kind: 'bool', group: 'Friction' },
   );
   return path => h.created.filter(el => el.dataset.path === path).at(-1);
 }
 
-test('friction controls start both enabled and submit independent numerical modes from the frozen native anchor', async () => {
+test('friction controls start loss-free and submit independent simulator and predictor friction from the frozen native anchor', async () => {
   const h = harness(), field = frictionSchema(h);
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
@@ -1058,9 +1063,9 @@ test('friction controls start both enabled and submit independent numerical mode
     const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
     await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
-    assert.equal(field('friction.simulation').checked, true);
-    assert.equal(field('friction.prediction').checked, true);
-    assert.equal(field('friction.predictor_smoothing_rad_s').value, '0.03');
+    assert.equal(field('plant.friction').checked, false);
+    assert.equal(field('friction').value, '0');
+    assert.deepEqual(field('friction').children.map(item => item.textContent), ['Loss-free', 'URDF Coulomb + viscous, tanh 0.03 rad/s']);
     assert(h.created.some(el => el.textContent?.includes('hard-sign Coulomb + viscous')));
     assert(h.created.some(el => el.textContent === 'Coulomb (Nm), joints 1–7: 2.1, 2.6, 2, 1.95, 0.8, 1.1, 0.3'));
     assert(h.created.some(el => el.textContent === 'Viscous (Nm s/rad), joints 1–7: 3.35, 4.15, 2.45, 2.25, 0.5, 0.3, 0.15'));
@@ -1068,21 +1073,21 @@ test('friction controls start both enabled and submit independent numerical mode
       q: Array(7).fill(time), qd: Array(7).fill(-.2), ee_xyz: [time, 0, 1] });
     h.$('live-history').value = '1'; h.$('live-history').emit('input');
     const anchor = structuredClone(live.displayedState), presentation = live.presentationSettings;
-    field('friction.prediction').checked = false; field('friction.prediction').emit('input');
+    field('plant.friction').checked = true; field('plant.friction').emit('input');
     assert.equal(live.playing, false);
     source.emit({ type: 'state', settings_version: 1, sim_time_s: 1.3, q: Array(7).fill(3), qd: Array(7).fill(2), ee_xyz: [3, 0, 1] });
     await new Promise(resolve => setTimeout(resolve, 380));
     const simulatorOnly = h.commands.at(-1);
     assert.equal(simulatorOnly.type, 'set_settings');
-    assert.deepEqual(simulatorOnly.config.friction, { simulation: true, prediction: false, predictor_smoothing_rad_s: .03 });
+    assert.deepEqual(simulatorOnly.config.plant, { friction: true }); assert.equal(simulatorOnly.config.friction, null);
     assert.deepEqual(simulatorOnly.anchor, { sim_time_s: 1, q: anchor.q, qd: anchor.qd });
     assert.equal(simulatorOnly.reset, undefined); assert.deepEqual(live.presentationSettings, presentation);
     source.emit(plan(2, 2));
-    field('friction.prediction').checked = true; field('friction.prediction').emit('input');
-    field('friction.simulation').checked = false; field('friction.simulation').emit('input');
-    field('friction.predictor_smoothing_rad_s').value = '.05'; field('friction.predictor_smoothing_rad_s').emit('input');
+    field('friction').value = '1'; field('friction').emit('input');
+    field('plant.friction').checked = false; field('plant.friction').emit('input');
     await new Promise(resolve => setTimeout(resolve, 380));
-    assert.deepEqual(h.commands.at(-1).config.friction, { simulation: false, prediction: true, predictor_smoothing_rad_s: .05 });
+    assert.deepEqual(h.commands.at(-1).config.friction, PREDICTOR_FRICTION);
+    assert.deepEqual(h.commands.at(-1).config.plant, { friction: false });
     assert(h.commands.every(item => item.type === 'set_settings')); // No compile, source apply, or presentation request.
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
@@ -1096,18 +1101,18 @@ test('predictor friction keeps unsupported N visible and blocks calculation unti
     await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
     const before = h.commands.length;
-    field('friction.prediction').checked = true; field('friction.prediction').emit('input');
-    assert.equal(live.settings.config.N, 64); assert.equal(live.settings.config.friction.prediction, true);
+    field('friction').value = '1'; field('friction').emit('input');
+    assert.equal(live.settings.config.N, 64); assert.deepEqual(live.settings.config.friction, PREDICTOR_FRICTION);
     assert.equal(field('N').children[2].disabled, true); assert.match(field('N').children[2].textContent, /unavailable/);
     assert.equal(h.$('live-play').disabled, true); assert.equal(h.$('live-preview').disabled, true);
-    assert.match(h.$('live-message').textContent, /N=64.*Settings › Backend.*explicitly/);
+    assert.match(h.$('live-message').textContent, /N=64 is not compiled.*Settings › Backend/);
     await new Promise(resolve => setTimeout(resolve, 380)); assert.equal(h.commands.length, before);
     field('N').value = '1'; field('N').emit('input');
     assert.equal(live.settings.config.N, 32); assert.equal(h.$('live-play').disabled, false);
     await new Promise(resolve => setTimeout(resolve, 380));
-    assert.equal(h.commands.at(-1).config.N, 32); assert.equal(h.commands.at(-1).config.friction.prediction, true);
+    assert.equal(h.commands.at(-1).config.N, 32); assert.deepEqual(h.commands.at(-1).config.friction, PREDICTOR_FRICTION);
     source.emit(plan(2, 2));
-    field('friction.prediction').checked = false; field('friction.prediction').emit('input');
+    field('friction').value = '0'; field('friction').emit('input');
     assert.equal(field('N').children[2].disabled, false); assert.equal(live.settings.config.N, 32);
     assert.equal(h.$('live-play').disabled, false);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
@@ -1131,11 +1136,11 @@ test('unavailable friction transition cancels active work and keeps Cancel avail
     h.setCommandHandler((command, version) => command.type === 'cancel'
       ? new Promise(resolve => { acknowledgeCancel = resolve; })
       : { ok: true, json: async () => ({ accepted: true, settings_version: version }) });
-    field('friction.prediction').checked = true; field('friction.prediction').emit('input');
+    field('friction').value = '1'; field('friction').emit('input');
     assert.equal(live.playing, false); assert.equal(h.$('live-play').disabled, true);
     assert.equal(h.$('live-cancel').disabled, false); // Transport works despite an incompatible numerical draft.
     assert.deepEqual(h.commands.slice(before), [{ type: 'cancel' }]);
-    field('friction.predictor_smoothing_rad_s').value = '.04'; field('friction.predictor_smoothing_rad_s').emit('input');
+    field('plant.friction').checked = true; field('plant.friction').emit('input');
     await new Promise(resolve => setTimeout(resolve, 380));
     assert.deepEqual(h.commands.slice(before), [{ type: 'cancel' }]); // No repeated cancel or invalid submission.
     source.emit({ type: 'state', settings_version: 1, sim_time_s: 1.3, q: Array(7).fill(3), qd: Array(7).fill(2), ee_xyz: [3, 0, 1] });

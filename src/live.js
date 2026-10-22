@@ -24,8 +24,9 @@ export function writePath(value, path, next) {
   parent[last] = next;
 }
 
+// config.friction is the predictor friction of MpcParams: null when loss-free.
 export function availableKnotCounts(schema, config) {
-  const mode = config?.friction?.prediction ? 'on' : 'off';
+  const mode = config?.friction ? 'on' : 'off';
   return schema.available_N_by_friction?.[mode] ?? schema.available_N;
 }
 
@@ -51,9 +52,11 @@ export function restoreCompatibleSettings(schema, saved) {
     try {
       if (parameter.kind === 'choice') {
         const choices = path === 'N' ? schema.available_N : parameter.choices;
-        if (!choices.some(choice => Object.is(choice && typeof choice === 'object' && 'value' in choice ? choice.value : choice, value))) continue;
+        if (!choices.some(choice => settingValuesEqual(choiceValue(choice), value))) continue;
       } else if (parameter.kind === 'bool') {
         if (typeof value !== 'boolean') continue;
+      } else if (value === null) {
+        if (!parameter.nullable) continue;
       } else {
         if (typeof value !== 'number') continue;
         parseParameter(parameter, { value: String(value) });
@@ -86,6 +89,11 @@ export function solverProfileSettings(schema, saved) {
   return restored;
 }
 
+// A schema choice is a plain value or {value, label}.
+export function choiceValue(choice) {
+  return choice && typeof choice === 'object' && 'value' in choice && 'label' in choice ? choice.value : choice;
+}
+
 export function parseParameter(parameter, input) {
   if (parameter.kind === 'bool') return input.checked;
   if (parameter.kind === 'choice') {
@@ -93,12 +101,14 @@ export function parseParameter(parameter, input) {
     if (String(input.value).trim() === '' || !Number.isInteger(index) || index < 0 || index >= parameter.choices.length) {
       throw new Error(`${parameter.label || parameter.path || 'Setting'} needs an available choice.`);
     }
-    const choice = parameter.choices[index];
-    const value = choice && typeof choice === 'object' && 'value' in choice ? choice.value : choice;
+    const value = choiceValue(parameter.choices[index]);
     if (value === undefined) throw new Error(`${parameter.label || parameter.path || 'Setting'} needs an available choice.`);
     return value;
   }
-  if (input.value.trim() === '') throw new Error(`${parameter.label} needs a value.`);
+  if (input.value.trim() === '') {
+    if (parameter.nullable) return null;
+    throw new Error(`${parameter.label} needs a value.`);
+  }
   const value = Number(input.value);
   if (!Number.isFinite(value) || (parameter.kind === 'int' && !Number.isInteger(value))) {
     throw new Error(`${parameter.label} needs a finite ${parameter.kind === 'int' ? 'integer' : 'number'}.`);
@@ -263,9 +273,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       if (value != null) option.textContent = `${value}${option.disabled ? ' · unavailable' : ''}`;
     }
     const commit = schema.source?.mpc_commit;
-    $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · prebuilt N${schema.available_N_by_friction ? settings.config.friction?.prediction ? ' (predictor friction)' : ' (loss-free predictor)' : ''}: ${available.join(', ') || 'none'}`;
+    $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · compiled N${schema.available_N_by_friction ? settings.config.friction ? ' (predictor friction)' : ' (loss-free predictor)' : ''}: ${available.join(', ') || 'none'}`;
   }
-  const unavailableFrictionMessage = () => `N=${settings.config.N} is unavailable for this predictor friction mode. Choose an available N or open Settings › Backend to build it explicitly; select smooth-friction predictor modules when Predictor friction is on.`;
+  const unavailableFrictionMessage = () => `N=${settings.config.N} is not compiled for this predictor. Choose a compiled N or build it in Settings › Backend (Build selected N, with Predictor friction modules when Predictor friction is on).`;
   function change() {
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
@@ -290,8 +300,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const resetInput = (input, value, parameter = {}) => {
       input.setCustomValidity('');
       if (parameter.kind === 'bool') input.checked = value;
-      else if (parameter.kind === 'choice') input.value = parameter.choices.findIndex(choice => settingValuesEqual(choice && typeof choice === 'object' && 'value' in choice ? choice.value : choice, value));
-      else input.value = String(value);
+      else if (parameter.kind === 'choice') input.value = parameter.choices.findIndex(choice => settingValuesEqual(choiceValue(choice), value));
+      else input.value = value == null ? '' : String(value);
       input.dispatchEvent(new Event(parameter.event || 'input', { bubbles: true }));
     };
     const bindReset = (input, parameter, getDefault, { key = parameter.path, host, group = 'settings', event = 'input' } = {}) => resetIndicators.bind({
@@ -370,8 +380,6 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     };
     for (const supplied of schema.parameters) {
       const parameter = { ...supplied, path: supplied.path.replace(/^config\./, '') };
-      // Retain this upstream value in the complete config, without a timing UI.
-      if (parameter.path.endsWith('warm_start')) continue;
       if (parameter.path === 'N') { parameter.kind = 'choice'; parameter.choices = schema.available_N; }
       const name = parameter.group || 'Settings';
       const isHorizon = ['N', 'dt_s'].includes(parameter.path);
@@ -381,10 +389,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         const fields = document.createElement('div'); fields.className = 'settings-fields'; details.append(summary);
         if (name === 'Friction') {
           const note = document.createElement('p'); note.className = 'settings-note';
-          const simulatorLaw = schema.friction?.simulation_law === 'coulomb_stick_slip_viscous'
-            ? 'stick/slip Coulomb (solved per step) + implicit viscous friction'
-            : 'hard-sign Coulomb + viscous friction (explicit RK4)';
-          note.textContent = `Simulator: ${simulatorLaw}. Predictor: smooth tanh Coulomb + viscous friction. Uses the selected source’s canonical right-arm coefficients. Changes start a new segment from the displayed state.`;
+          note.textContent = `Simulator: ${schema.friction?.simulation_law || 'hard-sign Coulomb + viscous (RK4)'}. Predictor: ${schema.friction?.prediction_law || 'tanh Coulomb + viscous'}, a compiled variant.`;
+          note.title = `Coefficients from the ${schema.friction?.source || 'reduced right-arm URDF'}. Changes start a new segment from the displayed state.`;
           details.append(note);
           const coefficients = schema.friction?.coefficients;
           for (const [key, unit] of [['coulomb_nm', 'Coulomb (Nm)'], ['viscous_nm_s_per_rad', 'Viscous (Nm s/rad)']]) {
@@ -402,14 +408,18 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       const value = readPath(settings.config, parameter.path);
       if (parameter.kind === 'choice') {
         for (const [i, choice] of parameter.choices.entries()) {
-          const item = document.createElement('option'), object = choice && typeof choice === 'object', typedValue = object && 'value' in choice ? choice.value : choice;
-          item.value = String(i); item.textContent = object ? choice.label || String(typedValue ?? 'Default') : String(choice ?? 'Default'); item.selected = Object.is(typedValue, value); input.append(item);
+          const item = document.createElement('option'), object = choice && typeof choice === 'object', typedValue = choiceValue(choice);
+          item.value = String(i); item.textContent = object ? choice.label || String(typedValue ?? 'Default') : String(choice ?? 'Default'); item.selected = settingValuesEqual(typedValue, value); input.append(item);
         }
         if (parameter.path === 'N' && !schema.available_N.includes(value)) {
           const unavailable = document.createElement('option'); unavailable.value = '-1'; unavailable.textContent = `${value} · unavailable`; unavailable.disabled = true; unavailable.selected = true; input.append(unavailable); input.value = '-1';
         }
       } else if (parameter.kind === 'bool') { input.type = 'checkbox'; input.checked = Boolean(value); }
-      else { input.type = 'number'; input.step = parameter.kind === 'int' ? '1' : 'any'; if (parameter.min != null) input.min = parameter.min; if (parameter.max != null) input.max = parameter.max; input.value = value; input.required = true; }
+      else {
+        input.type = 'number'; input.step = parameter.kind === 'int' ? '1' : 'any'; if (parameter.min != null) input.min = parameter.min; if (parameter.max != null) input.max = parameter.max;
+        input.value = value == null ? '' : value; input.required = !parameter.nullable;
+        if (parameter.nullable) input.placeholder = 'none';
+      }
       input.disabled = Boolean(parameter.disabled); input.title = parameter.description || parameter.path; listen(input, 'input', () => {
         if (isHorizon) {
           if (parameter.path === 'N' && input.value !== '-1') profileNError = false;

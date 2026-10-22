@@ -77,9 +77,9 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
     <div class="source-actions"><button type="button" data-action="inspect" title="Check the environment and binary identities; never compiles">Check source</button><button type="button" class="source-apply" data-action="apply" title="Restart the backend with this source. Starts a fresh Live session; saved replays and disk history remain.">Apply and restart backend</button></div></section>
     <div class="solver-profile-slot"></div>
     <section class="dialog-section"><h3>Binaries</h3>
-    <div class="dialog-field"><label for="source-counts">Additional knot counts N</label><input id="source-counts" name="counts" type="text" inputmode="numeric" placeholder="e.g. 48 96"></div>
-    <label class="source-rebuild" title="Off builds loss-free predictors. On builds tanh Coulomb + viscous predictors; the smoothing width remains a runtime setting."><input name="prediction_friction" type="checkbox">Smooth-friction predictor modules</label>
-    <label class="source-rebuild" title="Rebuild selected counts even when already compatible; prior binaries are kept under _expr_data/source-builds/"><input name="rebuild" type="checkbox">Rebuild compatible counts</label>
+    <div class="dialog-field" title="Knot counts the visualizer offers: 8, 16, 24, 32, 48, 64, 96, 128"><label for="source-counts">Knot counts N</label><input id="source-counts" name="counts" type="text" inputmode="numeric" placeholder="e.g. 48 96"></div>
+    <label class="source-rebuild" title="Off builds loss-free predictors. On builds predictors with the URDF Coulomb + viscous friction (tanh width 0.03 rad/s, compiled in)."><input name="prediction_friction" type="checkbox">Predictor friction modules</label>
+    <label class="source-rebuild" title="Rebuild selected counts even when already compiled; the old module file is replaced"><input name="rebuild" type="checkbox">Rebuild compiled counts</label>
     <div class="source-actions"><button type="button" data-action="build" title="Compiles with half the CPU cores and keeps Live running. Normal setting changes never compile.">Build selected N</button></div>
     <pre class="source-build-log" hidden></pre></section>
     <section class="dialog-section"><h3>Plotting</h3>
@@ -109,11 +109,11 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
   }
   function describe(result) {
     const source = result.source || {};
-    const rows = [['Revision', `${source.mpc_branch || 'detached'} · ${source.mpc_commit || 'unknown'}${source.mpc_dirty ? ' · modified' : ''}`], ['Compatible N', (result.available_N || []).join(', ') || 'none']];
+    const rows = [['Revision', `${source.mpc_branch || 'detached'} · ${source.mpc_commit || 'unknown'}${source.mpc_dirty ? ' · modified' : ''}`], ['Compiled N', ['off', 'on'].map(mode => `${mode === 'on' ? 'friction' : 'loss-free'}: ${(result.available_N_by_friction?.[mode] || []).join(', ') || 'none'}`).join(' · ')]];
     identity.replaceChildren?.(...rows.flatMap(([term, value]) => { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = term; dd.textContent = value; return [dt, dd]; }));
     identity.dataset.compatible = String(Boolean(result.compatible));
     if (!result.compatible) say(result.error || (result.errors || []).join('; ') || 'Selected source is incompatible.', true);
-    else say(result.available_N?.length ? '' : 'No compatible binaries found; build selected N explicitly.');
+    else say(result.available_N?.length ? '' : 'Nothing compiled yet; build selected N explicitly.');
   }
   async function refresh() {
     if (!initialized) field('mpc_root').placeholder = 'Checking selected source…';

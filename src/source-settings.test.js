@@ -172,20 +172,20 @@ test('path fields hold <checkout> templates; resolution is a tooltip, errors an 
   assert.equal(slow.defaults.cache, '<checkout>/.cache/gato'); assert.equal(slow.defaults.python, '<checkout>/venv-host/bin/python');
 });
 
-test('source and profile refresh preserve typed friction modes and valid predictor smoothing', () => {
+test('source and profile refresh preserve the predictor friction choice, simulator friction and a null budget', () => {
+  const friction = { coulomb_nm: [1, 1, 1, 1, 1, 1, 1], viscous_nm_s_per_rad: [2, 2, 2, 2, 2, 2, 2], width_rad_s: .03 };
   const schema = {
-    available_N: [32], available_N_by_friction: { off: [32], on: [] },
-    defaults: { config: { N: 32, friction: { simulation: true, prediction: true, predictor_smoothing_rad_s: .03 } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
+    available_N: [32], available_N_by_friction: { off: [32], on: [32] },
+    defaults: { config: { N: 32, friction: null, budget_s: null, plant: { friction: false } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
     parameters: [
       { path: 'N', kind: 'choice', choices: [32] },
-      { path: 'friction.simulation', kind: 'bool' }, { path: 'friction.prediction', kind: 'bool' },
-      { path: 'friction.predictor_smoothing_rad_s', kind: 'float', min: .001, max: 1 },
+      { path: 'friction', kind: 'choice', choices: [{ value: null, label: 'Loss-free' }, { value: friction, label: 'URDF' }] },
+      { path: 'budget_s', kind: 'float', min: 1e-4, max: 10, nullable: true },
+      { path: 'plant.friction', kind: 'bool' },
     ], tasks: [{ kind: 'reach', defaults: { target_offset_m: [0, 0, 0] } }],
   };
-  const saved = { config: { N: 32, friction: { simulation: false, prediction: true, predictor_smoothing_rad_s: .05 } }, task: { kind: 'reach' } };
-  assert.deepEqual(restoreCompatibleSettings(schema, saved).config.friction, saved.config.friction);
-  saved.config.friction.predictor_smoothing_rad_s = 0;
-  assert.equal(restoreCompatibleSettings(schema, saved).config.friction.predictor_smoothing_rad_s, .03);
-  saved.config.friction.prediction = 'false';
-  assert.equal(restoreCompatibleSettings(schema, saved).config.friction.prediction, true);
+  const saved = { config: { N: 32, friction: structuredClone(friction), budget_s: .05, plant: { friction: true } }, task: { kind: 'reach' } };
+  assert.deepEqual(restoreCompatibleSettings(schema, saved).config, saved.config);
+  saved.config.friction.width_rad_s = .05; saved.config.budget_s = null; saved.config.plant.friction = 'true';
+  assert.deepEqual(restoreCompatibleSettings(schema, saved).config, { N: 32, friction: null, budget_s: null, plant: { friction: false } });
 });

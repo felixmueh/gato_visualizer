@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialLiveSettings, cloneSettings, readPath, writePath, parseParameter, maxViolation, validPoints } from './live.js';
+import { initialLiveSettings, cloneSettings, readPath, writePath, parseParameter, choiceValue, maxViolation, validPoints } from './live.js';
 
 test('settings edits preserve the complete configuration and native typed choices', () => {
   const defaults = { config: { N: 32, solver_params: { linsys: null, q_cost: 4 }, controller: { limits_kw: { rho: .01 } } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } };
@@ -47,4 +47,12 @@ test('empty and unavailable choices cannot turn required config values into unde
   }
   assert.throws(() => parseParameter({kind: 'choice', label: 'Knot points', choices: []}, {value: ''}), /available choice/);
   assert.throws(() => parseParameter({kind: 'choice', label: 'Knot points', choices: []}, {value: '0'}), /available choice/);
+});
+
+test('a nullable number parses an empty field as null and labelled choices yield their values', () => {
+  assert.equal(parseParameter({ kind: 'float', label: 'Budget', nullable: true, min: 1e-4 }, { value: ' ' }), null);
+  assert.throws(() => parseParameter({ kind: 'float', label: 'Budget', min: 1e-4 }, { value: '' }), /needs a value/);
+  const friction = { width_rad_s: .03 };
+  assert.equal(parseParameter({ kind: 'choice', choices: [{ value: null, label: 'Loss-free' }, { value: friction, label: 'URDF' }] }, { value: '1' }), friction);
+  assert.equal(choiceValue({ value: null, label: 'Loss-free' }), null);
 });
