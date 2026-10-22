@@ -162,7 +162,7 @@ class InspectionService:
         # capability requests and Run again preflight. This lock is independent
         # of Live and job lifecycle locks; no numerical scheduling is changed.
         with self.probe_lock:
-            key = tuple(sorted(profile.items()))
+            key = json.dumps(profile, sort_keys=True)
             fingerprint = profile_fingerprint(profile)
             cached = self.probe_cache.get(key)
             if cached is None or cached[0] != fingerprint:

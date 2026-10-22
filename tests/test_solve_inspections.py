@@ -298,6 +298,13 @@ class JobTests(unittest.TestCase):
         self.assertNotIn('xu',json.dumps(result))
         self.assertTrue(Path(self.service.descriptor(result['id'])['binary_path']).exists())
 
+    def test_profile_with_templates_is_checked(self):
+        # Profiles carry a templates dict since 8f7fdd5; Run again failed with
+        # "unhashable type: 'dict'" while caching the profile probe.
+        self.profile['templates']=dict(reach=dict(N=3))
+        capability=self.service.capability(self.request())
+        self.assertTrue(capability['available'],capability)
+
     def test_old_native_profile_capability_is_explicit_and_never_constructs_solver(self):
         self.service.probe=lambda *args,**kwargs:dict(compatible=True,available_N=[3],capabilities={})
         capability=self.service.capability(self.request())
