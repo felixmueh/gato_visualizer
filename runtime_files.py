@@ -1,9 +1,9 @@
 """RAM-backed runtime scratch (Felix, 2026-10-23; Linux only).
 
-Files rewritten or appended continuously while Live runs (Live history, preview
-captures, solver-process and coordinator logs) live on tmpfs, not on disk: the
-visualizer must run on HDDs, and SSD wear. What must persist (uploads, config,
-builds and their logs, exported replays, Run again results) stays on disk.
+Runtime scratch (Live history, preview captures, Run again results, solver-process
+and coordinator logs, TMPDIR) lives on tmpfs, not on disk: the visualizer must run on
+HDDs, and SSD wear. Only what must persist (uploads, config, builds and their logs,
+exported replays) stays on disk.
 """
 from __future__ import annotations
 
@@ -23,6 +23,24 @@ def runtime_directory(*parts):
     path = base.joinpath(*parts)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def owner_tag():
+    """Names a runtime file or directory owned by this server process."""
+    return f"p{os.getpid()}"
+
+
+def ended_owner(tag):
+    """True when `tag` is not the owner tag of a running process (a leftover)."""
+    if not (tag.startswith("p") and tag[1:].isdigit()):
+        return True
+    try:
+        os.kill(int(tag[1:]), 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass
+    return False
 
 
 def runtime_warning():

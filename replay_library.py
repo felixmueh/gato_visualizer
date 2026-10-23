@@ -49,6 +49,10 @@ class ReplayLibrary:
         self.items = []
         self.revision = 0
         self.loaded = {}
+        # The most recently loaded recording (id, revision) is the current replay;
+        # listeners learn when it changes (Run again results of other replays go).
+        self.current = None
+        self.listeners = []
 
     @staticmethod
     def identifier(source, relative):
@@ -116,6 +120,16 @@ class ReplayLibrary:
             return dict(items=[dict(item) for item in self.items], revision=self.revision)
 
     def scene(self, identifier):
+        scene = self._scene(identifier)
+        current = (identifier, "default" if identifier == "default" else scene["source"]["plot_revision"])
+        with self.lock:
+            changed, self.current = current != self.current, current
+        if changed:
+            for listener in self.listeners:
+                listener(current)
+        return scene
+
+    def _scene(self, identifier):
         if identifier == "default":
             return self.default_scene
         with self.lock:
