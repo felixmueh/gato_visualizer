@@ -124,3 +124,106 @@ test('onion ticks repaint by revision and seek only from plain clicks in their r
     await click(1, 27); assert.equal(seeks.at(-1), 2.5);
   } finally { globalThis.ResizeObserver = previousObserver; }
 });
+
+function sessionTimelineFixture(callbacks = {}) {
+  const { document: doc } = plotDOM(), nodes = new Map(), draws = [];
+  const createElement = doc.createElement;
+  doc.createElement = tag => {
+    const node = createElement(tag); node.classList.remove = name => node.classList.toggle(name, false);
+    let capture;
+    node.setPointerCapture = pointer => { capture = pointer; }; node.hasPointerCapture = pointer => capture === pointer;
+    node.releasePointerCapture = () => { capture = undefined; };
+    node.getContext = () => ({ scale() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {}, measureText: () => ({ width: 30 }), fillRect(...rect) { draws.push({ node, color: this.fillStyle, rect }); } });
+    return node;
+  };
+  doc.getElementById = id => {
+    if (!nodes.has(id)) nodes.set(id, doc.createElement(id === 'timeline-bands' ? 'canvas' : 'div'));
+    return nodes.get(id);
+  };
+  const observer = globalThis.ResizeObserver; globalThis.ResizeObserver = class { observe() {} };
+  let timeline;
+  try { timeline = setupExpandedTimeline({ document: doc, onSeek() {}, ...callbacks }); }
+  finally { globalThis.ResizeObserver = observer; }
+  return { timeline, nodes, draws, doc };
+}
+
+const laneTracks = () => [
+  { id: 'live', kind: 'live', letter: 'A', label: 'Live', color: 0xffffff, offset_s: 0, span: [0, 10], visible: true, display: 'arm' },
+  { id: 'b', kind: 'replay', letter: 'B', label: 'Reach', color: 0xb48cff, offset_s: 1, span: [2, 4], visible: true, display: 'arm', differences: [{ text: 'SQP: 10' }, { text: 'N: 64' }, { text: 'dt: 0.02' }], badges: [{ label: 'Frame', title: 'Tool frames differ' }] },
+];
+
+test('session lanes group freezes first, keep timing on Live and cache across cursor motion', async () => {
+  const added = [], tracks = laneTracks(), { timeline, nodes, draws } = sessionTimelineFixture({ onAddTrack: id => added.push(id) });
+  const intervals = [{ start_time_s: 0, end_time_s: .1, mpc_overrun: true }];
+  const update = time => timeline.update({ mode: 'live', identity: 'session', bounds: [0, 10], time, tracks, revision: 1, intervals, breaches: [{ sim_time_s: 3 }], catalog: [
+    { id: 'experiment', name: 'Reach test', source: 'ingest', status: 'ready' }, { id: 'bad', source: 'ingest', status: 'error' },
+    { id: 'freeze', name: 'Freeze B', source: 'freeze', status: 'ready' },
+  ] });
+  update(0); assert.equal(nodes.get('live-timeline-expand').dataset.trackCount, '1');
+  assert.equal(timeline.snapshot.lanePaints, 0);
+  await nodes.get('live-timeline-expand').emit('click');
+  const lanes = nodes.get('timeline-lanes'), rows = lanes.children;
+  assert.equal(rows.length, 2); assert.equal(nodes.get('timeline-track-picker').hidden, false);
+  assert.equal(rows[0].querySelector('.timeline-lane-offset').value, '+0.000');
+  assert.equal(rows[0].querySelector('.timeline-lane-offset').disabled, true);
+  assert.equal(rows[1].querySelector('.timeline-lane-offset').value, '+1.000');
+  assert.equal(rows[1].querySelector('.timeline-lane-differences').textContent, 'SQP: 10 · N: 64');
+  assert.match(rows[1].querySelector('.timeline-lane-differences').title, /dt: 0.02/);
+  assert.equal(rows[1].querySelector('.timeline-lane-badge').title, 'Tool frames differ');
+  assert(draws.some(draw => draw.node === rows[0].querySelector('canvas') && draw.color === '#ed716c'));
+  assert(!draws.some(draw => draw.node === nodes.get('timeline-bands') && draw.color === '#ed716c'));
+  assert.equal(rows[1].querySelector('canvas').hidden, true);
+  const paints = timeline.snapshot.paints, lanePaints = timeline.snapshot.lanePaints;
+  update(5); assert.equal(timeline.snapshot.paints, paints); assert.equal(timeline.snapshot.lanePaints, lanePaints);
+  assert.equal(rows[1].querySelector('.timeline-lane-cursor').style.left, '50%');
+  const choices = nodes.get('timeline-track-menu').children;
+  assert.equal(choices[0].textContent, 'Temporary'); assert.equal(choices[1].textContent, 'Freeze B');
+  await choices[1].emit('click'); assert.deepEqual(added, ['freeze']);
+  assert.equal(nodes.get('timeline-track-menu').hidden, true);
+  await rows[1].querySelector('.timeline-lane-rail').emit('pointermove', { clientX: 300 });
+  assert.equal(nodes.get('timeline-inspection-tooltip').textContent, 'B · 4.000 s');
+});
+
+test('lane drag uses pointer capture, six-pixel snapping and Alt; explicit edits and controls use track callbacks', async () => {
+  const changes = [], resets = [], removed = [], tracks = laneTracks();
+  const { timeline, nodes } = sessionTimelineFixture({ onTrackChange: (id, patch) => changes.push([id, patch]), onTrackReset: id => resets.push(id), onTrackRemove: id => removed.push(id) });
+  timeline.update({ mode: 'live', identity: 'session', bounds: [0, 10], time: 5, tracks });
+  await nodes.get('live-timeline-expand').emit('click');
+  const row = nodes.get('timeline-lanes').children[1], clip = row.querySelector('.timeline-lane-clip'), rail = row.querySelector('.timeline-lane-rail');
+  const pointer = (x, extra = {}) => ({ pointerId: 2, button: 0, clientX: x, ...extra });
+  await clip.emit('pointerdown', pointer(0)); assert.equal(clip.hasPointerCapture(2), true);
+  await rail.emit('pointermove', pointer(-175)); // First recorded sample at 2 s snaps onto session 0.
+  assert.equal(changes.at(-1)[1].offset_s, -2);
+  await rail.emit('pointermove', pointer(-175, { altKey: true }));
+  assert(Math.abs(changes.at(-1)[1].offset_s - (1 - 175 / 600 * 10)) < 1e-12);
+  await clip.emit('pointerup', pointer(-175)); assert.equal(clip.hasPointerCapture(2), false);
+  await clip.emit('dblclick'); assert.deepEqual(resets, ['b']);
+  const offset = row.querySelector('.timeline-lane-offset'); offset.value = '-0.350'; await offset.emit('change'); assert.deepEqual(changes.at(-1), ['b', { offset_s: -.35 }]);
+  offset.value = 'bad'; await offset.emit('change'); assert.equal(offset.value, '+1.000');
+  await row.querySelector('.timeline-lane-visibility').emit('click'); assert.deepEqual(changes.at(-1), ['b', { visible: false }]);
+  await row.querySelector('.timeline-lane-display').emit('click'); assert.deepEqual(changes.at(-1), ['b', { display: 'dot' }]);
+  await row.querySelector('.timeline-lane-remove').emit('click'); assert.deepEqual(removed, ['b']);
+});
+
+test('session aggregate and zoom persist across generations, empty main spans and Replay visits', async () => {
+  const { timeline, nodes } = sessionTimelineFixture(), intervals = [];
+  const live = (bounds, revision) => timeline.update({ mode: 'live', identity: 'session', bounds, time: 0, revision, intervals, tracks: laneTracks() });
+  live([0, 10], 1); await nodes.get('live-timeline-expand').emit('click');
+  timeline.zoom(.5); timeline.setAggregate({ start: 3, end: 7 });
+  assert.deepEqual(timeline.snapshot.visible, [2.5, 7.5]);
+  live([0, 0], 2); assert.deepEqual(timeline.snapshot.visible, [2.5, 7.5]); assert.deepEqual(timeline.snapshot.aggregate, { start: 3, end: 7 });
+  live([0, 20], 3); assert.deepEqual(timeline.snapshot.visible, [2.5, 7.5]);
+  timeline.update({ mode: 'replay', identity: 'other', bounds: [100, 102], time: 100, intervals });
+  assert.deepEqual(timeline.snapshot.aggregate, { start: null, end: null }); assert.equal(nodes.get('timeline-lanes').hidden, true);
+  live([0, 20], 4); assert.deepEqual(timeline.snapshot.visible, [2.5, 7.5]); assert.deepEqual(timeline.snapshot.aggregate, { start: 3, end: 7 });
+});
+
+
+test('different Replay object identities reset independently while Live session windows stay retained', async () => {
+  const { timeline } = sessionTimelineFixture();
+  timeline.update({ mode: 'replay', identity: { id: 'one' }, bounds: [0, 10], time: 0 });
+  timeline.zoom(.5); timeline.setAggregate({ start: 3, end: 4 });
+  timeline.update({ mode: 'replay', identity: { id: 'two' }, bounds: [100, 110], time: 100 });
+  assert.deepEqual(timeline.snapshot.aggregate, { start: null, end: null });
+  assert.deepEqual(timeline.snapshot.visible, [100, 110]);
+});

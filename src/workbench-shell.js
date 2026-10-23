@@ -53,9 +53,11 @@ export function workbenchShell(icon) {
         <button id="live-reset" class="transport-button" disabled aria-label="Reset state" title="Reset state">${icon('restart')}</button>
         <div class="live-history-track transport-track"><div id="live-history-intervals" aria-hidden="true"></div><div id="live-onion-ticks" class="onion-ticks"></div><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Live history time"></div>
         <span id="live-history-position" class="transport-time">0 / 0 s</span>
+        <label class="replay-speed live-speed"><span class="sr-only">Session playback speed</span><select id="live-speed" aria-label="Session playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
         <label class="stop-option" title="Stop at the recorded end; uncheck to continue simulation"><input id="live-stop-at-end" type="checkbox" checked>Stop</label>
         <div class="transport-calculation"><label class="sr-only" for="live-calculation">Calculation mode</label><select id="live-calculation" aria-label="Calculation mode"><option value="on_play">On Play</option><option value="manual">Manual</option><option value="automatic">Automatic</option></select>
           <button id="live-precalculate" class="transport-button" disabled aria-label="Precalculate" title="Precalculate closed-loop motion">${icon('calculate')}</button>
+          <button id="live-freeze" class="transport-button" disabled aria-label="Freeze for comparison" title="Freeze for comparison">${icon('freeze')}</button>
           <label class="duration-input"><input id="live-duration" type="number" min=".01" step="any" value="10" aria-label="Calculation duration seconds"><span>s</span></label>
         </div>
         <button id="live-onion-skin" class="transport-button onion-skin-toggle" aria-label="Onion skin" aria-pressed="false" title="Onion skin · off (O)">${icon('onion')}</button>

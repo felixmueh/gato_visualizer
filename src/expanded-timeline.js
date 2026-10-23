@@ -1,4 +1,5 @@
 import { intervalDescription, intervalSeverity } from './live-execution.js';
+import { snapOffset } from './session.js';
 
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 export function timelineTypingTarget(target) {
@@ -85,15 +86,17 @@ const KEYFRAME_TICK_TOP = 23, KEYFRAME_TICK_BOTTOM = 34, KEYFRAME_HIT_RADIUS = 4
 export function expandedTimelineShell() {
   return `<section id="expanded-timeline" class="expanded-timeline" aria-label="Timeline inspection" hidden>
     <div id="timeline-strip-resize" class="timeline-strip-resize" role="separator" aria-orientation="horizontal" aria-label="Resize timeline plots" hidden></div>
-    <div class="timeline-inspection-heading"><span id="timeline-clock-label">Recorded time</span><span id="timeline-timing-note">No timing data</span><div class="timeline-zoom-controls"><button id="timeline-window-clear" class="timeline-window-clear" aria-label="Clear aggregate window" title="Clear aggregate window (Esc)" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg></button><button id="timeline-zoom-out" aria-label="Zoom timeline out" title="Zoom out (−)">−</button><button id="timeline-zoom-in" aria-label="Zoom timeline in" title="Zoom in (+)">+</button><button id="timeline-fit" title="Fit entire recording (0)">Fit</button></div></div>
+    <div class="timeline-inspection-heading"><span id="timeline-clock-label">Recorded time</span><span id="timeline-timing-note">No timing data</span><div class="timeline-track-picker" id="timeline-track-picker" hidden><button id="timeline-add-track" aria-haspopup="menu" aria-expanded="false" aria-controls="timeline-track-menu">+ Add track</button><div id="timeline-track-menu" class="timeline-track-menu" role="menu" hidden></div></div><div class="timeline-zoom-controls"><button id="timeline-window-clear" class="timeline-window-clear" aria-label="Clear aggregate window" title="Clear aggregate window (Esc)" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg></button><button id="timeline-zoom-out" aria-label="Zoom timeline out" title="Zoom out (−)">−</button><button id="timeline-zoom-in" aria-label="Zoom timeline in" title="Zoom in (+)">+</button><button id="timeline-fit" title="Fit entire recording (0)">Fit</button></div></div>
+    <p id="timeline-track-message" class="timeline-track-message" role="status" hidden></p>
     <div id="timeline-linked-graphs"></div>
     <div id="timeline-inspector" class="timeline-inspector" role="slider" tabindex="0" aria-label="Inspect simulation time" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-describedby="timeline-gesture-hint"><canvas id="timeline-bands" aria-hidden="true"></canvas><div id="timeline-window-shade-start" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-shade-end" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-start" class="timeline-window-handle" data-side="start" role="slider" tabindex="-1" aria-label="Aggregate window start"></div><div id="timeline-window-end" class="timeline-window-handle" data-side="end" role="slider" tabindex="-1" aria-label="Aggregate window end"></div><div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"><span></span></div></div>
+    <div id="timeline-lanes" class="timeline-lanes" aria-label="Session tracks" hidden></div>
     <div class="timeline-inspection-footer"><span id="timeline-gesture-hint" class="timeline-gesture-help" title="${GESTURE_HINT}"><span aria-hidden="true">?</span><span class="sr-only">${GESTURE_HINT}</span></span><span id="timeline-selection">0.000 s</span></div>
     <div id="timeline-inspection-tooltip" class="timeline-inspection-tooltip" role="tooltip" hidden></div>
   </section>`;
 }
 
-export function setupExpandedTimeline({ document: doc = document, onSeek, onLayout = () => {}, onAggregate = () => {} }) {
+export function setupExpandedTimeline({ document: doc = document, onSeek, onLayout = () => {}, onAggregate = () => {}, onAddTrack = () => {}, onTrackChange = () => {}, onTrackReset = () => {}, onTrackRemove = () => {} }) {
   const $ = id => doc.getElementById(id), panel = $('expanded-timeline'), surface = $('timeline-inspector');
   const canvas = $('timeline-bands'), playhead = $('timeline-playhead'), tooltip = $('timeline-inspection-tooltip');
   const toggles = ['live-timeline-expand', 'replay-timeline-expand'].map($);
@@ -101,6 +104,152 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   let source, sourceCount = -1, revision, index = [], paintKey = '', width = 0, paints = 0, drag = null, mode = 'replay';
   let keyframes = [], keyframeSource, keyframeRevision;
   let aggregate = { ...UNBOUNDED_AGGREGATE };
+  let tracks = [], catalog = [], breaches = [], laneKey = '', catalogKey = '', lanePaints = 0, laneDrag = null;
+  const lanes = $('timeline-lanes'), picker = $('timeline-track-picker'), addTrack = $('timeline-add-track'), menu = $('timeline-track-menu');
+  const laneNodes = new Map(), workspaces = new Map();
+  const colorText = color => typeof color === 'number' ? `#${color.toString(16).padStart(6, '0')}` : color || '#ffffff';
+  const offsetText = offset => `${offset >= 0 ? '+' : ''}${offset.toFixed(3)}`;
+  const diffText = diff => typeof diff === 'string' ? diff : diff.text || diff.label || `${diff.path}: ${JSON.stringify(diff.other)}`;
+  function closeMenu() { menu.hidden = true; addTrack.setAttribute('aria-expanded', 'false'); }
+  addTrack.addEventListener('click', () => { menu.hidden = !menu.hidden; addTrack.setAttribute('aria-expanded', String(!menu.hidden)); });
+  doc.addEventListener('pointerdown', event => { if (!event.target.closest?.('.timeline-track-picker')) closeMenu(); });
+  doc.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenu(); });
+  function paintCatalog() {
+    const items = catalog.filter(item => item.status === 'ready' && item.source !== 'default');
+    const key = JSON.stringify(items.map(item => [item.id, item.name, item.label, item.source]));
+    if (key === catalogKey) return;
+    catalogKey = key; menu.replaceChildren(); addTrack.disabled = !items.length;
+    for (const [title, entries] of [['Temporary', items.filter(item => item.source === 'freeze')], ['Library', items.filter(item => item.source !== 'freeze')]]) {
+      if (!entries.length) continue;
+      const heading = doc.createElement('div'); heading.className = 'timeline-track-menu-heading'; heading.textContent = title; menu.append(heading);
+      for (const item of entries) {
+        const button = doc.createElement('button'); button.type = 'button'; button.setAttribute('role', 'menuitem');
+        button.textContent = item.label || item.name; button.title = item.path || item.name || '';
+        button.addEventListener('click', () => { closeMenu(); onAddTrack(item.id); }); menu.append(button);
+      }
+    }
+  }
+  function buildLane(track) {
+    const row = doc.createElement('div'); row.className = 'timeline-lane'; row.dataset.trackId = track.id;
+    const header = doc.createElement('div'); header.className = 'timeline-lane-header';
+    const chip = doc.createElement('span'); chip.className = 'timeline-lane-chip';
+    const label = doc.createElement('span'); label.className = 'timeline-lane-label';
+    const badges = doc.createElement('span'); badges.className = 'timeline-lane-badges';
+    const differences = doc.createElement('span'); differences.className = 'timeline-lane-differences';
+    const offset = doc.createElement('input'); offset.type = 'text'; offset.className = 'timeline-lane-offset'; offset.setAttribute('inputmode', 'decimal');
+    offset.setAttribute('aria-label', `Track ${track.letter || track.id} offset in seconds`);
+    const unit = doc.createElement('span'); unit.className = 'timeline-lane-offset-unit'; unit.textContent = 's';
+    const eye = doc.createElement('button'); eye.type = 'button'; eye.className = 'timeline-lane-visibility';
+    const display = doc.createElement('button'); display.type = 'button'; display.className = 'timeline-lane-display';
+    const remove = doc.createElement('button'); remove.type = 'button'; remove.className = 'timeline-lane-remove'; remove.textContent = '×';
+    const rail = doc.createElement('div'); rail.className = 'timeline-lane-rail';
+    const clip = doc.createElement('div'); clip.className = 'timeline-lane-clip'; clip.tabIndex = track.kind === 'live' ? -1 : 0;
+    const bands = doc.createElement('canvas'); bands.className = 'timeline-lane-bands'; bands.setAttribute('aria-hidden', 'true');
+    const cursor = doc.createElement('div'); cursor.className = 'timeline-lane-cursor'; cursor.setAttribute('aria-hidden', 'true');
+    clip.append(bands); rail.append(clip, cursor); header.append(chip, label, badges, differences, offset, unit, eye, display, remove); row.append(header, rail);
+    const node = { row, chip, label, badges, differences, offset, eye, display, remove, rail, clip, bands, cursor, track, bandsKey: '' };
+    function applyOffset() {
+      const value = Number(offset.value.replace(/s\s*$/, '').trim());
+      if (!offset.value.trim() || !Number.isFinite(value)) { offset.value = offsetText(node.track.offset_s || 0); return; }
+      onTrackChange(track.id, { offset_s: value });
+    }
+    offset.addEventListener('change', applyOffset);
+    offset.addEventListener('keydown', event => { if (event.key === 'Enter') { applyOffset(); offset.blur?.(); } else if (event.key === 'Escape') { offset.value = offsetText(node.track.offset_s || 0); offset.blur?.(); event.stopPropagation(); } });
+    eye.addEventListener('click', () => onTrackChange(track.id, { visible: node.track.visible === false }));
+    display.addEventListener('click', () => onTrackChange(track.id, { display: node.track.display === 'dot' ? 'arm' : 'dot' }));
+    remove.addEventListener('click', () => onTrackRemove(track.id));
+    clip.addEventListener('dblclick', event => { event.preventDefault(); if (node.track.kind !== 'live') onTrackReset(track.id); });
+    clip.addEventListener('keydown', event => {
+      if (node.track.kind === 'live') return;
+      if (event.key === 'Home') { event.preventDefault(); onTrackReset(track.id); }
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); onTrackChange(track.id, { offset_s: node.track.offset_s + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? .001 : .01) }); }
+    });
+    clip.addEventListener('pointerdown', event => {
+      if (node.track.kind === 'live' || event.button !== 0) return;
+      event.preventDefault(); event.stopPropagation(); hideTooltip();
+      laneDrag = { id: track.id, pointer: event.pointerId, x: event.clientX, offset: node.track.offset_s || 0, span: [...window], width: Math.max(1, rail.clientWidth) };
+      clip.setPointerCapture(event.pointerId); clip.classList.toggle('dragging', true);
+    });
+    rail.addEventListener('pointermove', event => {
+      const item = node.track;
+      if (laneDrag?.id === track.id && laneDrag.pointer === event.pointerId) {
+        const secondsPerPixel = (laneDrag.span[1] - laneDrag.span[0]) / laneDrag.width;
+        const raw = laneDrag.offset + (event.clientX - laneDrag.x) * secondsPerPixel;
+        const candidates = [0, selected, ...tracks.filter(other => other.id !== track.id).flatMap(other => other.span.map(time => time + (other.offset_s || 0)))];
+        onTrackChange(track.id, { offset_s: snapOffset(raw, candidates, secondsPerPixel, { alt: event.altKey, span: item.span }) });
+        return;
+      }
+      const rect = rail.getBoundingClientRect(), sessionTime = window[0] + (event.clientX - rect.left) / Math.max(1, rail.clientWidth) * (window[1] - window[0]);
+      const entries = item.kind === 'live' ? visibleTimelineIntervals(index, [sessionTime - .000001, sessionTime + .000001]) : [];
+      const entry = entries.find(entry => entry.severity === 'red') || entries.find(entry => entry.severity === 'yellow') || entries[0];
+      tooltip.textContent = `${item.letter || ''} · ${(sessionTime - (item.offset_s || 0)).toFixed(3)} s${entry ? ` · ${intervalDescription(entry.item)}` : ''}`; tooltip.hidden = false;
+    });
+    function endLaneDrag(event) {
+      if (laneDrag?.id !== track.id || laneDrag.pointer !== event.pointerId) return;
+      laneDrag = null; clip.classList.toggle('dragging', false);
+      if (clip.hasPointerCapture(event.pointerId)) clip.releasePointerCapture(event.pointerId);
+    }
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) clip.addEventListener(type, endLaneDrag);
+    rail.addEventListener('pointerleave', hideTooltip);
+    rail.addEventListener('click', event => { if (event.target === rail) seek(window[0] + (event.clientX - rail.getBoundingClientRect().left) / Math.max(1, rail.clientWidth) * (window[1] - window[0])); });
+    lanes.append(row); return node;
+  }
+  function paintLanes() {
+    const shown = mode === 'live' && tracks.length > 0;
+    lanes.hidden = !shown; picker.hidden = mode !== 'live'; panel.classList.toggle('has-tracks', shown);
+    const count = tracks.filter(track => track.kind !== 'live').length;
+    const liveToggle = $('live-timeline-expand'); liveToggle.dataset.trackCount = String(count); liveToggle.classList.toggle('has-track-count', count > 0);
+    if (!shown || !expanded) return;
+    const ids = new Set(tracks.map(track => track.id));
+    for (const [id, node] of laneNodes) if (!ids.has(id)) { node.row.remove(); laneNodes.delete(id); }
+    const key = JSON.stringify([window, revision, surface.clientWidth, doc.defaultView?.devicePixelRatio || 1, breaches, tracks.map(track => [track.id, track.label, track.letter, track.color, track.span, track.offset_s, track.visible, track.display, track.empty, track.differences, track.badges])]);
+    if (key === laneKey) return;
+    laneKey = key; lanePaints++;
+    const span = window[1] - window[0], x = time => span ? (time - window[0]) / span * 100 : 0;
+    for (const track of tracks) {
+      let node = laneNodes.get(track.id); if (!node) { node = buildLane(track); laneNodes.set(track.id, node); }
+      node.track = track;
+      const main = track.kind === 'live', offset = track.offset_s || 0, differences = track.differences || [];
+      node.row.classList.toggle('muted', track.visible === false); node.row.classList.toggle('main-track', main);
+      node.chip.style.backgroundColor = colorText(track.color); node.clip.style.backgroundColor = colorText(track.color);
+      node.label.textContent = `${track.letter || (main ? 'A' : '')} · ${track.label || (main ? 'Live' : track.id)}`;
+      node.label.title = [node.label.textContent, ...differences.map(diffText)].join('\n');
+      node.differences.textContent = differences.slice(0, 2).map(diffText).join(' · '); node.differences.title = differences.map(diffText).join('\n');
+      node.badges.replaceChildren(...(track.badges || []).map(badge => { const element = doc.createElement('span'); element.className = 'timeline-lane-badge'; element.textContent = badge.label || '⚠'; element.title = badge.title || ''; return element; }));
+      if (doc.activeElement !== node.offset) node.offset.value = offsetText(offset);
+      node.offset.disabled = main; node.offset.title = main ? 'Live offset is fixed at 0 s' : 'Offset in session time; double-click the lane to reset';
+      node.eye.textContent = track.visible === false ? '○' : '●'; node.eye.title = track.visible === false ? 'Show track' : 'Hide track';
+      node.eye.setAttribute('aria-label', `${track.visible === false ? 'Show' : 'Hide'} track ${track.letter || track.id}`); node.eye.setAttribute('aria-pressed', String(track.visible !== false)); node.eye.disabled = main;
+      node.display.textContent = track.display === 'dot' ? 'Dot' : 'Arm'; node.display.title = main ? 'Focused solid robot' : 'Toggle ghost arm / end-effector dot'; node.display.disabled = main;
+      node.display.setAttribute('aria-label', `Track ${track.letter || track.id} display: ${track.display === 'dot' ? 'dot' : 'arm'}`);
+      node.remove.hidden = main; node.remove.title = 'Remove track'; node.remove.setAttribute('aria-label', `Remove track ${track.letter || track.id}`);
+      const left = x(track.span[0] + offset), right = x(track.span[1] + offset);
+      node.clip.hidden = track.empty || right < 0 || left > 100; node.clip.style.left = `${Math.max(0, left)}%`; node.clip.style.width = `${Math.max(0, Math.min(100, right) - Math.max(0, left))}%`;
+      node.clip.title = main ? 'Live' : 'Drag to offset; Alt disables snapping; double-click resets';
+      node.bands.hidden = !main;
+      if (main) {
+        const railWidth = Math.max(1, node.rail.clientWidth), ratio = doc.defaultView?.devicePixelRatio || 1;
+        const canvasKey = [window, revision, railWidth, ratio, left, right, breaches.length].join('|');
+        if (canvasKey !== node.bandsKey) {
+          node.bandsKey = canvasKey;
+          const width = railWidth * (Math.min(100, right) - Math.max(0, left)) / 100;
+          node.bands.width = Math.max(1, Math.round(width * ratio)); node.bands.height = Math.round(20 * ratio);
+          const context = node.bands.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, 20);
+          const at = time => (x(time) - Math.max(0, left)) / 100 * railWidth;
+          for (const severity of ['normal', 'yellow', 'red']) {
+            context.fillStyle = { normal: '#476371', yellow: '#e8c65a', red: '#ed716c' }[severity];
+            for (const item of visibleTimelineIntervals(index, window)) if (item.severity === severity) context.fillRect(at(item.start), 0, Math.max(1, at(item.end) - at(item.start)), 20);
+          }
+          context.fillStyle = '#ff8b83';
+          for (const breach of breaches) { const time = breach.sim_time_s ?? breach.time_s; if (Number.isFinite(time)) context.fillRect(at(time) - 1, 0, 2, 20); }
+        }
+      }
+    }
+  }
+  function positionLanes() {
+    const span = window[1] - window[0], left = span ? (selected - window[0]) / span * 100 : 0;
+    for (const node of laneNodes.values()) { node.cursor.style.left = `${left}%`; node.cursor.hidden = left < 0 || left > 100; }
+  }
   const handles = { start: $('timeline-window-start'), end: $('timeline-window-end') };
   const shades = { start: $('timeline-window-shade-start'), end: $('timeline-window-shade-end') }, clearWindow = $('timeline-window-clear');
   surface.title = GESTURE_HINT;
@@ -108,7 +257,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     if (!expanded) return;
     width = Math.max(1, surface.clientWidth);
     const ratio = doc.defaultView?.devicePixelRatio || 1;
-    const key = [window[0], window[1], width, ratio, sourceCount, revision, mode, keyframeRevision].join('|');
+    const key = [window[0], window[1], width, ratio, sourceCount, revision, mode, keyframeRevision, tracks.length].join('|');
     if (paintKey === key) return;
     paintKey = key; paints++;
     const height = 74;
@@ -116,12 +265,13 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     const context = canvas.getContext('2d');
     context.scale(ratio, ratio); context.clearRect(0, 0, width, height);
     const span = window[1] - window[0], x = time => (time - window[0]) / (span || 1) * width;
-    context.fillStyle = '#263548'; context.fillRect(0, 39, width, 25);
+    const hasLanes = mode === 'live' && tracks.length > 0;
+    if (!hasLanes) { context.fillStyle = '#263548'; context.fillRect(0, 39, width, 25); }
     // Render normal, then yellow, then red so MPC retains priority at every zoom.
     const visible = visibleTimelineIntervals(index, window);
     for (const severity of ['normal', 'yellow', 'red']) {
       context.fillStyle = { normal: '#476371', yellow: '#e8c65a', red: '#ed716c' }[severity];
-      for (const item of visible) if (item.severity === severity) {
+      for (const item of visible) if (!hasLanes && item.severity === severity) {
         const left = clamp(x(item.start), 0, width), right = clamp(x(item.end), 0, width);
         context.fillRect(left, 39, Math.max(1, right - left), 25);
       }
@@ -179,7 +329,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   }
   const snapSeconds = () => 6 / Math.max(1, width) * (window[1] - window[0]);
   const rawTimeAt = event => window[0] + (event.clientX - surface.getBoundingClientRect().left) / Math.max(1, surface.clientWidth) * (window[1] - window[0]);
-  function redraw() { paint(); position(); }
+  function redraw() { paintLanes(); paint(); position(); positionLanes(); }
   function setExpanded(value) {
     expanded = value; panel.hidden = !value;
     for (const button of toggles) {
@@ -204,7 +354,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     }
     return closest;
   }
-  function seek(time) { selected = clamp(time, ...bounds); onSeek(selected); position(); }
+  function seek(time) { selected = clamp(time, ...bounds); onSeek(selected); position(); positionLanes(); }
   function zoom(factor, fraction = .5) { window = zoomTimeline(window, bounds, factor, fraction); fitted = false; redraw(); }
   function pan(seconds) { window = clampTimelineWindow(window.map(time => time + seconds), bounds); fitted = false; redraw(); }
   function fit() { window = [...bounds]; fitted = true; redraw(); }
@@ -293,22 +443,28 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     refreshLayout: redraw,
     update(next) {
       const reset = identity !== next.identity || mode !== next.mode;
+      if (reset && laneDrag) { const node = laneNodes.get(laneDrag.id), pointer = laneDrag.pointer; laneDrag = null; node?.clip.classList.toggle('dragging', false); if (node?.clip.hasPointerCapture(pointer)) node.clip.releasePointerCapture(pointer); }
+      if (reset && mode === 'live' && identity != null) workspaces.set(identity, { aggregate: { ...aggregate }, window: [...window], fitted });
       identity = next.identity; mode = next.mode; bounds = timelineBounds(next.bounds);
+      tracks = next.tracks || []; catalog = next.catalog || []; breaches = next.breaches || []; paintCatalog();
       selected = clamp(Number.isFinite(next.time) ? next.time : bounds[0], ...bounds);
       if (reset) {
-        // Window times belong to one recording/generation, like the zoom.
-        fitted = true; paintKey = ''; hideTooltip(); setAggregate(UNBOUNDED_AGGREGATE);
+        // Live uses one stable session identity across generation changes.
+        // Returning from Replay restores that session's presentation windows.
+        const previous = mode === 'live' ? workspaces.get(identity) : undefined;
+        fitted = previous?.fitted ?? true; window = previous?.window ?? [...bounds];
+        paintKey = ''; laneKey = ''; hideTooltip(); setAggregate(previous?.aggregate ?? UNBOUNDED_AGGREGATE);
         if (drag) {
           const previous = drag; drag = null; previous.element.classList.remove('panning');
           if (previous.element.hasPointerCapture(previous.pointer)) previous.element.releasePointerCapture(previous.pointer);
         }
-        $('timeline-clock-label').textContent = next.clockLabel || (mode === 'live' ? 'Simulation time' : 'Recorded time');
+        $('timeline-clock-label').textContent = next.clockLabel || (mode === 'live' ? 'Session time' : 'Recorded time');
       }
-      window = fitted ? [...bounds] : clampTimelineWindow(window, bounds);
+      window = fitted ? [...bounds] : mode === 'live' ? window : clampTimelineWindow(window, bounds);
       const items = next.intervals || [];
       if (reset || source !== items || sourceCount !== items.length || revision !== next.revision) {
         source = items; sourceCount = items.length; revision = next.revision;
-        index = indexTimelineIntervals(items); paintKey = '';
+        index = indexTimelineIntervals(items); paintKey = ''; laneKey = ''; laneNodes.forEach(node => { node.bandsKey = ''; });
       }
       if (reset || keyframeSource !== next.keyframes || keyframeRevision !== next.keyframeRevision) {
         keyframeSource = next.keyframes; keyframeRevision = next.keyframeRevision;
@@ -316,6 +472,6 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       }
       redraw();
     },
-    get snapshot() { return { expanded, mode, bounds: [...bounds], visible: [...window], selectedTime: selected, intervalCount: index.length, paints, aggregate: { ...aggregate } }; },
+    get snapshot() { return { expanded, mode, bounds: [...bounds], visible: [...window], selectedTime: selected, intervalCount: index.length, paints, lanePaints, trackCount: tracks.length, aggregate: { ...aggregate } }; },
   };
 }
