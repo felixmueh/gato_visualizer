@@ -13,16 +13,18 @@ from live_mpc import (POSITION_TOL_M, REACH_DEFAULT_TASK, SPEED_L1_TOL_RAD_S, fi
 from live_presentation import snapshot
 from solver_process import SolverProcess, model_contract, validate_contract
 
-RESET_TIMEOUT_SECONDS = 30
-
-
 class RemoteController:
     def __init__(self, adapter):
         self.adapter = adapter
 
     def reset(self, native_state):
-        self.adapter.remote.request("reset", timeout=RESET_TIMEOUT_SECONDS,
-                                    state=np.asarray(native_state).tolist())
+        """Reseed the child's controller from native_state at the adapter's time, with the
+        task reference a request then would get: mpc.warmup (GATO's warm-up solve unless
+        params.warmup is off). Like a solve, the warm-up has no deadline. It is no plan:
+        no record, no interval timing."""
+        a = self.adapter
+        return a.remote.request("reset", state=np.asarray(native_state).tolist(), time_s=float(a.t),
+                                reference=a.task_reference().tolist())
 
 
 class SimulatorAdapter:
@@ -149,9 +151,15 @@ class SimulatorAdapter:
         plant.start()
         return plant
 
-    def solve_snapshot(self, origin, settings_version):
+    def task_reference(self):
+        """The reference for a request at the current time: the figure-eight window from
+        self.t, else the fixed target."""
         if self.task["kind"] == "figure8":
             self.update_tracking_reference()
+        return self.reference
+
+    def solve_snapshot(self, origin, settings_version):
+        self.task_reference()
         response = self.remote.request("solve", state=self.x, time_s=self.t,
             reference=self.reference, origin=origin, settings_version=settings_version)
         self.sequence += 1

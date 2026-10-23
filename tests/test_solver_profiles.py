@@ -291,19 +291,15 @@ with socket.socket(fileno=fd) as channel:
             finally:
                 child.close()
 
-    def test_remote_reset_timeout_stops_stalled_child(self):
-        with tempfile.TemporaryDirectory() as directory:
-            child = SolverProcess(dict(id="test", mpc_root=directory, python=sys.executable,
-                cache=directory), script=self.blocking_child(directory))
-            controller = RemoteController(SimpleNamespace(remote=child))
-            try:
-                with patch("solver_adapter.RESET_TIMEOUT_SECONDS", 1):
-                    with self.assertRaisesRegex(RuntimeError, "reset timed out"):
-                        controller.reset(np.zeros(14))
-                self.assertIsNotNone(child.process.poll())
-                self.assertIn("reset exceeded", child.log_path.read_text())
-            finally:
-                child.close()
+    def test_remote_reset_warms_up_with_the_task_reference_and_no_deadline(self):
+        """A reseed is mpc.warmup in the child: a solve-length call, so like a solve it has
+        no deadline, and it carries the state's time and the reference a request then gets."""
+        calls = []
+        remote = SimpleNamespace(request=lambda operation, **kw: calls.append((operation, kw)))
+        reference = np.arange(12, dtype=np.float32).reshape(2, 6)
+        adapter = SimpleNamespace(remote=remote, t=1.25, task_reference=lambda: reference)
+        RemoteController(adapter).reset(np.ones(14))
+        self.assertEqual(calls, [("reset", dict(state=[1.]*14, time_s=1.25, reference=reference.tolist()))])
 
     def test_borrowed_lock_survives_parent_handle_close_until_child_exit(self):
         with tempfile.TemporaryDirectory() as directory:

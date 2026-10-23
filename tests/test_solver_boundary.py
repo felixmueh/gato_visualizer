@@ -49,7 +49,7 @@ class FakeMpc:
 
     def __init__(self, params, binary):
         self.params, self.N, self.dt, self.signs = params, params.N, params.dt_s, SIGNS
-        self.resets, self.step, self._plan = [], None, None
+        self.resets, self.warmups, self.step, self._plan = [], [], None, None
         self.controller = SimpleNamespace(reset=self.reset, solver=FakeSolver(params.N))
         FakeMpc.instances.append(self)
 
@@ -57,6 +57,11 @@ class FakeMpc:
         if not float32_finite(x):
             raise ValueError("reset x0 must be finite")
         self.resets.append(np.array(x))
+
+    def warmup(self, state, reference):
+        if self.params.warmup:
+            self.reset(np.r_[state.q, state.qd]*np.tile(SIGNS, 2))
+            self.warmups.append((state.t, np.array(reference)))
 
     def request(self, state, reference, updates=None):
         from tiago_mpc.plan import Plan
@@ -232,6 +237,39 @@ class BoundaryTests(unittest.TestCase):
             finally:
                 remote.close()
         self.assertFalse(remote.thread.is_alive())
+
+    def test_every_reseed_warms_up_from_its_state_with_the_reference_then(self):
+        with fake_gpu():
+            remote = Remote()
+            simulator = SimulatorAdapter(MPC_ROOT)
+            try:
+                schema = dict(available_N_by_friction=dict(off=[4], on=[]))
+                simulator.remote, simulator.profile, simulator.profile_schema = remote, dict(id="p"), schema
+                remote.request("bootstrap")
+                simulator.configure(config(), deepcopy(FIGURE8_DEFAULT_TASK))
+                mpc = FakeMpc.instances[-1]
+                self.assertEqual(len(mpc.warmups), 1)  # configuring reseeds from the start state
+                simulator.x, simulator.t = np.arange(14, dtype=float)/10, 2.
+                self.assertEqual(simulator.controller.reset(simulator.x)["warmup"], True)
+                t, reference = mpc.warmups[-1]
+                self.assertEqual(t, 2.)
+                # The figure-eight window from the reseed's time, as the next request gets it.
+                np.testing.assert_array_equal(reference, simulator.reference)
+                np.testing.assert_array_equal(mpc.resets[-1], simulator.x*np.tile(SIGNS, 2))
+                # The same reseed again, with no solve in between, changes nothing.
+                self.assertTrue(simulator.controller.reset(simulator.x)["skipped"])
+                plan = simulator.solve_snapshot("preview", 1)  # the preview's own reseed is that one
+                self.assertEqual(len(mpc.warmups), 2)
+                self.assertTrue(plan["stats"]["controller_restarted"])
+                simulator.solve_snapshot("preview", 2)  # after a solve, a preview warms up again
+                self.assertEqual(len(mpc.warmups), 3)
+                simulator.configure(config(warmup=False), deepcopy(FIGURE8_DEFAULT_TASK))
+                mpc = FakeMpc.instances[-1]
+                self.assertEqual(simulator.controller.reset(simulator.x + 1)["warmup"], False)
+                self.assertEqual(mpc.warmups, [])  # warm-up off: the plain controller reset
+                np.testing.assert_array_equal(mpc.resets[-1], (simulator.x + 1)*np.tile(SIGNS, 2))
+            finally:
+                remote.close()
 
     def test_simulated_plant_starts_at_the_state_and_time_and_never_rewinds(self):
         live_probe()

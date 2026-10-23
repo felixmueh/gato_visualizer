@@ -14,6 +14,7 @@ import inspect
 import os
 import socket
 from pathlib import Path
+import time
 import traceback
 
 import numpy as np
@@ -64,6 +65,7 @@ class SolverSession:
                                    native_urdf_sha256=digest(self.tiago.ARM_URDF))
         self.mpc = None
         self.restarted = True
+        self.seed = None  # (state, reference) of the last reseed while no solve followed
 
     def bootstrap(self):
         return dict(contract=model_contract(self.kinematics, self.tiago), model_identity=self.model_identity)
@@ -76,7 +78,7 @@ class SolverSession:
         params = m.MpcParams.from_dict(params)
         if max_sqp_iters is not None:
             params = replace(params, solver=params.solver.replace(max_sqp_iters=max_sqp_iters))
-        self.mpc = None  # release the previous controller's GPU buffers first
+        self.mpc = self.seed = None  # release the previous controller's GPU buffers first
         binary = m.find_binary(params)
         if binary is None:
             raise ValueError(f"Not compiled: N={params.N} {'with' if params.friction else 'without'} predictor "
@@ -101,19 +103,35 @@ class SolverSession:
                     model_identity=self.model_identity, prediction_friction=configuration["friction"],
                     gpu_joint_coordinate_signs=self.mpc.signs.tolist())
 
-    def reset(self, state):
-        """Reseed the controller from a native state (Mpc's sanctioned controller.reset)."""
-        x = np.asarray(state, dtype=float)
-        self.mpc.controller.reset(x * np.tile(self.mpc.signs, 2))
-        self.restarted = True
+    def reset(self, state, time_s, reference):
+        """Reseed the controller from a native state and the task reference for a request
+        then: mpc.warmup, which resets it and, with params.warmup, runs GATO's warm-up
+        solve (as run() before its first tick); without the warm-up, the plain controller
+        reset. A reseed repeating the previous one, with no solve in between, changes
+        nothing and is skipped. Returns whether a warm-up ran and its wall time."""
+        from tiago_mpc.plan import State
+        mpc, x = self.mpc, np.asarray(state, dtype=float)
+        reference = np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6)
+        seed = (x.tobytes(), reference.tobytes())
+        if seed == self.seed:
+            return dict(warmup=False, skipped=True, wall_s=0.)
+        self.seed = None
+        started = time.perf_counter()
+        if mpc.params.warmup:
+            mpc.warmup(State(float(time_s), x[:7], x[7:]), reference)
+        else:
+            mpc.controller.reset(x * np.tile(mpc.signs, 2))
+        self.seed, self.restarted = seed, True
+        return dict(warmup=mpc.params.warmup, skipped=False, wall_s=time.perf_counter() - started)
 
     def solve(self, state, time_s, reference, origin, settings_version):
         from tiago_mpc.plan import State
         mpc, x = self.mpc, np.asarray(state, dtype=float)
+        reference = np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6)
         if origin == "preview":
-            self.reset(x)
-        mpc.request(State(float(time_s), x[:7], x[7:]),
-                    np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6))
+            self.reset(x, time_s, reference)
+        self.seed = None  # the solve moves the controller on from its seed
+        mpc.request(State(float(time_s), x[:7], x[7:]), reference)
         plan = mpc.result()
         stats = plan_stats(plan.stats, self.restarted)
         self.restarted = False
@@ -148,13 +166,13 @@ def serve(channel, root):
             elif session.mpc is None:
                 raise ValueError("Solver is not configured")
             elif operation == "reset":
-                session.reset(payload["state"])
-                result = None
+                result = session.reset(payload["state"], payload["time_s"], payload["reference"])
             elif operation == "solve":
                 result = dict(plan=session.solve(payload["state"], payload["time_s"], payload["reference"],
                                                  payload["origin"], payload["settings_version"]))
             elif operation == "inspect":
                 from inspection_worker import inspect_solve
+                session.seed = None  # the cold solve leaves the solver elsewhere
                 result = inspect_solve(session, payload)
             else:
                 raise ValueError(f"Unsupported solver operation: {operation}")

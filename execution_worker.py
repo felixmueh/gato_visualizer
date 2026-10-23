@@ -2,6 +2,8 @@
 
 SimulatorAdapter calls a separate solver child that owns controller/CUDA state.
 This process holds the GPU leases; neither owner runs in the HTTP process.
+Every controller.reset here is a reseed: mpc.warmup in the child (GATO's warm-up
+solve unless MpcParams.warmup is off), never a plan or part of an interval's timing.
 """
 from __future__ import annotations
 from copy import deepcopy
@@ -368,6 +370,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         if session is None:
                             adapter.controller.reset(adapter.x)
                             session = MultirateSession(adapter, execution, version)
+                            job["wall"] = time.monotonic()  # the reseed's warm-up is no calculation
                         job.update(solves=session.solves, controls=session.control_updates, steps=session.steps)
                         status("playing" if job["paced"] else "calculating", "Computing closed-loop MPC motion", complete=False)
                 if job is None or not current(token):
