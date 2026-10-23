@@ -158,7 +158,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
   const transportConnected = () => liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && !needsInitialPreview;
   const connected = () => transportConnected() && !profileNError;
-  const continueAtEnd = () => liveReady && (settings?.execution.calculation === 'on_play' || Boolean(settings?.execution.continue_at_end));
+  const continueAtEnd = () => connected() && (settings?.execution.calculation === 'on_play' || Boolean(settings?.execution.continue_at_end));
   // Completion metadata can precede later history pages. Do not drain a short
   // final tail until the local download is caught up.
   const growingHistory = () => Boolean(job.job_active || extensionPending || fetching || fetchAgain);
@@ -817,7 +817,11 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       connection.onopen = () => { latestServerEvents.clear(); controlsEnabled(); message('Connected · waiting for solver status…'); if (!needsInitialPreview && generation != null) fetchHistory(); };
       connection.onerror = () => { controlsEnabled(); message('Live stream disconnected · reconnecting. Playback remains local.', true); };
       renderView();
-    } else if (source) { const connection = source; source = null; connection.close(); pending = false; needsInitialPreview = false; await send({ type: 'pause' }); }
+    } else if (source) {
+      const shouldPause = transportConnected() && (connected() || job.job_active || pending);
+      const connection = source; source = null; connection.close(); pending = false; needsInitialPreview = false;
+      if (shouldPause) await send({ type: 'pause' });
+    }
   }
   $('replay-mode').addEventListener('click', () => switchMode('replay'));
   $('live-mode').addEventListener('click', () => switchMode('live'));
@@ -871,7 +875,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       pausePlayback(); extensionPending = false;
       const intent = playbackIntent;
       controlsEnabled(); renderView();
-      if (transportConnected()) await send({ type: 'pause' });
+      if (transportConnected() && (connected() || job.job_active || pending)) await send({ type: 'pause' });
       if (intent !== playbackIntent) return;
       if (settings?.execution.calculation === 'on_play') { pending = false; job = { ...job, job_active: false }; }
       controlsEnabled(); renderView(); return;
@@ -888,8 +892,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const resume = continueAtEnd() || (!noMotion && Math.abs(clock.time - history.bounds[1]) < 1e-7 && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7);
     // Finite precalculations replay from the start when Stop is selected.
     // On Play resumes continuous computation from the existing recording tip.
-    if (!noMotion && !job.job_active && !extensionPending && !resume && clock.time >= sessionBounds()[1] - 1e-7) clock.seek(sessionBounds()[0]);
-    const shouldExtend = (noMotion && (resume || sessionBounds()[1] <= sessionBounds()[0])) || (clock.time >= history.bounds[1] - 1e-7 && resume);
+    if ((!noMotion || localComparisonPlayback()) && !job.job_active && !extensionPending && !resume && clock.time >= sessionBounds()[1] - 1e-7) clock.seek(sessionBounds()[0]);
+    const shouldExtend = connected() && ((noMotion && (resume || sessionBounds()[1] <= sessionBounds()[0])) || (clock.time >= history.bounds[1] - 1e-7 && resume));
     const follow = resume && (noMotion || clock.time >= history.bounds[1] - 1e-7);
     // Publish local intent immediately. Arriving history may grow the recorded
     // end while Play is acknowledged; it must not change the chosen follow mode.
@@ -984,7 +988,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       unsubscribeSession?.(); session = value; clock.setRate(session.rate);
       unsubscribeSession = session.subscribe(() => {
         clock.setRate(session.rate); renderDirty = true;
-        if ($('live-play').disabled !== (!connected() && !localComparisonPlayback())) controlsEnabled();
+        const disabled = !connected() && !localComparisonPlayback();
+        const [start, end] = sessionBounds(), emptied = disabled && clock.playing && end <= start;
+        if (emptied) pausePlayback();
+        if (emptied || $('live-play').disabled !== disabled) controlsEnabled();
       });
       syncSession(); renderDirty = true;
     },

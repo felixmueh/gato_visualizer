@@ -1316,14 +1316,17 @@ test('one session clock plays comparison tails at the chosen rate and edits clam
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
-test('unavailable Live keeps an empty main track and plays comparisons locally across a Replay roundtrip', async () => {
+for (const unavailable of ['no compiled N', 'predictor unavailable']) test(`unavailable Live (${unavailable}) keeps an empty main track and plays comparisons locally across a Replay roundtrip`, async () => {
   const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
-  h.schema.available_N = [];
+  if (unavailable === 'no compiled N') h.schema.available_N = [];
+  else h.schema.available_N_by_friction = { off: [], on: [32] };
   try {
     const session = createSession(), live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); live.setSession(session);
     await flush(); assert.equal(h.$('live-mode').disabled, false);
-    h.$('live-mode').emit('click'); assert.equal(live.mode, 'live'); assert.equal(h.sources.length, 0);
+    h.$('live-mode').emit('click'); assert.equal(live.mode, 'live');
+    if (unavailable === 'no compiled N') assert.equal(h.sources.length, 0);
+    else { const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); }
     assert.equal(session.focused.empty, true); assert.equal(h.$('live-play').disabled, true);
     const track = session.addTrack({ span: [5, 6] });
     assert.equal(h.$('live-play').disabled, false); assert.equal(h.$('live-precalculate').disabled, true);
@@ -1333,6 +1336,16 @@ test('unavailable Live keeps an empty main track and plays comparisons locally a
     h.$('replay-mode').emit('click'); await flush(); h.$('live-mode').emit('click');
     assert.equal(session.tracks[1], track); assert.equal(session.cursor, .25);
     live.seek(.75); assert.equal(session.cursor, .75); assert.deepEqual(h.commands, []);
+    live.seek(1); h.$('live-play').emit('click'); live.frame(0); live.frame(250);
+    assert.equal(live.playing, true); assert.equal(session.cursor, .25); // Play restarts the finite local session.
+    session.setVisible(track.id, false); live.frame(500);
+    assert.equal(h.$('live-play').disabled, true); assert.equal(live.playing, false);
+    session.setVisible(track.id, true); live.frame(600);
+    assert.equal(h.$('live-play').disabled, false);
+    h.$('live-play').emit('click'); live.frame(0); live.frame(250);
+    assert.equal(live.playing, true);
+    session.removeTrack(track.id); live.frame(500);
+    assert.equal(h.$('live-play').disabled, true); assert.equal(live.playing, false);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
