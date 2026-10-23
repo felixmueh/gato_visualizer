@@ -20,6 +20,8 @@ import uuid
 
 import numpy as np
 
+from runtime_files import runtime_directory
+
 ROOT = Path(__file__).resolve().parent
 MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 ARRAY_FRAME = 1 << 63
@@ -192,6 +194,9 @@ def receive_message(channel, deadline=None):
     return message
 
 
+KEPT_LOGS = 16
+
+
 class SolverProcess:
     """One child; callers hold the coordinator's GPU lease for its whole call."""
     def __init__(self, profile, *, script=None, lease_fds=lambda: ()):
@@ -200,8 +205,10 @@ class SolverProcess:
         self.epoch = uuid.uuid4().hex
         self.sequence = 0
         self.channel, child = socket.socketpair()
-        folder = ROOT / "_expr_data/live/solver-processes"
-        folder.mkdir(parents=True, exist_ok=True)
+        folder = runtime_directory("solver-processes")
+        # Bounded: keep the logs of the last KEPT_LOGS children (names sort by start time).
+        for old in sorted(folder.glob("*.log"))[:-(KEPT_LOGS-1)]:
+            old.unlink(missing_ok=True)
         self.log_path = folder / f"{time.time_ns()}-{self.epoch}.log"
         environment = dict(os.environ, GATO_CACHE_DIR=profile["cache"], PYTHONUNBUFFERED="1")
         # A launch-time source choice must not leak into a different profile.

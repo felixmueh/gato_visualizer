@@ -58,17 +58,19 @@ class EncodedHistoryPageTests(unittest.TestCase):
     def test_captured_page_excludes_later_appends_and_survives_generation_reset(self):
         old = self.store.path
         original_open = Path.open
-        def open_after_change(path, *args, **kwargs):
+        def open_then_change(path, *args, **kwargs):
+            handle = original_open(path, *args, **kwargs)
             if path == old and args == ('rb',):
                 self.store.append([dict(type='state', sim_time_s=999., q=[99]*7)])
                 self.store.reset(8)
-            return original_open(path, *args, **kwargs)
-        with patch.object(Path, 'open', open_after_change):
+            return handle
+        with patch.object(Path, 'open', open_then_change):
             page = json.loads(self.store.page_json(7, 590, 256))
         self.assertEqual(page, dict(generation=7, next_cursor=601, complete=False,
                                     records=self.records[590:], history_end_s=.6))
         self.assertEqual(self.store.generation, 8)
-        self.assertTrue(old.exists())
+        # Only the current run is kept; the page read from the open (deleted) file.
+        self.assertFalse(old.exists())
 
     def test_truncated_committed_page_is_rejected(self):
         self.store.stream.truncate(self.store.stream.tell()-1)

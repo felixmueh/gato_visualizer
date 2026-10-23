@@ -49,7 +49,9 @@ class SourceTests(unittest.TestCase):
             store.reset(1)
             store.append([dict(header, sim_time_s=3.), dict(type="state", sim_time_s=3., q=[9.]*7)])
             self.assertEqual(reader.read(store.plot_source(1))["states"][0]["q"][0], 9)
-            self.assertTrue(previous.exists())
+            self.assertFalse(previous.exists())  # only the current run is kept
+            with self.assertRaisesRegex(ValueError, "History changed"):
+                reader.read(descriptor)
             with self.assertRaisesRegex(ValueError, "History changed"):
                 store.plot_source(0)
             # A history without its segment header (before 2026-10-23) fails clearly.
@@ -341,7 +343,7 @@ class WorkerTests(unittest.TestCase):
             result = self.wait_job(self.service.submit(body)["job_id"])
             self.assertEqual(result["state"], "failed")
             self.assertIn("not retained", result["error"])
-            self.assertTrue(saved_path.exists())
+            self.assertFalse(saved_path.exists())
         finally:
             history.close(); solves.close()
 

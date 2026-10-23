@@ -379,7 +379,7 @@ class SchedulerTests(unittest.TestCase):
                 self.assertEqual(store.page(0,256,256)['records'][0]['sim_time_s'],256)
                 old=store.path
                 store.reset(1)
-                self.assertTrue(old.exists())
+                self.assertFalse(old.exists())
                 with self.assertRaises(HistoryGenerationError):
                     store.page(0,0,256)
                 with self.assertRaises(ValueError):

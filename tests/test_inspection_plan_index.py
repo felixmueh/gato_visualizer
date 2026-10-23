@@ -74,9 +74,9 @@ class PlanIndexTests(unittest.TestCase):
         for identifier in ('missing', 'preview:7', '', True, {'seq': 7}):
             with self.subTest(identifier=identifier), self.assertRaises(ValueError):
                 self.history.selected_plan(descriptor, identifier)
-        old, content = self.history.path, self.history.path.read_bytes()
+        old = self.history.path
         self.history.reset(1)
-        self.assertEqual(old.read_bytes(), content)
+        self.assertFalse(old.exists())
         with self.assertRaises(HistoryGenerationError):
             self.history.selected_plan(descriptor, '7')
         with self.assertRaisesRegex(ValueError, 'not retained'):
@@ -104,7 +104,7 @@ class PlanIndexTests(unittest.TestCase):
             self.service._problem(stale)
         old = self.previews.path
         self.history.reset(1); self.previews.reset(1)
-        self.assertTrue(old.exists())
+        self.assertFalse(old.exists())
         with self.assertRaises(HistoryGenerationError):
             self.service._problem(request)
         with self.assertRaisesRegex(ValueError, 'not retained'):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections import deque
 from copy import deepcopy
+import errno
 import json
 import multiprocessing as mp
 import os
@@ -13,6 +14,7 @@ import traceback
 
 from execution_session import DEFAULT_EXECUTION, validate_anchor, validate_execution
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
+from runtime_files import ENVIRONMENT as RUNTIME_ENVIRONMENT, runtime_directory
 from solver_lifecycle import run_with_parent
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
@@ -25,12 +27,27 @@ class HistoryGenerationError(ValueError):
     pass
 
 
+def _server_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
 class HistoryStore:
     """Append-only JSONL; bounded pages and a compact byte-offset index.
 
     One file per generation; its first record is the segment header holding the
-    constant context. Completed and superseded generations remain in the owning
-    checkout's ignored data directory. HTTP never waits for a GPU/native solver call.
+    constant context. HTTP never waits for a GPU/native solver call.
+
+    Only the current run is kept (Felix, 2026-10-23): a generation's file is deleted
+    when it stops being current (a new generation, close at shutdown or restart),
+    and files left by earlier server runs (by owner pid) at start. Readers of a
+    replaced generation fail with HistoryGenerationError. `kept` is the hook for
+    runs retained on purpose later (a comparison feature); nothing adds to it yet.
     """
     def __init__(self, directory):
         self.directory = Path(directory)
@@ -38,12 +55,23 @@ class HistoryStore:
         self.generation = 0
         self.lock = threading.RLock()
         self.stream = None
+        self.path = None
+        self.kept = set()
+        for path in self.directory.glob("history-*.jsonl"):
+            owner = path.name.split("-")[1]
+            if not (owner.startswith("p") and owner[1:].isdigit() and _server_alive(int(owner[1:]))):
+                path.unlink(missing_ok=True)
         self.reset(0)
+
+    def _discard(self, path):
+        if path is not None and path not in self.kept:
+            path.unlink(missing_ok=True)
 
     def reset(self, generation):
         with self.lock:
             if self.stream:
                 self.stream.close()
+            self._discard(self.path)
             self.generation = generation
             self.offsets = []
             self.plan_offsets = {}
@@ -51,7 +79,7 @@ class HistoryStore:
             self.state_count = 0
             self.end_time = 0.
             self.complete = True
-            self.path = self.directory / f"history-{time.time_ns()}-g{generation}.jsonl"
+            self.path = self.directory / f"history-p{os.getpid()}-{time.time_ns()}-g{generation}.jsonl"
             self.stream = self.path.open("w+b")
 
     @staticmethod
@@ -90,8 +118,14 @@ class HistoryStore:
             end_time = max(end_time, timestamp)
         with self.lock:
             start = self.stream.tell()
-            self.stream.write(payload)
-            self.stream.flush()
+            try:
+                self.stream.write(payload)
+                self.stream.flush()
+            except OSError as exc:
+                if exc.errno == errno.ENOSPC:
+                    raise OSError(exc.errno, f"The RAM-backed runtime directory {self.directory.parent} is full; "
+                                  f"Reset, shorten the run or set {RUNTIME_ENVIRONMENT}") from exc
+                raise
             cursor = len(self.offsets)
             self.offsets.extend(start + offset for offset in relative_offsets)
             for identifier, index, offset, size in plans:
@@ -116,8 +150,9 @@ class HistoryStore:
                         complete=self.complete)
 
     def _page_encoded(self, generation, after, limit):
-        # Snapshot one bounded committed byte window, then read outside locks.
-        # Superseded files remain readable; later appends cannot enter this page.
+        # Snapshot one bounded committed byte window and open it, then read outside
+        # locks. The open file stays readable when a newer generation replaces (and
+        # deletes) it; later appends cannot enter this page.
         with self.lock:
             if generation != self.generation:
                 raise HistoryGenerationError(f"History changed; current generation={self.generation}")
@@ -125,13 +160,13 @@ class HistoryStore:
                     not 0 <= after <= len(self.offsets) or not 1 <= limit <= MAX_HISTORY_PAGE_RECORDS):
                 raise ValueError(f"after must be an existing history cursor; limit must be within [1,{MAX_HISTORY_PAGE_RECORDS}]")
             stop = min(after+limit, len(self.offsets))
-            path = self.path
             offset = self.offsets[after] if stop > after else None
             end = self.offsets[stop] if stop < len(self.offsets) else self.stream.tell()
             complete, end_time = self.complete, self.end_time
+            reader = self.path.open("rb") if offset is not None else None
         records = []
         if offset is not None:
-            with path.open("rb") as reader:
+            with reader:
                 reader.seek(offset)
                 encoded = reader.read(end-offset)
             records = encoded.split(b"\n")[:-1]
@@ -174,12 +209,13 @@ class HistoryStore:
             if indexed is None or indexed[0] >= cursor or indexed[1] + indexed[2] > byte_end:
                 raise ValueError("Selected solve is not retained in this source")
             _, offset, size = indexed
-            path, segment = self.path, self.segment
-        if segment is None:
-            raise ValueError(NO_SEGMENT)
-        # Keep disk I/O and JSON decoding out of the append/metadata lock. A
-        # concurrently superseded file remains retained, like history pages.
-        with path.open("rb") as reader:
+            segment = self.segment
+            if segment is None:
+                raise ValueError(NO_SEGMENT)
+            # Open under the lock: a concurrently replaced (deleted) file stays
+            # readable, like history pages. Disk I/O and JSON decoding stay outside.
+            reader = self.path.open("rb")
+        with reader:
             reader.seek(offset)
             encoded = reader.read(size)
         if len(encoded) != size or not encoded.endswith(b"\n"):
@@ -190,8 +226,12 @@ class HistoryStore:
         return dict(deepcopy(segment["context"]), **plan)
 
     def close(self):
-        if self.stream:
-            self.stream.close()
+        """Close at shutdown or restart: the current run stops being current."""
+        with self.lock:
+            if self.stream:
+                self.stream.close()
+                self.stream = None
+            self._discard(self.path)
 
 
 class ProcessLiveService:
@@ -254,8 +294,9 @@ class ProcessLiveService:
         self.schema["execution"] = dict(defaults=deepcopy(self.execution),
             max_duration_s=120, max_states=MAX_STATES,
             rates_order=["simulation_hz", "control_hz", "to_hz"])
-        self.history_store = HistoryStore(Path(__file__).resolve().parent / "_expr_data/live/history")
-        self.inspection_store = HistoryStore(Path(__file__).resolve().parent / "_expr_data/live/solves")
+        # Runtime scratch on tmpfs (runtime_files); only the current run is kept.
+        self.history_store = HistoryStore(runtime_directory("history"))
+        self.inspection_store = HistoryStore(runtime_directory("solves"))
         if render_factory is None:
             from live_presentation import LiveRenderer
             render_factory = LiveRenderer
@@ -609,8 +650,7 @@ class ProcessLiveService:
         # borrowed lease FDs keep GPU locks held until child cleanup completes.
         self._process.join(timeout=SHUTDOWN_GRACE_SECONDS)
         if self._process.is_alive():
-            directory = Path(__file__).resolve().parent / "_expr_data/live/coordinator-lifecycle"
-            directory.mkdir(parents=True, exist_ok=True)
+            directory = runtime_directory("coordinator-lifecycle")
             (directory / f"shutdown-{time.time_ns()}.json").write_text(json.dumps(dict(
                 reason=f"Explicit backend shutdown exceeded {SHUTDOWN_GRACE_SECONDS}s cooperative grace",
                 coordinator_pid=self._process.pid, active_profile_id=self.active_profile_id,

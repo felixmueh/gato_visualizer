@@ -776,6 +776,10 @@ def main(argv=None):
     print(f"Ingest directory: {visualizer_config.ingest_directory} "
           "(recursive catalog updates when the browser polls)", flush=True)
     print(f"Browser uploads: {library.upload_directory}", flush=True)
+    from runtime_files import runtime_directory, runtime_warning
+    print(f"Runtime files (RAM-backed, current run only): {runtime_directory()}", flush=True)
+    if (warning := runtime_warning()) is not None:
+        print(f"WARNING: {warning}", file=sys.stderr, flush=True)
     print("Starting pose only: upload or select a recording for replay", flush=True)
     try:
         server.serve_forever()

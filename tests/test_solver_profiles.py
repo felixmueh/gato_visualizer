@@ -60,8 +60,12 @@ class ProfileAdapter(FakeAdapter):
     def state_snapshot(self, *args):
         if self.profile == "state_failure":
             raise ValueError("state snapshot failed after configuration")
-        return dict(super().state_snapshot(*args), simulator_identity=self.plant_identity,
-                    solver_profile=self.profile)
+        return super().state_snapshot(*args)
+
+    def segment_header(self, version, execution):
+        header = super().segment_header(version, execution)
+        header["context"].update(simulator_identity=self.plant_identity, solver_profile=self.profile)
+        return header
 
 
 class CompiledAdapter(ProfileAdapter):
@@ -128,26 +132,26 @@ class SwitchTests(unittest.TestCase):
     def tearDown(self):
         self.live.close()
 
-    def test_switch_retains_native_anchor_plant_and_old_files(self):
+    def test_switch_retains_native_anchor_and_plant_and_replaces_the_run(self):
         live = self.live
         old_path = live.history_store.path
-        old_bytes = old_path.read_bytes()
         old_generation = live.generation
-        plant = live.latest["state"]["simulator_identity"]
+        plant = live.latest["segment"]["context"]["simulator_identity"]
         pid = live._process.pid
         anchor = dict(sim_time_s=3.5, q=[.25]*7, qd=[-.4]*7)
         live.switch_solver_profile(dict(id="second"), anchor)
         wait_until(lambda: live.profile_switch["state"] == "idle" and live.generation > old_generation)
         wait_until(lambda: "state" in live.latest)
         self.assertEqual(live._process.pid, pid)
-        self.assertEqual(live.latest["state"]["simulator_identity"], plant)
+        self.assertEqual(live.latest["segment"]["context"]["simulator_identity"], plant)
+        self.assertEqual(live.latest["segment"]["context"]["solver_profile"], "second")
         self.assertEqual(live.latest["state"]["sim_time_s"], 3.5)
         self.assertEqual(live.latest["state"]["q"], [.25]*7)
         self.assertEqual(live.latest["state"]["qd"], [-.4]*7)
         self.assertEqual(live.active_profile_id, "second")
         self.assertEqual(live.schema["available_N_by_friction"], dict(off=[16], on=[32]))
         self.assertEqual(live.schema["friction"]["source"]["predictor"], "second")
-        self.assertEqual(old_path.read_bytes(), old_bytes)
+        self.assertFalse(old_path.exists())  # only the current run is kept
         self.assertNotEqual(live.history_store.path, old_path)
         self.assertEqual(live.latest["status"]["state"], "paused")
 

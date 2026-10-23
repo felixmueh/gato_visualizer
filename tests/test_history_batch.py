@@ -1,5 +1,6 @@
 """Byte-exact batched history writes and atomic offset publication."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -27,6 +28,35 @@ class StreamCounter:
 
     def close(self):
         self.stream.close()
+
+
+class RetentionTests(unittest.TestCase):
+    def test_only_the_current_run_is_kept(self):
+        """Felix, 2026-10-23: replaced runs and files of ended server runs are deleted."""
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            ended = folder/'history-p999999999-1-g4.jsonl'   # no such process
+            legacy = folder/'history-1792000000000000000-g2.jsonl'  # before owner pids
+            running = folder/f'history-p{os.getppid()}-1-g1.jsonl'  # another live server
+            other = folder/'notes.txt'
+            for path in (ended, legacy, running, other):
+                path.write_text('x')
+            store = HistoryStore(folder)
+            try:
+                self.assertFalse(ended.exists() or legacy.exists())
+                self.assertTrue(running.exists() and other.exists())
+                first = store.path
+                self.assertTrue(first.name.startswith(f'history-p{os.getpid()}-'))
+                store.reset(1)
+                self.assertFalse(first.exists())
+                kept = store.path
+                store.kept.add(kept)  # the hook for runs kept on purpose
+                store.reset(2)
+                self.assertTrue(kept.exists())
+                current = store.path
+            finally:
+                store.close()
+            self.assertFalse(current.exists())  # shutdown or restart ends the current run
 
 
 class BatchHistoryTests(unittest.TestCase):
@@ -72,7 +102,7 @@ class BatchHistoryTests(unittest.TestCase):
                     history_cursor=1504, history_end_s=1.499, complete=True))
                 old = store.path
                 store.reset(1)
-                self.assertEqual(old.read_bytes(), expected)
+                self.assertFalse(old.exists())  # only the current run is kept
                 self.assertEqual(store.offsets, [])
                 self.assertEqual(store.plan_offsets, {})
                 fresh = dict(type='plan', seq=1, sim_time_s=0., q=[[99]*7])
@@ -80,7 +110,6 @@ class BatchHistoryTests(unittest.TestCase):
                 self.assertEqual(store.offsets, [0])
                 with self.assertRaisesRegex(ValueError, 'no segment header'):
                     store.selected_plan(store.plot_source(1), 1)  # a history without its header fails clearly
-                self.assertEqual(old.read_bytes(), expected)
             finally:
                 store.close()
 

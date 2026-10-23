@@ -77,6 +77,9 @@ class SourceReader:
                 self.identity, self.records, self.cursor, self.offset = identity, [], 0, 0
                 self.buckets = {name: [] for name in ("states", "plans", "intervals", "controls")}
                 self.segment = self.raw_cache = None
+            if not Path(descriptor["path"]).exists():
+                # Only the current run is kept; a replaced generation's file is gone.
+                raise ValueError("History changed; its run was replaced")
             with Path(descriptor["path"]).open("rb") as stream:
                 stream.seek(self.offset)
                 while self.cursor < descriptor["cursor"]:
