@@ -220,7 +220,7 @@ API:
 - `GET /api/replays` → `{items, revision}`. Items include `id`, `name`, `path`,
   `source`, `revision`, `status` (`ready` or `error`) and an optional `error`.
 - `GET /api/replays/scene?id=...` → a snapshot in the existing scene shape.
-  `default` is the starting pose. `/api/scene` keeps that initial scene.
+  `default` is the start pose. `/api/scene` keeps that initial scene.
 - `POST /api/replays/upload?path=study/run.npz`, raw body with
   `Content-Type: application/octet-stream` → `{accepted, item, id}`.
   Invalid uploads return `{accepted:false,error}`; collisions use HTTP 409.
@@ -228,7 +228,7 @@ API:
 An uploaded scene includes full-root `reference_time_s`/`reference_xyz` for
 each trajectory when present, and `metadata.time_basis`. Prediction
 `metadata.recorded_start_s` records the explicit origin. With no reference,
-`target_xyz` is null. Starting-pose scenes have `source.bootstrap=true` and no
+`target_xyz` is null. Start-pose scenes have `source.bootstrap=true` and no
 trajectories; they do not manufacture recordings or timestamps.
 
 

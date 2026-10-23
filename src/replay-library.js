@@ -1,4 +1,4 @@
-export function isStartingScene(recording) {
+export function isStartPoseScene(recording) {
   return recording.source?.bootstrap === true && Array.isArray(recording.trajectories) && recording.trajectories.length === 0;
 }
 
@@ -91,7 +91,7 @@ export function playbackClock(trajectory) {
   return basis === 'wall' ? 'wall' : basis === 'simulation' ? 'simulation' : 'recorded';
 }
 
-export function setupReplayLibrary({ onScene, onLinkedItem, initialId = 'default', initialName = 'Starting pose' }) {
+export function setupReplayLibrary({ onScene, onLinkedItem, initialId = 'default', initialName = 'Start pose' }) {
   const $ = (id) => document.getElementById(id);
   let selectedId = initialId;
   let selectedItem = { id: initialId, name: initialName, path: '', status: 'ready' };

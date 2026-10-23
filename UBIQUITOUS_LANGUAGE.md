@@ -8,6 +8,7 @@
 | **MPC episode** | One closed-loop MPC execution over time, whose recording may contain robot states, applied controls, references, and associated solves. | Solve, prediction, trajectory when the whole execution is meant |
 | **Prediction** | The candidate state/control trajectory returned by a solve, including its prediction horizon. | Executed trajectory, episode |
 | **Robot state** | The native joint positions and velocities at a specified task/simulation time. | Joint positions alone when defining a continuation state |
+| **Start pose** | The native joint positions the simulated arm starts from at t = 0, velocities zero: the Live setting `config.plant.start_pose_rad`, default `tiago_mpc`'s `Q_START`. Reset returns to it; changing it starts a new run there. Replay's default scene shows the arm at `Q_START`. | Starting pose, initial pose, comfortable pose (that is `Q_START`, the default) |
 | **Reseed** | Preparing the Live controller to solve from a robot state: `tiago_mpc`'s `Mpc.warmup` with the task reference at that time, which runs GATO's warm-up solve unless warm-up is off. It is not a solve and produces no prediction. | Reset (the Live command), restart |
 | **SQP time limit** | `MpcParams.max_sqp_time_s`: wall time for a Live solve's SQP iterations within the SQP cap; none by default in Live, which runs on simulation time. | SQP wall budget, `budget_s` (Run again's separate wall budget) |
 

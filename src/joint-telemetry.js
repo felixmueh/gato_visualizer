@@ -1,4 +1,5 @@
 import { DEFAULT_LIMIT_USE, LIMIT_QUANTITIES, formatLimitDistance, limitBounds, quantityLimitUse } from './limit-use.js';
+import { createResetButton, RESET_ICON } from './setting-resets.js';
 
 // Positions/velocities interpolate; actuator commands hold until the next command.
 export function sampleTelemetry(trajectory, time) {
@@ -68,6 +69,63 @@ export function setupJointViewToggle({ container, buttons, storage = globalThis.
   return apply;
 }
 
+// The lock left of Gauges/Numbers (Felix, 2026-10-23). Locked, the default, the
+// Joints tab is read-only. Unlocked, in Live at t = 0, the position gauges (drag)
+// and Numbers cells (type, Enter) edit the start pose. Remembered per viewer.
+export const JOINT_LOCK_KEY = 'joint-lock-v1';
+export function loadJointLock(storage) {
+  try { return storage?.getItem(JOINT_LOCK_KEY) !== 'unlocked'; } catch { return true; }
+}
+export function saveJointLock(storage, locked) {
+  try { storage?.setItem(JOINT_LOCK_KEY, locked ? 'locked' : 'unlocked'); } catch { /* per-viewer convenience only */ }
+}
+const LOCK_ICON = (open) => `<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="${open ? 'M7 9V6.5a3 3 0 0 1 5.9-.8' : 'M7 9V6.5a3 3 0 0 1 6 0V9'}"/></svg>`;
+
+export function setupJointLock({ button, rows, storage = globalThis.localStorage, onChange = () => {} }) {
+  const apply = locked => {
+    rows.locked = locked; rows.lockButton = button;
+    button.dataset.locked = String(locked); button.setAttribute('aria-pressed', String(!locked));
+    button.setAttribute('aria-label', locked ? 'Unlock the start pose for editing' : 'Lock the joints');
+    button.innerHTML = LOCK_ICON(!locked);
+    refreshLock(rows);
+  };
+  button.addEventListener('click', () => { apply(!rows.locked); saveJointLock(storage, rows.locked); onChange(rows.locked); });
+  apply(loadJointLock(storage));
+  return apply;
+}
+
+function refreshLock(rows) {
+  const button = rows.lockButton;
+  if (!button) return;
+  button.title = rows.locked ? 'Locked: the joints are read-only. Unlock to set the start pose.'
+    : 'Unlocked: in Live at t = 0, drag a position or type it to set the start pose; a new run starts there. Click to lock.';
+}
+
+// The start-pose Reset beside the lock (Felix, 2026-10-23): always shown, locked or
+// not; disabled while the start pose is the default (or cannot be set now), else it
+// returns the whole start pose to the default as one settings change.
+const jointLabel = (pose, i) => `J${i + 1} ${signed(pose.value[i], 3)} rad (default ${signed(pose.defaults[i], 3)})`;
+function refreshStartReset(rows) {
+  const button = rows.startReset, pose = rows.startPose;
+  if (!button) return;
+  const changed = pose ? pose.value.flatMap((v, i) => Math.abs(v - pose.defaults[i]) > 1e-9 ? [jointLabel(pose, i)] : []) : [];
+  const enabled = changed.length > 0 && pose.resettable;
+  button.disabled = !enabled;
+  button.title = !pose ? 'Reset the start pose to the default (Live only: Replay has no run to reset)'
+    : !changed.length ? 'The start pose is the default'
+    : `Reset the start pose to the default and start a new run there at t = 0, also mid-run.\nDiffers: ${changed.join(', ')}`
+      + (pose.resettable ? '' : '\nNot available now: not connected, or the GPU is busy.');
+}
+
+// While the start pose is edited: the planning box is the URDF range shrunk by the
+// MPC's joint margin; a start pose outside it is allowed and flagged.
+export const OUTSIDE_PLANNING = 'Outside the MPC planning box (URDF limits less the joint margin): '
+  + 'the run starts here anyway; its first plans report a position-row violation while they move the joint back inside. '
+  + 'Stop on breach checks only the URDF limits.';
+const startEditing = rows => Boolean(rows.startPose?.editable && !rows.locked);
+const roundRad = value => Math.round(value * 1e4) / 1e4;
+const withJoint = (q, index, value) => q.map((item, i) => i === index ? value : item);
+
 function createGauge(doc, quantity) {
   const gauge = el(doc, 'span', 'limit-gauge'); gauge.dataset.quantity = quantity;
   const track = el(doc, 'span', 'limit-gauge-track');
@@ -88,13 +146,18 @@ function createGauge(doc, quantity) {
   return parts;
 }
 
-export function createJointTable(container, names) {
+// onStartPoseDraft(q | null) shows a dragged start pose in the scene (null: back to
+// the shown state); onStartPoseCommit(q) sets it: one settings change per release,
+// Enter or reset arrow, never one per pointer move.
+export function createJointTable(container, names, { onStartPoseDraft = () => {}, onStartPoseCommit = () => {}, onStartPoseReset = () => {}, resetButton = null } = {}) {
   const doc = container.ownerDocument;
   const heading = el(doc, 'div', 'joint-row joint-columns');
   // Colour is the cue; its meaning is a hover away.
   heading.title = headingTitle();
+  const labels = [];
   for (const [text, unit] of [['JOINT'], ['POS', 'rad'], ['VEL', 'rad/s'], ['TORQUE', 'N m']]) {
-    const cell = Object.assign(el(doc, 'span'), { textContent: text });
+    const cell = el(doc, 'span'), label = Object.assign(el(doc, 'span', 'joint-heading-label'), { textContent: text });
+    cell.append(label); labels.push(label);
     if (unit) cell.append(Object.assign(el(doc, 'small', 'joint-unit'), { textContent: ` ${unit}` }));
     heading.append(cell);
   }
@@ -103,17 +166,74 @@ export function createJointTable(container, names) {
     const row = el(doc, 'div', 'joint-row');
     const label = el(doc, 'span', 'joint-name'); label.textContent = `J${i + 1}`; label.title = name; row.append(label);
     const gauges = LIMIT_QUANTITIES.map(quantity => { const parts = createGauge(doc, quantity); row.append(parts.gauge); return parts; });
+    const reset = createResetButton(doc, `config.plant.start_pose_rad.${i}`, `J${i + 1} start pose`);
+    reset.hidden = true; label.append(reset);
+    const input = el(doc, 'input', 'limit-gauge-input'); input.type = 'number'; input.step = '0.001'; input.disabled = true;
+    input.setAttribute('aria-label', `J${i + 1} start pose (rad)`); gauges[0].gauge.append(input);
+    Object.assign(gauges, { row, name, label, reset, input });
     container.append(row); return gauges;
   });
-  rows.heading = heading;
+  if (resetButton) { resetButton.innerHTML = RESET_ICON; resetButton.setAttribute('aria-label', 'Reset the start pose to the default'); }
+  Object.assign(rows, { heading, container, positionLabel: labels[1], startReset: resetButton, locked: true, startPose: null });
   rows.tooltip = createGaugeTooltip(container);
+
+  const pose = () => rows.startPose;
+  const commit = q => { if (q.some((v, i) => Math.abs(v - pose().value[i]) > 1e-12)) onStartPoseCommit(q); };
+  resetButton?.addEventListener('click', event => {
+    event.preventDefault();
+    if (pose()?.resettable && !resetButton.disabled) onStartPoseReset();
+  });
+  rows.forEach((gauges, index) => {
+    const { reset, input } = gauges, position = gauges[0];
+    reset.addEventListener('click', event => {
+      event.preventDefault(); event.stopPropagation();
+      if (startEditing(rows)) commit(withJoint(pose().value, index, pose().defaults[index]));
+    });
+    const clamp = value => Math.max(pose().lower[index], Math.min(pose().upper[index], value));
+    // Numbers: commit on Enter or leaving the field; Escape restores the start pose.
+    const revert = () => { if (pose()) input.value = pose().value[index].toFixed(DIGITS.position); };
+    input.addEventListener('change', () => {
+      if (!startEditing(rows)) return;
+      const value = Number(input.value);
+      if (!input.value.trim() || !Number.isFinite(value)) { revert(); return; }
+      const next = clamp(value); input.value = next.toFixed(DIGITS.position);
+      commit(withJoint(pose().value, index, next));
+    });
+    input.addEventListener('focus', () => input.select?.());
+    input.addEventListener('keydown', event => { if (event.key === 'Escape') { revert(); input.blur?.(); } });
+    // Gauges: drag the position marker anywhere on its track, clamped to the URDF range.
+    let drag = null;
+    position.gauge.addEventListener('pointerdown', event => {
+      // Dragging belongs to the Gauges view; the Numbers view's input keeps its own pointer behaviour.
+      if (!startEditing(rows) || event.button !== 0 || position.track.hidden || event.target === input || position.gauge.closest?.('.joint-list')?.dataset.view === 'numbers') return;
+      const rect = position.track.getBoundingClientRect(), { lower, upper } = pose();
+      const at = x => roundRad(clamp(lower[index] + ((x - rect.left) / rect.width - POSITION_INSET) / (1 - 2 * POSITION_INSET) * (upper[index] - lower[index])));
+      drag = { start: [...pose().value], at, q: null };
+      position.gauge.setPointerCapture?.(event.pointerId); event.preventDefault();
+      drag.q = withJoint(drag.start, index, at(event.clientX)); onStartPoseDraft(drag.q);
+    });
+    position.gauge.addEventListener('pointermove', event => {
+      if (!drag) return;
+      const q = withJoint(drag.start, index, drag.at(event.clientX));
+      if (q[index] !== drag.q[index]) { drag.q = q; onStartPoseDraft(q); }
+    });
+    const end = cancelled => () => {
+      if (!drag) return;
+      const { start, q } = drag; drag = null;
+      onStartPoseDraft(null);
+      if (!cancelled && q[index] !== start[index]) onStartPoseCommit(q);
+    };
+    position.gauge.addEventListener('pointerup', end(false));
+    position.gauge.addEventListener('pointercancel', end(true));
+  });
   return rows;
 }
 
 const range = (bounds, unit) => `${signed(bounds[0], 3)} … ${signed(bounds[1], 3)} ${unit}`;
 
-export function gaugeTip(quantity, value, use, { limits, mpcBounds, index, torqueKind }) {
-  const meaning = quantity === 'torque' ? (torqueKind === 'predicted' ? 'Predicted actuator torque' : 'Last applied actuator torque') : MEANING[quantity];
+export function gaugeTip(quantity, value, use, { limits, mpcBounds, index, torqueKind, startPose = null }) {
+  const meaning = quantity === 'torque' ? (torqueKind === 'predicted' ? 'Predicted actuator torque' : 'Last applied actuator torque')
+    : quantity === 'position' && startPose ? 'Start pose' : MEANING[quantity];
   const unit = { position: 'rad', velocity: 'rad/s', torque: 'Nm' }[quantity];
   const parts = [Number.isFinite(value) ? `${meaning} ${signed(value, DIGITS[quantity])} ${unit}` : `${meaning} unavailable`];
   const urdf = limitBounds(limits, quantity, index);
@@ -121,6 +241,11 @@ export function gaugeTip(quantity, value, use, { limits, mpcBounds, index, torqu
   if (use) parts.push(`${percent(use.utilisation)} · ${use.state} · ${formatLimitDistance(use)}`);
   const mpc = limitBounds(mpcBounds, quantity, index);
   if (mpc) parts.push(`MPC bound ${quantity === 'position' ? range(mpc, unit) : `±${Number(mpc[1].toPrecision(4))} ${unit}`}`);
+  if (quantity === 'position' && startPose) {
+    parts.push(`Planning box ${range([startPose.planning.lower[index], startPose.planning.upper[index]], unit)} · default ${signed(startPose.defaults[index], 3)} ${unit}`);
+    if (startPose.outside?.[index]) parts.push(OUTSIDE_PLANNING);
+    parts.push('Drag or type to set the start pose; a new run starts there at t = 0');
+  }
   return parts.join('\n');
 }
 
@@ -149,13 +274,33 @@ function updateGauge(parts, quantity, value, context) {
   }
 }
 
-export function updateJointTable(rows, { q, qd, torque, limits, mpcBounds = null, torqueKind = 'applied', settings = DEFAULT_LIMIT_USE }) {
+// startPose (Live only, else null): {editable, value, defaults, lower, upper,
+// planning: {lower, upper}}. Editable means the cursor is at the run start, where
+// the position column shows the start pose; the lock decides whether it is edited.
+export function updateJointTable(rows, { q, qd, torque, limits, mpcBounds = null, torqueKind = 'applied', settings = DEFAULT_LIMIT_USE, startPose = null }) {
   settings = { ...DEFAULT_LIMIT_USE, ...settings };
   if (rows.heading) rows.heading.title = headingTitle(settings);
+  rows.startPose = startPose;
+  const editing = startEditing(rows);
+  const outside = editing ? startPose.value.map((v, i) => v < startPose.planning.lower[i] - 1e-12 || v > startPose.planning.upper[i] + 1e-12) : [];
+  const modified = editing ? startPose.value.map((v, i) => Math.abs(v - startPose.defaults[i]) > 1e-9) : [];
+  const editContext = editing ? { ...startPose, outside } : null;
+  if (rows.container) rows.container.dataset.startPose = editing ? 'edit' : '';
+  if (rows.positionLabel) rows.positionLabel.textContent = editing ? 'START' : 'POS';
   rows.forEach((gauges, index) => {
     const values = [q?.[index], qd?.[index], torque?.[index]];
-    gauges.forEach((parts, j) => updateGauge(parts, LIMIT_QUANTITIES[j], values[j], { limits, mpcBounds, index, torqueKind, settings }));
+    gauges.forEach((parts, j) => updateGauge(parts, LIMIT_QUANTITIES[j], values[j], { limits, mpcBounds, index, torqueKind, settings, startPose: j === 0 ? editContext : null }));
+    if (!gauges.row) return;
+    gauges.reset.hidden = !modified[index];
+    gauges.row.dataset.planning = outside[index] ? 'outside' : '';
+    gauges.label.title = outside[index] ? `${gauges.name}\n${OUTSIDE_PLANNING}` : gauges.name;
+    gauges.input.disabled = !editing;
+    if (editing && gauges.input.ownerDocument?.activeElement !== gauges.input) {
+      Object.assign(gauges.input, { value: startPose.value[index].toFixed(DIGITS.position), min: String(startPose.lower[index]), max: String(startPose.upper[index]) });
+    }
   });
+  refreshLock(rows);
+  refreshStartReset(rows);
   rows.tooltip?.refresh();
 }
 

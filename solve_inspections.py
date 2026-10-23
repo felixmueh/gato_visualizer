@@ -27,15 +27,17 @@ def profile_fingerprint(profile):
     with its original name/mtime invalidates the result. Source / Build Apply
     also restarts this service and therefore drops the entire cache.
     """
-    root, cache = Path(profile["mpc_root"]), Path(profile["cache"])
-    python = Path(profile["python"])
+    root, python = Path(profile["mpc_root"]), Path(profile["python"])
+    # The cache in effect: the override, else tiago_mpc's resolved default.
+    effective = profile.get("effective_cache") or profile.get("cache")
+    caches = () if effective is None else (Path(effective),)
     gato = root / "external/gato"
-    paths = {python, python.parent.parent / "pyvenv.cfg", cache / "manifest.json",
+    paths = {python, python.parent.parent / "pyvenv.cfg", *(cache / "manifest.json" for cache in caches),
              gato / "CMakeLists.txt", gato / "pyproject.toml", gato / "setup.py"}
     suffixes = {".py", ".h", ".hpp", ".cuh", ".cu", ".cpp", ".cmake", ".json", ".urdf", ".xml", ".so"}
     for directory in (root / "tiago_mpc", root / "models",
                       gato / "python", gato / "gato", gato / "tools",
-                      cache / "modules", cache / "robots"):
+                      *(cache / name for cache in caches for name in ("modules", "robots"))):
         for folder, directories, files in os.walk(directory):
             directories[:] = [name for name in directories if name not in
                               {"__pycache__", ".git", "build", "CMakeFiles", "meshes"}]

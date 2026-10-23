@@ -58,11 +58,11 @@ test('wall recordings keep a wall clock label and unknown basis stays neutral', 
   assert.equal(playbackClock({}),'recorded');
 });
 
-test('only an explicitly marked empty bootstrap scene is a starting pose', async () => {
-  const {isStartingScene, recordingLabel}=await import('./replay-library.js');
-  assert.equal(isStartingScene({source:{bootstrap:true},trajectories:[]}),true);
-  assert.equal(isStartingScene({source:{},trajectories:[]}),false);
-  assert.equal(isStartingScene({source:{bootstrap:true},trajectories:[{}]}),false);
+test('only an explicitly marked empty bootstrap scene is a start pose', async () => {
+  const {isStartPoseScene, recordingLabel}=await import('./replay-library.js');
+  assert.equal(isStartPoseScene({source:{bootstrap:true},trajectories:[]}),true);
+  assert.equal(isStartPoseScene({source:{},trajectories:[]}),false);
+  assert.equal(isStartPoseScene({source:{bootstrap:true},trajectories:[{}]}),false);
   const items=[{id:'one',name:'folder/run',source:'ingest'},{id:'two',name:'folder/run',source:'upload'}];
   assert.equal(recordingLabel(items[0],items),'ingest/folder/run');
   assert.equal(recordingLabel(items[1],items),'uploads/folder/run');

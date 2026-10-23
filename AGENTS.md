@@ -90,7 +90,7 @@ follows the package API that experiments use, without shims.
   `mpc.step`, plan statistics from `Plan.stats`.
 - **Replays:** the MPC-bound overlay comes from the replay's
   `provenance.params`. The legacy default recording loader is gone; the app
-  starts at the starting pose.
+  starts at the start pose.
 - **Run again on recordings from before the migration** reports
   "unavailable: pre-migration recording"; there is no converter.
 - **Default `tiago_mpc` root is `../tiago_mpc`.** The frozen
@@ -345,6 +345,38 @@ settings in `config.plant` (the **Limit handling** group), never part of
 
 See [limit handling](docs/execution-api.md#limit-handling).
 
+**Start pose — Felix, 2026-10-23.** The seven native joint positions the
+simulated arm starts from at t = 0 (velocities zero) are a Live setting,
+`config.plant.start_pose_rad`, default the simulator source's `tiago.Q_START`,
+within the raw URDF position limits. It is in the segment header's settings like
+every Live setting. Changing it starts a new run at t = 0 from it, as Reset (not
+an anchor in the middle of a run); Reset returns to the configured start pose.
+The Joints tab edits it: a lock left of Gauges/Numbers, locked by default and
+remembered per viewer, keeps the tab read-only; unlocked, in Live with the
+cursor at t = 0, the position column (headed START) is the start pose: dragging
+a gauge shows the arm at once (scene only) and commits on release, a Numbers
+cell commits on Enter, a reset arrow beside a modified joint restores that joint.
+A Reset button left of the lock, always shown (also locked), is disabled while the
+start pose is the default and otherwise, even mid-run, restores the whole start pose in one
+settings change; it replaces the former all-joints arrow and the lock's dot. A pose outside the
+MPC planning box (URDF range less `joint_margin_rad`) is flagged, not blocked.
+Away from t = 0 or locked, the tab is read-only as before. Recorded comparison
+tracks stay read-only. Task geometry (reach target, figure-eight start) stays tied
+to `Q_START`. The initial scene shows the arm at `Q_START`. "Start pose" is the one term; the former
+"starting pose" of the default scene is the same thing.
+
+## Browser checks — Felix, 2026-10-23
+
+Playwright (a pinned devDependency; Chromium only, in `~/.cache/ms-playwright`,
+installed with `npx playwright install chromium`) lets an agent check the real
+UI headlessly. Start your own server on your own port (`./scripts/start.sh --port
+<port> --config _expr_data/<name>.json`, GPU rules apply once Live solves), write
+the script under `_expr_data/` (ES module, `import { chromium } from 'playwright'`,
+`chromium.launch()`, `page.goto('http://127.0.0.1:<port>/')`), save screenshots
+there too, and stop the server afterwards. Never drive Felix's viewer on port
+8090; read-only screenshots of it only if he asks. Rebuild (`npm run build`)
+after frontend changes; the server serves `dist/`.
+
 ## What the display claims
 
 The display must not let a viewer mistake one kind of data for another: a
@@ -403,8 +435,17 @@ not modify upstream sources or packages.
 
 **Build through tiago_mpc — Felix, 2026-10-22** (supersedes the visualizer's
 own identity validation and module discovery, and the rebuild backups): the
-default cache follows `tiago_mpc`'s convention, `<checkout>/.cache/host-gato`
-for host interpreters and `<checkout>/.cache/gato` for the container's `.venv`.
+default cache is `tiago_mpc`'s own default (Felix, 2026-10-23; supersedes
+`<checkout>/.cache/gato`). Without an explicit cache override the visualizer
+chooses no cache: `GATO_CACHE_DIR` stays unset in every process it starts
+(solver child, Build, probe) and `tiago_mpc.util.cache_root()` decides, which is
+the **main** checkout's `.cache/gato` also for a worktree, shared by host and
+container (GATO keys modules by toolchain and Python ABI, so both sides' builds
+coexist). The visualizer does not repeat that lookup: `source_runtime.default_cache`
+asks `cache_root()` in a subprocess, and the probe reports it as
+`selection.effective_cache`; Settings show that path labelled as `tiago_mpc`'s
+default. An explicit override (template or path, or a launch-time
+`GATO_CACHE_DIR`) sets `GATO_CACHE_DIR` as before.
 The source probe asks `find_binary` for each offered N, with and without
 predictor friction; `tiago_mpc` and GATO own the cache keys. Build selected N
 calls `compile_binary` per N in a CPU-only subprocess of the selected

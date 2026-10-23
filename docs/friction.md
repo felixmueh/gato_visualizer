@@ -68,11 +68,11 @@ default). The command-line equivalent:
 
 ```sh
 /path/to/selected/python scripts/source_probe.py build \
-  --mpc-root /path/to/tiago_mpc --cache /path/to/tiago_mpc/.cache/host-gato \
-  --prediction-friction --N 32
+  --mpc-root /path/to/tiago_mpc --prediction-friction --N 32
 ```
 
-This calls `compile_binary` for each N. A running backend learns of modules
+This calls `compile_binary` for each N into `tiago_mpc`'s default cache
+(`--cache` overrides it). A running backend learns of modules
 built this way only through Apply, which reloads the available knot counts;
 **Build selected N** in Settings › Backend lists them in Live without a restart
 (for the running solver's checkout, interpreter and cache; Felix, 2026-10-23).

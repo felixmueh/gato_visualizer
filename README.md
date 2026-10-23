@@ -8,16 +8,17 @@ inspect its predicted tool path, then play the simulated closed-loop motion.
 
 Use a prepared sibling `../tiago_mpc` checkout with canonical models, fetched
 LFS meshes and GATO dependencies (select another checkout with `--mpc-root`,
-`TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the starting pose,
+`TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the start pose,
 in one Live workspace, ready to calculate or add recordings as tracks.
 The launcher uses `../tiago_mpc/venv-host` on the desktop. `TIAGO_PYTHON` can
 select another prepared interpreter; inside the existing container the launcher
 falls back to the checkout's `.venv`. It does not install Python packages there.
 
-The viewer uses the GATO modules that `tiago_mpc` compiled into the selected
-checkout's cache: `.cache/host-gato` for the host interpreter, `.cache/gato` for
-the container's `.venv` (tiago_mpc's convention). `tiago_mpc` compiles only on
-request; prepare the horizon modules during setup (`--prebuild` builds the
+The viewer uses the GATO modules that `tiago_mpc` compiled into its default
+cache: the main checkout's `.cache/gato`, also when the selected checkout is a
+worktree, for every interpreter, host and container alike. `tiago_mpc` decides
+this path (`tiago_mpc.util.cache_root()`); the viewer leaves `GATO_CACHE_DIR`
+unset unless a cache override is given. `tiago_mpc` compiles only on request; prepare the horizon modules during setup (`--prebuild` builds the
 loss-free N = 16, 32, 64, 128) or with the gear button (**Settings › Backend**):
 
 ```bash
@@ -66,17 +67,19 @@ and binary cache fields hold path templates. The literal token `<checkout>`
 stands for the selected checkout and is substituted when the path is used, so a
 saved template such as `<checkout>/.venv/bin/python` stays valid when the checkout
 changes (`~` is expanded too; absolute paths without the token keep working;
-any other `<…>` token is an error). The defaults are
+any other `<…>` token is an error). The interpreter defaults to
 `<checkout>/venv-host/bin/python` when that interpreter exists, else
-`<checkout>/.venv/bin/python`, and `<checkout>/.cache/host-gato`, or
-`<checkout>/.cache/gato` when the interpreter is the container's `.venv`. The resolved
+`<checkout>/.venv/bin/python`. The cache defaults to `tiago_mpc`'s own default,
+which the field shows as its resolved path (tooltip "tiago_mpc's default"); a
+cache override is any other template or path. The resolved
 absolute path is the field's tooltip; a template that cannot be resolved is marked
 invalid, with the reason as tooltip. An edited template is a highlighted override
 with a reset arrow that restores the default. A value equal to the default is sent
 as "follow the checkout" and not saved; overrides are saved as typed, templates
 included. `POST /api/source/defaults` with `{"mpc_root": …}` (optionally
-`python`/`cache` templates) returns the default templates, their resolution and
-the resolution of the entered templates. Existing configs with absolute paths are
+`python`/`cache` templates) returns the default interpreter template, the default
+cache path (`cache`, with `cache_label`), their resolution and the resolution of
+the entered templates. Existing configs with absolute paths are
 not rewritten. Check source imports `tiago_mpc`'s MPC API in the selected
 interpreter and asks its `find_binary` which modules exist for the offered
 knot counts (8, 16, 24, 32, 48, 64, 96, 128), loss-free and with predictor
@@ -102,7 +105,7 @@ window to release the GPU safely.
 Startup source precedence is `--mpc-root` > `TIAGO_MPC_ROOT` > saved selection >
 `../tiago_mpc`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
 Selecting another source with CLI/environment chooses that project's default
-environment/cache unless explicitly overridden. Apply replaces those launch-time
+environment and `tiago_mpc`'s default cache unless explicitly overridden. Apply replaces those launch-time
 overrides for its restart. No packages are installed in the selected environment.
 
 Server configuration lives in [`visualizer.json`](visualizer.json). Its
@@ -264,10 +267,24 @@ simulation settings: `tiago_mpc`'s robot path never clips. See
 
 Adjust the target offset and settings, and inspect the prediction.
 The prediction computes one optimized horizon from the displayed state. It
-does not advance the simulated plant. **Reset state** returns to the comfortable
-starting pose, clears recorded motion, and restarts the episode's plan count.
+does not advance the simulated plant. **Reset state** returns to the start
+pose, clears recorded motion, and restarts the episode's plan count.
 Adding recording tracks never replaces the Live configuration. The first connection after loading
-the application starts a fresh episode at the comfortable pose and time zero.
+the application starts a fresh episode at the start pose and time zero.
+
+**Start pose** (Felix, 2026-10-23): the seven joint positions the simulated arm
+starts from at t = 0, velocities zero; the default is `tiago_mpc`'s `Q_START`
+(the comfortable pose). It is a Live setting (`config.plant.start_pose_rad`),
+edited in the **Joints** tab: unlock it with the lock left of
+Gauges/Numbers, then, with the cursor at t = 0 (after Reset, or scrubbed to the
+start), drag a position gauge or type a position in the Numbers view. The arm
+follows the drag at once; releasing (or Enter) sets the start pose and starts a
+new run at t = 0 from it, as Reset does. Values are clamped to the URDF position
+limits. A joint outside the MPC planning box (URDF limits less the joint margin)
+is shown amber: the run still starts there, and its first plans report a
+position-row violation while they move the joint back inside. The task does not
+move with the start pose: the reach target and the figure-eight start stay
+where they are defined.
 
 The **Calculation** menu selects how full closed-loop motion is generated:
 
@@ -392,6 +409,16 @@ ticks at the URDF bounds and shaded near bands, and velocity and torque bars of
 |value| up to a 100 % tick, overflowing past it when beyond. Bars use one colour
 per quantity while inside, amber when near, red at the limit and red outlined
 beyond (the states of [Presentation settings](docs/presentation.md#joint-limit-states)).
+The lock left of the switch keeps the tab read-only (locked, the default,
+remembered per viewer). Unlocked, in Live at t = 0, the position column is
+headed START and edits the start pose (above): drag a gauge, or type a
+position and press Enter; a circular arrow beside each modified joint resets
+it. A Reset button at the top of the tab, left of the lock, is always shown:
+greyed out while the start pose is the default, enabled when it differs (also
+locked), and then returns the whole start pose to the default as one settings
+change, also mid-run (running, paused or after t = 0), starting a new run at
+t = 0; its tooltip lists the differing joints. Away from t = 0 or
+locked, the joint table shows the state at the cursor as before. Velocity and torque are never editable.
 A **Gauges / Numbers** switch in the tab header swaps the bars for a compact
 table of the same cells: position (rad), velocity (rad/s) and torque (N m) as
 signed numbers in the same state colours. Both views read the same telemetry

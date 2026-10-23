@@ -54,6 +54,9 @@ export function restoreCompatibleSettings(schema, saved) {
       if (parameter.kind === 'choice') {
         const choices = path === 'N' ? schema.available_N : parameter.choices;
         if (!choices.some(choice => settingValuesEqual(choiceValue(choice), value))) continue;
+      } else if (parameter.kind === 'joints') {
+        if (!Array.isArray(value) || value.length !== parameter.lower.length ||
+            !value.every((x, i) => Number.isFinite(x) && x >= parameter.lower[i] && x <= parameter.upper[i])) continue;
       } else if (parameter.kind === 'bool') {
         if (typeof value !== 'boolean') continue;
       } else if (value === null) {
@@ -119,6 +122,23 @@ export function parseParameter(parameter, input) {
   return value;
 }
 
+// The start pose (config.plant.start_pose_rad): the native joint positions the
+// simulated arm starts from at t = 0. It is edited in the Joints tab, not the
+// settings panel; changing it starts a new run there, as Reset (Felix, 2026-10-23).
+export const START_POSE_PATH = 'plant.start_pose_rad';
+export function startPoseValue(config) {
+  const value = readPath(config, START_POSE_PATH);
+  return Array.isArray(value) ? [...value] : null;
+}
+export function startPoseOf(schema, settings, defaults) {
+  const spec = schema?.parameters?.find(parameter => parameter.path.replace(/^config\./, '') === START_POSE_PATH);
+  const value = readPath(settings?.config, START_POSE_PATH);
+  if (!spec || !Array.isArray(value)) return null;
+  const margin = Number(settings.config.joint_margin_rad) || 0;
+  return { value: [...value], defaults: [...readPath(defaults.config, START_POSE_PATH)], lower: [...spec.lower], upper: [...spec.upper],
+    planning: { lower: spec.lower.map(v => v + margin), upper: spec.upper.map(v => v - margin) } };
+}
+
 export function maxViolation(value) {
   const values = Array.isArray(value) ? value.flat(Infinity) : [value];
   const finite = values.filter((item) => typeof item === 'number' && Number.isFinite(item));
@@ -146,6 +166,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   let session, unsubscribeSession, freezing = false;
   let calculateWhilePlaying = false;
   let precomputedRevision = -1, precomputedPoints;
+  // The start pose shown while a position gauge is dragged: scene only, no settings change.
+  let poseDraft = null, acceptedStartPose;
   const latestServerEvents = new Map();
   // Each history segment's constant context (task, limits, identities), sent once
   // in its `segment` record; plans and states name their segment by generation.
@@ -199,6 +221,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     acceptTaskAnchors(record.context); renderDirty = true;
     syncSession();
   }
+  const atRunStart = item => Math.abs(item?.sim_time_s ?? 0) < 1e-9;
   const displayedAnchor = () => {
     const value = presentedState || history.at(clock.time)?.state || state;
     return value && Array.isArray(value.q) && Array.isArray(value.qd)
@@ -279,7 +302,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const previousExpectedVersion = expectedVersion;
     expectedVersion = Math.max(expectedVersion ?? 0, settingsVersion ?? 0) + 1;
     const request = ++submission;
-    const resetting = initialResetPending;
+    // A new start pose starts a new run at t = 0 from it, as Reset.
+    const resetting = initialResetPending || !settingValuesEqual(startPoseValue(next.config), acceptedStartPose);
     const anchor = resetting ? undefined : frozenAnchor || displayedAnchor();
     pausePlayback(); controlsEnabled(); refreshPlanLabel();
     message(next.execution.calculation === 'automatic' ? 'Replacing calculation from the displayed starting state…' : 'Updating one-horizon preview…');
@@ -288,6 +312,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (!accepted) { pending = false; dirty = true; expectedVersion = previousExpectedVersion; }
     else {
       if (resetting) { initialResetPending = false; onReset(); }
+      acceptedStartPose = startPoseValue(next.config);
       if (Number.isInteger(accepted.settings_version)) expectedVersion = settingsVersion = accepted.settings_version;
       if (accepted.generation != null) useGeneration(accepted.generation, true);
       pending = !plan || plan.settings_version < expectedVersion;
@@ -438,6 +463,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     for (const supplied of schema.parameters) {
       const parameter = { ...supplied, path: supplied.path.replace(/^config\./, '') };
       if (parameter.path === 'N') { parameter.kind = 'choice'; parameter.choices = schema.available_N; }
+      if (parameter.kind === 'joints') continue;  // the start pose: edited in the Joints tab
       const name = parameter.group || 'Settings';
       const isHorizon = ['N', 'dt_s'].includes(parameter.path);
       if (!isHorizon && !groups.has(name)) {
@@ -715,9 +741,15 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   function renderView() {
     const selected = presentation.interpolate ? history.interpolateAt(clock.time, { trace: false }) : history.at(clock.time, { trace: false });
     if (traceRevision !== historyRevision) { displayPath = history.displayPath(); traceRevision = historyRevision; }
-    const shownState = selected?.state || state, shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || plan;
+    let shownState = selected?.state || state;
+    const shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || plan;
     const historical = clock.time != null && clock.time < history.bounds[1] - 1e-7;
-    const editing = dirty || pending;
+    const editing = dirty || pending || Boolean(poseDraft);
+    // At the run start the arm shows the start pose being dragged or not yet run.
+    const startQ = poseDraft || readPath(settings?.config, START_POSE_PATH);
+    if (mode === 'live' && Array.isArray(startQ) && (!shownState || atRunStart(shownState)) && !settingValuesEqual(shownState?.q, startQ)) {
+      shownState = { type: 'state', sim_time_s: 0, q: [...startQ], qd: startQ.map(() => 0), torque_nm: null, generation, start_pose_draft: true };
+    }
     // A growing recording can alternate between its tip and an interpolated
     // historical sample every time another batch arrives. Its task is fixed
     // for this settings generation; keep the independent reference geometry
@@ -757,7 +789,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       if (shownState) {
         const tracePoints = selected ? displayPath.points : [shownState.ee_xyz];
         const traceCount = selected ? Math.min(tracePoints.length, Math.floor(selected.index / displayPath.stride) + 1 + (selected.index === history.length - 1 && selected.index % displayPath.stride ? 1 : 0)) : 1;
-        onState(shownState, { tracePoints, traceCount, segment: segmentOf(shownState),
+        onState(shownState, { tracePoints, traceCount, segment: segmentOf(shownState) || segments.get(generation)?.context,
           referenceTarget: desiredReference?.draft ? taskReferencePoint(draft, base, shownState.sim_time_s) : shownState.target_xyz,
           historical: clock.time != null && clock.time < history.bounds[1] - 1e-7, interpolated: Boolean(shownState.render_interpolated) }); presentedState = shownState;
       }
@@ -988,6 +1020,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   }
   const initialSchemaRequest = schemaReload;
   const ready = fetch('/api/live/schema').then(async response => { const result = await response.json(); if (initialSchemaRequest !== schemaReload) return; if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings);
+    acceptedStartPose = startPoseValue(defaultSettings.config);
     try {
       const retained = sessionStorage.getItem('source-restart-live-settings');
       sessionStorage.removeItem('source-restart-live-settings');
@@ -1038,6 +1071,38 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         document.querySelector(`[data-task-path="${path}"]`).value = String(Number(Math.max(.01, Math.min(.6, pose.size_m[i])).toFixed(6)));
       });
       change(); return this.targetInteraction;
+    },
+    // Editable in Live at the run start (t = 0), where the Joints tab shows the start
+    // pose; the Joints lock decides whether it is edited. null outside Live.
+    get startPose() {
+      if (mode !== 'live' || !schema || !settings) return null;
+      const pose = startPoseOf(schema, settings, defaultSettings);
+      if (!pose) return null;
+      if (poseDraft) pose.value = [...poseDraft];
+      const shown = presentedState;
+      pose.resettable = connected() && status !== 'gpu_busy';
+      pose.editable = pose.resettable && !clock.playing && (!shown || atRunStart(shown));
+      return pose;
+    },
+    // The Joints tab's Reset: the default start pose at any point of a run (running,
+    // paused or after t = 0); like every start-pose change it starts a new run at t = 0.
+    resetStartPose() {
+      const pose = this.startPose;
+      if (!pose?.resettable) return false;
+      poseDraft = null;
+      writePath(settings.config, START_POSE_PATH, [...pose.defaults]);
+      change(); renderView(); return true;
+    },
+    previewStartPose(q) {
+      if (q && !this.startPose?.editable) return;
+      poseDraft = q ? [...q] : null; renderDirty = true; renderView();
+    },
+    setStartPose(q) {
+      const pose = this.startPose;
+      if (!pose?.editable || !Array.isArray(q) || q.length !== pose.value.length) return false;
+      poseDraft = null;
+      writePath(settings.config, START_POSE_PATH, q.map((v, i) => Math.max(pose.lower[i], Math.min(pose.upper[i], v))));
+      change(); renderView(); return true;
     },
     setPresentationSettings(value) {
       presentation = validatePresentation(value); clock.setBuffer(presentation.buffer_ms);

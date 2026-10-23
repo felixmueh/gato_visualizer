@@ -40,10 +40,13 @@ IPC chunks remain bounded and no recorded samples are silently dropped.
 
 - `set_settings`: existing complete `config` and `task`, plus `execution` and
   optional `anchor`. The first browser Live session sends `reset: true` instead
-  of an anchor: settings and the comfortable zero-time state are applied
+  of an anchor: settings and the zero-time state at the start pose are applied
   atomically before preview or Automatic calculation. Later mode switches and
   reconnects preserve the session. `reset` must be boolean; a true reset cannot
-  be combined with an anchor.
+  be combined with an anchor. A `config.plant.start_pose_rad` that differs
+  from the current one always starts a new run at t = 0 from the new start
+  pose, as Reset; the browser sends `reset: true` with it, and an anchor sent
+  with it is not used (Felix, 2026-10-23).
 - `precalculate`: generate `duration_s` of closed-loop motion without pacing;
   optional `anchor` chooses its initial state.
 - `preview`: compute one prediction at the optional displayed-state `anchor`
@@ -55,7 +58,8 @@ IPC chunks remain bounded and no recorded samples are silently dropped.
 - `pause`: stop On Play generation cooperatively. In Manual/Automatic mode it
   pauses browser playback while explicit precalculation continues.
 - `cancel`: invalidate the current job cooperatively.
-- `reset`: return to the comfortable pose, zero velocity and simulation time;
+- `reset`: return to the configured start pose (`config.plant.start_pose_rad`,
+  default `tiago.Q_START`), zero velocity and simulation time;
   clear the current history and episode plan sequence. Reset also recovers
   after a numerical failure: the discarded state, which may be nonfinite or
   beyond the solver's float32 range, never seeds the reconfigured solver.

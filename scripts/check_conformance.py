@@ -31,7 +31,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from execution_session import DEFAULT_EXECUTION, MultirateSession
-from live_mpc import GPULocks, build_schema, import_tiago
+from live_mpc import GPULocks, build_schema, import_tiago, start_pose_spec
 from source_runtime import probe_selection, resolve_selection
 from visualizer_config import DEFAULT_MPC_ROOT
 
@@ -56,7 +56,8 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     root = args.mpc_root.expanduser().resolve()
     selection = resolve_selection(root, python=sys.executable, cache=os.environ.get("GATO_CACHE_DIR"))
-    os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    if selection["cache"]:  # an explicit override; else tiago_mpc's default
+        os.environ["GATO_CACHE_DIR"] = selection["cache"]
     import_tiago(root)
     sys.path.insert(0, str(root))  # tiago_mpc's experiments package
     from experiments.reach import Reach, reach
@@ -96,7 +97,7 @@ def main():
 
         from solver_adapter import SimulatorAdapter
         profile = dict(id="conformance", name="Conformance", **{key: selection[key] for key in ("mpc_root", "python", "cache")})
-        schema = build_schema(probe_selection(profile), root)
+        schema = build_schema(probe_selection(profile), root, start_pose_spec(import_tiago(root)))
         adapter = SimulatorAdapter(root)
         adapter.gpu_locks = locks
         adapter.select_profile(profile, schema)

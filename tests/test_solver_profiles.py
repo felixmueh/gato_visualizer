@@ -19,13 +19,13 @@ import numpy as np
 
 from execution_bridge import ProcessLiveService
 from execution_session import DEFAULT_EXECUTION, MultirateSession
-from live_mpc import PLANT_DEFAULTS
+from live_mpc import PLANT_DEFAULTS, import_tiago
 from solver_process import SolverProcess, validate_contract, send_lease, receive_leased_message
 from solver_adapter import SimulatorAdapter, RemoteController
 from solver_profiles import SolverProfiles
 from server import make_server
 from tests.test_execution import FakeAdapter, FakeRenderer, fake_schema, fake_worker, MPC_ROOT
-from tests.tiago_mpc_source import live_probe
+from tests.tiago_mpc_source import live_probe, start_pose
 
 
 class ProfileAdapter(FakeAdapter):
@@ -104,7 +104,7 @@ class CompiledRefreshTests(unittest.TestCase):
                 live.command(settings)
             probe = live_probe()
             probe["available_N_by_friction"] = dict(off=[16, 32], on=[])
-            other = dict(live.active_profile, cache="/elsewhere/cache")
+            other = dict(live.active_profile, effective_cache="/elsewhere/cache")
             self.assertFalse(live.refresh_compiled(other, probe))  # another cache: Apply restarts
             self.assertFalse(live.refresh_compiled(live.active_profile, dict(compatible=False)))
             self.assertEqual(live.schema["available_N"], [16])
@@ -287,6 +287,7 @@ class TransportTests(unittest.TestCase):
 
     def test_preflight_rejects_changed_parameter_shape_before_replacing_solver(self):
         adapter = SimulatorAdapter.__new__(SimulatorAdapter)
+        adapter.tiago = import_tiago(MPC_ROOT)
         adapter.contract = dict(joint_names=[str(i) for i in range(7)], nq=7, nv=7,
             coordinate_units="rad,rad/s,Nm", torque_semantics="actuator_joint_torque",
             reference_frame="torso", end_effector_frame="tcp",
@@ -294,7 +295,7 @@ class TransportTests(unittest.TestCase):
         profile = dict(mpc_root=str(MPC_ROOT), python=sys.executable, cache="unused")
         checked = dict(live_probe(), contract=adapter.contract, available_N=[32], available_N_by_friction=dict(off=[32], on=[]))
         with patch("source_runtime.probe_selection", return_value=checked):
-            schema = adapter.preflight_profile(profile, dict(checked["defaults"], plant=deepcopy(PLANT_DEFAULTS)),
+            schema = adapter.preflight_profile(profile, dict(checked["defaults"], plant=dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=start_pose()["default"])),
                                                dict(kind="reach", target_offset_m=[0, 0, 0]))
             self.assertEqual(schema["available_N"], [32])
             checked["defaults"]["additional_setting"] = True

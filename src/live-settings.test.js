@@ -1469,3 +1469,63 @@ test('Freeze posts the current generation, adds a replay track and rewinds befor
     assert.deepEqual(h.commands.at(-1).anchor, { sim_time_s: 3, q: Array(7).fill(3), qd: Array(7).fill(.1) });
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
+
+test('the start pose is edited at the run start only: a drag previews the arm, a commit starts a new run at t = 0', async () => {
+  const h = harness(), start = [-.39, -1.73, -.38, -2.33, 0, -1.21, .04];
+  h.schema.defaults.config.joint_margin_rad = .1;
+  h.schema.defaults.config.plant = { start_pose_rad: [...start] };
+  h.schema.parameters.push({ path: 'plant.start_pose_rad', kind: 'joints', label: 'Start pose', group: 'Start pose',
+    lower: Array(7).fill(-3), upper: Array(7).fill(3) });
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const shown = [], resets = [];
+  try {
+    const session = createSession();
+    const live = setupLive({ onMode() {}, onPlan() {}, onState: state => {
+      shown.push(state); assert.equal(session.focused.displayedState, state);
+    }, onReset: () => resets.push(1) });
+    live.setSession(session); session.setAggregate({ start: .1, end: .4 });
+    await flush();
+    assert.equal(live.startPose, null);  // Replay: read-only
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
+    assert.equal(h.commands.length, 1);
+    // No generic settings field: the Joints tab edits it.
+    assert(!h.created.some(el => el.dataset.path === 'plant.start_pose_rad'));
+    source.emit(plan(1, 1));
+    source.emit({ type: 'state', settings_version: 1, sim_time_s: 0, q: [...start], qd: Array(7).fill(0), ee_xyz: [0, 0, 1] });
+    await flush();
+    const pose = live.startPose;
+    assert.deepEqual([pose.editable, pose.value, pose.defaults], [true, start, start]);
+    assert.deepEqual([pose.planning.lower[0], pose.planning.upper[0]], [-2.9, 2.9]);
+    // Dragging shows the pose at once, without a settings change.
+    const dragged = start.map((v, i) => i === 3 ? v + .3 : v);
+    live.previewStartPose(dragged);
+    assert.deepEqual(shown.at(-1).q, dragged); assert.equal(shown.at(-1).start_pose_draft, true);
+    assert.equal(h.commands.length, 1);
+    live.previewStartPose(null);
+    assert.equal(live.setStartPose([...dragged.slice(0, 6), 9]), true);  // clamped to the URDF range
+    await new Promise(resolve => setTimeout(resolve, 380));
+    const command = h.commands.at(-1);
+    assert.equal(command.type, 'set_settings'); assert.equal(command.reset, true); assert.equal(command.anchor, undefined);
+    assert.deepEqual(session.aggregate, { start: .1, end: .4 });
+    assert.deepEqual(command.config.plant.start_pose_rad, [...dragged.slice(0, 6), 3]);
+    assert.equal(resets.length, 2);  // the first Live reset and this one
+    // Away from the run start the Joints tab is read-only; other edits continue from the displayed state.
+    source.emit(plan(2, 1));
+    for (const time of [0, .5]) source.emit({ type: 'state', settings_version: 2, sim_time_s: time, q: [...dragged.slice(0, 6), 3], qd: Array(7).fill(.1), ee_xyz: [0, 0, 1] });
+    h.$('live-history').value = '0.5'; h.$('live-history').emit('input'); await flush();
+    assert.equal(live.startPose.editable, false);
+    assert.equal(live.setStartPose(start), false);
+    // The Joints tab's Reset still works there: default start pose, new run at t = 0.
+    assert.equal(live.startPose.resettable, true);
+    assert.equal(live.resetStartPose(), true);
+    await new Promise(resolve => setTimeout(resolve, 380));
+    const back = h.commands.at(-1);
+    assert.equal(back.type, 'set_settings'); assert.equal(back.reset, true); assert.equal(back.anchor, undefined);
+    assert.deepEqual(back.config.plant.start_pose_rad, start);
+    h.edit('solver_params.q_cost', 8);
+    await new Promise(resolve => setTimeout(resolve, 380));
+    assert.equal(h.commands.at(-1).reset, undefined); assert.equal(h.commands.at(-1).anchor.sim_time_s, .5);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});

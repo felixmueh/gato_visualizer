@@ -238,18 +238,24 @@ def canonical_model_assets(mpc_root):
             assets, fixed_joints, next(iter(root_links)))
 
 
-def load_scene(mpc_root):
-    """The default scene: the starting pose, without a recording."""
+def load_scene(mpc_root, start_pose=None):
+    """The default scene: the arm at start_pose (seven native joint positions), by
+    default Live's default start pose, the checkout's tiago.Q_START
+    (live_mpc.start_pose_spec), without a recording."""
     robot_xml, assets, fixed_joints, world_frame = canonical_model_assets(mpc_root)
-    starting_right_rad = (-.39, -1.73, -.38, -2.35, 0.0, -1.21, .04)
-    fixed_joints.update(zip(JOINT_NAMES, starting_right_rad))
+    if start_pose is None:
+        from live_mpc import import_tiago, start_pose_spec
+        start_pose = start_pose_spec(import_tiago(mpc_root))["default"]
+    if len(start_pose) != len(JOINT_NAMES):
+        raise SourceError("The start pose needs one position per right-arm joint")
+    fixed_joints.update(zip(JOINT_NAMES, map(float, start_pose)))
     urdf = Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf"
     scene = dict(robot_url="/assets/robot.urdf", joint_names=JOINT_NAMES,
                  joint_limits=canonical_joint_limits(urdf),
                  fixed_joints=fixed_joints, world_frame=world_frame, up_axis="Z",
                  end_effector_frame="arm_right_tool_joint", trajectories=[],
                  source=dict(mpc_root=str(Path(mpc_root).resolve()), bootstrap=True,
-                             label="Starting pose — upload or select a recording",
+                             label="Start pose — upload or select a recording",
                              full_urdf_sha256=sha256(urdf), files_sha256={}))
     return scene, robot_xml, assets
 
@@ -802,7 +808,11 @@ def main(argv=None):
     if os.path.abspath(sys.executable) != os.path.abspath(selection["python"]):
         os.execve(selection["python"], [selection["python"], str(ROOT / "server.py"),
                   *(sys.argv[1:] if argv is None else argv)], os.environ.copy())
-    os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    # An explicit cache override, else unset: tiago_mpc's cache_root() decides.
+    if selection["cache"]:
+        os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    else:
+        os.environ.pop("GATO_CACHE_DIR", None)
     # SIGTERM stops like Ctrl-C: the services below close their child processes.
     # A second SIGTERM ends the server at once; the children then exit with it.
     def stop(signum, frame):
@@ -812,7 +822,7 @@ def main(argv=None):
     os.environ["PATH"] = str(Path(selection["python"]).parent) + os.pathsep + os.environ.get("PATH", "")
     try:
         scene, robot_xml, meshes = load_scene(args.mpc_root)
-    except (SourceError, OSError, RuntimeError) as exc:
+    except (SourceError, OSError, RuntimeError, ImportError, ValueError) as exc:
         parser.exit(1, f"Source error: {exc}\n")
     live, live_error = None, None
     if args.replay_only:
@@ -860,7 +870,7 @@ def main(argv=None):
     print(f"Runtime files (RAM-backed, current run only): {runtime_directory()}", flush=True)
     if (warning := runtime_warning()) is not None:
         print(f"WARNING: {warning}", file=sys.stderr, flush=True)
-    print("Starting pose only: upload or select a recording for replay", flush=True)
+    print("Start pose only: upload or select a recording for replay", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

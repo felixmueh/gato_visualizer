@@ -20,7 +20,8 @@ export async function sourceRequest(path, body, fetcher = fetch) {
 
 /**
  * Interpreter and cache fields hold path templates; `<checkout>` stands for the
- * selected checkout. Saved templates stay valid when the checkout changes, so
+ * selected checkout. The default cache is tiago_mpc's own resolved default path
+ * (its main checkout's `.cache/gato`), shown and labelled as such. Saved templates stay valid when the checkout changes, so
  * only a field still holding the default text follows the default (the default
  * interpreter can differ between checkouts). An edited template stays as a
  * visible override until its reset arrow restores the default; a template
@@ -43,10 +44,13 @@ export function trackCheckoutDefaults({ fields, resets, request = sourceRequest,
       if (!text || text === defaults[key]) fields[key].value = next?.[key] || '';
       defaults[key] = next?.[key] || null;
       const entered = next?.entered?.[key];
-      fields[key].title = entered?.error || entered?.path || next?.resolved?.[key] || '';
+      // The default cache is tiago_mpc's own resolved path, labelled as such.
+      const label = key === 'cache' && next?.cache_label ? ` (${next.cache_label})` : '';
+      const path = entered?.path || next?.resolved?.[key];
+      fields[key].title = entered?.error || (path ? path + (entered?.default ? label : '') : '');
       fields[key].dataset.invalid = String(Boolean(entered?.error));
       const reset = resets.entries.find(entry => entry.key === `${group}.${key}`)?.button;
-      if (reset) reset.title = defaults[key] ? `Reset to ${defaults[key]}` : 'Reset to the checkout default';
+      if (reset) reset.title = defaults[key] ? `Reset to ${defaults[key]}${label}` : 'Reset to the checkout default';
     }
     resets.update();
   }

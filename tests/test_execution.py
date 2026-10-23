@@ -12,7 +12,7 @@ from execution_bridge import HistoryStore, HistoryGenerationError, ProcessLiveSe
 from execution_session import DEFAULT_EXECUTION, MultirateSession, breach_message, interval_record, validate_execution
 from execution_worker import estimated_states, worker_main
 from server import make_server
-from tests.tiago_mpc_source import MPC_ROOT, live_probe
+from tests.tiago_mpc_source import MPC_ROOT, live_probe, start_pose
 LOCK_HELD = False
 
 
@@ -95,8 +95,11 @@ class FakeAdapter:
                                    stop_on_breach=config['plant']['stop_on_breach'])
         self.task = task
         self.controller.reset(self.x)
-    def reset_state(self):
+    def reset_state(self, start_pose=None):
+        if start_pose is not None:
+            self.start_pose = np.asarray(start_pose, dtype=float)
         self.x[:] = 0
+        self.x[:7] = getattr(self, 'start_pose', 0)
         self.t = 0
         self.sequence = 0
         self.applied_torque = None
@@ -141,7 +144,7 @@ def fake_schema(root):
     from live_mpc import build_schema
     probe = live_probe()
     probe['available_N_by_friction'] = dict(off=[16], on=[])
-    schema = build_schema(probe, root or MPC_ROOT)
+    schema = build_schema(probe, root or MPC_ROOT, start_pose())
     schema['defaults']['config']['N'] = 16
     return schema
 
@@ -433,6 +436,38 @@ class SpawnTests(unittest.TestCase):
         self.assertEqual(self.service.latest['plan']['seq'],1)
         self.assertEqual([r for r in self.records() if r['type']=='state'][0]['sim_time_s'],0)
 
+    def test_a_new_start_pose_starts_a_run_at_zero_and_reset_returns_to_it(self):
+        old = self.settings()
+        old['anchor'] = dict(sim_time_s=3., q=[.7]*7, qd=[.2]*7)
+        self.service.command(old)
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
+        self.assertEqual(self.records()[1]['sim_time_s'], 3.)
+        request = self.settings()
+        pose = list(request['config']['plant']['start_pose_rad'])
+        pose[3] += .3
+        request['config']['plant']['start_pose_rad'] = pose
+        # Editing the start pose starts at t = 0 from it, as Reset; the anchor is not used.
+        request['anchor'] = dict(sim_time_s=3., q=[.7]*7, qd=[.2]*7)
+        self.service.command(request)
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==2)
+        header, first = self.records()[:2]
+        self.assertEqual((header['type'], self.service.config['plant']['start_pose_rad']), ('segment', pose))
+        self.assertEqual((first['sim_time_s'], first['q'], first['qd']), (0., pose, [0.]*7))
+        self.service.command(dict(type='precalculate'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('message')=='Precalculation complete')
+        self.assertGreater([r for r in self.records() if r['type']=='state'][-1]['sim_time_s'], 0.)
+        self.service.command(dict(type='reset'))
+        self.wait(lambda:self.service.latest.get('plan',{}).get('origin')=='preview' and
+                  self.service.latest.get('status',{}).get('generation')==self.service.generation and
+                  self.service.latest['status'].get('message','').startswith('Preview ready'))
+        self.assertEqual([(r['sim_time_s'], r['q']) for r in self.records() if r['type']=='state'], [(0., pose)])
+        # Other settings changes keep continuing from the displayed state.
+        unchanged = self.settings()
+        unchanged['anchor'] = dict(sim_time_s=0., q=pose, qd=[.1]*7)
+        self.service.command(unchanged)
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==3)
+        self.assertEqual(self.records()[1]['qd'], [.1]*7)
+
     def test_atomic_settings_reset_starts_automatic_calculation_at_comfortable_state(self):
         old = self.settings()
         old['anchor'] = dict(sim_time_s=3., q=[.7]*7, qd=[.2]*7)
@@ -446,7 +481,7 @@ class SpawnTests(unittest.TestCase):
                   self.service.latest['status'].get('message')=='Precalculation complete')
         states = [r for r in self.records() if r['type']=='state']
         self.assertEqual(states[0]['sim_time_s'], 0.)
-        self.assertEqual(states[0]['q'], [0.]*7)
+        self.assertEqual(states[0]['q'], request['config']['plant']['start_pose_rad'])
         self.assertEqual(states[0]['qd'], [0.]*7)
         self.assertAlmostEqual(states[-1]['sim_time_s'], .125)
         self.assertEqual([r for r in self.records() if r['type']=='plan'][0]['seq'], 1)
@@ -668,7 +703,7 @@ class SpawnTests(unittest.TestCase):
         self.service.command(dict(type='reset'))
         self.wait(lambda:self.service.latest.get('status',{}).get('state')!='error' and
                   self.service.latest.get('plan',{}).get('origin')=='preview')
-        self.assertEqual(self.records()[1]['q'],[0.]*7)
+        self.assertEqual(self.records()[1]['q'],self.service.config['plant']['start_pose_rad'])
 
 
 if __name__=='__main__':

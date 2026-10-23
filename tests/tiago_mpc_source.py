@@ -57,3 +57,9 @@ def live_probe():
                       capabilities=dict(iteration_capture_by_friction=dict(off={}, on={}), exact_resume=False))
     from copy import deepcopy
     return deepcopy(_PROBE)
+
+
+def start_pose():
+    """MPC_ROOT's start pose specification (live_mpc.start_pose_spec: Q_START, URDF limits)."""
+    from live_mpc import import_tiago, start_pose_spec
+    return start_pose_spec(import_tiago(MPC_ROOT))

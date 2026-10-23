@@ -21,8 +21,8 @@ Named solver profiles identify a TIAGo checkout/worktree, Python interpreter
 and compiled-module cache. The interpreter and cache are saved as templates in
 which the literal `<checkout>` stands for the profile's checkout (for example
 `<checkout>/.venv/bin/python`); the backend substitutes it, expands `~` and
-rejects other `<…>` tokens. Defaults are not saved, so they keep following the
-checkout; absolute paths still work. Profile status carries both the resolved
+rejects other `<…>` tokens. The default cache is `tiago_mpc`'s own (see
+below). Defaults are not saved, so they keep following the checkout; absolute paths still work. Profile status carries both the resolved
 paths and the stored `templates`. Exactly one persistent Live solver child exists.
 An explicit inspection may temporarily start a separate child while Live is
 paused/idle, under the same canonical GPU lease. Only one GPU job runs at a
@@ -106,8 +106,11 @@ controls carry the profile/process identity and exact plan sequence association.
   `simulator_source`, `switch` and `generation`.
 - `POST /api/solver-profiles` accepts `{profile: {id, name, mpc_root, python?,
   cache?}}` and saves it in `visualizer.json.solver_profiles`. The reserved
-  `simulator` profile follows Source / Build. Cache defaults to the selected
-  project's cache. Saving does not load a solver or compile.
+  `simulator` profile follows Source / Build. Without a cache override the
+  profile's processes get no `GATO_CACHE_DIR` and `tiago_mpc` picks its default
+  (the main checkout's `.cache/gato`, also for a worktree); profile status
+  carries it as `effective_cache` (`cache` is the override or null). Saving
+  does not load a solver or compile.
 - `POST /api/solver-profiles/activate` accepts `{profile_id, anchor?}` and returns
   HTTP 202 `{state: "switching", profile_id}`. The optional anchor contains
   native `q`, `qd`, and `sim_time_s`; omission uses the committed simulation tip.

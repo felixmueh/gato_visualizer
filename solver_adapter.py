@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from live_mpc import (POSITION_TOL_M, REACH_DEFAULT_TASK, SPEED_L1_TOL_RAD_S, figure8_reference,
-                      import_tiago, mpc_params, source_identity)
+                      import_tiago, mpc_params, source_identity, start_pose_spec)
 from live_presentation import mutable, snapshot
 from solver_process import SolverProcess, model_contract, validate_contract
 
@@ -46,6 +46,8 @@ class SimulatorAdapter:
             velocity_rad_s=limits.velocity.tolist(), effort_nm=limits.effort.tolist(),
             plant="tiago_mpc.sim.SimPlant", friction=None)
         self.default_target = tiago.fk(tiago.Q_REACH, tiago.GRASP_FRAME)
+        # Task geometry stays tied to Q_START, as tiago_mpc's Figure8.start_m: the
+        # configurable start pose moves the arm, not the figure-eight anchor.
         self.figure8_start_world = self.kinematics.target_to_world(tiago.fk(tiago.Q_START, tiago.GRASP_FRAME))
         self.task_anchors = snapshot(dict(reach=self.kinematics.target_to_world(self.default_target).tolist(),
                                           figure8=self.figure8_start_world.tolist()))
@@ -56,10 +58,15 @@ class SimulatorAdapter:
         self.remote = self.profile = self.profile_identity = self.profile_schema = None
         self._segment_context = None
         self.controller = RemoteController(self)
+        self.start_pose = np.asarray(start_pose_spec(tiago)["default"])
         self.reset_state()
 
-    def reset_state(self):
-        self.x = np.r_[self.tiago.Q_START, np.zeros(7)]
+    def reset_state(self, start_pose=None):
+        """Back to the start pose at t = 0, velocities zero; start_pose (seven native
+        joint positions, config.plant.start_pose_rad) replaces the configured one."""
+        if start_pose is not None:
+            self.start_pose = np.asarray(start_pose, dtype=float)
+        self.x = np.r_[self.start_pose, np.zeros(7)]
         self.t = 0.
         self.u = np.zeros(7)
         self.sequence = 0
@@ -70,7 +77,7 @@ class SimulatorAdapter:
         from live_mpc import build_schema, validate_settings
         from source_runtime import probe_selection
         checked = probe_selection({key: profile[key] for key in ("mpc_root", "python", "cache")})
-        schema = build_schema(checked, profile["mpc_root"])
+        schema = build_schema(checked, profile["mpc_root"], start_pose_spec(self.tiago))
         validate_contract(self.contract, checked.get("contract", {}))
         validate_settings(config, task, schema)
         return schema
@@ -98,6 +105,8 @@ class SimulatorAdapter:
             raise ValueError(f"The simulator tracks {self.kinematics.end_effector_frame}, not {params['ee_frame']}")
         predictor = self.remote.request("configure", timeout=120, params=params)
         self.plant_friction = self.tiago.urdf_friction() if config["plant"]["friction"] else None
+        # The next Reset starts here; anchors and the current state are unaffected.
+        self.start_pose = np.asarray(config["plant"]["start_pose_rad"], dtype=float)
         raw = self.tiago.limits()
         self.limit_handling = dict(limits=dict(lower=raw.lower, upper=raw.upper, velocity=raw.velocity, effort=raw.effort),
                                    clip_effort=config["plant"]["clip_effort"],

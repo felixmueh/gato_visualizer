@@ -19,7 +19,7 @@ from live_presentation import mutable, render_plan, snapshot
 from solver_adapter import SimulatorAdapter
 from solver_process import receive_message, send_lease, send_message, wire_value
 from solver_worker import serve
-from tests.tiago_mpc_source import MPC_ROOT, live_probe
+from tests.tiago_mpc_source import MPC_ROOT, live_probe, start_pose
 
 SIGNS = np.array([1., 1., 1., 1., 1., -1., 1.])
 
@@ -127,7 +127,8 @@ class Remote:
 
 
 def config(**changes):
-    return {**live_probe()["defaults"], "N": 4, "plant": deepcopy(PLANT_DEFAULTS), **changes}
+    return {**live_probe()["defaults"], "N": 4, "plant": dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=start_pose()["default"]),
+            **changes}
 
 
 class BoundaryTests(unittest.TestCase):
@@ -230,7 +231,7 @@ class BoundaryTests(unittest.TestCase):
                 simulator.reference[:] = 99
                 simulator.profile["id"] = "new-profile"
                 simulator.configure(config(solver=dict(config()["solver"], max_sqp_iters=9),
-                                           plant=dict(PLANT_DEFAULTS, friction=True)), deepcopy(FIGURE8_DEFAULT_TASK))
+                                           plant=dict(config()["plant"], friction=True)), deepcopy(FIGURE8_DEFAULT_TASK))
                 self.assertEqual(render_plan(captured, simulator.kinematics), expected)
                 newer = simulator.segment_header(9, {})["context"]
                 self.assertEqual(newer["problem_configuration"]["solver"]["max_sqp_iters"], 9)

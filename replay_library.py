@@ -87,7 +87,7 @@ class ReplayLibrary:
                 yield path
 
     def _scan(self):
-        items = [dict(id="default", name="Starting pose", path="", source="default",
+        items = [dict(id="default", name="Start pose", path="", source="default",
                       status="ready", revision="default")]
         paths, retained = {}, {}
         for source, root in (("freeze", self.freeze_directory), ("ingest", self.ingest_directory),

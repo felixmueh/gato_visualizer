@@ -1,4 +1,4 @@
-"""Starting-pose scene, kinematics and HTTP checks against the canonical model, without GPU work."""
+"""Start-pose scene, kinematics and HTTP checks against the canonical model, without GPU work."""
 import json
 from pathlib import Path
 import tempfile
@@ -13,7 +13,7 @@ import pinocchio as pin
 
 from server import JOINT_NAMES, RobotKinematics, SourceError, decode_prediction, decode_prediction_telemetry, load_scene, make_server
 
-from tiago_mpc_source import MPC_ROOT, arm_urdf
+from tiago_mpc_source import MPC_ROOT, arm_urdf, start_pose
 
 
 class PredictionTests(unittest.TestCase):
@@ -48,13 +48,19 @@ class CanonicalSourceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.scene, cls.robot_xml, cls.meshes = load_scene(MPC_ROOT)
 
-    def test_starting_scene_has_no_trajectories(self):
+    def test_start_pose_scene_has_no_trajectories(self):
         self.assertTrue(self.scene["source"]["bootstrap"])
         self.assertEqual(self.scene["trajectories"], [])
         self.assertEqual(self.scene["world_frame"], "base_footprint")
+        # The arm stands at Live's default start pose, tiago_mpc's Q_START (no hard-coded copy).
+        from live_mpc import import_tiago
+        self.assertEqual([self.scene["fixed_joints"][name] for name in JOINT_NAMES],
+                         import_tiago(MPC_ROOT).Q_START.tolist())
+        with self.assertRaisesRegex(SourceError, "one position per right-arm joint"):
+            load_scene(MPC_ROOT, [0.] * 6)
         with tempfile.TemporaryDirectory() as empty, \
                 self.assertRaisesRegex(SourceError, "Canonical full robot model is missing"):
-            load_scene(empty)
+            load_scene(empty, start_pose()["default"])
 
     def test_lfs_pointer_mesh_is_a_source_error(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -66,7 +72,7 @@ class CanonicalSourceTests(unittest.TestCase):
                 (models / "meshes" / Path(mesh.get("filename")).name).write_text(
                     "version https://git-lfs.github.com/spec/v1\n")
             with self.assertRaisesRegex(SourceError, "Git LFS pointer"):
-                load_scene(folder)
+                load_scene(folder, start_pose()["default"])
 
     def test_full_and_reduced_fk_agree_after_torso_transform(self):
         full = RobotKinematics(MPC_ROOT / "models/tiago_pro/tiago_pro.urdf")

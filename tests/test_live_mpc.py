@@ -16,7 +16,7 @@ from live_mpc import (GPULocks, POSITION_TOL_M, SPEED_L1_TOL_RAD_S, build_schema
 from server import make_server
 from live_presentation import LatestPresentation, mutable, render_plan, render_state, snapshot
 from solver_adapter import SimulatorAdapter
-from tests.tiago_mpc_source import MPC_ROOT, live_probe
+from tests.tiago_mpc_source import MPC_ROOT, live_probe, start_pose
 
 
 class SettingsTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class SettingsTests(unittest.TestCase):
         probe = live_probe()
         probe["available_N_by_friction"] = dict(off=[16, 32], on=[32])
         self.friction = probe["friction"]
-        self.schema = build_schema(probe, MPC_ROOT)
+        self.schema = build_schema(probe, MPC_ROOT, start_pose())
         self.config = deepcopy(self.schema["defaults"]["config"])
         self.task = deepcopy(REACH_DEFAULT_TASK)
 
@@ -38,14 +38,16 @@ class SettingsTests(unittest.TestCase):
         self.assertIsNotNone(live_probe()["defaults"]["max_sqp_time_s"])
         self.assertIs(config["warmup"], True)
         # Loss-free plant, effort clipped, stop on every limit breach (Felix, 2026-10-23)
+        # The start pose is the simulator source's Q_START (Felix, 2026-10-23).
         self.assertEqual(config["plant"], dict(friction=False, clip_effort=True,
-                                               stop_on_breach=dict(position=True, velocity=True, torque=True)))
+                                               stop_on_breach=dict(position=True, velocity=True, torque=True),
+                                               start_pose_rad=start_pose()["default"]))
         self.assertIsNone(config["friction"])  # loss-free predictor and plant by default
         specs = {s["path"]: s for s in self.schema["parameters"]}
         self.assertEqual(set(specs), {"N", "dt_s", "ee_frame", "warm_start", "reset_rho_each_step", "admm_linsys",
             "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "warmup", "max_sqp_time_s",
             "plant.friction", "plant.clip_effort", "plant.stop_on_breach.position", "plant.stop_on_breach.velocity",
-            "plant.stop_on_breach.torque", *(f"solver.{key}" for key in config["solver"]), *(f"admm.{key}" for key in config["admm"])})
+            "plant.stop_on_breach.torque", "plant.start_pose_rad", *(f"solver.{key}" for key in config["solver"]), *(f"admm.{key}" for key in config["admm"])})
         self.assertEqual(specs["warm_start"]["choices"], ["shift", "hold"])
         self.assertEqual(specs["admm_linsys"]["choices"], ["pcg", "bdsv_factor", "auto"])
         for fixed in ("solver.exact_hessian", "solver.linsys", "ee_frame"):
@@ -68,11 +70,30 @@ class SettingsTests(unittest.TestCase):
                          {"Stop on breach"})
         validate_settings(dict(self.config, max_sqp_time_s=.05, warmup=False, friction=self.friction), self.task, self.schema)
 
+    def test_the_start_pose_is_seven_positions_within_the_urdf_limits(self):
+        spec = next(s for s in self.schema["parameters"] if s["path"] == "plant.start_pose_rad")
+        limits = start_pose()
+        self.assertEqual((spec["kind"], spec["group"], spec["label"]), ("joints", "Start pose", "Start pose"))
+        self.assertEqual((spec["lower"], spec["upper"]), (limits["lower"], limits["upper"]))
+        self.assertTrue(spec["description"])
+        valid = list(limits["default"])
+        valid[3] += .3
+        valid[0] = limits["upper"][0]  # the URDF limit itself is allowed
+        config = deepcopy(self.config)
+        config["plant"]["start_pose_rad"] = valid
+        self.assertEqual(validate_settings(config, self.task, self.schema)[0]["plant"]["start_pose_rad"], valid)
+        beyond = list(limits["default"])
+        beyond[1] = limits["lower"][1] - 1e-6
+        for value in (beyond, valid[:6], valid + [0.], [*valid[:6], float("nan")], [*valid[:6], True], None, "q"):
+            config["plant"]["start_pose_rad"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "plant.start_pose_rad"):
+                validate_settings(config, self.task, self.schema)
+
     def test_a_new_text_parameter_is_shown_fixed_at_its_default(self):
         probe = live_probe()
         probe["defaults"] = dict(probe["defaults"], integrator="rk4")
         probe["available_N_by_friction"] = dict(off=[32], on=[])
-        schema = build_schema(probe, MPC_ROOT)
+        schema = build_schema(probe, MPC_ROOT, start_pose())
         spec = next(s for s in schema["parameters"] if s["path"] == "integrator")
         self.assertEqual((spec["kind"], spec["choices"], spec["disabled"]), ("choice", ["rk4"], True))
         validate_settings(schema["defaults"]["config"], self.task, schema)

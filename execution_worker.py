@@ -69,7 +69,7 @@ def estimated_states(execution, duration=None):
 
 
 def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory=None, schema_factory=None, solver_profile=None, report_hz=DEFAULT_PRESENTATION["report_hz"]):
-    from live_mpc import build_schema, GPULocks
+    from live_mpc import build_schema, GPULocks, import_tiago, start_pose_spec
     from live_presentation import mutable
     from solver_adapter import SimulatorAdapter
     locks = GPULocks(mpc_root)
@@ -150,8 +150,9 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             if initialized_generation != generation and generation_start.get("kind") == "reset":
                 # Configuring seeds the controller from the current state. A
                 # failed run's tip may be beyond the solver's float32 range,
-                # so Reset discards it before, not after, reconfiguring.
-                adapter.reset_state()
+                # so Reset discards it before, not after, reconfiguring, and
+                # seeds from the configured start pose.
+                adapter.reset_state(config["plant"]["start_pose_rad"])
             adapter.configure(config, task)
             need_config = False
 
@@ -181,8 +182,9 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             # The fixed simulator imports only Python model/plant helpers.
             # Binary loading/ABI discovery stays in an independent interpreter.
             from source_runtime import probe_selection
+            # The start pose belongs to the plant: its default comes from the simulator source.
             schema = build_schema(probe_selection({key: solver_profile[key] for key in ("mpc_root", "python", "cache")}),
-                                  mpc_root)
+                                  mpc_root, start_pose_spec(import_tiago(mpc_root)))
         config = deepcopy(schema["defaults"]["config"])
         task = deepcopy(schema["defaults"]["task"])
         execution = deepcopy(schema["defaults"].get("execution", DEFAULT_EXECUTION))

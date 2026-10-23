@@ -210,7 +210,9 @@ class SolverProcess:
         for old in sorted(folder.glob("*.log"))[:-(KEPT_LOGS-1)]:
             old.unlink(missing_ok=True)
         self.log_path = folder / f"{time.time_ns()}-{self.epoch}.log"
-        environment = dict(os.environ, GATO_CACHE_DIR=profile["cache"], PYTHONUNBUFFERED="1")
+        from source_runtime import cache_environment
+        # GATO_CACHE_DIR only for an explicit cache override; else tiago_mpc's default.
+        environment = dict(cache_environment(profile), PYTHONUNBUFFERED="1")
         # A launch-time source choice must not leak into a different profile.
         environment.pop("TIAGO_MPC_ROOT", None)
         environment.pop("TIAGO_PYTHON", None)

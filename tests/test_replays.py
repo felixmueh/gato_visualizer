@@ -19,7 +19,7 @@ from replay_format import JOINT_NAMES, ReplayError, load_replay, model_sha256
 from replay_library import ReplayLibrary, UploadConflict
 from server import RobotKinematics, load_scene, make_server, replay_scene
 
-from tiago_mpc_source import MODEL, MPC_ROOT, REPLAY_EXPORTER, replay_exporter
+from tiago_mpc_source import MODEL, MPC_ROOT, REPLAY_EXPORTER, replay_exporter, start_pose
 
 ROOT = Path(__file__).resolve().parents[1]
 tools = replay_exporter()
@@ -29,7 +29,7 @@ tools = replay_exporter()
 class ReplayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.base_scene, cls.robot_xml, cls.meshes = load_scene(MPC_ROOT)
+        cls.base_scene, cls.robot_xml, cls.meshes = load_scene(MPC_ROOT, start_pose()["default"])
 
     def setUp(self):
         parent = ROOT / "_expr_data/tests"
@@ -329,18 +329,18 @@ class ReplayTests(unittest.TestCase):
             library.upload("invalid.npz", b"invalid")
         self.assertFalse((library.upload_directory / "invalid.npz").exists())
 
-    def test_starting_pose_scene_has_no_fabricated_trajectory(self):
+    def test_start_pose_scene_has_no_fabricated_trajectory(self):
         fresh = self.folder / "fresh-checkout"
         (fresh / "models").mkdir(parents=True)
         (fresh / "models/tiago_pro").symlink_to(MODEL.parent, target_is_directory=True)
-        scene, _, _ = load_scene(fresh)
+        scene, _, _ = load_scene(fresh, start_pose()["default"])
         self.assertTrue(scene["source"]["bootstrap"])
         self.assertEqual(scene["trajectories"], [])
         self.assertTrue(all(name in scene["fixed_joints"] for name in JOINT_NAMES))
         library = ReplayLibrary(ingest_directory=self.folder / "ingest", upload_directory=self.folder / "uploads",
                                 model_urdf=MODEL, default_scene=scene,
                                 scene_builder=lambda replay, path: replay_scene(replay, path, MPC_ROOT, scene))
-        self.assertEqual(library.catalog()["items"][0]["name"], "Starting pose")
+        self.assertEqual(library.catalog()["items"][0]["name"], "Start pose")
         uploaded = library.upload("reach.npz", self.path.read_bytes())
         selected = library.scene(uploaded["id"])
         self.assertFalse(any(name in selected["fixed_joints"] for name in JOINT_NAMES))

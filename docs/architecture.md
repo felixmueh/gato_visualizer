@@ -98,7 +98,9 @@ rate, as `plant.clip_effort` and `plant.stop_on_breach` select
 
 A generation identifies active history, a settings version identifies the
 accepted settings, and cancellation revision rejects obsolete work. Changing
-execution settings captures displayed q, qd and task time once for a new segment.
+execution settings captures displayed q, qd and task time once for a new segment;
+changing the start pose (`config.plant.start_pose_rad`) instead starts the new
+segment at t = 0 from it, as Reset, which returns to the configured start pose.
 Ordinary Play extends the history tip. Pinning fixes solve/iteration selection;
 it does not pause the episode. Exact optimizer continuation is unavailable.
 Run again is cold, separate and explicit; inspection Stop terminates only its
