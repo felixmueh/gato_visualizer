@@ -58,8 +58,10 @@ default). The command-line equivalent:
   --prediction-friction --N 32
 ```
 
-This calls `compile_binary` for each N; Apply then reloads the available knot
-counts.
+This calls `compile_binary` for each N. A running backend learns of modules
+built this way only through Apply, which reloads the available knot counts;
+**Build selected N** in Settings › Backend lists them in Live without a restart
+(for the running solver's checkout, interpreter and cache; Felix, 2026-10-23).
 
 ## History
 

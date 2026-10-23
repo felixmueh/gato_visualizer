@@ -31,11 +31,16 @@ visualizer's simulated-plant group:
   `ee_frame`, `warm_start`, `reset_rho_each_step`, `admm_linsys`, `admm`
   (ADMM limit-row settings), `joint_margin_rad`, `velocity_fraction`,
   `effort_fraction`, `friction` (predictor friction, `null` when loss-free),
-  `warmup` and `budget_s` (`null`: no SQP wall budget).
+  `max_sqp_time_s` (wall time for a solve's SQP iterations within
+  `solver.max_sqp_iters`; `null`: no time limit) and `warmup` (a boolean:
+  GATO's warm-up solve at every reseed, below).
 - `plant`: `{"friction": false}`, the simulator friction switch.
 
 The defaults are `tiago_mpc`'s `TIAGO` parameters, reported by the selected
-interpreter's source probe, plus `plant.friction: false`. The solver child
+interpreter's source probe, with `max_sqp_time_s: null`, plus
+`plant.friction: false`. `TIAGO`'s 10 ms limit is for the wall clock; Live and
+precalculation run on the simulation clock, so the visualizer's default has no
+time limit, and the user can still set one (Felix, 2026-10-23). The solver child
 rebuilds `MpcParams.from_dict` from everything except `plant`; no
 configuration file is written. Recorded plans carry the same object as
 `problem_configuration`.
@@ -104,7 +109,7 @@ predictor-friction module `tiago_mpc`'s `find_binary` finds, among the offered
 knot counts 8, 16, 24, 32, 48, 64, 96 and 128; `available_N` is their union.
 `kind` is `float`, `int`, `bool` or `choice` (with `choices`, each a plain value
 or `{value, label}`); `scale` is `log` or `linear`; numeric entries may be
-`nullable` (`budget_s`). Every leaf of `config` has a parameter entry, so every
+`nullable` (`max_sqp_time_s`, whatever its default). Every leaf of `config` has a parameter entry, so every
 default is shown. Fixed fields have `disabled: true` and a single allowed
 choice: `solver.linsys` is null, `solver.exact_hessian` is false, and
 `ee_frame` is the grasp frame the simulator tracks. `friction` is one choice
@@ -123,7 +128,24 @@ motion. It is distinct from a separate cold Run again inspection and is not a
 promise of the exact first Play plan or a preserved optimizer checkpoint.
 Normal settings/N changes load a compiled module (`Mpc(params, binary)`) and
 never compile; an N that is not compiled for the chosen predictor is rejected
-with "Not compiled".
+with "Not compiled". A successful Build into the active solver's own
+checkout, interpreter and cache adds its modules to the running backend's
+schema at once (`compiled_modules` event; Felix, 2026-10-23): building only
+adds modules, which the solver child finds with `find_binary` at its next
+configure. A Build for another selection, or after the source identity
+changed, still needs Apply and its restart.
+
+**Warm-up at every reseed (Felix, 2026-10-23).** Each time the solver child's
+controller is reseeded from a state (configuring, Reset, an anchor, a preview,
+rollback after a cancellation, resuming Play after a preview), it calls
+`tiago_mpc`'s `Mpc.warmup(state, reference)` with the task reference a request
+at that time gets (the figure-eight window from the state's time). With
+`warmup` on, that resets the controller and runs GATO's warm-up solve, as
+`run()` does before its first tick; with it off, it is the plain controller
+reset. A reseed repeating the previous one with no solve in between is skipped.
+The warm-up is no plan: it creates no record and is not part of an interval's
+timing. Like a solve, the call has no deadline. The solver log
+(`_expr_data/live/solver-processes/`) has one line per warm-up.
 
 Before constructing, resetting, solving or disposing native solver state, the
 coordinator acquires the canonical experiment locks nonblockingly. While another
@@ -154,8 +176,16 @@ required for Replay, camera movement or scrubbing retained history.
  "q": [7 floats], "qd": [7 floats],
  "ee_xyz": [3 floats], "distance_m": 0.031, "arrived": false, "rtf": 0.98}
 
+{"type": "compiled_modules", "available_N": [16, 32],
+ "available_N_by_friction": {"off": [16, 32], "on": [32]}}
+
 {"type": "error", "message": "...", "detail": "..."}
 ```
+
+`compiled_modules` follows a successful Build into the active solver's
+checkout, interpreter and cache: the backend has updated the schema's available
+N without a restart, and the browser updates the N choices (below,
+[Commands](#commands-and-gpu-sharing)).
 
 All positions are in the full robot's root frame. `q` values are native joint
 coordinates, already converted from the GPU convention with the joint-6 sign.

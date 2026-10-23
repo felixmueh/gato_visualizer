@@ -91,8 +91,11 @@ modules**, with predictor friction. A count that is already compiled is left
 as it is; **Rebuild compiled counts** compiles it again and replaces the old
 module file (no backup). Progress streams into the dialog; the log and a
 receipt stay under `_expr_data/source-builds/`. Changing normal Live settings
-or selecting N never compiles. **Apply and restart
-backend** saves the selected paths, closes the numerical worker, restarts in the
+or selecting N never compiles. A Build into the running Live solver's own
+checkout, interpreter and cache only adds modules: Live lists the new N as soon
+as it finishes, without a restart (Felix, 2026-10-23). **Apply and restart
+backend** is for another source, interpreter or cache, or changed source code;
+it saves the selected paths, closes the numerical worker, restarts in the
 selected interpreter, and reloads all source-bound models/renderers/replay
 bindings. This starts a fresh Live session while retaining compatible controls,
 saved replays and disk history. Restart may wait for an active solve or timing
@@ -289,11 +292,19 @@ rates per calculation-wall second are labeled separately.
 
 The settings are `tiago_mpc`'s `MpcParams` with their defaults: horizon N
 and knot interval, costs, SQP/PCG budgets and tolerance, ADMM choices, bound
-margins/fractions, warm start, warm-up solves, the SQP wall budget and
-predictor friction; the end-effector frame is shown as fixed. Only compiled N
-are offered; changing a setting never compiles one, and an N that is not
-compiled for the chosen predictor shows as unavailable. Use Settings › Backend
-to inspect changed `tiago_mpc` code, build modules explicitly and Apply. See the
+margins/fractions, warm start, the warm-up solve, the SQP time limit and
+predictor friction; the end-effector frame is shown as fixed. The SQP time
+limit (`max_sqp_time_s`) defaults to none, shown as "none": Live and
+precalculation run on the simulation clock, where `tiago_mpc`'s 10 ms
+wall-clock limit does not belong; a limit can still be set (Felix,
+2026-10-23). Every reseed of the controller (configuring, Reset, an anchor, a
+preview, rollback, resuming Play) runs `tiago_mpc`'s `Mpc.warmup` from that
+state with the task reference then: GATO's warm-up solve while **Warm-up
+solve** is on (the default), the plain controller reset when it is off. The
+warm-up is no plan and is not timed. Only compiled N are offered; changing a
+setting never compiles one, and an N that is not compiled for the chosen
+predictor shows as unavailable. Use Settings › Backend to build modules
+explicitly, or to inspect changed `tiago_mpc` code and Apply. See the
 [execution API](docs/execution-api.md) and [prediction fields](docs/live-api.md).
 
 Predicted tool path, task reference, and recorded simulated motion have separate
@@ -382,16 +393,21 @@ check only when the experiment locks are free:
 
 It runs `tiago_mpc`'s `experiments.reach.reach` with `SimPlant` (1 ms
 substeps) and `Mpc` in this process, then the visualizer's adapter, solver child
-and multirate session at 1000/100/100 Hz with the same `MpcParams`, start and
-target. It compares the states at every command tick, the commands and the plans
-(`--atol`, default 1e-9) over `--steps` command ticks (default 300, that is 3 s).
-The reference reach gets a zero position tolerance, so it never arrives and runs
-the whole duration; the default reach would otherwise arrive within 0.1 s. By
-default the reference plant steps on the session's 1 ms grid, and the comparison
-is bit for bit. `--accumulated-ticks` keeps `run()`'s accumulated tick times
-instead: their last-bit differences in the substep lengths grow through GATO's
-float32 solves until the plans diverge after about 1 s, which is round-off, not
-a scheduling difference. It needs the default loss-free N module and covers the default reach, not
+and multirate session with the same `MpcParams` (Live's defaults: `TIAGO`
+without the SQP time limit, warm-up on), start, target and rates: commands
+every 2 ms (500 Hz, the reach's default), a control update every 10 ms knot,
+physics on a 1 ms grid. `run()` warms up from the start state before its first
+tick; the session's configure reseeds with the same `Mpc.warmup`. It compares
+the states at every command tick, the commands and the plans (`--atol`, default
+1e-9) over `--steps` knot intervals (default 300, that is 3 s). The reference
+reach gets a zero position tolerance, so it never arrives and runs the whole
+duration; the default reach would otherwise arrive early. By default the
+reference plant steps on the session's 1 ms grid, and the comparison is bit for
+bit (passed against `tiago_mpc` 31c405a, 2026-10-23). `--accumulated-ticks`
+keeps `run()`'s accumulated tick times instead: their last-bit differences in
+the substep lengths grow through GATO's float32 solves until the plans diverge
+(after about 1 s with 10 ms commands, 2026-10-22), which is round-off, not a
+scheduling difference. It needs the default loss-free N module and covers the default reach, not
 every profile, friction or inspection path. Run it with the selected checkout's
 interpreter and pass the source explicitly (`--mpc-root`, else `TIAGO_MPC_ROOT`,
 else `../tiago_mpc`); it does not read the saved source selection. Both raw

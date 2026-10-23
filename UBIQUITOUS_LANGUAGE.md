@@ -8,6 +8,8 @@
 | **MPC episode** | One closed-loop MPC execution over time, whose recording may contain robot states, applied controls, references, and associated solves. | Solve, prediction, trajectory when the whole execution is meant |
 | **Prediction** | The candidate state/control trajectory returned by a solve, including its prediction horizon. | Executed trajectory, episode |
 | **Robot state** | The native joint positions and velocities at a specified task/simulation time. | Joint positions alone when defining a continuation state |
+| **Reseed** | Preparing the Live controller to solve from a robot state: `tiago_mpc`'s `Mpc.warmup` with the task reference at that time, which runs GATO's warm-up solve unless warm-up is off. It is not a solve and produces no prediction. | Reset (the Live command), restart |
+| **SQP time limit** | `MpcParams.max_sqp_time_s`: wall time for a Live solve's SQP iterations within the SQP cap; none by default in Live, which runs on simulation time. | SQP wall budget, `budget_s` (Run again's separate wall budget) |
 
 ## Inspection and continuation
 

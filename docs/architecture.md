@@ -87,7 +87,9 @@ Run again is cold, separate and explicit; inspection Stop terminates only its
 isolated child and supplies no partial checkpoint. Ordinary Pause is cooperative.
 
 Saved source/interpreter/cache selection controls imports. Source Apply restarts
-the backend; profile activation replaces only the solver and starts a new segment.
+the backend; a Build into the active solver's own checkout, interpreter and cache
+only refreshes the available N (`ProcessLiveService.refresh_compiled`); profile
+activation replaces only the solver and starts a new segment.
 Neither ordinary settings nor profile activation compiles: `Mpc(params, binary)`
 only loads. Build selected N is the explicit build path; it calls `compile_binary`
 into the selected project cache. Logs, binary traces

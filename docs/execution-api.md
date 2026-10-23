@@ -69,8 +69,8 @@ Domain terms are defined in [UBIQUITOUS_LANGUAGE.md](../UBIQUITOUS_LANGUAGE.md).
 Changing execution settings starts a new active episode segment from the
 displayed native positions, velocities and task time. For example, play to
 10 s, scrub to 5 s, change settings, then calculate 10 s: the continuation
-covers task/simulation time 5–15 s. It resets the controller for the changed
-configuration while preserving the selected plant state and figure-eight
+covers task/simulation time 5–15 s. It reseeds the controller for the changed
+configuration (with the warm-up, [live-api.md](live-api.md#commands-and-gpu-sharing)) while preserving the selected plant state and figure-eight
 phase. The active UI history contains the new segment; it does not stitch in
 the old 0–5 s prefix. Superseded history files remain on disk.
 

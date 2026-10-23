@@ -55,7 +55,8 @@ No other user's process is terminated.
 Normal settings and profile switching only load compiled modules: the child
 constructs `Mpc(params, find_binary(params))` and refuses with "Not compiled"
 when the lookup finds none. Source / Build (`compile_binary`) remains the
-explicit build operation.
+explicit build operation; a Build for the active profile's own checkout,
+interpreter and cache adds its N without a restart (Felix, 2026-10-23).
 
 Activation cancels calculation and runs a CPU-only selected-interpreter preflight
 (the source probe: `tiago_mpc` API, `find_binary` per N and predictor friction,
@@ -63,7 +64,7 @@ coordinate contract) and validates the current settings against the profile's
 schema. A predictable
 preflight failure retains the working child, pauses and preserves history.
 After successful preflight it captures native q/qd/task time, stops the old child,
-starts the replacement and resets its controller. A successful
+starts the replacement and reseeds its controller (`Mpc.warmup`). A successful
 switch starts a fresh identified history generation at the captured state and
 stays paused. Every prior disk recording remains intact. There is no transfer
 of private warm-start state between implementations.

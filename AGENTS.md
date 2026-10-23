@@ -96,6 +96,29 @@ follows the package API that experiments use, without shims.
 - **Default `tiago_mpc` root is `../tiago_mpc`.** The frozen
   `tiago_mpc_vis_baseline` worktree is no longer used.
 
+### Warm-up and the SQP time limit — Felix, 2026-10-23
+
+Follows `tiago_mpc` 31c405a (steps 15 and 16), which the source probe now
+requires: `MpcParams.budget_s` became `max_sqp_time_s` (default 10 ms, wall
+clock only) and `warmup` a boolean with `Mpc.warmup(state, reference)`.
+
+- **No SQP time limit by default.** Live and precalculation run on the
+  simulation clock, so Live's default is `replace(TIAGO, max_sqp_time_s=None)`,
+  shown as "none"; the user can still set a limit. `warmup` keeps `TIAGO`'s
+  default (on).
+- **Every reseed warms up.** Configuring, Reset, anchors, previews, rollback
+  and resuming Play reseed the solver child's controller with `Mpc.warmup`
+  from that state and the task reference a request then gets; with `warmup`
+  off that is the plain controller reset. A reseed repeating the previous one
+  with no solve in between is skipped. The warm-up is no plan, creates no
+  record, is not part of interval timing and, like a solve, has no RPC
+  deadline.
+- **Build refreshes Live without a restart.** Building only adds modules for
+  the same interpreter and cache, so a successful Build into the active
+  solver's own checkout, interpreter and cache updates the available N in the
+  running backend and browser. Apply and its restart remain for source,
+  interpreter or cache changes.
+
 ### Trial changes to tiago_mpc — Felix, 2026-10-22
 
 To try a change to `tiago_mpc` from visualizer work, create a `tiago_mpc`
@@ -160,7 +183,11 @@ start, target and `MpcParams`, and compares states at every command tick,
 commands and plans, so drift in `tiago_mpc` fails loudly. By default the
 reference steps on the session's 1 ms grid for 3 s without arriving, and the
 comparison is bit for bit. It covers the default loss-free reach, not every
-profile, friction or inspection path.
+profile, friction or inspection path. Since `tiago_mpc` 31c405a (Felix,
+2026-10-23) both sides use `TIAGO` without the SQP time limit and with the
+warm-up (`run()` warms up before its first tick, the session's configure
+reseeds the same way), at the reach's default rates: 500 Hz commands, a
+control update per 10 ms knot.
 
 ## Model and coordinates
 
@@ -234,8 +261,9 @@ requested, so display and solver cannot disagree.
 
 Since the settings became `asdict(MpcParams)` (Felix, 2026-10-22), every
 `MpcParams` field is shown with its value, including `ee_frame`, `warmup`,
-`budget_s` and `warm_start`; values the visualizer cannot change appear as
-fixed choices.
+`max_sqp_time_s` and `warm_start`; values the visualizer cannot change appear as
+fixed choices. A `max_sqp_time_s` of None (Live's default, 2026-10-23) shows as
+"none".
 
 ## Host environment and GPU
 
@@ -264,8 +292,10 @@ calls `compile_binary` per N in a CPU-only subprocess of the selected
 interpreter. Rebuild passes `use_cache=False`, which unlinks the old module
 (processes that loaded it keep their mapping); there are no backups.
 
-Applying a source/cache/interpreter or newly built set fully restarts the backend
-and its numerical worker; never swap Python/CUDA imports in an existing worker.
+Applying a source/cache/interpreter fully restarts the backend and its
+numerical worker; never swap Python/CUDA imports in an existing worker. A Build
+into the running solver's own checkout, interpreter and cache only adds modules
+and is listed without a restart (Felix, 2026-10-23, above).
 Reconstruct source-bound robot/render/replay objects and start fresh Live history;
 retain saved replays/disk history and compatible UI settings. Path precedence is
 `--mpc-root`, then `TIAGO_MPC_ROOT`, then the saved selection, then `../tiago_mpc`.
