@@ -36,6 +36,8 @@ def main():
     parser.add_argument("--steps", type=int, default=300, help="command ticks of 10 ms")
     parser.add_argument("--atol", type=float, default=1e-9)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--accumulated-ticks", action="store_true",
+                        help="keep run()'s accumulated tick times (deadline += period) instead of the 1 ms grid")
     args = parser.parse_args()
     if not 1 <= args.steps <= 800:
         parser.error("--steps must be in [1, 800] (the reach's 8 s timeout)")
@@ -66,7 +68,18 @@ def main():
         duration = args.steps * params.dt_s
         mpc = Mpc(params, binary)
         task = Reach(position_tol_m=0.)  # never arrives: compare the whole duration
-        record = reach(SimPlant(substep=.001), mpc, task=task, out=output / "reference", duration=duration)
+
+        class GridPlant(SimPlant):
+            """run() accumulates its tick times (deadline += period) and SimPlant its substeps
+            (t + h); MultirateSession steps to origin + k/rate. The substep lengths then differ
+            by an ulp, and GATO's float32 solve amplifies that round-off after about a hundred
+            plans. This plant steps run()'s ticks on the session's 1 ms grid, k/1000."""
+            def advance(self, t):
+                for k in range(round(self.t * 1000) + 1, round(t * 1000) + 1):
+                    super().advance(k / 1000)
+
+        plant = (SimPlant if args.accumulated_ticks else GridPlant)(substep=.001)
+        record = reach(plant, mpc, task=task, out=output / "reference", duration=duration)
         expected, expected_status = record.trajectory, record.summary["status"]
         del mpc, record
 
@@ -95,12 +108,17 @@ def main():
         sent = np.isfinite(expected["command"]).all(axis=1)
         reference = dict(state=expected["state"], command=expected["command"][sent],
                          plan_states=expected["plan_states"], plan_torques=expected["plan_torques"])
-        checks = {key: dict(shape_equal=reference[key].shape == actual[key].shape,
-                            max_abs_difference=float(np.max(np.abs(reference[key] - actual[key])))
-                            if reference[key].shape == actual[key].shape else None)
-                  for key in reference}
+        def check(expected, got):
+            if expected.shape != got.shape:
+                return dict(shape_equal=False, max_abs_difference=None)
+            rows = np.abs(expected - got).reshape(len(expected), -1).max(axis=1)
+            beyond = np.flatnonzero(rows > args.atol)
+            return dict(shape_equal=True, max_abs_difference=float(rows.max()),
+                        first_row_beyond_atol=int(beyond[0]) if len(beyond) else None,
+                        max_abs_difference_before_it=float(rows[:beyond[0]].max(initial=0.)) if len(beyond) else None)
+        checks = {key: check(reference[key], actual[key]) for key in reference}
         passed = all(c["shape_equal"] and c["max_abs_difference"] <= args.atol for c in checks.values())
-        result = dict(passed=passed, atol=args.atol, steps=args.steps, reference_status=expected_status,
+        result = dict(passed=passed, atol=args.atol, steps=args.steps, accumulated_ticks=args.accumulated_ticks, reference_status=expected_status,
                       reference_ticks=len(ticks), checks=checks, binary=str(binary),
                       params=json.loads(json.dumps(config)),
                       note="Diagnostic conformance only; no timing or convergence claim")
