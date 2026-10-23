@@ -37,7 +37,9 @@ export function onionKeyframes(times, { maxCount = 8, previousStep } = {}) {
   let step = retainedStep;
   if (step) {
     const [first, last] = gridBounds(start, end, step);
-    if (last - first + 1 > maxCount * 2) step = null;
+    // Grow to the next sufficient nice step rather than restarting at the
+    // initial eight-point density. A large incoming batch may skip steps.
+    if (last - first + 1 > maxCount * 2) step = chooseStep(start, end, maxCount * 2);
   }
   step ??= chooseStep(start, end, maxCount);
   const [first, last] = gridBounds(start, end, step), keyframes = [];

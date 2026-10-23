@@ -28,8 +28,12 @@ test('Live growth keeps its spacing through sixteen grid points and recomputes o
   assert.equal(held.step, .5);
   assert.equal(held.times.length, 17); // Sixteen grid points and the final state.
   const recomputed = onionKeyframes([0, 8], { previousStep: held.step });
-  assert.equal(recomputed.step, 2);
-  assert.deepEqual(recomputed.times, [0, 2, 4, 6, 8]);
+  assert.equal(recomputed.step, 1);
+  assert.deepEqual(recomputed.times, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(onionKeyframes([0, 32], { previousStep: 2 }).step, 5);
+  const batch = onionKeyframes([0, 100], { previousStep: initial.step });
+  assert.equal(batch.step, 10);
+  assert.deepEqual(batch.times, [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
   assert.equal(onionKeyframes([0, 2], { previousStep: 2 }).step, 2);
 });
 
