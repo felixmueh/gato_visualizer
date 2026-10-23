@@ -138,7 +138,26 @@ The playback bar contains Play/Pause, Reset, the timeline and **Stop**. Checked
 Stop ends playback at the recording's end. With Manual/Automatic Live calculation,
 unchecking it continues simulation from the tip; in Replay, unchecking it loops
 the recording. On Play runs continuously until paused. Live also
-provides the calculation mode, a precalculation icon and a duration in seconds.
+provides the calculation mode, a precalculation icon, a duration in seconds,
+**Freeze for comparison**, and a playback speed (forced to 1× while following
+a growing Live tip).
+
+Live is always a session with main track **A**. Expand the timeline and use
+**Add track** to compare saved recordings, or **Freeze for comparison** to
+export the idle current run into RAM, add it at offset zero, and rewind to its
+start. A subsequent settings edit starts from that displayed starting state.
+Library tracks align their first sample with Live's start. Each lane shows its
+colour, label and editable offset; drag its span to move it in session time
+(Alt disables snapping), or double-click to restore the default placement.
+Eye, Arm/Dot and × control visibility, representation and removal. Coloured
+recorded ghosts/dots and paths play with Live, holding dimmed endpoint poses
+outside their spans. Lane badges describe frame/time/model mismatches or an
+incomplete run on hover. The collapsed chevron counts comparison tracks.
+Freezes appear under Temporary in Add track and in the Replay library. Eight
+are retained per server run; removing a track does not delete its freeze.
+Page reload retains the freeze catalog but clears the browser's tracks;
+server shutdown deletes its freezes. Replay mode hides and retains the Live
+session. See [session defaults](docs/presentation.md#session-and-tracks).
 Task position inputs remain available below the controller settings; direct
 viewport manipulation avoids scrolling to them during normal use.
 
@@ -180,7 +199,8 @@ bound. Dragging a bound onto its data edge (or double-clicking it) leaves that
 side unbounded; an unbounded end keeps following new Live data. The reset arrow,
 Esc on the timeline, or × on the Episode header's window chip clears it to the
 entire episode. The window is independent of zoom and the playback cursor and
-resets with the recording or Live generation, like zoom. Sidebar episode-time
+persists across Live generation changes, like zoom. Replay resets both when
+the recording changes. Sidebar episode-time
 plots fit the window; docked plots retain the timeline zoom window and cursor. Drag in a plot to scrub; Y scales hold headroom and expand smoothly as
 new values arrive. The Solve inspector follows the recorded
 plan association. **Pin solve** retains its identity and SQP selection with a
@@ -289,8 +309,8 @@ time's reference phase; Reset returns the phase to zero.
 
 The Live timeline uses authoritative saved physics timestamps. Scrub to inspect
 recorded position, velocity, actuator torque and matching predictions. History
-plays smoothly at 1× simulation time, independently of how slowly it was
-calculated. At a growing history's unavailable end, playback holds until more
+plays at the selected session speed (1× while following a growing Live tip),
+independently of how slowly it was calculated. At a growing history's unavailable end, playback holds until more
 motion is ready. It never extrapolates or jumps to the newest sample. The full
 accepted recording is retained; only the displayed path is reduced to at most
 5000 points, with cached geometry so rendering stays responsive.

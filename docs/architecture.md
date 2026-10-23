@@ -44,6 +44,8 @@ one GPU computation runs at a time. Live's private controller remains idle.
 | Run again, exact captured problem, binary SQP trace | [solve_inspections.py](../solve_inspections.py), [inspection_problem.py](../inspection_problem.py), [inspection_worker.py](../inspection_worker.py), [inspection_artifacts.py](../inspection_artifacts.py) | [Inspection](inspection.md) |
 | Plot jobs, source views, standard plots | [plot_service.py](../plot_service.py), [plot_sources.py](../plot_sources.py), [gato_visualizer/plotting/](../gato_visualizer/plotting), [plotters/standard.py](../plotters/standard.py) | [Plot API](plot-api.md), [author workflow](plot-authoring.md) |
 | NPZ validation, watched library, uploads | [replay_format.py](../replay_format.py), [replay_library.py](../replay_library.py) | [Replay/export cookbook](replay-format.md) |
+| Session state, track rendering and timeline lanes | [src/session.js](../src/session.js), [src/track-scene.js](../src/track-scene.js), [src/expanded-timeline.js](../src/expanded-timeline.js) | [Session and tracks](presentation.md#session-and-tracks) |
+| RAM freeze export and motion-only payload | [live_freeze.py](../live_freeze.py), [replay_library.py](../replay_library.py), [server.py](../server.py) | [Freeze contents](replay-format.md#live-freezes) |
 | Recorded onion keyframes, ghost arm pool and interaction | [src/onion-skin.js](../src/onion-skin.js), [src/ghost-arm.js](../src/ghost-arm.js), [src/onion-skin-view.js](../src/onion-skin-view.js) | [Onion skin](presentation.md#onion-skin) |
 | Browser scene and interaction wiring | [src/main.js](../src/main.js), [src/workbench-ui.js](../src/workbench-ui.js) | [README workspace](../README.md#workspace) |
 | Browser Live history, playback, settings | [src/live.js](../src/live.js), [src/live-history.js](../src/live-history.js), [src/live-execution.js](../src/live-execution.js), [src/presentation-settings.js](../src/presentation-settings.js) | [Execution](execution-api.md), [presentation](presentation.md) |
@@ -53,7 +55,8 @@ Production Live uses `SimulatorAdapter`, the solver child and
 `MultirateSession`; `scripts/check_conformance.py` compares exactly that path
 with `tiago_mpc`'s `experiments.reach.reach`. `LatestPresentation` and `src/live-playout.js` retain older
 presentation helpers; the current motion clock is `createHistoryClock` in
-`src/live-execution.js`, driven by fetched history. Do not infer production
+`src/live-execution.js`, driven by fetched history over the browser session span,
+with the main track owning Live tip decisions. Do not infer production
 ownership or playback timing from an old helper alone.
 
 ## Invariants to preserve

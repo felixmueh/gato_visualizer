@@ -257,6 +257,12 @@ plot output is identical by digest on the same data.
 
 ## Runtime files
 
+Session freezes are exported into `freezes/p<pid>/` under this RAM-backed
+runtime directory. Up to eight remain available in the replay catalog during
+the server run, including across page reloads. Startup removes ended owners'
+leftovers and shutdown removes the current owner's directory. Browser track
+changes do not write config or delete recordings; Keep to disk is deferred.
+
 Felix, 2026-10-23: runtime scratch lives in RAM-backed files, and the Live
 history keeps only the current run. The runtime directory is
 `<system temp>/tiago-mpc-visualizer-<uid>/` (Python's `tempfile.gettempdir()`, `/tmp`
@@ -357,8 +363,9 @@ affected state; never use a nonexistent terminal control (`sample_knot` would
 raise there). The upstream controller warm-start heuristic remains intact.
 
 Precalculation runs unpaced. On Play generation is paced to at most 1x and
-slows when computation cannot keep up. Recorded playback advances at 1x
-simulation time from browser elapsed time. Live defaults to sample hold; optional
+slows when computation cannot keep up. Recorded playback advances from browser
+elapsed time at the selected session rate (0.25–4×), forced to 1× while following
+a growing Live tip. Live defaults to sample hold; optional
 interpolation blends native positions and velocities between recorded timestamps.
 The default 200 ms playback buffer is a simulation-time lead over the cursor,
 measured from received history. It does not derive playback speed from

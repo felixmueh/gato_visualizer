@@ -82,3 +82,57 @@ It provides a JSON report and four screenshot downloads. Its result is stored
 under `motion-studio-onion-spike-result` for inspection; it does not override
 the application’s qualified rendering defaults. Raw laptop measurements and the
 implementation report stay in this worktree’s ignored `_expr_data/onion-skin/`.
+
+
+## Session and tracks
+
+Live always has one browser-owned session, initially main track A only. The
+session time equals Live's recorded simulation time. Each immutable replay
+track samples at `session time − offset`, interpolating recorded samples and
+holding the nearest endpoint outside its span. Main-track playback retains the
+Live sample-hold/interpolation preference. The session span is the union of
+the main track and visible comparison tracks. Focus is main-only in this phase;
+settings and the target gizmo always edit Live, while pinned solves retain
+their own source.
+
+**Add track** in the expanded heading lists ready catalog recordings, RAM
+freezes first under Temporary. Replays align their start with the main track's
+start (session zero when it is empty); freezes start at offset zero. Lanes show
+an effective offset, including zero, plus eye, Arm/Dot and removal controls.
+Dragging shifts a track without modifying recorded data; snapping within 6 px
+uses zero, the cursor and track endpoints. Alt-drag disables snapping;
+double-click resets the default offset. A lane's hover tooltip shows track
+time, all settings differences and provenance badges; its label shows the first
+two differences. Letters distinguish tracks when the five-colour palette repeats.
+The main lane carries Live timing intervals and breach marks. A count on the
+collapsed timeline chevron keeps loaded tracks discoverable.
+
+Comparison ghosts use the shared arm renderer in an independent uncapped
+pre-pass pool, with one right arm per visible Arm track and its own recorded
+fixed-joint base. Dot tracks show an end-effector marker. Opacity is 0.35 in
+span and 0.15 outside. Paths are solid in the track colour, thinner and dimmer
+than Live's white trace. A different reference is dashed in the same colour.
+Ghosts/dots appear in the main, Top and Right views; limit tint belongs only
+to the solid robot, and onion skin remains independent. Frame, wall-clock,
+model-hash and incomplete-run mismatches are marked once on the lane.
+
+Play, Pause and scrub drive one session clock even without comparison tracks.
+Speed ranges from 0.25× to 4× except while following a growing Live tip, when
+the selector is disabled at 1×. With Stop checked the cursor can pass Live's
+end and play to the session end, with Live's endpoint dimmed; with Continue,
+Live waits for or extends computation at its tip and the tracks wait together.
+Offsets and playback rate never change calculation, recording or frequencies.
+The aggregate window is stored in session time; it and an unfitted zoom window
+survive Live generation changes. Replay mode keeps its existing transport and
+looping, hides the session tracks and restores them on return to Live. When
+Live is unavailable, its empty main lane and loaded comparison tracks still
+support local playback; calculation controls remain disabled.
+
+Freeze for comparison is available with at least two states, no active job and
+no dirty/pending settings. It exports the current run via `save_replay`, adds
+it at offset zero and seeks the episode cursor to the run start. Breach-stopped
+and cancelled runs are allowed and labelled incomplete. Freezes live only in
+the server's RAM-backed runtime directory, survive page reloads, and are pruned
+to eight oldest-first; server shutdown deletes them. The browser's track list,
+offsets and display choices are not persisted or written to config. Focus
+switching, Keep, comparison plots and a past-run browser are later phases.

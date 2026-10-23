@@ -230,3 +230,42 @@ each trajectory when present, and `metadata.time_basis`. Prediction
 `metadata.recorded_start_s` records the explicit origin. With no reference,
 `target_xyz` is null. Starting-pose scenes have `source.bootstrap=true` and no
 trajectories; they do not manufacture recordings or timestamps.
+
+
+## Live freezes
+
+The library also scans the server-owned RAM runtime root
+`freezes/p<pid>/`, with catalog ids `freeze-<hash>` and `source: "freeze"`.
+These files survive browser reloads, are pruned oldest-first beyond eight, and
+are deleted on server shutdown; startup removes directories of ended servers.
+Removing a browser track does not delete its file. Keep to disk is deferred.
+
+`GET /api/replays/motion?id=<catalog id>` is the lightweight track payload:
+`id`, `revision`, `label`, `time_basis`, `end_effector_frame`, `fixed_joints`,
+`joint_limits`, `model_warning`, `time_s`, `q`, `ee_xyz`, `reference_time_s`,
+`reference_xyz`, `arm_base` (4×4 row-major world transform of the first arm
+joint's parent), `plan_count` and `provenance`. It computes FK for recorded
+motion only, caches by catalog id and revision, and never switches the current
+Replay or discards its Run again results. Queries accept exactly one catalog
+id, never paths. `/api/replays/scene` still serves full Replay payloads.
+
+Freeze uses the selected checkout's unchanged `experiments.replay.save_replay`.
+It includes every committed state (`time_s`, native q and qd), applied torque,
+state-time targets as a moving reference, every controller plan with origin,
+knot states/velocities/predicted torques and finite scalar statistics, joint
+limits, end-effector frame and the scene's fixed joints. Preview plans are
+excluded. Live world coordinates derive from the full URDF root,
+`base_footprint`, so this is the reference frame written to the replay.
+`provenance.params` carries the problem configuration;
+`provenance.live` carries settings, source/simulator/solver/model identities,
+arrival rule, generation, completion status, freeze timestamp and breaches.
+
+Accepted v1 omissions: timing intervals (no freeze timing plots/bands), command
+records (plan sequence, planned unclipped torque and plan exhaustion), state
+`distance_m`/`arrived`, playback breach stops and Run again problem inputs
+(`constraint_bounds_native`, `reference_native`, `initial_state`). Applied
+torque remains; breaches and the arrival rule remain in provenance. Run again
+is unavailable as for any replay without captured inputs. Format limits apply:
+200,000 total samples, 10,000 predictions and 64 MiB compressed. Total samples
+include recorded states, reference samples and prediction knots. Oversized runs
+are refused with the limit named; no export subsampling is performed.

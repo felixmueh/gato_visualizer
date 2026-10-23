@@ -172,8 +172,9 @@ explicitly rather than claiming that physics alone exceeded its budget.
 Manual and automatic precalculation run the full closed-loop simulation for the
 requested duration. New parameter edits invalidate obsolete calculation jobs;
 automatic jobs use a frozen displayed starting state. History playback follows
-recorded simulation timestamps at 1x, with a separate "Continue simulation at
-end" toggle. Imported Replay recordings remain independent of Live settings.
+recorded simulation timestamps at the session playback rate, with a separate
+"Continue simulation at end" toggle. Imported Replay recordings remain
+independent of Live settings.
 
 Import `tiago_mpc` code unchanged instead of re-implementing it. Which code
 that is changed on 2026-10-22; see "The tiago_mpc API the visualizer uses"
@@ -247,6 +248,24 @@ profile, friction or inspection path. Since `tiago_mpc` 31c405a (Felix,
 warm-up (`run()` warms up before its first tick, the session's configure
 reseeds the same way), at the reach's default rates: 500 Hz commands, a
 control update per 10 ms knot.
+
+## Session model — Felix, 2026-10-23
+
+Live always has a browser-owned session with main track A (current generation,
+offset 0), one session clock, transport and focus. Library recordings and RAM
+freezes are immutable replay tracks, aligned by presentation-only offsets;
+freezes default to 0, library replays align starts. Focus remains on Live in
+this phase; scene/Joints/Episode/Solve reads go through the focused track.
+Settings and the target gizmo always edit Live; a pinned Solve keeps its source.
+Live history playback may run at 0.25–4×, with 1× forced while following a
+growing Live tip. Stop plays to the session end; Continue retains Live's tip
+extension/waiting. The aggregate window and zoom belong to session time and
+survive generation changes. Replay mode remains separate and hides tracks.
+Freeze exports through the selected `tiago_mpc`'s `save_replay`, rewinds the
+cursor to the run start, and retains up to eight files in the server-owned
+RAM runtime directory. Track loading never switches the current Replay.
+Do not add focus switching, Keep, comparison plots, session persistence or
+historical branch browsing in this phase. See [presentation](docs/presentation.md#session-and-tracks).
 
 ## Model and coordinates
 
@@ -329,7 +348,8 @@ concerns. Do not add caveats for unlikely misreadings or repeat a label across
 panels; permanent text is a last resort of a few words.
 
 The visualizer's independent simulation/control/TO clocks govern generation;
-recorded playback uses simulation timestamps at 1x. Visualizer runs are
+recorded playback uses simulation timestamps at the session playback rate,
+forced to 1× while following a growing Live tip. Visualizer runs are
 diagnostics, not experiment or timing evidence.
 
 ## Defaults are never hidden — Felix, 2026-10-22

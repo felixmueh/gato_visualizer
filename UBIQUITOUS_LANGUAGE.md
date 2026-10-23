@@ -38,7 +38,7 @@
 | **Segment header** | The first record of a generation's Live history: everything constant within that segment (effective settings, source and identities, limits and bounds, task path and anchors). Other records name their segment by generation. | Plan context, per-record context |
 | **Knot interval** | The time spacing of states in a prediction horizon. | Control period |
 | **Report frequency** | The wall-clock cadence for publishing batches of completed numerical records. | Simulation frequency, sample reduction |
-| **Aggregate window** | The episode time range, selected on the timeline with independently unbounded left/right bounds, over which episode plots and aggregates are computed; an unbounded end follows new history. | Visible window, zoom, analysis range selector |
+| **Aggregate window** | The session time range, selected on the timeline with independently unbounded left/right bounds, over which episode plots and aggregates are computed; an unbounded end follows new history. | Visible window, zoom, analysis range selector |
 | **Playback buffer** | The desired amount of received simulation-time history ahead of the Live cursor. | Integration delay, reporting interval |
 
 ## Simulator and predictor
@@ -51,6 +51,22 @@
 | **Clip effort** | The simulation setting that clips each command to ± the raw URDF effort limit before it reaches the simulated plant; the robot path never clips. | Torque saturation of the MPC, effort bound (the MPC's `effort_fraction` row) |
 | **Limit breach** | A simulated position, velocity or applied (clipped) torque that starts to be beyond its raw URDF limit, checked at every physics step or command; with **Stop on breach** Live pauses there. Planned knots never breach. | Limit use near/at (presentation states), MPC bound violation |
 | **Native coordinates** | The canonical robot joint coordinates used by plant states, portable replays and public Live predictions. | GPU coordinates |
+
+## Session and tracks — Felix, 2026-10-23
+
+| Term | Definition | Aliases to avoid |
+| --- | --- | --- |
+| **Session** | Tracks shown together with one session time, transport and focus. | Comparison mode |
+| **Track** | An immutable recorded MPC episode placed on session time, with an offset, colour, visibility and arm/dot display. | Clip, layer |
+| **Track time** | A recording's own clock: session time minus its offset. | Global time |
+| **Main track** | Live's current generation, always present, growing/editable, offset fixed at zero; empty while idle or unavailable. | Active track |
+| **Session time** | Shared playback axis, equal to the main track's simulation clock. | Global time, wall time |
+| **Offset** | Presentation-only placement of a track on session time, in seconds; never written into the recording. | Time correction |
+| **Focused track** | The track supplying the solid robot, limit tint, Joints, prediction, Episode and follow-cursor Solve. Live only in this phase. | Selected track, active track |
+| **Lane** | A track's row below the expanded timeline ruler. | Layer |
+| **Freeze** | A Live run exported as a replay NPZ into RAM and available as a track; Keep to disk is a later phase. | Snapshot, temporary replay |
+| **Ghost arm** | A translucent right arm at another recorded state; comparison ghosts use their track colour. | Prediction |
+| **End-effector dot** | A marker at a track's recorded end-effector position, in its track colour. | Tool prediction |
 
 ## Relationships
 
@@ -70,7 +86,7 @@
 
 After playing to 10 s, scrubbing to 5 s, and changing execution settings, further computation starts from the displayed state at 5 s. Computing another 10 s covers task/simulation time 5–15 s. Figure-eight task phase follows that preserved task time.
 
-For the current version, the continuation replaces the active episode history in the UI; earlier history is not stitched into the new segment. Existing history files remain on disk. This does not introduce an episode-branch browser or change ordinary Play: with no execution-setting edit, Play extends the existing history tip. Plot settings, camera edits and inspection alone do not start a continuation.
+For the current version, the continuation replaces the active episode history in the UI; earlier history is not stitched into the new segment. Replaced history files are deleted; explicitly frozen runs survive in RAM until pruning or server shutdown. This does not introduce an episode-branch browser or change ordinary Play: with no execution-setting edit, Play extends the existing history tip. Plot settings, camera edits and inspection alone do not start a continuation.
 
 ## Example dialogue
 

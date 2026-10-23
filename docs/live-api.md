@@ -24,6 +24,19 @@ commands and read retained records; they own no controller or CUDA state.
   and Run-again route answers 503 with `{"error": "<reason>"}`; unknown `/api/`
   routes answer 404 with a JSON `error`.
 
+## Freeze for comparison
+
+`POST /api/live/freeze` accepts same-origin JSON `{ "generation": 3 }` and
+returns `{ "accepted": true, "item": <replay catalog item> }`. It requires the
+current generation and no active or queued numerical job; stale generation
+returns HTTP 409 (`History changed`), as does an active job. At least two
+recorded states are required. Format-limit errors name the exceeded limit;
+recorded data are never silently dropped. The browser also disables Freeze
+while settings are dirty or pending. Export is CPU-only, reading the committed
+history prefix; it does not invoke the solver. The resulting replay is a
+server-owned RAM freeze, independent of later Live generation changes. See
+[freeze contents](replay-format.md#live-freezes).
+
 ## Settings object
 
 `config` is `asdict(MpcParams)` of the selected `tiago_mpc` plus the
