@@ -233,7 +233,8 @@ class DisplaySourceTests(unittest.TestCase):
             selection = dict(mpc_root=str(root), python=sys.executable, cache=str(root/'cache'))
             tiago = SimpleNamespace(FULL_URDF=root/'full.urdf', ARM_URDF=root/'reduced.urdf', GRASP_FRAME='grasp',
                                     urdf_friction=lambda width: SimpleNamespace(width_rad_s=width))
-            mpc = SimpleNamespace(MpcParams=1, TIAGO=2, Mpc=3, find_binary=4, compile_binary=5)
+            mpc = SimpleNamespace(MpcParams=1, TIAGO=SimpleNamespace(max_sqp_time_s=.01),
+                                  Mpc=SimpleNamespace(warmup=3), find_binary=4, compile_binary=5)
             assets, kinematics = Mock(), Mock()
             with patch('live_mpc.import_tiago', return_value=tiago) as imported, \
                  patch.object(script.importlib, 'import_module', return_value=mpc), \
@@ -248,6 +249,9 @@ class DisplaySourceTests(unittest.TestCase):
                 self.assertEqual(os.environ['GATO_CACHE_DIR'], str(root/'cache'))
                 assets.side_effect = ValueError('canonical mesh is missing')
                 with self.assertRaisesRegex(ValueError, 'canonical mesh is missing'):
+                    script.load_source(selection)
+                del mpc.Mpc.warmup  # tiago_mpc before 31c405a
+                with self.assertRaisesRegex(ValueError, 'lacks Mpc.warmup'):
                     script.load_source(selection)
                 del mpc.compile_binary
                 with self.assertRaisesRegex(ValueError, 'lacks compile_binary'):

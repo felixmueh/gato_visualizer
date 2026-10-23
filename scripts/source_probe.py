@@ -40,6 +40,9 @@ def load_source(selection):
     for name in ("MpcParams", "TIAGO", "Mpc", "find_binary", "compile_binary"):
         if not hasattr(mpc, name):
             raise ValueError(f"tiago_mpc.mpc lacks {name}; the visualizer needs the step-13 MPC API")
+    if not hasattr(mpc.Mpc, "warmup") or not hasattr(mpc.TIAGO, "max_sqp_time_s"):
+        raise ValueError("tiago_mpc.mpc lacks Mpc.warmup or MpcParams.max_sqp_time_s; "
+                         "the visualizer needs tiago_mpc 31c405a or later (steps 15 and 16)")
     # An importable solver alone cannot make a checkout displayable. Check the same
     # full model/assets and grasp-frame binding the restarted backend will construct.
     from server import RobotKinematics, canonical_model_assets

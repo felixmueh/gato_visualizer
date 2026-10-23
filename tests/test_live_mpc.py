@@ -32,12 +32,16 @@ class SettingsTests(unittest.TestCase):
         config, task = validate_settings(self.config, self.task, self.schema)
         self.assertEqual(config, self.config)
         self.assertIsNot(config, self.config)
-        self.assertEqual({key: value for key, value in config.items() if key != "plant"}, live_probe()["defaults"])
+        # TIAGO's defaults, without the SQP wall-time limit on the simulation clock
+        self.assertEqual({key: value for key, value in config.items() if key != "plant"},
+                         dict(live_probe()["defaults"], max_sqp_time_s=None))
+        self.assertIsNotNone(live_probe()["defaults"]["max_sqp_time_s"])
+        self.assertIs(config["warmup"], True)
         self.assertEqual(config["plant"], dict(friction=False))
         self.assertIsNone(config["friction"])  # loss-free predictor and plant by default
         specs = {s["path"]: s for s in self.schema["parameters"]}
         self.assertEqual(set(specs), {"N", "dt_s", "ee_frame", "warm_start", "reset_rho_each_step", "admm_linsys",
-            "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "warmup", "budget_s",
+            "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "warmup", "max_sqp_time_s",
             "plant.friction", *(f"solver.{key}" for key in config["solver"]), *(f"admm.{key}" for key in config["admm"])})
         self.assertEqual(specs["warm_start"]["choices"], ["shift", "hold"])
         self.assertEqual(specs["admm_linsys"]["choices"], ["pcg", "bdsv_factor", "auto"])
@@ -48,9 +52,11 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(specs["friction"]["choices"], [dict(value=None, label="Loss-free"), dict(
             value=self.friction, label="URDF Coulomb + viscous, tanh 0.03 rad/s")])
         self.assertEqual(self.friction["width_rad_s"], .03)
-        self.assertTrue(specs["budget_s"]["nullable"])
+        self.assertEqual({key: specs["max_sqp_time_s"][key] for key in ("kind", "nullable", "min", "max")},
+                         dict(kind="float", nullable=True, min=1e-4, max=10))
+        self.assertEqual(specs["warmup"]["kind"], "bool")
         self.assertEqual(specs["plant.friction"]["group"], specs["friction"]["group"])
-        validate_settings(dict(self.config, budget_s=.05, warmup=2, friction=self.friction), self.task, self.schema)
+        validate_settings(dict(self.config, max_sqp_time_s=.05, warmup=False, friction=self.friction), self.task, self.schema)
 
     def test_a_new_text_parameter_is_shown_fixed_at_its_default(self):
         probe = live_probe()
@@ -66,7 +72,7 @@ class SettingsTests(unittest.TestCase):
                  ("dt_s", -1), ("solver.max_sqp_iters", 100001),
                  ("solver.exact_hessian", True), ("solver.linsys", "qdldl"),
                  ("warm_start", "repeat"), ("admm.rho", float("inf")), ("velocity_fraction", 0),
-                 ("ee_frame", "arm_right_tool_joint"), ("budget_s", 0), ("warmup", -1), ("plant.friction", 1),
+                 ("ee_frame", "arm_right_tool_joint"), ("max_sqp_time_s", 0), ("warmup", 1), ("warmup", None), ("plant.friction", 1),
                  ("friction", dict(self.friction, width_rad_s=.05)), ("friction", True)]
         for path, value in cases:
             config = deepcopy(self.config)

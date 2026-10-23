@@ -1,6 +1,7 @@
 """Live settings, task geometry and GPU locks around tiago_mpc's MPC.
 
-The settings are asdict(MpcParams) plus the visualizer's simulated-plant group.
+The settings are asdict(MpcParams) plus the visualizer's simulated-plant group;
+their defaults are TIAGO's with no SQP wall-time limit (the simulation clock).
 The parameter specs and defaults come from the selected interpreter's source
 probe; this module imports no tiago_mpc solver code and no GATO module.
 """
@@ -58,13 +59,17 @@ def mpc_params(config):
 LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "q_cost": "Tool position cost",
           "qd_cost": "Joint speed cost", "u_cost": "Control cost", "N_cost": "Terminal position cost",
           "friction": "Predictor friction", "plant.friction": "Simulator friction",
-          "ee_frame": "End-effector frame", "warmup": "Warm-up solves", "budget_s": "SQP wall budget (s)"}
+          "ee_frame": "End-effector frame", "warmup": "Warm-up solve", "max_sqp_time_s": "SQP time limit (s)"}
 RANGES = {"dt_s": (.001, .1), "solver.max_sqp_iters": (1, 100000), "solver.max_pcg_iters": (1, 1000000),
           "solver.pcg_tol": (1e-8, 1), "solver.solve_ratio": (.001, 1), "solver.mu": (1e-6, 1e5),
           "solver.rho": (1e-8, 1e4), "admm.iters": (1, 200), "admm.eps_rel": (1e-8, 1),
           "joint_margin_rad": (0, .5), "velocity_fraction": (.01, 1), "effort_fraction": (.01, 1),
-          "warmup": (0, 100), "budget_s": (1e-4, 10)}
+          "max_sqp_time_s": (1e-4, 10)}
 LIMIT_KEYS = ("joint_margin_rad", "velocity_fraction", "effort_fraction")
+NULLABLE = ("max_sqp_time_s",)  # None: no wall-time limit, within solver.max_sqp_iters
+# Live and precalculation run on the simulation clock, so Live's default has no
+# wall-time limit for the SQP iterations; the user can still set one (Felix, 2026-10-23).
+SIMULATION_CLOCK_DEFAULTS = dict(max_sqp_time_s=None)
 
 
 def parameter_specs(config, available_n, predictor_friction):
@@ -97,7 +102,7 @@ def parameter_specs(config, available_n, predictor_friction):
             else:
                 spec["kind"] = "int" if isinstance(item, int) else "float"
                 lo, hi = RANGES.get(name, (0, 1e5) if key.endswith("cost") else (1e-8, 1e4))
-                spec.update(min=lo, max=hi, nullable=item is None)
+                spec.update(min=lo, max=hi, nullable=item is None or name in NULLABLE)
                 if lo > 0 and hi / lo >= 1000:
                     spec["scale"] = "log"
             specs.append(spec)
@@ -280,7 +285,7 @@ def build_schema(probe, mpc_root):
     from execution_session import DEFAULT_EXECUTION
     if not probe.get("compatible"):
         raise ValueError(probe.get("error") or "Selected source is incompatible")
-    defaults = dict(deepcopy(probe["defaults"]), plant=dict(friction=False))
+    defaults = dict(deepcopy(probe["defaults"]), **SIMULATION_CLOCK_DEFAULTS, plant=dict(friction=False))
     by_mode = {mode: list(probe["available_N_by_friction"][mode]) for mode in ("off", "on")}
     available = sorted(set(by_mode["off"]) | set(by_mode["on"]))
     predictor = probe["friction"]

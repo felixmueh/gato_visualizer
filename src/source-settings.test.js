@@ -172,20 +172,35 @@ test('path fields hold <checkout> templates; resolution is a tooltip, errors an 
   assert.equal(slow.defaults.cache, '<checkout>/.cache/gato'); assert.equal(slow.defaults.python, '<checkout>/venv-host/bin/python');
 });
 
-test('source and profile refresh preserve the predictor friction choice, simulator friction and a null budget', () => {
+test('source and profile refresh preserve the predictor friction choice, simulator friction and a null SQP time limit', () => {
   const friction = { coulomb_nm: [1, 1, 1, 1, 1, 1, 1], viscous_nm_s_per_rad: [2, 2, 2, 2, 2, 2, 2], width_rad_s: .03 };
   const schema = {
     available_N: [32], available_N_by_friction: { off: [32], on: [32] },
-    defaults: { config: { N: 32, friction: null, budget_s: null, plant: { friction: false } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
+    defaults: { config: { N: 32, friction: null, max_sqp_time_s: null, plant: { friction: false } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
     parameters: [
       { path: 'N', kind: 'choice', choices: [32] },
       { path: 'friction', kind: 'choice', choices: [{ value: null, label: 'Loss-free' }, { value: friction, label: 'URDF' }] },
-      { path: 'budget_s', kind: 'float', min: 1e-4, max: 10, nullable: true },
+      { path: 'max_sqp_time_s', kind: 'float', min: 1e-4, max: 10, nullable: true },
       { path: 'plant.friction', kind: 'bool' },
     ], tasks: [{ kind: 'reach', defaults: { target_offset_m: [0, 0, 0] } }],
   };
-  const saved = { config: { N: 32, friction: structuredClone(friction), budget_s: .05, plant: { friction: true } }, task: { kind: 'reach' } };
+  const saved = { config: { N: 32, friction: structuredClone(friction), max_sqp_time_s: .05, plant: { friction: true } }, task: { kind: 'reach' } };
   assert.deepEqual(restoreCompatibleSettings(schema, saved).config, saved.config);
-  saved.config.friction.width_rad_s = .05; saved.config.budget_s = null; saved.config.plant.friction = 'true';
-  assert.deepEqual(restoreCompatibleSettings(schema, saved).config, { N: 32, friction: null, budget_s: null, plant: { friction: false } });
+  saved.config.friction.width_rad_s = .05; saved.config.max_sqp_time_s = null; saved.config.plant.friction = 'true';
+  assert.deepEqual(restoreCompatibleSettings(schema, saved).config, { N: 32, friction: null, max_sqp_time_s: null, plant: { friction: false } });
+});
+
+test('a draft saved before tiago_mpc 31c405a keeps the new warm-up and SQP time-limit defaults', () => {
+  const schema = {
+    available_N: [32], available_N_by_friction: { off: [32], on: [] },
+    defaults: { config: { N: 32, warmup: true, max_sqp_time_s: null, plant: { friction: false } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
+    parameters: [
+      { path: 'N', kind: 'choice', choices: [32] },
+      { path: 'warmup', kind: 'bool' },
+      { path: 'max_sqp_time_s', kind: 'float', min: 1e-4, max: 10, nullable: true },
+      { path: 'plant.friction', kind: 'bool' },
+    ], tasks: [{ kind: 'reach', defaults: { target_offset_m: [0, 0, 0] } }],
+  };
+  const saved = { config: { N: 32, warmup: 0, budget_s: .05, plant: { friction: false } }, task: { kind: 'reach' } };
+  assert.deepEqual(restoreCompatibleSettings(schema, saved).config, { N: 32, warmup: true, max_sqp_time_s: null, plant: { friction: false } });
 });
