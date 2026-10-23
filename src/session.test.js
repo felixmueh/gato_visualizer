@@ -1,0 +1,74 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createSession, TRACK_PALETTE, sessionSpan, trackTime, outsideSpan, defaultOffset, snapOffset, settingsDiff } from './session.js';
+
+test('Live is always the focused main track; session span includes hidden main but only visible comparisons', () => {
+  const session = createSession();
+  assert.equal(session.focusedId, 'live'); assert.deepEqual(session.span, [0, 0]);
+  session.updateMain({ span: [5, 6], empty: false, visible: false });
+  const replay = session.addTrack({ span: [10, 14], id: 'library' });
+  assert.equal(replay.offset_s, -5); assert.equal(replay.letter, 'B');
+  assert.deepEqual(session.span, [5, 9]);
+  session.setVisible(replay.id, false); assert.deepEqual(session.span, [5, 6]);
+  assert.equal(session.removeTrack('live'), false); assert.equal(session.setOffset('live', 3), false);
+  session.setOffset(replay.id, -10); session.setVisible(replay.id, true); assert.deepEqual(session.span, [0, 6]);
+  assert.equal(session.removeTrack(replay.id), true); assert.deepEqual(session.span, [5, 6]);
+});
+
+test('default offsets align library starts and retain simulation time for freezes without altering samples', () => {
+  const session = createSession(), motion = { id: 'f', time_s: [3, 5], q: [[1], [2]], provenance: { live: { settings: { config: { N: 32 } } } } };
+  const replay = session.addTrack({ motion: { ...motion, id: 'experiment' } });
+  assert.equal(replay.offset_s, -3);
+  const freeze = session.addTrack({ motion, catalogSource: 'freeze' });
+  assert.equal(freeze.offset_s, 0); assert.equal(freeze.defaultOffset, 'zero');
+  session.updateMain({ span: [2, 4], empty: false });
+  session.setOffset(replay.id, 7); session.resetOffset(replay.id); assert.equal(replay.offset_s, -1);
+  session.setOffset(freeze.id, 7); session.resetOffset(freeze.id); assert.equal(freeze.offset_s, 0);
+  assert.deepEqual(motion.time_s, [3, 5]); assert.deepEqual(motion.q, [[1], [2]]);
+  assert.equal(defaultOffset({ kind: 'live', span: [2, 4] }, session.focused), 0);
+});
+
+test('palette and letters advance deterministically without limiting the number of tracks', () => {
+  const session = createSession(), tracks = Array.from({ length: 30 }, () => session.addTrack({ span: [0, 1] }));
+  assert.deepEqual(tracks.slice(0, 5).map(track => track.color), TRACK_PALETTE);
+  assert.equal(tracks[5].color, TRACK_PALETTE[0]); assert.equal(tracks[24].letter, 'Z'); assert.equal(tracks[25].letter, 'AA');
+  assert.notEqual(tracks[0].id, tracks[29].id);
+});
+
+test('session cursor, aggregate window, identity and speed survive generation replacement', () => {
+  const session = createSession(), id = session.id;
+  session.updateMain({ source: { kind: 'live', generation: 1 }, span: [2, 4], empty: false });
+  session.setAggregate({ start: 2.2, end: null }); session.setCursor(3); session.setRate(2);
+  session.updateMain({ source: { kind: 'live', generation: 2 }, span: [3, 5], empty: false });
+  assert.equal(session.id, id); assert.equal(session.cursor, 3); assert.equal(session.rate, 2);
+  assert.deepEqual(session.aggregate, { start: 2.2, end: null });
+  assert.throws(() => session.setOffset(session.addTrack({ span: [0, 1] }).id, NaN), /finite/);
+  for (const rate of [0, -1, NaN]) assert.throws(() => session.setRate(rate), /positive/);
+});
+
+test('track cursor conversion and outside-span hold include both recorded endpoints', () => {
+  const track = { kind: 'replay', span: [3, 5], offset_s: -2 };
+  assert.equal(trackTime(track, 2), 4);
+  assert.equal(outsideSpan(track, 1), false); assert.equal(outsideSpan(track, 3), false);
+  assert.equal(outsideSpan(track, .9), true); assert.equal(outsideSpan(track, 3.1), true);
+  assert.deepEqual(sessionSpan([{ ...track, visible: true }, { ...track, offset_s: 10, visible: false }]), [1, 3]);
+});
+
+test('offset snapping uses six screen pixels, either edge, and Alt disables it', () => {
+  assert.equal(snapOffset(.047, [0, 1], .01, { span: [0, 2] }), 0);
+  assert.equal(snapOffset(.047, [2], .01, { span: [0, 2] }), 0);
+  assert.equal(snapOffset(.07, [0], .01), .07);
+  assert.equal(snapOffset(.047, [0], .01, { alt: true }), .047);
+});
+
+test('settings differences read segment headers and experiment params without Live-only omissions', () => {
+  const main = { context: { settings: { config: { N: 32, solver: { sqp: 5 }, plant: { clip: true } }, task: { kind: 'reach' }, execution: { duration_s: 10 } } } };
+  const other = structuredClone(main); other.context.settings.config.solver.sqp = 10;
+  assert.deepEqual(settingsDiff(main, other).map(({ path, main, other, text }) => ({ path, main, other, text })), [{ path: 'config.solver.sqp', main: 5, other: 10, text: 'sqp: 10' }]);
+  assert.deepEqual(settingsDiff(main, { provenance: { params: { N: 64, solver: { sqp: 5 } } } }).map(diff => diff.path), ['config.N']);
+  assert.deepEqual(settingsDiff(main, {}), []);
+  const session = createSession(); session.updateMain({ context: main.context, settings: main.context.settings });
+  const track = session.addTrack({ span: [0, 1], settings: other.context.settings });
+  assert.equal(track.differences[0].other, 10);
+  session.updateMain({ context: other.context, settings: other.context.settings }); assert.deepEqual(track.differences, []);
+});
