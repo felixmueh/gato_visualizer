@@ -67,7 +67,19 @@ export function createTrackScene({ robot, scene, jointNames = [] }) {
       transparent: true, opacity: TRACK_OPACITY, depthTest: false, depthWrite: false, toneMapped: false }));
     dot.name = 'track-dot'; dot.renderOrder = 5; container.add(path, dot);
     const base = track.motion.arm_base ? new Matrix4().set(...track.motion.arm_base.flat()) : undefined;
-    return { group: container, path, dot, base, motion: track.motion, reference: null, mainReference: undefined, referenceInitialized: false };
+    const movingNames = track.jointNames ?? track.motion.joint_names ?? jointNames;
+    const moving = new Set(movingNames), armJoints = new Set();
+    robot.joints?.arm_right_1_joint?.traverse(object => {
+      if (object.isURDFJoint) armJoints.add(object.urdfName);
+    });
+    // The base carries ancestor coordinates (for example torso height). The
+    // cloned subtree also needs the recording's gripper coordinates. Cache
+    // those constant values once; native trajectory samples always win.
+    const fixed = Object.entries(track.motion.fixed_joints || {})
+      .filter(([name, value]) => armJoints.has(name) && !moving.has(name) && Number.isFinite(value));
+    return { group: container, path, dot, base, motion: track.motion,
+      poseNames: [...fixed.map(([name]) => name), ...movingNames], fixedQ: fixed.map(([, value]) => value),
+      reference: null, mainReference: undefined, referenceInitialized: false };
   }
   function update({ tracks = [], time = 0, mainReference, visible = true }) {
     if (disposed) return;
@@ -108,8 +120,8 @@ export function createTrackScene({ robot, scene, jointNames = [] }) {
         record.mainReference = mainReference; record.referenceInitialized = true;
       }
       record.reference?.material.color.set(track.color);
-      if (shown && visible && track.display !== 'dot') poses.push({ id: track.id, time: trackTime, q: sample.q,
-        jointNames: track.jointNames ?? motion.joint_names ?? jointNames, color: track.color, opacity, base: record.base });
+      if (shown && visible && track.display !== 'dot') poses.push({ id: track.id, time: trackTime, q: [...record.fixedQ, ...sample.q],
+        jointNames: record.poseNames, color: track.color, opacity, base: record.base });
       sampled.push({ id: track.id, time: trackTime, sampledTime: Math.max(motion.time_s[0], Math.min(motion.time_s.at(-1), trackTime)),
         outside, visible: shown, display: track.display ?? 'arm', opacity, xyz: sample.xyz, q: sample.q });
     }

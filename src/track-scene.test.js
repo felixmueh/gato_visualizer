@@ -4,10 +4,14 @@ import { BoxGeometry, Group, Mesh, MeshStandardMaterial, Scene } from 'three';
 import { URDFJoint } from 'urdf-loader/src/URDFClasses.js';
 import { createTrackScene, trackDisplayPath, trackReferencesDiffer, TRACK_OPACITY, TRACK_OUTSIDE_OPACITY } from './track-scene.js';
 
-function fixture() {
+function fixture({ gripper = false } = {}) {
   const scene = new Scene(), robot = new Group(), torso = new Group(), joint = new URDFJoint();
   joint.urdfName = 'arm_right_1_joint'; joint.jointType = 'revolute'; joint.axis.set(0, 0, 1); joint.setJointValue(0);
   joint.add(new Mesh(new BoxGeometry(.2, .2, .2), new MeshStandardMaterial()));
+  if (gripper) {
+    const finger = new URDFJoint(); finger.urdfName = 'gripper_right_finger_joint'; finger.jointType = 'prismatic';
+    finger.axis.set(1, 0, 0); finger.limit.upper = .1; finger.setJointValue(.02); joint.add(finger);
+  }
   torso.add(joint); robot.add(torso); robot.joints = { arm_right_1_joint: joint }; scene.add(robot);
   return { scene, robot, tracks: createTrackScene({ robot, scene, jointNames: ['arm_right_1_joint'] }) };
 }
@@ -75,5 +79,27 @@ test('auxiliary bounds include visible paths and poses, excluding hidden tracks 
   tracks.update({ tracks: [near], time: 4 }); // Distant ghost remains allocated and hidden.
   assert(tracks.bounds.max.x < 3);
   tracks.update({ tracks: [near], time: 4, visible: false }); assert(tracks.bounds.isEmpty());
+  tracks.dispose();
+});
+
+
+test('recorded gripper coordinates stay independent per track without overriding moving joints or the solid robot', () => {
+  const { tracks, scene, robot } = fixture({ gripper: true }), a = track('a'), b = track('b');
+  a.motion.fixed_joints = { gripper_right_finger_joint: .01, arm_right_1_joint: -2, torso_lift_joint: .3, arm_left_1_joint: 1 };
+  b.motion.fixed_joints = { gripper_right_finger_joint: .07, arm_right_1_joint: -1 };
+  const solidFinger = robot.joints.arm_right_1_joint.children.find(object => object.urdfName === 'gripper_right_finger_joint');
+  tracks.update({ tracks: [a, b], time: 4 });
+  const colors = scene.getObjectByName('ghost-arms').children.map(group => group.children[0]);
+  const fingers = colors.map(root => root.children.find(object => object.urdfName === 'gripper_right_finger_joint'));
+  assert.deepEqual(fingers.map(finger => finger.jointValue[0]), [.01, .07]);
+  assert.deepEqual(colors.map(root => root.jointValue[0]), [.5, .5]);
+  assert.equal(solidFinger.jointValue[0], .02); assert.equal(robot.joints.arm_right_1_joint.jointValue[0], 0);
+  let sets = 0;
+  fingers.forEach(finger => { const original = finger.setJointValue.bind(finger); finger.setJointValue = (...values) => { sets++; return original(...values); }; });
+  tracks.update({ tracks: [a, b], time: 4 });
+  assert.equal(sets, 0); // Pose names/constant values feed the existing unchanged-pose cache.
+  tracks.update({ tracks: [a, b], time: 4.5 });
+  assert.deepEqual(fingers.map(finger => finger.jointValue[0]), [.01, .07]);
+  assert.equal(solidFinger.jointValue[0], .02);
   tracks.dispose();
 });
