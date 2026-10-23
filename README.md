@@ -247,9 +247,13 @@ Pressing Play at a completed Manual/Automatic recording's end with Stop checked
 replays it from the beginning. On Play resumes simulation from the latest state
 without rewinding history. At a growing recording's end, playback waits for new samples.
 
-Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz**. Simulation Hz controls
-RK4 integration, Control Hz samples the active plan's torque, and TO Hz requests
-new plans. The prediction knot interval is separate. The warm-start policy is
+Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz** (defaults 1000, 500 and
+100). Simulation Hz controls RK4 integration, Control Hz samples the active plan's
+torque, and TO Hz requests new plans. The prediction knot interval is separate.
+**Record every** n physics steps (default 2, shown with its spacing in ms) thins
+the recorded states and commands; plans and timing intervals stay complete, and
+the simulation and solves are unchanged. 1 records every step; the history
+summary and plot notes say "every 2nd step" when thinned. The warm-start policy is
 the `MpcParams` setting `warm_start` (shift or hold); there is no exact time
 alignment of the warm start. Large SQP/PCG budgets
 are available within backend limits; they may make calculation slower than 1×.
@@ -397,7 +401,8 @@ and multirate session with the same `MpcParams` (Live's defaults: `TIAGO`
 without the SQP time limit, warm-up on), start, target and rates: commands
 every 2 ms (500 Hz, the reach's default), a control update every 10 ms knot,
 physics on a 1 ms grid. `run()` warms up from the start state before its first
-tick; the session's configure reseeds with the same `Mpc.warmup`. It compares
+tick; the session's configure reseeds with the same `Mpc.warmup`. The session
+records every step (`record_every` 1). It compares
 the states at every command tick, the commands and the plans (`--atol`, default
 1e-9) over `--steps` knot intervals (default 300, that is 3 s). The reference
 reach gets a zero position tolerance, so it never arrives and runs the whole

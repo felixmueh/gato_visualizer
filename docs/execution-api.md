@@ -14,15 +14,19 @@ changed. `scripts/check_conformance.py` compares this loop with `tiago_mpc`'s
 ```json
 {
   "simulation_hz": 1000,
-  "control_hz": 100,
+  "control_hz": 500,
   "to_hz": 100,
+  "record_every": 2,
   "calculation": "on_play",
   "duration_s": 10,
   "continue_at_end": false
 }
 ```
 
-Rates are positive and obey `simulation_hz >= control_hz >= to_hz`.
+Rates are positive and obey `simulation_hz >= control_hz >= to_hz`. Commands
+default to 500 Hz, as `tiago_mpc`'s experiments (Felix, 2026-10-23); simulation
+stays at 1000 Hz and TO at 100 Hz. `record_every` is an integer within 1–1000;
+see [Recording substeps](#recording-substeps).
 `config.dt_s` is the independent prediction knot interval. The backend validates
 all settings before acceptance. Static previews accept large positive SQP/PCG
 budgets within the native integer range; the prior small MVP caps no longer
@@ -149,8 +153,9 @@ updates, and the interval records below. Every record carries `generation` and
 `torque_nm`, `plan_seq`, `plan_elapsed_s`, and `horizon_exhausted` (also exposed
 as `plan_exhausted`). Control timestamps distinguish when the held command
 changed from endpoint state torques, which record the input producing that state.
-History includes the initial state, every integration endpoint, every solved
-plan, and every completed timing interval. Saved states retain actual applied
+History includes the initial state, every solved plan, every completed timing
+interval and, with `record_every` 1, every integration endpoint and control
+update; [Recording substeps](#recording-substeps) thins only those two. Saved states retain actual applied
 torque. Predictions retain only their nonterminal control samples. A generation
 mismatch returns HTTP 409; clients discard the obsolete page and synchronize
 to the active generation. `complete` means the requested calculation finished,
@@ -170,6 +175,42 @@ overlapping requests for the same generation. It rejects outdated generations
 after every asynchronous response. History must not silently inherit the old
 60-second/2000-sample/256-plan presentation eviction limits. One authoritative
 recording supplies playback, scrubbing, executed path and trajectory fitting.
+
+## Recording substeps
+
+`record_every` (UI **Record every**, shown with its spacing in milliseconds)
+records states and commands at every n-th physics step; Felix, 2026-10-23.
+It counts physics steps, the finest grid, so 1 records every integration
+endpoint and command (the conformance script runs with 1). With n > 1 a state
+is recorded when its endpoint lies on every n-th tick of the session's physics
+grid, and at the end of every `advance_interval` call (each TO boundary, the
+job end); chunk ends lie on the recording grid. A command is recorded only at
+a recorded state's time. Plans and interval records are always complete.
+Each state and control record carries `record_every`.
+
+The default 2 records, at 1000/500/100 Hz, every 500 Hz command and the state
+it produced: 500 states, 500 commands, 100 plans and 100 intervals per simulated
+second (1200 records) against 1000 states, 100 commands, 100 plans and 100
+intervals (1300 records) at the former 1000/100/100 default with every step.
+State records are several kilobytes, so the bytes per simulated second also
+stay below the former default (measured sizes: the branch's report).
+
+Recording never changes the simulation or the solves: the plant still steps
+every physics tick and the controller every command tick. Values computed by
+the session (plan exhaustion, step/command/solve counts, achieved rates,
+interval timing and severity) see every step. Plan exhaustion is monotone
+within a plan and the end of every call is recorded, so a recorded state shows
+any exhaustion of its TO interval. Values derived from the history (arrival
+flag and distance, limit use, plots and aggregates, the executed path,
+playback) see the recorded states only; position and velocity extrema between
+them are not recorded. Finite jobs estimate stored states from this rule
+before starting (`estimated_states`).
+
+The display labels a thinned recording once where it could otherwise claim full
+resolution: the history summary ("· every 2nd step") and, in the hover notes of
+episode plots that read states or commands, a structured `recording` field of
+the plot spec (like `display_reduction`). The Live history has no export; a
+replay export from `tiago_mpc` is not affected.
 
 ## Simulation clock and plan execution
 

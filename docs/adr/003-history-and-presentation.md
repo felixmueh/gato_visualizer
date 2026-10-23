@@ -21,5 +21,12 @@ Finite jobs have explicit capacity limits; continuous history grows on disk.
 A slow numerical boundary can delay publication, and neither bounded packets
 nor larger HTTP pages guarantee real-time throughput.
 
+Amendment (Felix, 2026-10-23): with 500 Hz commands the execution setting
+`record_every` records states and commands at every n-th physics step (default
+2); plans and intervals stay complete and 1 restores every endpoint. It is a
+visible, labelled recording choice, never backpressure: reporting and IPC still
+discard nothing that was recorded. See
+[recording substeps](../execution-api.md#recording-substeps).
+
 Current limits/defaults: [presentation.md](../presentation.md).
 History cursors and interval timing: [execution-api.md](../execution-api.md).

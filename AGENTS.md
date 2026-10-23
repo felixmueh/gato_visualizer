@@ -175,6 +175,16 @@ above. Re-implement only what the visualizer's own clocks need: the multirate
 schedule and its zero-order hold of a plan's knot torques (as `tiago_mpc`'s
 `sample_knot`, except that it holds the last torque past the horizon).
 
+**Live commands at 500 Hz; recording substeps — Felix, 2026-10-23.** Live's
+default Control Hz (the thesis's command rate) is 500, as `tiago_mpc`'s
+experiments; simulation 1000 Hz and TO 100 Hz are unchanged, and the labels stay.
+The execution setting **Record every** (`record_every`, default 2) records
+states and commands at every n-th physics step so the history stays
+manageable; plans and timing intervals stay complete. It thins only what is
+recorded, never the simulation, the solves or what the session computes, and
+the display labels a thinned recording. See
+[recording substeps](docs/execution-api.md#recording-substeps).
+
 Conformance (Felix, 2026-10-22, replaces the comparison with `reach_sim.py`):
 the opt-in GPU script `scripts/check_conformance.py` runs
 `experiments.reach.reach` with `SimPlant` and `Mpc` in-process, then the

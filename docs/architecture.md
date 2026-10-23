@@ -59,8 +59,10 @@ ownership or playback timing from an old helper alone.
 
 Simulation, control and TO frequencies are independent of prediction knot
 spacing and wall-clock report frequency. At coincident numerical boundaries,
-solve first, select the control, then integrate. Every integration endpoint,
-control change, plan and completed deadline interval is retained. A slow solve
+solve first, select the control, then integrate. Every plan and completed
+deadline interval is retained, and with `record_every` 1 every integration
+endpoint and control change; larger values thin only those two ([recording
+substeps](execution-api.md#recording-substeps)) and never change the simulation. A slow solve
 slows wall-clock progress; it does not advance plant time. Live defaults to
 20 Hz reports, a 200 ms simulation-time playback buffer and sample hold.
 Changing these presentation preferences does not reset settings, generation or

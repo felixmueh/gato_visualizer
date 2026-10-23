@@ -31,6 +31,7 @@
 | **Simulation frequency** | The nominal RK4 integration rate, with steps split at control or replanning boundaries. | Display rate |
 | **Control frequency** | The rate at which the current prediction supplies a held actuator command. | MPC frequency, replanning frequency |
 | **TO frequency** | The trajectory-optimization/replanning rate requesting new solves. | Control frequency, reporting frequency |
+| **Record every** | `record_every`: the Live history records the state and command at every n-th physics step (and at every TO boundary); plans and timing intervals stay complete. It changes the recording, never the simulation or the solves; 1 records every step. | Report frequency, display reduction, sample rate |
 | **Knot interval** | The time spacing of states in a prediction horizon. | Control period |
 | **Report frequency** | The wall-clock cadence for publishing batches of completed numerical records. | Simulation frequency, sample reduction |
 | **Aggregate window** | The episode time range, selected on the timeline with independently unbounded left/right bounds, over which episode plots and aggregates are computed; an unbounded end follows new history. | Visible window, zoom, analysis range selector |
