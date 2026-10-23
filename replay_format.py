@@ -35,6 +35,17 @@ class ReplayError(ValueError):
     """A replay cannot be interpreted faithfully."""
 
 
+class _Arrays(dict):
+    """The NPZ's arrays by name, read in the pass that checks their headers.
+
+    NumPy's NpzFile finds each member by searching a list, which took seconds
+    for a long recording's ~12,000 arrays; reading here is one pass, unpickled.
+    """
+    @property
+    def files(self):
+        return self.keys()
+
+
 @dataclass(frozen=True)
 class Reference:
     xyz: np.ndarray
@@ -209,13 +220,14 @@ def load_replay(source, *, model_urdf):
                 raise ReplayError("Replay must contain only top-level NumPy arrays")
             # ZIP size limits alone do not bound an NPY header's claimed
             # allocation. Inspect each header before NumPy allocates its array.
+            archive = _Arrays()
             for member in members:
                 with container.open(member) as stream:
                     version = np.lib.format.read_magic(stream)
                     if version == (1, 0):
-                        shape, _, dtype = np.lib.format.read_array_header_1_0(stream)
+                        shape, fortran_order, dtype = np.lib.format.read_array_header_1_0(stream)
                     elif version == (2, 0):
-                        shape, _, dtype = np.lib.format.read_array_header_2_0(stream)
+                        shape, fortran_order, dtype = np.lib.format.read_array_header_2_0(stream)
                     else:
                         raise ReplayError(f"Unsupported NPY array version: {version}")
                     if shape and shape[0] > MAX_TOTAL_SAMPLES:
@@ -227,94 +239,96 @@ def load_replay(source, *, model_urdf):
                     expected_bytes = math.prod(shape) * dtype.itemsize
                     if expected_bytes != member.file_size-stream.tell() or expected_bytes > MAX_UNCOMPRESSED_BYTES:
                         raise ReplayError(f"Array header size disagrees with its data: {member.filename}")
-        if hasattr(source, "seek"):
-            source.seek(0)
-        with np.load(source, allow_pickle=False) as archive:
-            if "metadata_json" not in archive.files:
-                raise ReplayError("Missing metadata_json; expected tiago-replay NPZ v1")
-            try:
-                encoded = archive["metadata_json"]
-                if encoded.shape != () or encoded.dtype.kind != "U":
-                    raise ReplayError("metadata_json must be one Unicode JSON scalar")
-                metadata = json.loads(str(encoded.item()))
-            except (ValueError, TypeError) as exc:
-                raise ReplayError(f"Invalid metadata_json: {exc}") from exc
-            if not isinstance(metadata, dict):
-                raise ReplayError("metadata_json must encode an object")
-            _finite_json(metadata, "metadata_json")
-            if "provenance" in metadata and not isinstance(metadata["provenance"], dict):
-                raise ReplayError("provenance must be a JSON object")
-            if metadata.get("format") != FORMAT or type(metadata.get("version")) is not int or metadata["version"] != VERSION:
-                raise ReplayError("Unsupported replay format/version; expected tiago-replay version 1")
-            names = metadata.get("joint_names")
-            if (not isinstance(names, list) or any(not isinstance(n, str) for n in names) or
-                    len(names) != 7 or len(set(names)) != 7 or set(names) != set(JOINT_NAMES)):
-                raise ReplayError("joint_names must list each of the seven native right-arm joints exactly once")
-            order = [names.index(name) for name in JOINT_NAMES]
-            recorded_hash = metadata.get("model_sha256")
-            if not isinstance(recorded_hash, str) or not recorded_hash:
-                raise ReplayError("model_sha256 must identify the recording's full URDF")
-            # The hash covers raw file bytes, so comment or dynamics edits change
-            # it too. Joint names, fixed joints and frames are checked against
-            # the displayed model; a different file only produces a warning.
-            expected_hash = model_sha256(model_urdf)
-            model_warning = None if recorded_hash == expected_hash else dict(
-                recorded_model_sha256=recorded_hash, current_model_sha256=expected_hash)
-            if metadata.get("time_basis") not in ("simulation", "wall"):
-                raise ReplayError("time_basis must explicitly be 'simulation' or 'wall'")
-            if "label" in metadata and (not isinstance(metadata["label"], str) or not metadata["label"].strip()):
-                raise ReplayError("label must be a nonempty string")
-            if "end_effector_frame" in metadata and (not isinstance(metadata["end_effector_frame"], str)
-                    or not metadata["end_effector_frame"].strip()):
-                raise ReplayError("end_effector_frame must be a nonempty fixed-joint name")
-            _fixed_joints(metadata.get("fixed_joints", {}), model_urdf)
-            times = _times(archive, "time_s")
-            q = _numeric(archive, "q", (len(times), 7))[:, order]
-            qd, torque, torque_times = _telemetry(archive, times, order,
-                "qd_rad_s" if "qd_rad_s" in archive.files else None,
-                "torque_nm" if "torque_nm" in archive.files else None,
-                "torque_time_s" if "torque_time_s" in archive.files else None)
-            limits = normalize_joint_limits(metadata.get("joint_limits"), order)
-            reference = _reference(archive, "reference_xyz_m" if "reference_xyz_m" in archive.files else None,
-                                   "reference_time_s" if "reference_time_s" in archive.files else None,
-                                   metadata.get("reference_frame"))
-            predictions = metadata.get("predictions", [])
-            if not isinstance(predictions, list):
-                raise ReplayError("predictions must be a list of plan descriptors")
-            if len(predictions) > MAX_PREDICTIONS:
-                raise ReplayError(f"Replay exceeds the {MAX_PREDICTIONS} prediction display limit")
-            total_samples = len(times) + (0 if reference is None else len(np.atleast_2d(reference.xyz)))
-            plans = []
-            identifiers = set()
-            for index, descriptor in enumerate(predictions):
-                if not isinstance(descriptor, dict):
-                    raise ReplayError(f"Prediction {index} descriptor must be an object")
-                identifier = descriptor.get("id", f"prediction-{index}")
-                label = descriptor.get("label", f"Prediction {index + 1}")
-                if (not isinstance(identifier, str) or not identifier or identifier in identifiers or
-                        identifier == "recorded" or not isinstance(label, str) or not label.strip()):
-                    raise ReplayError(f"Prediction {index} needs a unique id and nonempty label")
-                identifiers.add(identifier)
-                origin = _number(descriptor.get("origin_time_s"), f"Prediction {index} origin_time_s", nonnegative=True)
-                plan_times = _times(archive, descriptor.get("time_key"))
-                plan_q = _numeric(archive, descriptor.get("q_key"), (len(plan_times), 7))[:, order]
-                plan_qd, plan_torque, plan_torque_times = _telemetry(archive, plan_times, order,
-                    descriptor.get("qd_key"), descriptor.get("torque_key"), descriptor.get("torque_time_key"))
-                plan_reference = _reference(archive, descriptor.get("reference_xyz_key"),
-                                            descriptor.get("reference_time_key"),
-                                            descriptor.get("reference_frame", metadata.get("reference_frame")))
-                stats = descriptor.get("stats", {})
-                if not isinstance(stats, dict):
-                    raise ReplayError(f"Prediction {index} stats must be a JSON object")
-                total_samples += len(plan_times) + (0 if plan_reference is None else len(np.atleast_2d(plan_reference.xyz)))
-                if total_samples > MAX_TOTAL_SAMPLES:
-                    raise ReplayError(f"Replay exceeds the {MAX_TOTAL_SAMPLES} total sample display limit")
-                plans.append(Prediction(identifier, label, origin, plan_times, plan_q, plan_reference, stats,
-                                        plan_qd, plan_torque, plan_torque_times))
+                    data = bytearray(stream.read(expected_bytes))
+                    if len(data) != expected_bytes:
+                        raise ReplayError(f"Array data is truncated: {member.filename}")
+                    archive[member.filename.removesuffix(".npy")] = np.frombuffer(data, dtype).reshape(
+                        shape, order="F" if fortran_order else "C")
+        if "metadata_json" not in archive.files:
+            raise ReplayError("Missing metadata_json; expected tiago-replay NPZ v1")
+        try:
+            encoded = archive["metadata_json"]
+            if encoded.shape != () or encoded.dtype.kind != "U":
+                raise ReplayError("metadata_json must be one Unicode JSON scalar")
+            metadata = json.loads(str(encoded.item()))
+        except (ValueError, TypeError) as exc:
+            raise ReplayError(f"Invalid metadata_json: {exc}") from exc
+        if not isinstance(metadata, dict):
+            raise ReplayError("metadata_json must encode an object")
+        _finite_json(metadata, "metadata_json")
+        if "provenance" in metadata and not isinstance(metadata["provenance"], dict):
+            raise ReplayError("provenance must be a JSON object")
+        if metadata.get("format") != FORMAT or type(metadata.get("version")) is not int or metadata["version"] != VERSION:
+            raise ReplayError("Unsupported replay format/version; expected tiago-replay version 1")
+        names = metadata.get("joint_names")
+        if (not isinstance(names, list) or any(not isinstance(n, str) for n in names) or
+                len(names) != 7 or len(set(names)) != 7 or set(names) != set(JOINT_NAMES)):
+            raise ReplayError("joint_names must list each of the seven native right-arm joints exactly once")
+        order = [names.index(name) for name in JOINT_NAMES]
+        recorded_hash = metadata.get("model_sha256")
+        if not isinstance(recorded_hash, str) or not recorded_hash:
+            raise ReplayError("model_sha256 must identify the recording's full URDF")
+        # The hash covers raw file bytes, so comment or dynamics edits change
+        # it too. Joint names, fixed joints and frames are checked against
+        # the displayed model; a different file only produces a warning.
+        expected_hash = model_sha256(model_urdf)
+        model_warning = None if recorded_hash == expected_hash else dict(
+            recorded_model_sha256=recorded_hash, current_model_sha256=expected_hash)
+        if metadata.get("time_basis") not in ("simulation", "wall"):
+            raise ReplayError("time_basis must explicitly be 'simulation' or 'wall'")
+        if "label" in metadata and (not isinstance(metadata["label"], str) or not metadata["label"].strip()):
+            raise ReplayError("label must be a nonempty string")
+        if "end_effector_frame" in metadata and (not isinstance(metadata["end_effector_frame"], str)
+                or not metadata["end_effector_frame"].strip()):
+            raise ReplayError("end_effector_frame must be a nonempty fixed-joint name")
+        _fixed_joints(metadata.get("fixed_joints", {}), model_urdf)
+        times = _times(archive, "time_s")
+        q = _numeric(archive, "q", (len(times), 7))[:, order]
+        qd, torque, torque_times = _telemetry(archive, times, order,
+            "qd_rad_s" if "qd_rad_s" in archive.files else None,
+            "torque_nm" if "torque_nm" in archive.files else None,
+            "torque_time_s" if "torque_time_s" in archive.files else None)
+        limits = normalize_joint_limits(metadata.get("joint_limits"), order)
+        reference = _reference(archive, "reference_xyz_m" if "reference_xyz_m" in archive.files else None,
+                               "reference_time_s" if "reference_time_s" in archive.files else None,
+                               metadata.get("reference_frame"))
+        predictions = metadata.get("predictions", [])
+        if not isinstance(predictions, list):
+            raise ReplayError("predictions must be a list of plan descriptors")
+        if len(predictions) > MAX_PREDICTIONS:
+            raise ReplayError(f"Replay exceeds the {MAX_PREDICTIONS} prediction display limit")
+        total_samples = len(times) + (0 if reference is None else len(np.atleast_2d(reference.xyz)))
+        plans = []
+        identifiers = set()
+        for index, descriptor in enumerate(predictions):
+            if not isinstance(descriptor, dict):
+                raise ReplayError(f"Prediction {index} descriptor must be an object")
+            identifier = descriptor.get("id", f"prediction-{index}")
+            label = descriptor.get("label", f"Prediction {index + 1}")
+            if (not isinstance(identifier, str) or not identifier or identifier in identifiers or
+                    identifier == "recorded" or not isinstance(label, str) or not label.strip()):
+                raise ReplayError(f"Prediction {index} needs a unique id and nonempty label")
+            identifiers.add(identifier)
+            origin = _number(descriptor.get("origin_time_s"), f"Prediction {index} origin_time_s", nonnegative=True)
+            plan_times = _times(archive, descriptor.get("time_key"))
+            plan_q = _numeric(archive, descriptor.get("q_key"), (len(plan_times), 7))[:, order]
+            plan_qd, plan_torque, plan_torque_times = _telemetry(archive, plan_times, order,
+                descriptor.get("qd_key"), descriptor.get("torque_key"), descriptor.get("torque_time_key"))
+            plan_reference = _reference(archive, descriptor.get("reference_xyz_key"),
+                                        descriptor.get("reference_time_key"),
+                                        descriptor.get("reference_frame", metadata.get("reference_frame")))
+            stats = descriptor.get("stats", {})
+            if not isinstance(stats, dict):
+                raise ReplayError(f"Prediction {index} stats must be a JSON object")
+            total_samples += len(plan_times) + (0 if plan_reference is None else len(np.atleast_2d(plan_reference.xyz)))
             if total_samples > MAX_TOTAL_SAMPLES:
                 raise ReplayError(f"Replay exceeds the {MAX_TOTAL_SAMPLES} total sample display limit")
-            return Replay(metadata, times, q, reference, tuple(plans), qd, torque, torque_times, limits,
-                          model_warning)
+            plans.append(Prediction(identifier, label, origin, plan_times, plan_q, plan_reference, stats,
+                                    plan_qd, plan_torque, plan_torque_times))
+        if total_samples > MAX_TOTAL_SAMPLES:
+            raise ReplayError(f"Replay exceeds the {MAX_TOTAL_SAMPLES} total sample display limit")
+        return Replay(metadata, times, q, reference, tuple(plans), qd, torque, torque_times, limits,
+                      model_warning)
     except ReplayError:
         raise
     except (OSError, ValueError, TypeError, KeyError, EOFError, zipfile.BadZipFile, ET.ParseError, RuntimeError, NotImplementedError) as exc:
