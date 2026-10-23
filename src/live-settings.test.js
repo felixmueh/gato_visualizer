@@ -1529,3 +1529,26 @@ test('the start pose is edited at the run start only: a drag previews the arm, a
     assert.equal(h.commands.at(-1).reset, undefined); assert.equal(h.commands.at(-1).anchor.sim_time_s, .5);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
+
+test('state callbacks observe the current displayed state and start-pose editability when seeking away from and back to zero', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  h.schema.defaults.config.plant = { start_pose_rad: Array(7).fill(0) };
+  h.schema.parameters.push({ path: 'plant.start_pose_rad', kind: 'joints', label: 'Start pose', lower: Array(7).fill(-3), upper: Array(7).fill(3) });
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const session = createSession(), observed = [];
+    const live = setupLive({ onMode() {}, onPlan() {}, onReset() {}, onState(state) {
+      observed.push({ shown: state.sim_time_s, displayed: live.displayedState?.sim_time_s,
+        focused: session.focused.displayedState.sim_time_s, editable: live.startPose?.editable });
+    } }); live.setSession(session);
+    await live.enterLive(); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    for (const time of [0, 4]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
+      q: Array(7).fill(time / 10), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+    live.seek(0); observed.length = 0;
+    live.seek(3.75);
+    assert.deepEqual(observed.at(-1), { shown: 3.75, displayed: 3.75, focused: 3.75, editable: false });
+    live.seek(0);
+    assert.deepEqual(observed.at(-1), { shown: 0, displayed: 0, focused: 0, editable: true });
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});

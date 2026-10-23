@@ -779,6 +779,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     $('live-rates').textContent = `Nominal simulated Hz: TO ${number(execution.to_hz)} · control ${number(execution.control_hz)} · physics ${number(execution.simulation_hz)}. Achieved per calculation-wall second: TO ${number(job.mpc_hz, 1)} · control ${number(job.control_hz, 1)} · physics ${number(job.simulation_hz, 1)}.`;
     $('live-play').classList.toggle('compute-limited', clock.playing && continueAtEnd() && clock.time >= history.bounds[1] - .001 && Boolean(job.job_active) && job.calculation_rtf < .99);
     refreshPlanLabel(shownPlan); refreshHistoryControls();
+    // Callbacks (including Joints) read the public displayed state and start
+    // pose eligibility, so publish this frame before notifying any observer.
+    if (mode === 'live' && shownState) presentedState = shownState;
     syncSession(shownState, editing ? null : shownPlan || null);
     if (mode === 'live') {
       // An old optimizer output must not look like a prediction of the edited
@@ -791,7 +794,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         const traceCount = selected ? Math.min(tracePoints.length, Math.floor(selected.index / displayPath.stride) + 1 + (selected.index === history.length - 1 && selected.index % displayPath.stride ? 1 : 0)) : 1;
         onState(shownState, { tracePoints, traceCount, segment: segmentOf(shownState) || segments.get(generation)?.context,
           referenceTarget: desiredReference?.draft ? taskReferencePoint(draft, base, shownState.sim_time_s) : shownState.target_xyz,
-          historical: clock.time != null && clock.time < history.bounds[1] - 1e-7, interpolated: Boolean(shownState.render_interpolated) }); presentedState = shownState;
+          historical: clock.time != null && clock.time < history.bounds[1] - 1e-7, interpolated: Boolean(shownState.render_interpolated) });
       }
     }
     renderDirty = false;
