@@ -73,6 +73,8 @@ test('cursor-only updates reuse recorded samples and ticks while updating ghost 
   const { view, elements, joint } = fixture(t), motion = source();
   view.update(motion.next);
   const before = view.snapshot, revision = view.timeline.keyframeRevision;
+  assert.equal(before.renderer.method, 'prepass');
+  assert.equal(before.renderer.layer, 0); // Main, Top and Right cameras share ghosts.
   const tick = elements.get('replay-onion-ticks').children[1];
   assert.equal(motion.calls(), 1);
   assert.deepEqual(before.snappedTimes, [0, .7, 1.4, 2.8, 4]);

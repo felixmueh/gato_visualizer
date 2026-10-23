@@ -16,17 +16,12 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
   const tooltip = $('onion-skin-tooltip');
   let enabled = false, normalVisible = true;
   try { enabled = localStorage.getItem(ONION_STORAGE_KEY) === 'true'; } catch {}
-  // The opt-in laptop spike records a per-browser rendering decision.
-  let decision;
-  try { const result = JSON.parse(localStorage.getItem('motion-studio-onion-spike-result')); if (result?.complete && result.decision?.passed) decision = result.decision; } catch {}
-  const layer = decision?.includeAuxiliary === false ? 1 : 0;
-  camera.layers.enable(1);
-  const ghosts = createGhostArms({ robot, scene, max: 24, method: decision?.method === 'prepass' ? 'prepass' : 'flat', layer });
+  // Qualified by the 2026-10-23 laptop spike; the same ghosts render in all views.
+  const ghosts = createGhostArms({ robot, scene, max: 24, method: 'prepass' });
   let source, identity, revision, selection = { step: null, times: [] }, poses = [];
   let timelineKeyframes = [], keyframeRevision = 0, paintKey;
   let lastPointer, pendingHover, down;
   const raycaster = new Raycaster(), pointer = new Vector2();
-  raycaster.layers.enable(1);
 
   function seek(time) { if (source) onSeek(time - (source.offset || 0)); }
   function hideTooltip() { tooltip.hidden = true; }

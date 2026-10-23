@@ -69,10 +69,16 @@ plots; paused history shows all retained states. A new generation clears the
 keyframes. Ghost transforms rebase when the recording’s fixed joints change.
 
 The pool is limited to 24 arms and shares the solid robot’s geometry while
-owning its materials. The optional `?onion-spike` dialog measures 8/16/24 arms
-with plain transparency and a depth pre-pass, with Views hidden/visible for
-5 seconds each while orbiting. It provides a JSON report and four screenshot
-downloads. Its result is stored under `motion-studio-onion-spike-result`;
-a completed passing decision selects pre-pass or the flat fallback and whether
-the auxiliary cameras draw ghosts after reload. Until qualified in that browser,
-the renderer uses the flat fallback and shows ghosts in both auxiliary views.
+owning its materials. Ghosts use a depth pre-pass and appear in the main,
+Top and Right views. The 2026-10-23 laptop spike (Firefox 158, reported AMD
+Radeon R9 200 Series) measured 16.67 ms mean frame interval with eight ghosts
+and Views visible, below the handoff’s 20 ms threshold; the auxiliary-view
+increment was below 5 ms. These are browser frame intervals from one run,
+including display pacing, rather than isolated GPU render times.
+
+The optional `?onion-spike` dialog measures 8/16/24 arms with plain transparency
+and a depth pre-pass, with Views hidden/visible for 5 seconds each while orbiting.
+It provides a JSON report and four screenshot downloads. Its result is stored
+under `motion-studio-onion-spike-result` for inspection; it does not override
+the application’s qualified rendering defaults. Raw laptop measurements and the
+implementation report stay in this worktree’s ignored `_expr_data/onion-skin/`.
