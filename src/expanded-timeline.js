@@ -80,6 +80,7 @@ export function visibleTimelineIntervals(index, [start, end]) {
 
 // Gestures are discoverable on hover (surface and the footer's ?), not as permanent text.
 const GESTURE_HINT = 'Scroll to zoom; Alt-drag, middle-drag or horizontal scroll to pan; drag to scrub. Shift-drag selects an aggregate window; drag its edge handles to adjust, onto the data end for unbounded; Esc clears it. Arrow keys seek, Shift+arrows seek 1 ms, +/− zoom, 0 fits.';
+const KEYFRAME_TICK_TOP = 23, KEYFRAME_TICK_BOTTOM = 34, KEYFRAME_HIT_RADIUS = 4;
 
 export function expandedTimelineShell() {
   return `<section id="expanded-timeline" class="expanded-timeline" aria-label="Timeline inspection" hidden>
@@ -98,6 +99,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   const toggles = ['live-timeline-expand', 'replay-timeline-expand'].map($);
   let expanded = false, identity, bounds = [0, 0], window = [0, 0], selected = 0, fitted = true;
   let source, sourceCount = -1, revision, index = [], paintKey = '', width = 0, paints = 0, drag = null, mode = 'replay';
+  let keyframes = [], keyframeSource, keyframeRevision;
   let aggregate = { ...UNBOUNDED_AGGREGATE };
   const handles = { start: $('timeline-window-start'), end: $('timeline-window-end') };
   const shades = { start: $('timeline-window-shade-start'), end: $('timeline-window-shade-end') }, clearWindow = $('timeline-window-clear');
@@ -106,7 +108,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     if (!expanded) return;
     width = Math.max(1, surface.clientWidth);
     const ratio = doc.defaultView?.devicePixelRatio || 1;
-    const key = [window[0], window[1], width, ratio, sourceCount, revision, mode].join('|');
+    const key = [window[0], window[1], width, ratio, sourceCount, revision, mode, keyframeRevision].join('|');
     if (paintKey === key) return;
     paintKey = key; paints++;
     const height = 74;
@@ -130,6 +132,12 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       context.strokeStyle = '#526174'; context.beginPath(); context.moveTo(left, 24); context.lineTo(left, 74); context.stroke();
       context.fillStyle = '#b3c7d7';
       context.fillText(tick.label, clamp(left + 4, 2, Math.max(2, width - context.measureText(tick.label).width - 2)), 16);
+    }
+    for (const keyframe of keyframes) {
+      if (keyframe.time < window[0] || keyframe.time > window[1]) continue;
+      const left = clamp(x(keyframe.time), 1, Math.max(1, width - 1));
+      context.fillStyle = typeof keyframe.color === 'number' ? `#${keyframe.color.toString(16).padStart(6, '0')}` : keyframe.color || '#aeb9c5';
+      context.fillRect(left - 1, KEYFRAME_TICK_TOP, 2, KEYFRAME_TICK_BOTTOM - KEYFRAME_TICK_TOP);
     }
     $('timeline-timing-note').innerHTML = index.length ? '<span class="timeline-mpc-key">MPC over budget</span> · <span class="timeline-simulation-key">Simulation / combined</span>' : 'No timing data';
     $('timeline-timing-note').classList.toggle('has-timing', Boolean(index.length));
@@ -182,6 +190,20 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   }
   const fractionAt = event => clamp((event.clientX - surface.getBoundingClientRect().left) / Math.max(1, surface.clientWidth), 0, 1);
   const timeAt = event => window[0] + fractionAt(event) * (window[1] - window[0]);
+  function keyframeAt(event, element) {
+    // Linked plots share the timeline gestures, but only the ruler has ticks.
+    if (element !== surface) return null;
+    const rect = surface.getBoundingClientRect(), y = event.clientY - rect.top;
+    if (y < KEYFRAME_TICK_TOP - 3 || y > KEYFRAME_TICK_BOTTOM + 3) return null;
+    const span = window[1] - window[0], x = event.clientX - rect.left;
+    let closest = null, distance = KEYFRAME_HIT_RADIUS;
+    for (const keyframe of keyframes) {
+      if (keyframe.time < window[0] || keyframe.time > window[1]) continue;
+      const dx = Math.abs((span ? (keyframe.time - window[0]) / span : 0) * surface.clientWidth - x);
+      if (dx <= distance) { closest = keyframe; distance = dx; }
+    }
+    return closest;
+  }
   function seek(time) { selected = clamp(time, ...bounds); onSeek(selected); position(); }
   function zoom(factor, fraction = .5) { window = zoomTimeline(window, bounds, factor, fraction); fitted = false; redraw(); }
   function pan(seconds) { window = clampTimelineWindow(window.map(time => time + seconds), bounds); fitted = false; redraw(); }
@@ -208,10 +230,11 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     event.preventDefault(); hideTooltip(); surface.focus();
     const side = event.button === 0 && event.target.closest?.('.timeline-window-handle')?.dataset.side;
     const select = event.button === 0 && !side && event.shiftKey;
-    drag = { pointer: event.pointerId, pan: !side && !select && (event.button === 1 || event.altKey), x: event.clientX, window: [...window], element, aggregate: side || null, anchor: select ? clamp(timeAt(event), ...bounds) : null };
+    const plain = event.button === 0 && !side && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
+    drag = { pointer: event.pointerId, pan: !side && !select && (event.button === 1 || event.altKey), x: event.clientX, y: event.clientY, window: [...window], element, aggregate: side || null, anchor: select ? clamp(timeAt(event), ...bounds) : null, keyframe: plain ? keyframeAt(event, element) : null };
     element.setPointerCapture(event.pointerId); element.classList.toggle('panning', drag.pan);
     if (drag.aggregate) positionAggregate();
-    else if (!drag.pan && drag.anchor == null) seek(timeAt(event));
+    else if (!drag.pan && drag.anchor == null && !drag.keyframe) seek(timeAt(event));
   });
   element.addEventListener('pointermove', event => {
     if (drag) {
@@ -224,9 +247,14 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       } else if (drag.pan) {
         const delta = (event.clientX - drag.x) / Math.max(1, surface.clientWidth) * (drag.window[1] - drag.window[0]);
         window = clampTimelineWindow(drag.window.map(time => time - delta), bounds); fitted = false; redraw();
-      } else seek(timeAt(event));
+      } else {
+        if (drag.keyframe && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < KEYFRAME_HIT_RADIUS) return;
+        drag.keyframe = null; seek(timeAt(event));
+      }
       return;
     }
+    const keyframe = keyframeAt(event, element);
+    if (keyframe) { tooltip.textContent = `${keyframe.time.toFixed(3)} s`; tooltip.hidden = false; return; }
     const time = timeAt(event), epsilon = Math.max(Number.EPSILON, (window[1] - window[0]) / Math.max(width, 1) / 2);
     const entries = visibleTimelineIntervals(index, [time - epsilon, time + epsilon]);
     const entry = entries.find(value => value.severity === 'red') || entries.find(value => value.severity === 'yellow') || entries[0];
@@ -235,6 +263,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   });
   function endDrag(event) {
     if (!drag || event.pointerId !== drag.pointer) return;
+    if (event.type === 'pointerup' && drag.keyframe && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < KEYFRAME_HIT_RADIUS) seek(drag.keyframe.time);
     const target = drag.element, wasAggregate = drag.aggregate; drag = null; target.classList.remove('panning');
     if (wasAggregate) positionAggregate();
     if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
@@ -280,6 +309,10 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       if (reset || source !== items || sourceCount !== items.length || revision !== next.revision) {
         source = items; sourceCount = items.length; revision = next.revision;
         index = indexTimelineIntervals(items); paintKey = '';
+      }
+      if (reset || keyframeSource !== next.keyframes || keyframeRevision !== next.keyframeRevision) {
+        keyframeSource = next.keyframes; keyframeRevision = next.keyframeRevision;
+        keyframes = (next.keyframes || []).filter(keyframe => Number.isFinite(keyframe.time)); paintKey = '';
       }
       redraw();
     },

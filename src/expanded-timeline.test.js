@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateSpan, moveAggregateBound, aggregateLabel, aggregateBounded, timelineTypingTarget, timelineBounds, clampTimelineWindow, zoomTimeline, timelineTicks, indexTimelineIntervals, visibleTimelineIntervals } from './expanded-timeline.js';
+import { aggregateSpan, moveAggregateBound, aggregateLabel, aggregateBounded, timelineTypingTarget, timelineBounds, clampTimelineWindow, zoomTimeline, timelineTicks, indexTimelineIntervals, visibleTimelineIntervals, setupExpandedTimeline } from './expanded-timeline.js';
+import { plotDOM } from './plot-dom-test-helper.js';
 
 test('timeline windows clamp pan, empty recordings and fine zoom to retained time', () => {
   assert.deepEqual(timelineBounds([NaN, Infinity]), [0, 0]);
@@ -72,4 +73,54 @@ test('aggregate window bounds snap open at the data edges and never cross', () =
   assert.deepEqual(aggregateSpan({ start: 0, end: 30 }, bounds), [2, 12]);
   assert.equal(aggregateLabel({ start: null, end: 8 }), 'start → 8.000 s');
   assert.equal(aggregateLabel({ start: 4, end: null }), '4.000 s → latest');
+});
+
+test('onion ticks repaint by revision and seek only from plain clicks in their ruler band', async () => {
+  const { document: doc } = plotDOM(), nodes = new Map(), strokes = [], seeks = [];
+  const context = { scale() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {}, measureText: () => ({ width: 30 }), fillRect(...rect) { strokes.push({ color: this.fillStyle, rect }); } };
+  doc.getElementById = id => {
+    if (!nodes.has(id)) {
+      const node = doc.createElement(id === 'timeline-bands' ? 'canvas' : 'div');
+      node.classList.remove = name => node.classList.toggle(name, false);
+      node.setPointerCapture = () => {}; node.hasPointerCapture = () => false;
+      node.getContext = () => context; nodes.set(id, node);
+    }
+    return nodes.get(id);
+  };
+  const previousObserver = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class { observe() {} };
+  try {
+    const timeline = setupExpandedTimeline({ document: doc, onSeek: time => seeks.push(time) });
+    const keyframes = [{ time: 2.5, color: 0x34d8d4 }], intervals = [];
+    const update = (revision = 1) => timeline.update({ identity: 'episode', mode: 'replay', bounds: [0, 10], time: 0, keyframes, keyframeRevision: revision, intervals });
+    update(); await nodes.get('replay-timeline-expand').emit('click');
+    assert(strokes.some(item => item.color === '#34d8d4' && item.rect[0] === 149 && item.rect[1] === 23));
+    const paints = timeline.snapshot.paints; update(); assert.equal(timeline.snapshot.paints, paints);
+    update(2); assert.equal(timeline.snapshot.paints, paints + 1);
+    const surface = nodes.get('timeline-inspector'), tooltip = nodes.get('timeline-inspection-tooltip');
+    const pointer = (x = 152, y = 27, extra = {}) => ({ pointerId: 1, button: 0, clientX: x, clientY: y, ...extra });
+    const click = async (x, y, extra = {}) => {
+      await surface.emit('pointerdown', pointer(x, y, extra));
+      await surface.emit('pointerup', pointer(x, y, { type: 'pointerup', ...extra }));
+    };
+    await surface.emit('pointermove', pointer()); assert.equal(tooltip.textContent, '2.500 s');
+    await click(152, 27); assert.equal(seeks.at(-1), 2.5);
+    await click(152, 50); assert.equal(seeks.at(-1), 152 / 600 * 10);
+    // A drag that began on a tick continues ordinary scrubbing without snapping back.
+    await surface.emit('pointerdown', pointer());
+    await surface.emit('pointermove', pointer(180));
+    await surface.emit('pointerup', pointer(180, 27, { type: 'pointerup' }));
+    assert.equal(seeks.at(-1), 3);
+    const count = seeks.length;
+    await click(152, 27, { shiftKey: true }); assert.equal(seeks.length, count);
+    await click(152, 27, { altKey: true }); assert.equal(seeks.length, count);
+    const plot = doc.createElement('div'); plot.classList.remove = () => {}; plot.setPointerCapture = () => {}; plot.hasPointerCapture = () => false;
+    timeline.bindSurface(plot);
+    await plot.emit('pointerdown', pointer()); await plot.emit('pointerup', pointer(152, 27, { type: 'pointerup' }));
+    assert.equal(seeks.at(-1), 152 / 600 * 10);
+    // Zoom moves the same keyframe to 0 px; no stale hit at its old position.
+    timeline.zoom(.5);
+    await click(152, 27); assert.equal(seeks.at(-1), 2.5 + 152 / 600 * 5);
+    await click(1, 27); assert.equal(seeks.at(-1), 2.5);
+  } finally { globalThis.ResizeObserver = previousObserver; }
 });
