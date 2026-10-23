@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 import numpy as np
 
 from execution_bridge import HistoryStore, HistoryGenerationError, ProcessLiveService
-from execution_session import DEFAULT_EXECUTION, MultirateSession, interval_record, validate_execution
+from execution_session import DEFAULT_EXECUTION, MultirateSession, breach_message, interval_record, validate_execution
 from execution_worker import estimated_states, worker_main
 from server import make_server
 from tests.tiago_mpc_source import MPC_ROOT, live_probe
@@ -357,6 +357,13 @@ class SchedulerTests(unittest.TestCase):
         self.assertAlmostEqual(breach['sim_time_s'],.03)  # q .01, .02, .03 at 1 Nm passes .025 at .03 s
         self.assertEqual((breach['breaches'][0]['quantity'],breach['breaches'][0]['limit']),('position',.025))
         self.assertIn('beyond its joint limit 0.025 rad',breach['message'])
+    def test_breaches_at_one_tick_name_the_largest_excess_first(self):
+        from execution_session import LimitWatch
+        watch=LimitWatch(dict(WIDE_LIMITS,effort=np.array([43.,43,26,26,26,26,26])),False,
+                         dict(position=True,velocity=True,torque=True),np.zeros(14))
+        found=watch.torque(np.array([0,0,0,0,-28.28,0,371.7]))
+        self.assertEqual([b['joint_index'] for b in found],[6,4])
+        self.assertTrue(breach_message(.03,found).startswith('Limit breach at 0.030 s: joint 7 torque 371.7 Nm beyond its effort limit 26 Nm (+1 more)'))
     def test_a_value_beyond_its_limit_at_the_start_does_not_stop(self):
         a=self.limited(dict(upper=np.full(7,-.1)))
         session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.))

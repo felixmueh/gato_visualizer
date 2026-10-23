@@ -78,7 +78,8 @@ class LimitWatch:
     effort). With clip on, each command is clipped to ± the effort limit before
     it reaches the plant. A breach is judged on simulated values only: the
     position and velocity at every physics endpoint, the applied (clipped)
-    torque at every command. A quantity of a joint breaches when it starts to
+    torque at every command; breaches at one tick are ordered by relative excess,
+    largest first. A quantity of a joint breaches when it starts to
     be beyond its limit and re-arms once it is back within it, so a value that
     stays beyond stops once. A value already beyond at the session's start
     (an anchor, a settings change) is armed only once back within.
@@ -101,27 +102,37 @@ class LimitWatch:
         applied = np.clip(planned, -self.effort, self.effort)
         return applied, bool(np.any(applied != planned))
 
-    def _check(self, quantity, beyond, values, limits):
+    def _check(self, quantity, beyond, values, limits, scale):
+        """Breaches that start now, with their excess relative to scale (for ordering)."""
         started = beyond & self.armed[quantity]
         self.armed[quantity] = ~beyond
         if not self.stop_on[quantity]:
             return []
-        return [dict(joint_index=int(i), quantity=quantity, value=float(values[i]), limit=float(limits[i]))
+        return [(abs(values[i]-limits[i])/scale[i],
+                 dict(joint_index=int(i), quantity=quantity, value=float(values[i]), limit=float(limits[i])))
                 for i in np.flatnonzero(started)]
+
+    @staticmethod
+    def _worst_first(found):
+        return [breach for _, breach in sorted(found, key=lambda item: -item[0])]
 
     def torque(self, applied):
         applied = np.asarray(applied, dtype=float)
-        return self._check("torque", np.abs(applied) > self.effort, applied, np.copysign(self.effort, applied))
+        return self._worst_first(self._check("torque", np.abs(applied) > self.effort, applied,
+                                             np.copysign(self.effort, applied), self.effort))
 
     def state(self, q, qd):
+        """Breaches at a physics endpoint, the largest excess first: relative to the
+        joint's range for position, to the limit for velocity."""
         q, qd = np.asarray(q, dtype=float), np.asarray(qd, dtype=float)
         bound = np.where(q < self.lower, self.lower, self.upper)
-        return (self._check("position", self._beyond_position(q), q, bound) +
-                self._check("velocity", np.abs(qd) > self.velocity, qd, np.copysign(self.velocity, qd)))
+        return self._worst_first(
+            self._check("position", self._beyond_position(q), q, bound, self.upper-self.lower) +
+            self._check("velocity", np.abs(qd) > self.velocity, qd, np.copysign(self.velocity, qd), self.velocity))
 
 
 def breach_message(t, breaches):
-    """One line naming the first breach: joint, quantity, value and limit."""
+    """One line naming the first (largest) breach: joint, quantity, value and limit."""
     first = breaches[0]
     unit, joint = UNITS[first["quantity"]], first["joint_index"]+1
     kind = dict(position="joint limit", velocity="velocity limit", torque="effort limit")[first["quantity"]]
