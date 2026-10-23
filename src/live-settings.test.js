@@ -1188,3 +1188,64 @@ test('unavailable friction transition cancels active work and keeps Cancel avail
     assert.equal(live.plan.seq, 2); assert.equal(h.$('live-play').disabled, false);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
+
+test('Limit handling shows Clip effort and the three Stop on breach checkboxes in one row with their defaults', async () => {
+  const h = harness();
+  h.schema.defaults.config.plant = { friction: false, clip_effort: true, stop_on_breach: { position: true, velocity: true, torque: true } };
+  h.schema.parameters.push({ path: 'plant.clip_effort', label: 'Clip effort', kind: 'bool', group: 'Limit handling', description: 'Clip each command' },
+    ...[['position', 'Joint limits'], ['velocity', 'Velocity'], ['torque', 'Torque']].map(([key, label]) =>
+      ({ path: `plant.stop_on_breach.${key}`, label, kind: 'bool', group: 'Limit handling', row: 'Stop on breach' })));
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    const field = path => h.created.filter(el => el.dataset.path === path).at(-1);
+    assert.equal(field('plant.clip_effort').checked, true);
+    const row = h.created.filter(el => el.className === 'parameter-row check-row');
+    assert.equal(row.length, 1); assert.equal(row[0].children[0].textContent, 'Stop on breach');
+    // Each checkbox keeps its own reset arrow beside it (setting-reset-field: [button, label]).
+    const checks = row[0].children[1].children.map(field => field.children[1]);
+    assert.deepEqual(checks.map(label => [label.className, label.children[0].dataset.path, label.children[0].checked, label.children[1].textContent]), [
+      ['row-check', 'plant.stop_on_breach.position', true, 'Joint limits'], ['row-check', 'plant.stop_on_breach.velocity', true, 'Velocity'],
+      ['row-check', 'plant.stop_on_breach.torque', true, 'Torque']]);
+    assert(h.created.some(el => el.tagName === 'details' && el.open && el.children[0].textContent === 'Limit handling'));
+    field('plant.clip_effort').checked = false; field('plant.clip_effort').emit('input');
+    field('plant.stop_on_breach.velocity').checked = false; field('plant.stop_on_breach.velocity').emit('input');
+    await new Promise(resolve => setTimeout(resolve, 380));
+    assert.deepEqual(h.commands.at(-1).config.plant, { friction: false, clip_effort: false, stop_on_breach: { position: true, velocity: false, torque: true } });
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+test('playback pauses at a recorded limit breach, and Play at a breach-ended tip continues the calculation', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const message = 'Limit breach at 0.100 s: joint 7 torque 850 Nm beyond its effort limit 26 Nm';
+  const records = [...Array.from({ length: 11 }, (_, index) => ({ type: 'state', generation: 1, settings_version: 1,
+    sim_time_s: index / 100, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [index / 100, 0, 1] })),
+    { type: 'breach', generation: 1, settings_version: 1, sim_time_s: .1, message,
+      breaches: [{ joint_index: 6, quantity: 'torque', value: 850, limit: 26 }] }];
+  h.setHistoryHandler(() => ({ ok: true, json: async () => ({ generation: 1, records, next_cursor: records.length, complete: false }) }));
+  try {
+    h.schema.defaults.execution.calculation = 'manual';
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length, complete: false }); await flush();
+    source.emit({ type: 'status', state: 'paused', generation: 1, settings_version: 1, job_active: false, message,
+      breach: { sim_time_s: .1, breaches: records.at(-1).breaches } }); await flush();
+    assert.equal(live.history.bounds[1], .1);
+    h.$('live-play').emit('click'); live.frame(0); live.frame(50);
+    assert.equal(live.playing, true); assert.equal(live.history.selectedTime, .05);
+    live.frame(500);
+    assert.equal(live.playing, false); assert.equal(live.history.selectedTime, .1);
+    assert.equal(h.$('live-message').textContent, message);
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 0);
+    assert(h.$('live-history-intervals').children.some(el => el.className === 'breach'));
+    // Continue: Play at the breach sends the calculation on, although Manual stops at its end.
+    h.$('live-play').emit('click'); await flush();
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
+    assert.equal(live.history.selectedTime, .1); assert.equal(live.playing, true);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});

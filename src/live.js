@@ -389,7 +389,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     resetIndicators.bind({ key: 'task.kind', name: 'task', input: $('live-task'), host: $('live-task').parentElement,
       getValue: () => $('live-task').value, getDefault: () => defaultSettings.task.kind,
       reset: value => { $('live-task').value = value; $('live-task').dispatchEvent(new Event('change', { bubbles: true })); } });
-    const groups = new Map();
+    const groups = new Map(), rows = new Map();
     const horizonRow = document.createElement('div'); horizonRow.className = 'horizon-row';
     ($('live-horizon-settings') || $('live-settings')).append(horizonRow);
     let horizonInput;
@@ -408,7 +408,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       const name = parameter.group || 'Settings';
       const isHorizon = ['N', 'dt_s'].includes(parameter.path);
       if (!isHorizon && !groups.has(name)) {
-        const details = document.createElement('details'); details.className = 'settings-group'; details.open = groups.size === 0 || name === 'Friction';
+        const details = document.createElement('details'); details.className = 'settings-group'; details.open = groups.size === 0 || name === 'Friction' || name === 'Limit handling';
         const summary = document.createElement('summary'); summary.textContent = name;
         const fields = document.createElement('div'); fields.className = 'settings-fields'; details.append(summary);
         if (name === 'Friction') {
@@ -452,7 +452,19 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         change();
       });
       if (isHorizon) { label.className = 'horizon-field'; text.textContent = parameter.path === 'N' ? 'N' : 'Δt (s)'; }
-      label.append(text, input); (isHorizon ? horizonRow : groups.get(name)).append(label); inputs.push({ parameter, input });
+      let host = isHorizon ? horizonRow : groups.get(name);
+      if (parameter.row) {
+        // Checkboxes sharing a row (Stop on breach: joint limits, velocity, torque) sit side by side.
+        if (!rows.has(parameter.row)) {
+          const row = document.createElement('div'); row.className = 'parameter-row check-row';
+          const caption = document.createElement('span'); caption.textContent = parameter.row;
+          const checks = document.createElement('div'); checks.className = 'row-checks';
+          row.append(caption, checks); host.append(row); rows.set(parameter.row, checks);
+        }
+        host = rows.get(parameter.row); label.className = 'row-check'; label.title = input.title;
+        label.append(input, text);
+      } else label.append(text, input);
+      host.append(label); inputs.push({ parameter, input });
       bindReset(input, parameter, () => readPath(defaultSettings.config, parameter.path), { key: `config.${parameter.path}` });
     }
     if (inputs.some(item => item.parameter.path === 'dt_s')) {
@@ -634,10 +646,15 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       if (previous?.severity === severity && Math.abs(previous.end - left) < 1e-8) previous.end = right;
       else segments.push({ start: left, end: right, severity });
     }
+    // Limit breaches where Live stopped: a tick in the limit colour.
+    const breaches = history.breaches.filter(item => item.sim_time_s >= start - 1e-9 && item.sim_time_s <= end + 1e-9).map(item => {
+      const el = document.createElement('span'); el.className = 'breach';
+      el.style.left = `${100 * (item.sim_time_s - start) / (span || 1)}%`; return el;
+    });
     $('live-history-intervals').replaceChildren(...segments.map(segment => {
       const el = document.createElement('span'); el.className = segment.severity;
       el.style.left = `${100 * Math.max(0, segment.start - start) / (span || 1)}%`; el.style.width = `${100 * (Math.min(end, segment.end) - Math.max(start, segment.start)) / (span || 1)}%`; return el;
-    }));
+    }), ...breaches);
   }
   function refreshHistoryControls() {
     const [start, end] = clock.presentationBounds(history.bounds), timeline = $('live-history'), time = clock.time ?? end;
@@ -730,9 +747,14 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   function frame(timestamp) {
     if (mode !== 'live') return;
     if (clock.playing) {
+      const before = clock.time;
       const tick = clock.tick(timestamp, history.bounds, { followAtEnd: continueAtEnd(), growing: growingHistory() });
-      if (tick.atEnd && !job.job_active && !fetching) {
-        if (continueAtEnd()) extendHistory();
+      // Playback stops at a recorded limit breach; Play continues from it.
+      const breach = before != null && history.breachCrossed(before, tick.time);
+      if (breach) { clock.seek(breach.sim_time_s); pausePlayback(); message(breach.message, true); controlsEnabled(); }
+      else if (tick.atEnd && !job.job_active && !fetching) {
+        // A calculation stopped by a breach waits for its breach record, never extends past it.
+        if (continueAtEnd()) { if (!job.breach) extendHistory(); }
         else if (!extensionPending) { pausePlayback(); controlsEnabled(); }
       }
       renderDirty = true;
@@ -801,11 +823,13 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (intent !== playbackIntent) return;
     const noMotion = history.length < 2;
     if (clock.time == null) clock.seek(history.bounds[0]);
+    // A calculation stopped by a limit breach continues from its tip on Play, in every mode.
+    const resume = continueAtEnd() || (!noMotion && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7);
     // Finite precalculations replay from the start when Stop is selected.
     // On Play resumes continuous computation from the existing recording tip.
-    if (!noMotion && !job.job_active && !extensionPending && !continueAtEnd() && clock.time >= history.bounds[1] - 1e-7) clock.seek(history.bounds[0]);
-    const shouldExtend = noMotion || (clock.time >= history.bounds[1] - 1e-7 && continueAtEnd());
-    const follow = continueAtEnd() && (noMotion || clock.time >= history.bounds[1] - 1e-7);
+    if (!noMotion && !job.job_active && !extensionPending && !resume && clock.time >= history.bounds[1] - 1e-7) clock.seek(history.bounds[0]);
+    const shouldExtend = noMotion || (clock.time >= history.bounds[1] - 1e-7 && resume);
+    const follow = resume && (noMotion || clock.time >= history.bounds[1] - 1e-7);
     // Publish local intent immediately. Arriving history may grow the recorded
     // end while Play is acknowledged; it must not change the chosen follow mode.
     clock.play(performance.now(), { follow, growing: shouldExtend || growingHistory() }); controlsEnabled(); renderView();
@@ -822,7 +846,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const bounds = event.target.getBoundingClientRect(), [start, end] = clock.presentationBounds(history.bounds);
     const time = start + Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * (end - start);
     const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time);
-    event.target.title = `${number(time, 3)} s · ${interval ? intervalDescription(interval) : 'Recorded simulation time'}`;
+    const breach = history.breaches.find(item => Math.abs(item.sim_time_s - time) <= .01 * (end - start));
+    event.target.title = `${number(time, 3)} s · ${breach ? `${breach.message} · ` : ''}${interval ? intervalDescription(interval) : 'Recorded simulation time'}`;
   });
   $('live-history-latest').addEventListener('click', showLatest);
   function beginSolverProfileSwitch() {

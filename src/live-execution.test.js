@@ -133,3 +133,9 @@ test('commands default to 500 Hz and Record every is a whole number of physics s
   assert.equal(recordingInterval(DEFAULT_EXECUTION), .002);
   assert.deepEqual([1, 2, 3, 4, 11, 21, 22].map(recordEveryLabel), ['', 'every 2nd step', 'every 3rd step', 'every 4th step', 'every 11th step', 'every 21st step', 'every 22nd step']);
 });
+
+test('interval descriptions count the commands clipped to the effort limit', () => {
+  assert.match(intervalDescription({ severity: 'none', clipped_commands: 3, start_time_s: 0, end_time_s: .01 }), /^Within budget · 3 commands clipped to the effort limit · MPC/);
+  assert.match(intervalDescription({ severity: 'none', clipped_commands: 1 }), /1 command clipped/);
+  assert.doesNotMatch(intervalDescription({ severity: 'none', clipped_commands: 0 }), /clipped/);
+});

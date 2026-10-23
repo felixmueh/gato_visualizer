@@ -1147,6 +1147,10 @@ kbd {
 .parameter-row { display: grid; grid-template-columns: minmax(0, 1fr) 92px; align-items: center; gap: 8px; font-size: 10px; line-height: 1.5; color: #91a8c0; }
 .parameter-row input[type="checkbox"] { justify-self: end; accent-color: #68d9ce; width: 17px; height: 17px; }
 .parameter-row input:invalid { border-color: #e5a17e; }
+.parameter-row.check-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.parameter-row .row-checks { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 6px; }
+.parameter-row .row-check { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.parameter-row .row-check input[type="checkbox"] { width: 14px; height: 14px; margin: 0; }
 .source-live { font-family: 'IBM Plex Mono', monospace; font-size: 8px; overflow-wrap: anywhere; }
 .live-mode .workspace { grid-template-columns: 320px minmax(0, 1fr); }
 .live-mode .sidebar { padding-top: 21px; }
@@ -1245,6 +1249,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 #live-history-intervals span { position: absolute; height: 9px; border-radius: 2px; }
 #live-history-intervals .red, .interval-key.red { background: #ed716c; }
 #live-history-intervals .yellow, .interval-key.yellow { background: #e8c65a; }
+#live-history-intervals .breach { width: 2px; height: 12px; margin-left: -1px; border-radius: 1px; background: var(--limit-beyond); box-shadow: 0 0 0 1px var(--limit-beyond-edge); z-index: 2; }
 .live-history-options { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; color: #9bb1c5; font-size: 9px; margin: 9px 0; }
 .live-history-options label { display: flex; align-items: center; gap: 6px; }
 .live-history-options input { accent-color: #68d9ce; }
@@ -1279,6 +1284,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .settings-group summary { font-size: 10px; padding: 11px 0; }
 .studio-workbench .settings-fields { display: grid; grid-template-columns: 1fr; padding-bottom: 12px; gap: 8px; }
 .studio-workbench .parameter-row { grid-template-columns: minmax(0, 1fr) 88px; font-size: 10px; }
+.studio-workbench .parameter-row.check-row { grid-template-columns: minmax(0, 1fr); }
+.studio-workbench .row-checks > .setting-reset-field { width: auto; }
 .studio-workbench .parameter-row input:not([type="checkbox"]), .studio-workbench .parameter-row select { width: 100%; padding: 5px 6px; }
 .studio-workbench .execution-rate-row, .studio-workbench .horizon-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 14px 0; }
 .studio-workbench .record-every-row { margin: -8px 0 14px; }

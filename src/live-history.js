@@ -7,10 +7,12 @@ export function createLiveHistory(options = {}) {
   let samples = [];
   let currentPlan = null;
   let intervals = [];
+  // Limit breaches where Live stopped (records of type 'breach'), in time order.
+  let breaches = [];
   let planAfterState = false;
   let revision = 0, metricCache = null, truncated = false, recordEvery = 1;
   const changed = () => { revision++; metricCache = null; };
-  const clear = () => { samples = []; intervals = []; currentPlan = null; planAfterState = false; truncated = false; recordEvery = 1; changed(); };
+  const clear = () => { samples = []; intervals = []; breaches = []; currentPlan = null; planAfterState = false; truncated = false; recordEvery = 1; changed(); };
   const trim = () => {
     const newest = samples.at(-1)?.state.sim_time_s;
     while (samples.length > 1 && (samples.length > limits.maxSamples || newest - samples[0].state.sim_time_s > limits.maxSeconds)) { samples.shift(); truncated = true; }
@@ -91,10 +93,14 @@ export function createLiveHistory(options = {}) {
     if (record.type === 'plan') addPlan(record);
     else if (record.type === 'state') addState(record);
     else if (record.type === 'interval') { intervals.push(record); changed(); }
+    else if (record.type === 'breach' && Number.isFinite(record.sim_time_s)) { breaches.push(record); changed(); }
   };
+  // The first breach in (after, until]: where playback crossing it stops.
+  const breachCrossed = (after, until) => breaches.find(item => item.sim_time_s > after + 1e-9 && item.sim_time_s <= until + 1e-9) || null;
   return {
-    clear, addPlan, addState, at, interpolateAt, addRecord,
+    clear, addPlan, addState, at, interpolateAt, addRecord, breachCrossed,
     get intervals() { return intervals; },
+    get breaches() { return breaches; },
     // Read-only convention: rebuild views only on recorded changes, never RAF.
     // Copies contain original immutable payload references, not copied states.
     get metricSnapshot() {

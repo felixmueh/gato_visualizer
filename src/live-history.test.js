@@ -73,3 +73,14 @@ test('history reports the recording step of its states and forgets it on clear',
   history.clear();
   assert.equal(history.recordEvery, 1);
 });
+
+test('breach records are kept in order and found where playback crosses them', () => {
+  const history = createLiveHistory();
+  history.addState({ sim_time_s: 0, q: [], ee_xyz: [0, 0, 0] });
+  for (const time of [.03, .2]) history.addRecord({ type: 'breach', sim_time_s: time, message: `at ${time}` });
+  assert.equal(history.breaches.length, 2);
+  assert.equal(history.breachCrossed(0, .02), null);
+  assert.equal(history.breachCrossed(0, .03).message, 'at 0.03');
+  assert.equal(history.breachCrossed(.03, .25).message, 'at 0.2'); // Play from a breach continues past it.
+  history.clear(); assert.equal(history.breaches.length, 0);
+});

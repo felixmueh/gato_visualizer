@@ -27,7 +27,9 @@ export function intervalDescription(interval) {
   const span = interval.end_time_s - interval.start_time_s;
   const physicsOver = interval.physics_overrun || interval.simulation_overrun || interval.physics_ratio > 1 || (Number.isFinite(span) && interval.physics_wall_s > span);
   const reason = severity === 'red' ? 'MPC exceeded budget' : severity === 'yellow' ? physicsOver ? 'Simulation exceeded budget' : 'Combined computation exceeded budget' : 'Within budget';
-  return `${reason} · MPC ${ms(interval.mpc_wall_s ?? interval.solve_wall_s)} · physics ${ms(interval.physics_wall_s ?? interval.simulation_wall_s)} · total ${ms(interval.total_wall_s)} · nominal TO budget ${ms(interval.to_budget_s ?? interval.budget_s)} · physics / total interval ${ms(span)}`;
+  // Effort clipping counts every command of the interval, also unrecorded ones.
+  const clipped = interval.clipped_commands > 0 ? ` · ${interval.clipped_commands} ${interval.clipped_commands === 1 ? 'command' : 'commands'} clipped to the effort limit` : '';
+  return `${reason}${clipped} · MPC ${ms(interval.mpc_wall_s ?? interval.solve_wall_s)} · physics ${ms(interval.physics_wall_s ?? interval.simulation_wall_s)} · total ${ms(interval.total_wall_s)} · nominal TO budget ${ms(interval.to_budget_s ?? interval.budget_s)} · physics / total interval ${ms(span)}`;
 }
 
 // One simulated-time clock for recorded and growing histories. Catching up to
