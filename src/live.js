@@ -161,10 +161,15 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   const continueAtEnd = () => connected() && (settings?.execution.calculation === 'on_play' || Boolean(settings?.execution.continue_at_end));
   // Completion metadata can precede later history pages. Do not drain a short
   // final tail until the local download is caught up.
-  const growingHistory = () => Boolean(job.job_active || extensionPending || fetching || fetchAgain);
+  const growingHistory = () => Boolean((connected() && (job.job_active || extensionPending)) || fetching || fetchAgain);
   const sessionBounds = () => session ? sessionSpan(session.tracks.map(track => track.kind === 'live' ? { ...track, span: history.bounds, empty: !history.length } : track)) : history.bounds;
   const presentationBounds = () => session ? sessionSpan(session.tracks.map(track => track.kind === 'live' ? { ...track, span: clock.presentationBounds(history.bounds), empty: !history.length } : track)) : clock.presentationBounds(history.bounds);
-  const localComparisonPlayback = () => Boolean(session?.tracks.some(track => track.kind === 'replay' && track.visible !== false && track.span?.[1] > track.span?.[0]));
+  const hasComparison = () => Boolean(session?.tracks.some(track => track.kind === 'replay' && track.visible !== false && track.span?.[1] > track.span?.[0]));
+  const anyPlayableSessionSpan = () => {
+    const [start, end] = sessionBounds();
+    return end > start && (history.length >= 2 || hasComparison());
+  };
+  const playbackDisabled = () => !connected() && (!anyPlayableSessionSpan() || (dirty && profileNError && !hasComparison()));
   function historySnapshot() { return { length: history.length, bounds: history.bounds, sessionBounds: sessionBounds(), presentationBounds: presentationBounds(), following: clock.following, buffering: clock.buffering, playing: clock.playing, growing: growingHistory(), selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals, breaches: history.breaches }; }
   function precomputedPath() {
     if (dirty || pending || !historyComplete || fetching || history.length < 2 || settings?.execution.calculation === 'on_play') return undefined;
@@ -175,7 +180,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (!session) return;
     const segment = segments.get(generation), context = segment?.context;
     session.updateMain({ source: { kind: 'live', generation }, span: history.bounds, empty: !history.length, segment, context,
-      settings: context?.settings || null, endEffectorFrame: context?.end_effector_frame || context?.settings?.config?.ee_frame,
+      settings: context?.settings || null, endEffectorFrame: context?.end_effector_frame || context?.settings?.config?.ee_frame || schema?.defaults?.config?.ee_frame || session.focused.endEffectorFrame,
       state, displayedState: shownState, plan: shownPlan, reference: desiredReference, limits: history.limits,
       metricHistory: history.metricSnapshot, historyRevision, history: historySnapshot(),
       precomputedPath: precomputedPath(),
@@ -217,7 +222,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   }
   function controlsEnabled() {
     const unavailable = !connected();
-    $('live-play').disabled = unavailable && !localComparisonPlayback();
+    $('live-play').disabled = playbackDisabled();
     $('live-preview').disabled = unavailable;
     $('live-reset').disabled = unavailable;
     $('live-precalculate').disabled = unavailable;
@@ -784,12 +789,12 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       // Playback stops at a recorded limit breach; Play continues from it.
       const breach = before != null && history.breachCrossed(before, tick.time);
       if (breach) { clock.seek(breach.sim_time_s); pausePlayback(); message(breach.message, true); controlsEnabled(); }
-      else if (tick.atEnd && !job.job_active && !fetching) {
+      else if (tick.atEnd && ((!job.job_active && !fetching) || !connected())) {
         // A calculation stopped by a breach never extends past it: playback stops at
         // its tip once that is downloaded (also for a breach at the time it resumed from).
         if (job.breach && continueAtEnd()) { if (history.bounds[1] >= job.breach.sim_time_s - 1e-9) { pausePlayback(); message(job.message, true); controlsEnabled(); } }
         else if (continueAtEnd()) extendHistory();
-        else if (!extensionPending) { pausePlayback(); controlsEnabled(); }
+        else if (!extensionPending || !connected()) { pausePlayback(); controlsEnabled(); }
       }
       renderDirty = true;
     }
@@ -882,7 +887,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     }
     // Settings submission pauses synchronously; capture this Play intent after
     // that pause, but before its HTTP acknowledgement can interleave user input.
-    const settingsRequest = dirty ? submitSettings() : null;
+    const settingsRequest = dirty && connected() ? submitSettings() : null;
     const intent = ++playbackIntent;
     if (settingsRequest && !await settingsRequest) return;
     if (intent !== playbackIntent) return;
@@ -892,7 +897,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const resume = continueAtEnd() || (!noMotion && Math.abs(clock.time - history.bounds[1]) < 1e-7 && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7);
     // Finite precalculations replay from the start when Stop is selected.
     // On Play resumes continuous computation from the existing recording tip.
-    if ((!noMotion || localComparisonPlayback()) && !job.job_active && !extensionPending && !resume && clock.time >= sessionBounds()[1] - 1e-7) clock.seek(sessionBounds()[0]);
+    if (anyPlayableSessionSpan() && (!job.job_active || !connected()) && (!extensionPending || !connected()) && !resume && clock.time >= sessionBounds()[1] - 1e-7) clock.seek(sessionBounds()[0]);
     const shouldExtend = connected() && ((noMotion && (resume || sessionBounds()[1] <= sessionBounds()[0])) || (clock.time >= history.bounds[1] - 1e-7 && resume));
     const follow = resume && (noMotion || clock.time >= history.bounds[1] - 1e-7);
     // Publish local intent immediately. Arriving history may grow the recorded
@@ -988,7 +993,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       unsubscribeSession?.(); session = value; clock.setRate(session.rate);
       unsubscribeSession = session.subscribe(() => {
         clock.setRate(session.rate); renderDirty = true;
-        const disabled = !connected() && !localComparisonPlayback();
+        const disabled = playbackDisabled();
         const [start, end] = sessionBounds(), emptied = disabled && clock.playing && end <= start;
         if (emptied) pausePlayback();
         if (emptied || $('live-play').disabled !== disabled) controlsEnabled();

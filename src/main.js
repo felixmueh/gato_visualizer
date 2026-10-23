@@ -635,6 +635,7 @@ async function start() {
       await addSessionTrack(item.id, item); await replayLibrary?.refresh();
     } });
     session = createSession();
+    session.updateMain({ endEffectorFrame: defaultData.end_effector_frame });
     live.setSession(session);
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
       moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });

@@ -1322,8 +1322,10 @@ for (const unavailable of ['no compiled N', 'predictor unavailable']) test(`unav
   if (unavailable === 'no compiled N') h.schema.available_N = [];
   else h.schema.available_N_by_friction = { off: [], on: [32] };
   try {
-    const session = createSession(), live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); live.setSession(session);
+    const session = createSession(), live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    session.updateMain({ endEffectorFrame: 'known_grasp' }); live.setSession(session);
     await flush(); assert.equal(h.$('live-mode').disabled, false);
+    assert.equal(session.focused.endEffectorFrame, 'known_grasp');
     h.$('live-mode').emit('click'); assert.equal(live.mode, 'live');
     if (unavailable === 'no compiled N') assert.equal(h.sources.length, 0);
     else { const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); }
@@ -1346,6 +1348,29 @@ for (const unavailable of ['no compiled N', 'predictor unavailable']) test(`unav
     assert.equal(live.playing, true);
     session.removeTrack(track.id); live.frame(500);
     assert.equal(h.$('live-play').disabled, true); assert.equal(live.playing, false);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+test('disconnected Live replays its recorded main span locally and ignores a stale active producer status', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const session = createSession(), live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); live.setSession(session);
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    for (const time of [0, .5, 1]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
+      q: Array(7).fill(time), qd: Array(7).fill(.1), ee_xyz: [time, 0, 1] });
+    source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true });
+    live.seek(0); source.readyState = 0; source.onerror();
+    assert.equal(h.$('live-play').disabled, false); assert.equal(h.$('live-precalculate').disabled, true);
+    assert.equal(live.history.growing, false);
+    const before = h.commands.length;
+    h.$('live-speed').value = '2'; h.$('live-speed').emit('change'); h.$('live-play').emit('click');
+    live.frame(0); live.frame(250); assert.equal(session.cursor, .5); assert.equal(live.playing, true);
+    live.frame(1000); assert.equal(session.cursor, 1); assert.equal(live.playing, false);
+    h.$('live-play').emit('click'); live.frame(0); live.frame(250);
+    assert.equal(session.cursor, .5); assert.equal(live.playing, true);
+    h.$('live-play').emit('click'); await flush(); assert.deepEqual(h.commands.slice(before), []);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
