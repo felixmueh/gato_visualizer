@@ -17,11 +17,10 @@ class FrictionTests(unittest.TestCase):
         cls.adapter = SimulatorAdapter(MPC_ROOT)
 
     def test_the_session_steps_tiago_mpc_sim_plant_with_either_law(self):
-        from gato.common import rk4
-        from tiago_mpc.dynamics import plant_rk4
+        from tiago_mpc.sim import SimPlant
         adapter, tiago = self.adapter, self.adapter.tiago
-        model = adapter.new_plant(.001).model
-        # Hard-sign RK4 with the URDF damping diverges at 1 ms (docs/friction.md): 0.1 ms there.
+        # Compare the session's command-tick stepping with the upstream plant
+        # advancing the same held command directly, at both retained rates.
         for friction, rate in ((None, 1000.), (tiago.urdf_friction(), 10000.)):
             with self.subTest(friction=friction):
                 adapter.reset_state()
@@ -32,16 +31,17 @@ class FrictionTests(unittest.TestCase):
                 adapter.solve_snapshot = lambda origin, version: dict(
                     type="plan", seq=1, N=3, dt_s=.02, _states=np.zeros((3, 14)), _torques=torques, stats=dict(solve_time_ms=1.))
                 adapter.state_record = lambda version=0: dict(type="state")
-                q, qd = adapter.x[:7].copy(), adapter.x[7:].copy()
+                reference = SimPlant(adapter.x[:7], adapter.x[7:], substep=1/rate, friction=friction)
+                reference.start()
+                reference.apply(torques[0])
                 session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=rate))
                 states = [r for r in session.advance_interval(.01) if r["type"] == "state"]
                 steps = round(.01*rate)
                 self.assertEqual(len(states), 5)  # at the 500 Hz command ticks
                 self.assertEqual(session.steps, steps)
-                for _ in range(steps):
-                    q, qd = (rk4(model, model.createData(), q, qd, torques[0], 1/rate) if friction is None else
-                             plant_rk4(model, model.createData(), q, qd, torques[0], 1/rate, friction))
-                np.testing.assert_allclose(adapter.x, np.r_[q, qd], rtol=0, atol=1e-12)
+                reference.advance(.01)
+                expected = reference.state()
+                np.testing.assert_allclose(adapter.x, np.r_[expected.q, expected.qd], rtol=0, atol=1e-12)
                 self.assertAlmostEqual(adapter.t, .01)
                 del adapter.solve_snapshot, adapter.state_record
 
