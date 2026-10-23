@@ -166,6 +166,8 @@ def validate_settings(config, task, schema):
         kind = spec["kind"]
         if kind == "bool":
             valid = isinstance(value, bool)
+        elif path == "N" and "available_N_by_friction" in schema:
+            valid = type(value) is int  # whether it is compiled is checked below, by mode
         elif kind == "choice":
             valid = any(type(value) is type(choice) and value == choice
                         for choice in map(choice_value, spec["choices"]))

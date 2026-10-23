@@ -81,6 +81,8 @@ class SettingsTests(unittest.TestCase):
             validate_settings({**self.config, "save_plan_steps": 1}, self.task, self.schema)
         with self.assertRaises(ValueError):
             validate_settings(self.config, {**self.task, "target_offset_m": [True, 0, 0]}, self.schema)
+        with self.assertRaisesRegex(ValueError, "Not compiled: N=64 without predictor friction.*Build"):
+            validate_settings(dict(self.config, N=64), self.task, self.schema)
         with self.assertRaisesRegex(ValueError, "Not compiled: N=16 with predictor friction"):
             validate_settings(dict(self.config, N=16, friction=self.friction), self.task, self.schema)
 
