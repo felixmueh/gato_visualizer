@@ -33,6 +33,7 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
   function showTooltip(time, x, y) {
     const bounds = $('viewport').getBoundingClientRect();
     tooltip.textContent = timeLabel(time);
+    tooltip.style.setProperty('--ghost-color', cssColor(source?.color ?? ONION_COLOR));
     tooltip.style.left = `${Math.min(bounds.width - 85, Math.max(0, x - bounds.left + 14))}px`;
     tooltip.style.top = `${Math.min(bounds.height - 35, Math.max(0, y - bounds.top + 14))}px`;
     tooltip.hidden = false;

@@ -1426,3 +1426,5 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .onion-tick:hover::after, .studio-workbench .onion-tick:focus-visible::after { height: 10px; top: -1px; box-shadow: 0 0 5px var(--ghost-color, #aeb7c2); }
 .studio-workbench .onion-tick[hidden] { display: none; }
 .studio-workbench .onion-skin-toggle[aria-pressed='true'] { color: #dbe7f2; background: #34475d; box-shadow: inset 0 0 0 1px #71869c; }
+
+.onion-skin-tooltip { border-color: var(--ghost-color, #aeb7c2); color: #dbe7f2; }
