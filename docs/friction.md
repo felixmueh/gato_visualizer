@@ -119,7 +119,10 @@ The validation above stands as recorded; this later diagnosis adds a cause.
 
 Reset after such a failure previously failed with `reset x0 must be finite`:
 the solver child and the worker both reseeded GATO from the blown-up state,
-which overflows GATO's float32 staging. Both now discard it first.
+which overflows GATO's float32 staging. Both now discard it first. A settings
+change after a blow-up anchors at the displayed tip instead; when that state is
+beyond float32, the solver child reports "The state is beyond the solver's
+range (the plant became unstable); press Reset".
 
 Scripts: `_expr_data/reset-nonfinite/` (`plant_loop*.py`, `predictor_stability.py`,
 `armature_bound.py` for CPU checks; `repro.py`, `friction_matrix.py` for Live).

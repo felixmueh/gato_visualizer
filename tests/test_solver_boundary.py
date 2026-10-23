@@ -161,7 +161,7 @@ class BoundaryTests(unittest.TestCase):
                     joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85))
                 rejected = remote.raw("solve", state=np.full(14, 1e300), time_s=.01,
                                       reference=np.zeros((4, 6)), origin="play", settings_version=1)
-                self.assertEqual(rejected["error"], "Nonfinite torque or predicted trajectory")
+                self.assertEqual(rejected["error"], "The state is beyond the solver's range (the plant became unstable); press Reset")
                 self.assertTrue(remote.raw("configure", params=params)["ok"])
                 capped = remote.request("configure", params=params, max_sqp_iters=17)
                 self.assertEqual(capped["configuration"]["solver"]["max_sqp_iters"], 17)
@@ -268,6 +268,23 @@ class BoundaryTests(unittest.TestCase):
                 self.assertEqual(simulator.controller.reset(simulator.x + 1)["warmup"], False)
                 self.assertEqual(mpc.warmups, [])  # warm-up off: the plain controller reset
                 np.testing.assert_array_equal(mpc.resets[-1], (simulator.x + 1)*np.tile(SIGNS, 2))
+            finally:
+                remote.close()
+
+    def test_a_state_beyond_float32_asks_for_reset_instead_of_a_nonfinite_x0(self):
+        with fake_gpu():
+            remote = Remote()
+            simulator = SimulatorAdapter(MPC_ROOT)
+            try:
+                schema = dict(available_N_by_friction=dict(off=[4], on=[]))
+                simulator.remote, simulator.profile, simulator.profile_schema = remote, dict(id="p"), schema
+                remote.request("bootstrap")
+                simulator.configure(config(), deepcopy(FIGURE8_DEFAULT_TASK))
+                for value in (1e39, -4e38):  # finite in float64 after a blow-up, beyond float32
+                    simulator.x = np.r_[np.zeros(7), np.full(7, value)]
+                    with self.subTest(value=value):
+                        with self.assertRaisesRegex(ValueError, "beyond the solver's range.*press Reset"):
+                            simulator.controller.reset(simulator.x)
             finally:
                 remote.close()
 

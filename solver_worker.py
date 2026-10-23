@@ -50,6 +50,19 @@ def plan_stats(stats, restarted):
                 controller_restarted=restarted)
 
 
+FLOAT32_MAX = float(np.finfo(np.float32).max)
+
+
+def solver_state(state):
+    """A native state GATO can take: after an unstable plant the state can be finite
+    in float64 but beyond GATO's float32 range, which GATO reports misleadingly as
+    a nonfinite reset x0."""
+    x = np.asarray(state, dtype=float)
+    if not np.isfinite(x).all() or np.abs(x).max() > FLOAT32_MAX:
+        raise ValueError("The state is beyond the solver's range (the plant became unstable); press Reset")
+    return x
+
+
 class SolverSession:
     """tiago_mpc's Mpc for the configured MpcParams, and what the coordinator records."""
 
@@ -110,7 +123,7 @@ class SolverSession:
         reset. A reseed repeating the previous one, with no solve in between, changes
         nothing and is skipped. Returns whether a warm-up ran and its wall time."""
         from tiago_mpc.plan import State
-        mpc, x = self.mpc, np.asarray(state, dtype=float)
+        mpc, x = self.mpc, solver_state(state)
         reference = np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6)
         seed = (x.tobytes(), reference.tobytes())
         if seed == self.seed:
@@ -126,7 +139,7 @@ class SolverSession:
 
     def solve(self, state, time_s, reference, origin, settings_version):
         from tiago_mpc.plan import State
-        mpc, x = self.mpc, np.asarray(state, dtype=float)
+        mpc, x = self.mpc, solver_state(state)
         reference = np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6)
         if origin == "preview":
             self.reset(x, time_s, reference)
