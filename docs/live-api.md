@@ -50,9 +50,12 @@ visualizer's simulated-plant group:
   `max_sqp_time_s` (wall time for a solve's SQP iterations within
   `solver.max_sqp_iters`; `null`: no time limit) and `warmup` (a boolean:
   GATO's warm-up solve at every reseed, below).
-- `plant`: the simulation group: `friction` (the simulator friction switch,
-  false), `clip_effort` (true: commands clipped to ± the raw URDF effort limit
-  before the plant) and `stop_on_breach: {"position": true, "velocity": true,
+- `plant`: the simulation group: `integrator` (`"rk4"`, loss-free, or
+  `"euler"`, semi-implicit), `friction` (plant friction, false; needs
+  `"euler"`), `coulomb_law` (`"tanh"`, `"sign"` or `"constraint"`, the
+  default), `friction_width_rad_s` (0.03, the tanh law's width),
+  `clip_effort` (true: commands clipped to ± the raw URDF effort limit before
+  the plant) and `stop_on_breach: {"position": true, "velocity": true,
   "torque": true}` (Live pauses where a simulated value breaches its raw URDF
   limit). See [limit handling](execution-api.md#limit-handling); Felix,
   2026-10-23. `start_pose_rad`: the start pose, seven native joint positions
@@ -121,8 +124,7 @@ receiving its first solved plan.
   "defaults": {"config": {...}, "task": {"kind": "reach", "target_offset_m": [0.15, 0.2, 0.2]}},
   "available_N": [16, 32, 64, 128],
   "available_N_by_friction": {"off": [16, 32, 64, 128], "on": [32]},
-  "friction": {"coefficients": {...}, "predictor": {...}, "source": "...",
-               "simulation_law": "...", "prediction_law": "..."},
+  "friction": {"coefficients": {...}, "predictor": {...}, "source": "..."},
   "parameters": [
     {"path": "solver.q_cost", "label": "Tool position cost", "group": "Costs",
      "kind": "float", "scale": "linear", "min": 0, "max": 100000}
@@ -145,7 +147,8 @@ default is shown. An entry may carry a `description` (its tooltip) and a
 breach** checkboxes of the **Limit handling** group). Fixed fields have `disabled: true` and a single allowed
 choice: `solver.linsys` is null, `solver.exact_hessian` is false, and
 `ee_frame` is the grasp frame the simulator tracks. `friction` is one choice
-between loss-free and the URDF friction with the fixed tanh width. All numeric
+between loss-free and the URDF friction with the fixed tanh width. The backend
+rejects plant friction with the RK4 integrator. All numeric
 ranges are enforced by the backend and published by `live_mpc.parameter_specs`;
 consumers should use the returned schema. Current upper bounds are SQP 100000,
 PCG 1000000 and ADMM 200. Inspection Run again
@@ -265,7 +268,7 @@ remain monotonic independently.
 
 ## Independent joint friction
 
-`config.plant.friction` (boolean) switches the simulator's friction;
+`config.plant` sets the simulated plant's integrator, friction and Coulomb law;
 `config.friction` is the predictor's (`null` or the URDF friction with the fixed
 0.03 rad/s tanh width). Both default to loss-free. `available_N_by_friction.off`
 / `.on` identify the compiled predictor variants. See [friction](friction.md)

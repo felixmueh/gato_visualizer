@@ -87,11 +87,12 @@ terminal torque. `Mpc` applies the joint-6 GPU signs; the child applies them
 itself only for controller reset, installed bound rows and inspection. Legacy
 raw XU and inspection arrays retain their own signs; portable NPZ already
 contains native coordinates. All displayed positions use the full robot root
-frame derived from the URDF. The simulator friction switch (`plant.friction`)
-gives `SimPlant` the URDF friction (hard-sign Coulomb plus viscous) or none;
-predictor/profile changes do not change the plant. Predictor friction
-(`friction` in `MpcParams`) selects a compiled variant with a fixed tanh width.
-Both default to loss-free. See [friction](friction.md). The session clips
+frame derived from the URDF. The plant group selects `SimPlant`'s integrator
+(`plant.integrator`) and URDF friction with its Coulomb law (`plant.friction`,
+`plant.coulomb_law`, `plant.friction_width_rad_s`); predictor/profile changes do
+not change the plant. Predictor friction (`friction` in `MpcParams`) selects a
+compiled variant with a fixed tanh width. Both default to loss-free. See
+[friction](friction.md). The session clips
 commands to the raw effort limit and stops on simulated limit breaches at full
 rate, as `plant.clip_effort` and `plant.stop_on_breach` select
 ([limit handling](execution-api.md#limit-handling)).

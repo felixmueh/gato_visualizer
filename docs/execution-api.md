@@ -225,7 +225,7 @@ instead of with every record:
 ```
 
 `settings` are the segment's complete effective settings: `config` (`asdict(MpcParams)`
-with the `plant` group: simulator friction and limit handling), `task` and
+with the `plant` group: integrator, plant friction, limit handling and start pose), `task` and
 `execution` (rates, calculation mode, duration); `source` is the simulator
 checkout's identity. `simulator_identity`, `solver_profile`, `model_identity`,
 `problem_configuration` and the bounds identify the plant, the predictor and the
@@ -344,8 +344,8 @@ orthogonal simulation settings in `config.plant` handle them in Live
 ## Simulation clock and plan execution
 
 Simulation time advances according to the requested rates, irrespective of
-solve latency. Physics is `tiago_mpc`'s `SimPlant` with RK4 substeps of at most
-1/`simulation_hz`: each integration chunk applies the held command and advances
+solve latency. Physics is `tiago_mpc`'s `SimPlant` (RK4 or semi-implicit Euler,
+[friction](friction.md)) with substeps of at most 1/`simulation_hz`: each integration chunk applies the held command and advances
 the plant to the chunk's end time. Every session (Reset, anchor, settings
 change, rollback) starts a fresh `SimPlant` at the current native state on a
 simulation clock at the current time, because that clock never moves backward.

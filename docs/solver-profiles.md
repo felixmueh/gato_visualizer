@@ -13,9 +13,8 @@ service and browser session running.
 
 The simulator checkout supplies `tiago_mpc.tiago` (model, assets, initial
 posture, limits, friction coefficients), `SimPlant` and the task geometry. The
-simulator friction switch gives `SimPlant` the URDF friction (hard-sign Coulomb
-plus viscous) or none; both it and predictor friction default to loss-free.
-Profile selection never changes the plant. See [friction](friction.md).
+plant settings choose `SimPlant`'s integrator and friction; plant and predictor
+default to loss-free. Profile selection never changes the plant. See [friction](friction.md).
 
 Named solver profiles identify a TIAGo checkout/worktree, Python interpreter
 and compiled-module cache. The interpreter and cache are saved as templates in

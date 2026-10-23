@@ -250,10 +250,12 @@ coordinates and compiled modules for the chosen knot count. See
 
 ## Live MPC
 
-Independent Simulator and Predictor friction controls use the selected source’s
-URDF joint coefficients. Both default to off (loss-free). Predictor friction is a
-compiled variant with a fixed tanh width of 0.03 rad/s. See
-[friction modes and compiled variants](docs/friction.md).
+The **Friction** group sets the simulated plant and the predictor
+independently, both loss-free by default, with the selected source’s URDF joint
+coefficients. The plant integrator is RK4 (loss-free) or semi-implicit Euler,
+which also simulates plant friction with a tanh, sign or constraint Coulomb law
+(default constraint). Predictor friction is a compiled variant with a fixed tanh
+width of 0.03 rad/s. See [friction](docs/friction.md).
 
 **Limit handling** (Felix, 2026-10-23): **Clip effort** (on by default) clips
 each command to ± the URDF effort limit before it reaches the simulated plant;
@@ -307,7 +309,7 @@ the beginning. Unchecking Stop extends simulation from the latest state.
 At a growing recording's end, playback waits for new samples.
 
 Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz** (defaults 1000, 500 and
-100). Simulation Hz controls RK4 integration, Control Hz samples the active plan's
+100). Simulation Hz sets the plant's integration step, Control Hz samples the active plan's
 torque, and TO Hz requests new plans. The prediction knot interval is separate.
 The history records every command, plan and timing interval and the state at
 every command tick and TO update (every 2 ms at the defaults); the physics steps

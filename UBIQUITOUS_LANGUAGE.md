@@ -32,7 +32,7 @@
 | **Keyframe** | A time at which a ghost arm is drawn. | Frame (a coordinate frame here) |
 | **Ghost arm** | A translucent right arm at a recorded state other than the solid robot’s displayed state. | Preview (a Live preview solve) |
 | **Simulation time** | The task/plant clock recorded with robot states, independent of time spent computing them. | Solver time, wall time |
-| **Simulation frequency** | The nominal RK4 integration rate, with steps split at control or replanning boundaries. | Display rate |
+| **Simulation frequency** | The nominal plant integration rate (RK4 or semi-implicit Euler), with steps split at control or replanning boundaries. | Display rate |
 | **Control frequency** | The rate at which the current prediction supplies a held actuator command. | MPC frequency, replanning frequency |
 | **TO frequency** | The trajectory-optimization/replanning rate requesting new solves. | Control frequency, reporting frequency |
 | **Control events** | The command ticks and TO updates; the Live history records every command and plan and the simulated state at each control event, not at physics steps. | Recording substeps, sample rate |

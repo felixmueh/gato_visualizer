@@ -34,9 +34,10 @@ now reuses its package API unchanged: `MpcParams` (the Live settings are
 `Mpc(params, binary)`, which only loads, in the solver child, and `SimPlant` on a
 simulation clock in the coordinator, replaced by a fresh plant on Reset, anchor
 or rollback. The visualizer keeps its own multirate clocks and zero-order hold.
-Plant and predictor are loss-free by default; simulator friction is `SimPlant`'s
-hard-sign Coulomb plus viscous law, and predictor friction a compiled variant
-with a fixed 0.03 rad/s tanh width. Conformance compares this Live loop with
+Plant and predictor are loss-free by default; plant friction uses `SimPlant`'s
+own integrator and Coulomb law options (amended 2026-10-23: RK4 or semi-implicit
+Euler; tanh, sign or constraint Coulomb), and predictor friction is a compiled
+variant with a fixed 0.03 rad/s tanh width. Conformance compares this Live loop with
 `tiago_mpc`'s `experiments.reach.reach` in-process.
 
 Implementation and exact timing semantics: [execution-api.md](../execution-api.md).

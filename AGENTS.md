@@ -81,7 +81,7 @@ follows the package API that experiments use, without shims.
   "not compiled" otherwise. The visualizer has no module discovery or plant
   naming of its own.
 - **Settings are `asdict(MpcParams)`** plus the visualizer's `plant` group
-  (simulator friction); `task` and `execution` are unchanged. No configuration
+  (the simulated plant); `task` and `execution` are unchanged. No configuration
   files are written.
 - **Live** steps `tiago_mpc.sim.SimPlant` in the simulation coordinator (a
   fresh plant on Reset, anchor or rollback, on a simulation clock) and runs
@@ -313,13 +313,14 @@ Develop with them, keep coefficients configurable, and make plant/predictor
 coefficient mismatch easy to set up for robustness checks; identified values
 come later and matter for tuning, not for the design.
 
-**Friction defaults — Felix, 2026-10-22** (supersedes the both-on UI default
-and the stick/slip plant of `visualizer-trial/stick-slip-plant`): plant and
-predictor are loss-free by default, matching `tiago_mpc`'s friction opt-in.
-Simulator friction is `SimPlant`'s hard-sign Coulomb plus viscous law; there
-is no stick/slip plant. Predictor friction is a compiled variant whose tanh
-width is fixed at 0.03 rad/s and not settable, since each width is its own
-compiled plant.
+**Friction — Felix, 2026-10-22 and 2026-10-23:** plant and predictor are
+loss-free by default, matching `tiago_mpc`'s friction opt-in. The plant
+(`config.plant`) maps onto `SimPlant`'s options: integrator RK4 (default,
+loss-free only) or semi-implicit Euler; plant friction (URDF coefficients, Euler
+only) with a tanh (settable width, default 0.03 rad/s), sign or constraint
+(default) Coulomb law. Predictor friction is a compiled variant whose tanh width
+is fixed at 0.03 rad/s and not settable, since each width is its own compiled
+plant. See [friction](docs/friction.md).
 
 **Limit handling in Live — Felix, 2026-10-23.** `tiago_mpc` 436b419 moved the
 raw-effort check out of `Mpc.result()` into its own `run` loop, so the solver
