@@ -16,7 +16,7 @@ function statistics(values) {
 export function setupOnionSpike({ renderer, scene, camera, controls, robot, getTrajectory, getJointNames, auxiliaryViews, setNormalVisible = () => {} }) {
   const body = document.createElement('div');
   const description = document.createElement('p');
-  description.textContent = 'Pause Replay on a recording, then start. Measures 12 cases (about 66 s) while orbiting automatically. Keep this tab visible. Download the report and screenshots when complete.';
+  description.textContent = 'Pause Replay on a recording, then start. Resets the camera and measures 12 cases (about 66 s) while orbiting automatically. Keep this tab visible. Download the report and screenshots when complete.';
   const actions = document.createElement('div'); actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
   const start = document.createElement('button'); start.textContent = 'Start';
   const cancel = document.createElement('button'); cancel.textContent = 'Stop'; cancel.disabled = true;
@@ -76,6 +76,7 @@ export function setupOnionSpike({ renderer, scene, camera, controls, robot, getT
   function finish(reason) {
     if (!running) return;
     running = false; start.disabled = false; cancel.disabled = true;
+    if (reason && current) result.partialCase = { ...current, samples: [...current.samples] };
     result.finishedAt = new Date().toISOString(); result.complete = !reason; result.stopReason = reason ?? null;
     result.decision = decide(); restore(); persist();
     status.textContent = reason ? `Stopped: ${reason}` : 'Complete · download JSON and screenshots';
@@ -117,6 +118,7 @@ export function setupOnionSpike({ renderer, scene, camera, controls, robot, getT
     source = getTrajectory();
     if (!source?.time_s?.length || !source.q?.length || !getJointNames()?.length) { status.textContent = 'Select a Replay recording first.'; return; }
     if (document.hidden) { status.textContent = 'Keep this tab visible before starting.'; return; }
+    document.getElementById('camera-home')?.click();
     screenshots = []; images.replaceChildren(); output.textContent = ''; download.disabled = true;
     saved = { position: camera.position.clone(), quaternion: camera.quaternion.clone(), up: camera.up.clone(), target: controls.target.clone(), zoom: camera.zoom,
       controlsEnabled: controls.enabled, sidebarHidden: Boolean(document.getElementById('right-sidebar')?.hidden),
