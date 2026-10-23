@@ -199,11 +199,13 @@ export function createJointTable(container, names, { onStartPoseDraft = () => {}
       const next = clamp(value); input.value = next.toFixed(DIGITS.position);
       commit(withJoint(pose().value, index, next));
     });
+    input.addEventListener('focus', () => input.select?.());
     input.addEventListener('keydown', event => { if (event.key === 'Escape') { revert(); input.blur?.(); } });
     // Gauges: drag the position marker anywhere on its track, clamped to the URDF range.
     let drag = null;
     position.gauge.addEventListener('pointerdown', event => {
-      if (!startEditing(rows) || event.button !== 0 || position.track.hidden) return;
+      // Dragging belongs to the Gauges view; the Numbers view's input keeps its own pointer behaviour.
+      if (!startEditing(rows) || event.button !== 0 || position.track.hidden || event.target === input || position.gauge.closest?.('.joint-list')?.dataset.view === 'numbers') return;
       const rect = position.track.getBoundingClientRect(), { lower, upper } = pose();
       const at = x => roundRad(clamp(lower[index] + ((x - rect.left) / rect.width - POSITION_INSET) / (1 - 2 * POSITION_INSET) * (upper[index] - lower[index])));
       drag = { start: [...pose().value], at, q: null };

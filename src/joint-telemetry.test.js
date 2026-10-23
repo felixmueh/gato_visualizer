@@ -195,6 +195,25 @@ test('typing a start pose commits on change (Enter), clamps to the URDF range an
   assert.equal(commits.length, 2);
 });
 
+test('in the Numbers view no pointer action changes a value; a click on the input is left to the browser', () => {
+  const {container, rows, button, drafts, commits} = editableTable();
+  button.dispatch('click');
+  updateJointTable(rows, {q: [.5, 0], limits: LIMITS, startPose: pose()});
+  const gauge = rows[0][0].gauge, input = rows[0].input;
+  gauge.closest = () => container;
+  container.dataset.view = 'numbers';
+  let prevented = false;
+  for (const target of [input, gauge]) gauge.dispatch('pointerdown', {button: 0, clientX: 280, pointerId: 1, target, preventDefault() { prevented = true; }});
+  gauge.dispatch('pointerup', {});
+  assert.deepEqual([drafts, commits, prevented], [[], [], false]);
+  // The same pointer action in the Gauges view still drags, but never from the input.
+  container.dataset.view = 'gauges';
+  gauge.dispatch('pointerdown', {button: 0, clientX: 280, pointerId: 2, target: input, preventDefault() {}});
+  assert.equal(drafts.length, 0);
+  gauge.dispatch('pointerdown', {button: 0, clientX: 280, pointerId: 3, target: gauge, preventDefault() {}});
+  assert.equal(drafts.length, 1);
+});
+
 test('reset arrows return one joint or all to the default, and a pose outside the planning box is flagged', () => {
   const {rows, button, commits} = editableTable();
   button.dispatch('click');
