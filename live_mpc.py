@@ -27,6 +27,10 @@ PREDICTOR_SMOOTHING_RAD_S = .03
 # limit (Felix, 2026-10-23). Simulation settings only: tiago_mpc's robot path never clips.
 PLANT_DEFAULTS = dict(friction=False, clip_effort=True,
                       stop_on_breach=dict(position=True, velocity=True, torque=True))
+# The start pose (plant.start_pose_rad) is the seven native joint positions the
+# simulated arm starts from at t = 0, velocities zero; Reset returns to it. Its
+# default is the simulator source's tiago.Q_START, so it is not a constant here
+# (start_pose_spec; Felix, 2026-10-23).
 
 
 def import_tiago(mpc_root):
@@ -66,14 +70,17 @@ LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "q_cost": "Tool posit
           "friction": "Predictor friction", "plant.friction": "Simulator friction",
           "ee_frame": "End-effector frame", "warmup": "Warm-up solve", "max_sqp_time_s": "SQP time limit (s)",
           "plant.clip_effort": "Clip effort", "plant.stop_on_breach.position": "Joint limits",
-          "plant.stop_on_breach.velocity": "Velocity", "plant.stop_on_breach.torque": "Torque"}
+          "plant.stop_on_breach.velocity": "Velocity", "plant.stop_on_breach.torque": "Torque",
+          "plant.start_pose_rad": "Start pose"}
 DESCRIPTIONS = {
     "plant.clip_effort": "Clip each command to ± the URDF effort limit before it reaches the simulated plant "
                          "(simulation only; the robot path never clips)",
     "plant.stop_on_breach.position": "Pause where a simulated joint position leaves its URDF limits",
     "plant.stop_on_breach.velocity": "Pause where a simulated joint speed exceeds its URDF velocity limit",
     "plant.stop_on_breach.torque": "Pause where the torque applied to the simulated plant (after clipping) "
-                                   "exceeds its URDF effort limit"}
+                                   "exceeds its URDF effort limit",
+    "plant.start_pose_rad": "Native joint positions the simulated arm starts from at t = 0, velocities zero; "
+                            "within the URDF position limits"}
 RANGES = {"dt_s": (.001, .1), "solver.max_sqp_iters": (1, 100000), "solver.max_pcg_iters": (1, 1000000),
           "solver.pcg_tol": (1e-8, 1), "solver.solve_ratio": (.001, 1), "solver.mu": (1e-6, 1e5),
           "solver.rho": (1e-8, 1e4), "admm.iters": (1, 200), "admm.eps_rel": (1e-8, 1),
@@ -86,8 +93,18 @@ NULLABLE = ("max_sqp_time_s",)  # None: no wall-time limit, within solver.max_sq
 SIMULATION_CLOCK_DEFAULTS = dict(max_sqp_time_s=None)
 
 
-def parameter_specs(config, available_n, predictor_friction):
-    """One entry per leaf of the Live config; predictor friction is one choice."""
+def start_pose_spec(tiago):
+    """The start pose's default (tiago.Q_START) and range (the raw URDF position
+    limits), from the simulator source: the plant starts there, not the solver."""
+    limits = tiago.limits()
+    return dict(default=np.asarray(tiago.Q_START, dtype=float).tolist(),
+                lower=np.asarray(limits.lower, dtype=float).tolist(),
+                upper=np.asarray(limits.upper, dtype=float).tolist())
+
+
+def parameter_specs(config, available_n, predictor_friction, start_pose):
+    """One entry per leaf of the Live config; predictor friction is one choice and
+    the start pose one entry of kind joints, edited in the Joints tab."""
     friction_label = f"URDF Coulomb + viscous, tanh {predictor_friction['width_rad_s']:g} rad/s"
     choices = {"N": list(available_n), "solver.linsys": [None], "solver.exact_hessian": [False],
                "ee_frame": [config["ee_frame"]], "warm_start": ["shift", "hold"],
@@ -108,6 +125,11 @@ def parameter_specs(config, available_n, predictor_friction):
                         scale="linear")
             if name in DESCRIPTIONS:
                 spec["description"] = DESCRIPTIONS[name]
+            if name == "plant.start_pose_rad":
+                spec.update(kind="joints", group="Start pose", lower=list(start_pose["lower"]),
+                            upper=list(start_pose["upper"]))
+                specs.append(spec)
+                continue
             if name.startswith("plant.stop_on_breach."):
                 spec["row"] = "Stop on breach"  # three checkboxes side by side
             if name in choices:
@@ -188,6 +210,14 @@ def validate_settings(config, task, schema):
     for path, spec in expected.items():
         value = values[path]
         kind = spec["kind"]
+        if kind == "joints":
+            valid = (isinstance(value, list) and len(value) == len(spec["lower"]) and all(
+                not isinstance(x, bool) and isinstance(x, (int, float)) and math.isfinite(x) and lo <= x <= hi
+                for x, lo, hi in zip(value, spec["lower"], spec["upper"])))
+            if not valid:
+                raise ValueError(f"Invalid {path}: {len(spec['lower'])} finite native joint positions "
+                                 "within the URDF position limits required")
+            continue
         if kind == "bool":
             valid = isinstance(value, bool)
         elif path == "N" and "available_N_by_friction" in schema:
@@ -299,14 +329,22 @@ def mpc_bounds_from_rows(rows, limit_bounds):
     return result
 
 
-def build_schema(probe, mpc_root):
-    """The Live schema from a selected-interpreter source probe (scripts/source_probe.py)."""
+def available_modules(probe):
+    """The compiled N a source probe found: per predictor-friction mode and their union."""
+    by_mode = {mode: list(probe["available_N_by_friction"][mode]) for mode in ("off", "on")}
+    return dict(available_N=sorted(set(by_mode["off"]) | set(by_mode["on"])), available_N_by_friction=by_mode)
+
+
+def build_schema(probe, mpc_root, start_pose):
+    """The Live schema from a selected-interpreter source probe (scripts/source_probe.py)
+    and the simulator's start pose (start_pose_spec)."""
     from execution_session import DEFAULT_EXECUTION
     if not probe.get("compatible"):
         raise ValueError(probe.get("error") or "Selected source is incompatible")
-    defaults = dict(deepcopy(probe["defaults"]), **SIMULATION_CLOCK_DEFAULTS, plant=deepcopy(PLANT_DEFAULTS))
-    by_mode = {mode: list(probe["available_N_by_friction"][mode]) for mode in ("off", "on")}
-    available = sorted(set(by_mode["off"]) | set(by_mode["on"]))
+    defaults = dict(deepcopy(probe["defaults"]), **SIMULATION_CLOCK_DEFAULTS,
+                    plant=dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=list(start_pose["default"])))
+    modules = available_modules(probe)
+    by_mode, available = modules["available_N_by_friction"], modules["available_N"]
     predictor = probe["friction"]
     friction = dict(coefficients={key: predictor[key] for key in ("coulomb_nm", "viscous_nm_s_per_rad")},
                     predictor=deepcopy(predictor), source="reduced right-arm URDF (tiago.urdf_friction)",
@@ -314,7 +352,7 @@ def build_schema(probe, mpc_root):
                     prediction_law=f"tanh Coulomb (width {predictor['width_rad_s']:g} rad/s) + viscous")
     return dict(available_N_by_friction=by_mode, available_N=available, friction=friction,
                 defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK), execution=deepcopy(DEFAULT_EXECUTION)),
-                parameters=parameter_specs(defaults, available, predictor),
+                parameters=parameter_specs(defaults, available, predictor, start_pose),
                 tasks=[dict(kind="reach", label="Reach", defaults=deepcopy(REACH_DEFAULT_TASK)),
                        dict(kind="figure8", label="Figure eight", defaults=deepcopy(FIGURE8_DEFAULT_TASK),
                             parameters=[dict(path="width_m", label="Width (m)", min=.01, max=.6),

@@ -31,7 +31,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from execution_session import DEFAULT_EXECUTION, MultirateSession
-from live_mpc import GPULocks, build_schema, import_tiago
+from live_mpc import GPULocks, build_schema, import_tiago, start_pose_spec
 from source_runtime import probe_selection, resolve_selection
 from visualizer_config import DEFAULT_MPC_ROOT
 
@@ -96,7 +96,7 @@ def main():
 
         from solver_adapter import SimulatorAdapter
         profile = dict(id="conformance", name="Conformance", **{key: selection[key] for key in ("mpc_root", "python", "cache")})
-        schema = build_schema(probe_selection(profile), root)
+        schema = build_schema(probe_selection(profile), root, start_pose_spec(import_tiago(root)))
         adapter = SimulatorAdapter(root)
         adapter.gpu_locks = locks
         adapter.select_profile(profile, schema)

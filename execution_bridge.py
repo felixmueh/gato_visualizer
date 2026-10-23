@@ -391,18 +391,18 @@ class ProcessLiveService:
         the available N here, in the coordinator, and in the browser (a compiled_modules
         event). Returns False, changing nothing, for another selection, a changed source
         identity or an incompatible probe: those still need Apply and its restart."""
-        from live_mpc import build_schema
+        from live_mpc import available_modules, source_identity
         keys = ("mpc_root", "python", "cache")
         if not probe.get("compatible"):
             return False
-        schema = build_schema(probe, selection["mpc_root"])
+        available = available_modules(probe)
+        source = source_identity(Path(selection["mpc_root"]).expanduser().resolve())
         with self.condition:
             active = self.active_profile
             if (self.closed or not self._process.is_alive() or self.profile_switch["state"] == "switching" or
                     any(str(active.get(key)) != str(selection.get(key)) for key in keys) or
-                    schema["source"] != self.schema.get("source")):
+                    source != self.schema.get("source")):
                 return False
-            available = dict(available_N=schema["available_N"], available_N_by_friction=schema["available_N_by_friction"])
             try:
                 self.commands.put_nowait(dict(type="refresh_compiled", **deepcopy(available)))
             except queue.Full:
@@ -467,6 +467,10 @@ class ProcessLiveService:
             # Queue saturation is rejected before changing visible generations.
             if self.commands.full():
                 raise ValueError("Command queue full; wait for the current solve to return")
+            # A new start pose starts a new run at t = 0 from it, as Reset; an anchor
+            # sent with it is not used (Felix, 2026-10-23).
+            new_start = (kind == "set_settings" and request["config"]["plant"]["start_pose_rad"] !=
+                         self.config["plant"]["start_pose_rad"])
             if kind == "set_settings":
                 self.next_version += 1
                 self.version = self.next_version
@@ -479,7 +483,7 @@ class ProcessLiveService:
                 with self.revision.get_lock():
                     self.revision.value += 1
             if kind in ("set_settings", "reset", "precalculate"):
-                if kind == "reset" or (kind == "set_settings" and request.get("reset")):
+                if kind == "reset" or (kind == "set_settings" and (request.get("reset") or new_start)):
                     self._generation_start = dict(kind="reset")
                 elif request.get("anchor") is not None:
                     self._generation_start = dict(kind="anchor", anchor=deepcopy(request["anchor"]))
