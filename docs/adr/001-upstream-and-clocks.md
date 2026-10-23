@@ -26,5 +26,18 @@ the existing settings transaction. These defaults are not a numerical or physica
 qualification. See the [friction contract](../friction.md) for legacy settings,
 source provenance and explicit binary preparation.
 
+Amendment, 2026-10-22 (migration to `tiago_mpc` main; supersedes the imports
+named above and the friction defaults of the first amendment): `tiago_mpc` no
+longer has `reach_sim.py`, JSON configurations or their loader. The visualizer
+now reuses its package API unchanged: `MpcParams` (the Live settings are
+`asdict(MpcParams)` plus the visualizer's `plant` group), `find_binary` and
+`Mpc(params, binary)`, which only loads, in the solver child, and `SimPlant` on a
+simulation clock in the coordinator, replaced by a fresh plant on Reset, anchor
+or rollback. The visualizer keeps its own multirate clocks and zero-order hold.
+Plant and predictor are loss-free by default; simulator friction is `SimPlant`'s
+hard-sign Coulomb plus viscous law, and predictor friction a compiled variant
+with a fixed 0.03 rad/s tanh width. Conformance compares this Live loop with
+`tiago_mpc`'s `experiments.reach.reach` in-process.
+
 Implementation and exact timing semantics: [execution-api.md](../execution-api.md).
 Source ownership and verification: [architecture.md](../architecture.md).

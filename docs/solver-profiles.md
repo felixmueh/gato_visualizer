@@ -11,12 +11,11 @@ service and browser session running.
 
 ## Ownership and lifecycle
 
-The simulator checkout supplies the prepared TIAGo model, integrator, assets,
-initial posture and task geometry. The independent simulator friction switch
-selects the source's `plant_step` (stick/slip Coulomb with implicit viscous damping where available, else hard-sign/viscous `plant_rk4`) or loss-free `reach_sim.rk4`.
-New UI defaults enable simulator and smooth predictor friction; legacy configurations without explicit
-losses retain loss-free behavior. Profile selection never changes this plant
-selection. See [friction](friction.md) for effective laws and provenance.
+The simulator checkout supplies `tiago_mpc.tiago` (model, assets, initial
+posture, limits, friction coefficients), `SimPlant` and the task geometry. The
+simulator friction switch gives `SimPlant` the URDF friction (hard-sign Coulomb
+plus viscous) or none; both it and predictor friction default to loss-free.
+Profile selection never changes the plant. See [friction](friction.md).
 
 Named solver profiles identify a TIAGo checkout/worktree, Python interpreter
 and compiled-module cache. The interpreter and cache are saved as templates in
@@ -53,11 +52,15 @@ Explicit backend shutdown waits 10s, then stops its own coordinator if necessary
 parent-death cleanup terminates its child, with borrowed leases held until exit.
 No other user's process is terminated.
 
-Normal settings and profile switching only load compatible prebuilt modules;
-they never compile. Source / Build remains the explicit build operation.
+Normal settings and profile switching only load compiled modules: the child
+constructs `Mpc(params, find_binary(params))` and refuses with "Not compiled"
+when the lookup finds none. Source / Build (`compile_binary`) remains the
+explicit build operation.
 
 Activation cancels calculation and runs a CPU-only selected-interpreter preflight
-for source/cache ABI, current N and coordinate compatibility. A predictable
+(the source probe: `tiago_mpc` API, `find_binary` per N and predictor friction,
+coordinate contract) and validates the current settings against the profile's
+schema. A predictable
 preflight failure retains the working child, pauses and preserves history.
 After successful preflight it captures native q/qd/task time, stops the old child,
 starts the replacement and resets its controller. A successful
@@ -74,16 +77,17 @@ browsing UI and does not broaden stale-generation plot acceptance.
 
 ## Compatibility and provenance
 
-Binary discovery checks the selected source/model/toolchain/Python ABI/GPU
-architecture and actual loadability. Coordinate compatibility is checked
-separately: native joint order, dimensions, units, actuator-torque semantics,
+Whether a module exists for the profile's `MpcParams` is `tiago_mpc`'s
+`find_binary` lookup; `tiago_mpc` and GATO own the cache keys. Coordinate
+compatibility is checked separately: native joint order, dimensions, units, actuator-torque semantics,
 reference frame, root transform, end-effector frame and TCP offset must agree.
 Different physical model hashes/limits/configurations are explicitly recorded;
 intentional predictor differences do not change the fixed simulator.
 
-The child converts final packed q/v/u arrays into native coordinates before RPC.
-The existing render contract receives `_signs = [1,...,1]`; historical plans keep
-their recorded signs. Every solve records profile/process identity, source/model
+The child returns `tiago_mpc`'s native `Plan` states and knot torques; `Mpc`
+applies the joint-6 GPU signs. Historical plans keep their recorded signs. Plan
+statistics come from `Plan.stats`, the per-iteration diagnostics from
+`mpc.step`. Every solve records profile/process identity, source/model
 identities, effective solver configuration, bounds, predictor dynamics, actual
 binary path/hash/native source ID and inspection capabilities. States and applied
 controls carry the profile/process identity and exact plan sequence association.

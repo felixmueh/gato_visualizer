@@ -6,21 +6,19 @@ inspect its predicted tool path, then play the simulated closed-loop motion.
 
 ## Run
 
-**Temporary default (2026-10-22):** `tiago_mpc` main is being restructured. Until the
-visualizer follows it, the default source is `../tiago_mpc_vis_baseline`, a frozen
-`tiago_mpc` worktree on branch `vis-baseline` (main at `72ca2b0`). Select another
-checkout with `--mpc-root`, `TIAGO_MPC_ROOT` or Settings › Backend.
-
-Use a prepared sibling `../tiago_mpc_vis_baseline` checkout with canonical models, fetched
-LFS meshes and GATO dependencies. The viewer opens at the starting pose, ready
-for replays from the library or uploads.
-The launcher uses `../tiago_mpc_vis_baseline/venv-host` on the desktop. `TIAGO_PYTHON` can
+Use a prepared sibling `../tiago_mpc` checkout with canonical models, fetched
+LFS meshes and GATO dependencies (select another checkout with `--mpc-root`,
+`TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the starting pose,
+ready for Live or for replays from the library or uploads.
+The launcher uses `../tiago_mpc/venv-host` on the desktop. `TIAGO_PYTHON` can
 select another prepared interpreter; inside the existing container the launcher
 falls back to the checkout's `.venv`. It does not install Python packages there.
 
-The viewer reuses compatible GATO binaries in the selected checkout’s
-`.cache/gato`. Prepare missing horizon modules explicitly during setup or use
-the gear button (**Settings › Backend**):
+The viewer uses the GATO modules that `tiago_mpc` compiled into the selected
+checkout's cache: `.cache/host-gato` for the host interpreter, `.cache/gato` for
+the container's `.venv` (tiago_mpc's convention). `tiago_mpc` compiles only on
+request; prepare the horizon modules during setup (`--prebuild` builds the
+loss-free N = 16, 32, 64, 128) or with the gear button (**Settings › Backend**):
 
 ```bash
 cd /workspace/tiago_mpc_visualizer
@@ -72,7 +70,8 @@ saved template such as `<checkout>/.venv/bin/python` stays valid when the checko
 changes (`~` is expanded too; absolute paths without the token keep working;
 any other `<…>` token is an error). The defaults are
 `<checkout>/venv-host/bin/python` when that interpreter exists, else
-`<checkout>/.venv/bin/python`, and `<checkout>/.cache/gato`. The resolved
+`<checkout>/.venv/bin/python`, and `<checkout>/.cache/host-gato`, or
+`<checkout>/.cache/gato` when the interpreter is the container's `.venv`. The resolved
 absolute path is the field's tooltip; a template that cannot be resolved is marked
 invalid, with the reason as tooltip. An edited template is a highlighted override
 with a reset arrow that restores the default. A value equal to the default is sent
@@ -80,17 +79,19 @@ as "follow the checkout" and not saved; overrides are saved as typed, templates
 included. `POST /api/source/defaults` with `{"mpc_root": …}` (optionally
 `python`/`cache` templates) returns the default templates, their resolution and
 the resolution of the entered templates. Existing configs with absolute paths are
-not rewritten. The previous visualizer cache can be
-reused by entering `/workspace/tiago_mpc_visualizer/.cache/gato` as the cache
-override; it is never copied into the selected project cache. Compatibility checks include the current
-URDF/grasp frame, generated/native GATO sources, toolchain, Python ABI, GPU
-architecture, and extension load/embedded identity. Discovery includes built N
-values beyond 16/32/64/128 and does not rely on manifest.N alone.
+not rewritten. Check source imports `tiago_mpc`'s MPC API in the selected
+interpreter and asks its `find_binary` which modules exist for the offered
+knot counts (8, 16, 24, 32, 48, 64, 96, 128), loss-free and with predictor
+friction. `tiago_mpc` and GATO decide what a cached module must match; the
+visualizer has no module discovery of its own.
 
-**Build selected N** accepts additional integer counts, reuses current binaries,
-and compiles missing/stale ones with progress and retained logs. The explicit
-rebuild checkbox preserves prior binary bytes under `_expr_data/source-builds/`.
-Changing normal Live settings or selecting N never compiles. **Apply and restart
+**Build selected N** calls `tiago_mpc`'s `compile_binary` for each selected
+count in a CPU-only subprocess, loss-free or, with **Predictor friction
+modules**, with predictor friction. A count that is already compiled is left
+as it is; **Rebuild compiled counts** compiles it again and replaces the old
+module file (no backup). Progress streams into the dialog; the log and a
+receipt stay under `_expr_data/source-builds/`. Changing normal Live settings
+or selecting N never compiles. **Apply and restart
 backend** saves the selected paths, closes the numerical worker, restarts in the
 selected interpreter, and reloads all source-bound models/renderers/replay
 bindings. This starts a fresh Live session while retaining compatible controls,
@@ -98,7 +99,7 @@ saved replays and disk history. Restart may wait for an active solve or timing
 window to release the GPU safely.
 
 Startup source precedence is `--mpc-root` > `TIAGO_MPC_ROOT` > saved selection >
-`../tiago_mpc_vis_baseline`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
+`../tiago_mpc`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
 Selecting another source with CLI/environment chooses that project's default
 environment/cache unless explicitly overridden. Apply replaces those launch-time
 overrides for its restart. No packages are installed in the selected environment.
@@ -139,7 +140,7 @@ Task position inputs remain available below the controller settings; direct
 viewport manipulation avoids scrolling to them during normal use.
 
 Changed Live settings show a circular-arrow button on their left. Click it to
-restore the original default supplied by the MPC configuration or active task.
+restore the original default supplied by `MpcParams` or the active task.
 The horizon reset restores the default knot interval at the currently selected
 N. Resetting a setting follows the same preview/Automatic calculation behavior
 as editing it; task pose also has a reset for position and rotation.
@@ -205,12 +206,15 @@ Settings › Backend also saves named solver checkout/interpreter/cache
 profiles (same `<checkout>` templates, defaults and reset arrows). Select one in Live to switch solver implementations without reloading
 the browser or replacing the simulator. Switching pauses at the displayed native
 state and starts a new history segment. Profiles must have compatible model
-coordinates and prebuilt binaries for the chosen knot count. See
+coordinates and compiled modules for the chosen knot count. See
 [solver profiles](docs/solver-profiles.md) for provenance and failure behavior.
 
 ## Live MPC
 
-Independent Simulator and Predictor friction controls use the selected source’s actual joint coefficients. Both default to **on** in the new UI, with predictor smoothing of **0.03 rad/s**; these defaults do not imply numerical or physical qualification. See [friction modes, provenance and prepared binaries](docs/friction.md).
+Independent Simulator and Predictor friction controls use the selected source’s
+URDF joint coefficients. Both default to off (loss-free). Predictor friction is a
+compiled variant with a fixed tanh width of 0.03 rad/s. See
+[friction modes and compiled variants](docs/friction.md).
 
 Select Live, adjust the target offset and settings, and inspect the prediction.
 The prediction computes one optimized horizon from the displayed state. It
@@ -242,11 +246,12 @@ without rewinding history. At a growing recording's end, playback waits for new 
 
 Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz**. Simulation Hz controls
 RK4 integration, Control Hz samples the active plan's torque, and TO Hz requests
-new plans. The prediction knot interval is separate. The existing upstream
-warm-start behavior is preserved and has no UI setting. Large SQP/PCG budgets
+new plans. The prediction knot interval is separate. The warm-start policy is
+the `MpcParams` setting `warm_start` (shift or hold); there is no exact time
+alignment of the warm start. Large SQP/PCG budgets
 are available within backend limits; they may make calculation slower than 1×.
 The N, interval and horizon inputs sit together: horizon is `(N − 1) × interval`.
-Editing either time input updates the other using the selected prebuilt N.
+Editing either time input updates the other using the selected compiled N.
 
 Choose Reach or Figure eight in the task selector. Reach defaults to world-axis
 offsets X = 0.15 m, Y = 0.2 m, Z = 0.2 m from the imported default reaching
@@ -282,11 +287,13 @@ computation-limited end, not while replaying previously slow intervals.
 it does not alter recorded playback speed. Nominal simulated rates and achieved
 rates per calculation-wall second are labeled separately.
 
-The settings include horizon N and knot interval, costs, SQP/PCG budgets and
-tolerance, ADMM choices, and bound margins/fractions. Only modules prepared for
-the current MPC/toolchain are offered; changing a setting never compiles one.
-Use Settings › Backend to inspect changed `tiago_mpc` code, build missing
-modules explicitly and Apply the selected source/binaries. See the
+The settings are `tiago_mpc`'s `MpcParams` with their defaults: horizon N
+and knot interval, costs, SQP/PCG budgets and tolerance, ADMM choices, bound
+margins/fractions, warm start, warm-up solves, the SQP wall budget and
+predictor friction; the end-effector frame is shown as fixed. Only compiled N
+are offered; changing a setting never compiles one, and an N that is not
+compiled for the chosen predictor shows as unavailable. Use Settings › Backend
+to inspect changed `tiago_mpc` code, build modules explicitly and Apply. See the
 [execution API](docs/execution-api.md) and [prediction fields](docs/live-api.md).
 
 Predicted tool path, task reference, and recorded simulated motion have separate
@@ -343,10 +350,10 @@ torque. Live torque reports the last command actually applied to the plant.
 
 The canonical full URDF supplies the torso-to-root transform for every tool
 path and reference. Models and existing recordings stay in `tiago_mpc` and are
-read-only; the viewer imports its controller/configuration/plant code unchanged.
-All new logs, configuration snapshots and validation artifacts live under this
-checkout's ignored `_expr_data/`; compiled modules stay in the selected GATO
-cache (the selected MPC checkout’s `.cache/gato` by default).
+read-only; the viewer imports its MPC (`tiago_mpc.mpc`), plant (`SimPlant`)
+and model code unchanged. All new logs, configuration snapshots and validation
+artifacts live under this checkout's ignored `_expr_data/`; compiled modules stay
+in the selected GATO cache (see [Run](#run)).
 
 ## Development
 
@@ -364,21 +371,24 @@ python_bin="$(python3 scripts/launch_python.py)"
 ```
 
 The resolver above uses the same prepared interpreter as startup; it installs
-no Python packages. The replay, end-effector and server tests take the model and
-`experiments/replay.py` from `TIAGO_MPC_ROOT` (default `../tiago_mpc`); the other
-tests still use a prepared sibling `../tiago_mpc_vis_baseline` until Live is
-migrated. Run the opt-in GPU conformance check only when the experiment locks
-are free:
+no Python packages. Tests that need `tiago_mpc` (its model, `experiments/replay.py`
+or `MpcParams` defaults) take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc`);
+none of them needs a compiled module or the GPU. Run the opt-in GPU conformance
+check only when the experiment locks are free:
 
 ```bash
 "$python_bin" scripts/check_conformance.py --mpc-root /absolute/path/to/tiago_mpc --steps 3
 ```
 
-It checks the synchronous `MPCAdapter` compatibility path against unchanged
-`reach_sim.py`, comparing three plans and their native plant timestamps, states
-and controls bit for bit. It does not exercise every production multirate,
-profile or inspection path. Pass the actual selected source explicitly; this
-script does not read the saved source selection. Both raw outputs are retained below
-`_expr_data/conformance/`. Solve timings are excluded from that comparison.
+It runs `tiago_mpc`'s `experiments.reach.reach` with `SimPlant` (1 ms
+substeps) and `Mpc` in this process, then the visualizer's adapter, solver child
+and multirate session at 1000/100/100 Hz with the same `MpcParams`, start and
+target. It compares the states at every command tick, the commands and the plans
+(`--atol`, default 1e-9) over the ticks `reach` ran, which stops once the task is
+done. It needs the default loss-free N module and covers the default reach, not
+every profile, friction or inspection path. Run it with the selected checkout's
+interpreter and pass the source explicitly (`--mpc-root`, else `TIAGO_MPC_ROOT`,
+else `../tiago_mpc`); it does not read the saved source selection. Both raw
+outputs are retained below `_expr_data/conformance/`. Timing is excluded.
 Mesh ownership and model provenance remain with the selected MPC checkout;
 see its `models/README.md` and license files.

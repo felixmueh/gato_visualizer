@@ -1,38 +1,74 @@
 # Simulator and predictor friction
 
-Live has two independent switches in the **Friction** group. New UI defaults enable both, with predictor smoothing **0.03 rad/s**. This is a dynamics choice, separate from costs, torque penalties and ADMM bounds. Existing configurations without any explicit losses keep their loss-free behavior. Explicit upstream `joint_dynamics` is honored for the simulator and its smooth predictor even without a visualizer `friction` field; captured predictor settings remain supported for Run again.
+Live has two independent switches in the **Friction** group: Simulator friction
+and Predictor friction. Both default to off, so plant and predictor are
+loss-free (Felix, 2026-10-22, matching `tiago_mpc`'s friction opt-in). This is a
+dynamics choice, separate from costs, torque penalties and ADMM bounds.
 
 ```json
-"friction": {
-  "simulation": true,
-  "prediction": true,
-  "predictor_smoothing_rad_s": 0.03
-}
+"plant": {"friction": false},
+"friction": null
 ```
 
-The switches belong to the numerical `config`, not presentation preferences. Editing them uses the ordinary settings transaction: a new history segment starts from the displayed native q/qd and task time. Use Reset between comparisons when the same initial state is desired. To inspect mismatch first, enable Simulator friction and disable Predictor friction; then enable both and Reset for the matched-coefficient comparison. Both enabled still means **different Coulomb laws**: stick/slip (or hard sign, see below) in the simulator and smooth tanh in the predictor.
+- **Simulator friction** is the visualizer's `config.plant.friction` (boolean).
+  On, the coordinator gives `tiago_mpc`'s `SimPlant` the URDF friction
+  (`tiago.urdf_friction()`, no width): viscous plus hard-sign Coulomb torque,
+  recomputed at every RK4 stage. There is no stick/slip plant.
+- **Predictor friction** is `MpcParams.friction`: `null` (loss-free) or the
+  `Friction` with the URDF coefficients and a tanh Coulomb width of
+  **0.03 rad/s** (`live_mpc.PREDICTOR_SMOOTHING_RAD_S`). The width is fixed and
+  not settable: each width is its own compiled GATO plant (Felix, 2026-10-22).
+  The schema offers the two values as one choice.
 
-Simulator friction calls the selected checkout's `tiago_mpc.joint_dynamics.plant_step` when it exists, with the law `coulomb_stick_slip_viscous` (accepted by Felix on 2026-10-22; currently only on the `tiago_mpc` trial branch `visualizer-trial/stick-slip-plant`). That step is a semi-implicit Euler step with implicit viscous damping and Coulomb friction solved as a stick/slip constraint for the end-of-step velocity: a joint holds exactly while the remaining torque stays within ±c and slips with friction c otherwise. It is stable at the default 1 ms step without armature. Sources without that step fall back to `plant_rk4`, viscous plus hard-sign Coulomb torque recomputed at every RK4 stage (sign(0)=0), which diverges at 1 ms for the light wrist. Neither law models stiction. Predictor friction uses its existing smooth-friction generated module, with tanh velocity width configurable from 0.001 to 1 rad/s. The width is a runtime solver parameter and does not require a different binary. Passive torque is subtracted once from actuator torque. Armature remains inactive metadata in both models; no inertia is added.
+Passive torque is subtracted once from actuator torque in both models. Armature
+is not modelled. The coefficients are the reduced right-arm URDF's friction and
+damping values (`tiago.urdf_friction`); the schema's `friction` object reports
+them with the simulation and prediction laws, and the Friction group shows them.
 
-Coefficients come from the selected checkout's `configs/tracking.json` joint-dynamics payload, checked against its canonical reduced right-arm URDF. Exact upstream provenance is retained so generated model identity matches the prepared cache. At the current source, Coulomb Nm is `[1.66, 1.15, 1.16, 0.912, 1.25, 0.473, 0.56]`; viscous Nm·s/rad is `[4.7, 9.69, 5.3, 4.2, 3.66, 2.95, 2.95]`. These are Felix's actual supplied values; no guessed arm parameters are introduced. Source paths/hashes, effective laws/vectors/widths, and simulator/predictor mismatch are retained in plans, simulator metadata and captured inspection problems. Historical records retain their original metadata.
+Both switches belong to the numerical `config`, not presentation preferences.
+Editing them uses the ordinary settings transaction: a new history segment
+starts from the displayed native q/qd and task time. Use Reset between
+comparisons when the same initial state is desired. For a mismatch check,
+enable Simulator friction only; with both on, the Coulomb laws still differ
+(hard sign in the simulator, tanh in the predictor). Plans record the
+`MpcParams` they used, and states the simulator identity with its friction, so
+the difference stays visible in metadata. Run again rebuilds the captured
+`MpcParams`, including its predictor friction, not the current UI values.
 
-The selected source supplies both the plant helper and predictor implementation. A named solver profile can differ from the simulator source, so recorded profile metadata identifies each. Native coordinates and the joint-6 GPU conversion remain unchanged. Cold Run again reconstructs the captured predictor law, vectors and width rather than taking the current UI defaults; it does not advance the simulator.
+Hard-sign Coulomb friction with viscous damping is unstable in the explicit RK4
+plant at the default 1 ms step (see the diagnosis below); retaining such
+failures is preferable to silently changing the plant law. These controls give
+simulation comparisons, not physical-robot qualification.
 
-## Prepared binaries
+## Compiled variants
 
-The schema advertises `available_N_by_friction.off` and `.on`, while `available_N` is their union. Selecting an unavailable mode/N fails explicitly and never compiles. Source / Build has an explicit smooth-predictor choice (`prediction_friction: true` in its build request); loss-free remains the build request default. Both variants use the selected project's existing cache. For a command-line equivalent:
+Predictor friction changes the compiled GATO module. The schema advertises
+`available_N_by_friction.off` and `.on`, from `tiago_mpc`'s `find_binary` per
+offered N in the source probe; `available_N` is their union. Selecting a
+predictor/N that is not compiled fails with "Not compiled" and never compiles.
+Simulator friction needs no module.
+
+Source / Build compiles the friction variant when **Predictor friction modules**
+is checked (`prediction_friction: true` in the build request; loss-free is the
+default). The command-line equivalent:
 
 ```sh
 /path/to/selected/python scripts/source_probe.py build \
-  --mpc-root /path/to/tiago_mpc --cache /path/to/tiago_mpc/.cache/gato \
+  --mpc-root /path/to/tiago_mpc --cache /path/to/tiago_mpc/.cache/host-gato \
   --prediction-friction --N 32
 ```
 
-This is an explicit build action. Ordinary configuration, preview, Play and inspection only qualify/load current binaries; they do not call registration or a compiler. Compatibility includes generated model/frame, native sources, toolchain, ABI and architecture. A previously present smooth binary may be stale. Build only the selected missing/stale variant, then Apply/restart using the existing workflow.
+This calls `compile_binary` for each N; Apply then reloads the available knot
+counts.
 
-Hard-sign Coulomb friction can produce integration-sensitive behavior near zero speed; retaining those outcomes is preferable to silently changing the plant law. These controls provide simulation comparisons, not physical-robot qualification or a claim that smooth friction resolves previous solver failures.
+## History
 
-## Initial validation, 2026-10-22
+The sections below record the friction work before the migration to
+`tiago_mpc` main. Their settings (both on by default, a settable smoothing width,
+`joint_dynamics`, `configs/tracking.json`, the stick/slip plant) no longer
+exist; the measurements stand as recorded.
+
+### Initial validation, 2026-10-22
 
 The CPU checks for independent settings, prepared-module selection, provenance
 and inspection reconstruction passed. Legacy loss-free conformance also passed:
@@ -54,7 +90,7 @@ checks does not resolve the dynamics failure. No cause was established; no
 timestep change, model change, solver repair or smaller-step follow-up was run
 as part of this validation.
 
-## Diagnosis of the instability, 2026-10-22
+### Diagnosis of the instability, 2026-10-22
 
 The validation above stands as recorded; this later diagnosis adds a cause.
 
@@ -86,10 +122,11 @@ which overflows GATO's float32 staging. Both now discard it first.
 Scripts: `_expr_data/reset-nonfinite/` (`plant_loop*.py`, `predictor_stability.py`,
 `armature_bound.py` for CPU checks; `repro.py`, `friction_matrix.py` for Live).
 
-## Stick/slip simulator step, 2026-10-22
+### Stick/slip simulator step, 2026-10-22 (superseded)
 
 Felix accepted the semi-implicit simulator step with Coulomb friction solved as
-a constraint. Checks on the trial branch `visualizer-trial/stick-slip-plant`
+a constraint; on 2026-10-22 he decided against a stick/slip plant for the
+migrated visualizer, which uses `SimPlant`'s law. Checks on the trial branch `visualizer-trial/stick-slip-plant`
 (worktree `impl/tiago_mpc-visualizer-trial-stick-slip`):
 
 - **Correctness:** CPU tests check the stick/slip optimality conditions over

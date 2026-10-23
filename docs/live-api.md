@@ -23,18 +23,28 @@ commands and read retained records; they own no controller or CUDA state.
 
 ## Settings object
 
-`config` has the shape of `tiago_mpc/configs/reaching.json` without
-`description` and `save_plan_steps`: `N`, `dt_s`, `solver_params`,
-`controller` (`warm_start`, `reset_rho_each_step`, `admm_linsys`,
-`limits_kw`), `limit_bounds`. The backend always writes the complete object
-to a JSON file under `_expr_data/live/` and resolves it with
-`reaching_config.load_configuration(path)`, so the effective settings are
-the ones `reach_sim.py --config <that file>` would use.
+`config` is `asdict(MpcParams)` of the selected `tiago_mpc` plus the
+visualizer's simulated-plant group:
 
-`task` is separate, because `reaching_config` rejects unknown fields:
+- `MpcParams` fields: `N`, `dt_s`, `solver` (GATO's `SolverParams`: SQP/PCG
+  caps and tolerance, `mu`, `rho`, costs, `linsys`, `exact_hessian`, …),
+  `ee_frame`, `warm_start`, `reset_rho_each_step`, `admm_linsys`, `admm`
+  (ADMM limit-row settings), `joint_margin_rad`, `velocity_fraction`,
+  `effort_fraction`, `friction` (predictor friction, `null` when loss-free),
+  `warmup` and `budget_s` (`null`: no SQP wall budget).
+- `plant`: `{"friction": false}`, the simulator friction switch.
+
+The defaults are `tiago_mpc`'s `TIAGO` parameters, reported by the selected
+interpreter's source probe, plus `plant.friction: false`. The solver child
+rebuilds `MpcParams.from_dict` from everything except `plant`; no
+configuration file is written. Recorded plans carry the same object as
+`problem_configuration`.
+
+`task` is separate:
 
 - `{"kind": "reach", "target_offset_m": [dx, dy, dz]}`: offset in the world
-  frame from the default `reach_sim` target, FK(`Q_START_RAD + Q_GOAL_DELTA_RAD`).
+  frame from the default reaching target, FK(`Q_REACH`) at the grasp frame
+  (the target of `tiago_mpc`'s `experiments/reach.py`).
   The visualizer defaults to `[0.15, 0.2, 0.2]` m; these are offsets, not absolute XYZ coordinates.
 - `{"kind": "figure8", "target_offset_m": [dx,dy,dz], "width_m": 0.24,
   "height_m": 0.16, "period_s": 24, "orientation_xyzw": [0,0,0,1]}`: horizontal world-XY tracking. The loop
@@ -77,24 +87,31 @@ receiving its first solved plan.
 {
   "defaults": {"config": {...}, "task": {"kind": "reach", "target_offset_m": [0.15, 0.2, 0.2]}},
   "available_N": [16, 32, 64, 128],
+  "available_N_by_friction": {"off": [16, 32, 64, 128], "on": [32]},
+  "friction": {"coefficients": {...}, "predictor": {...}, "source": "...",
+               "simulation_law": "...", "prediction_law": "..."},
   "parameters": [
-    {"path": "solver_params.q_cost", "label": "Position cost", "group": "Costs",
-     "kind": "float", "scale": "log", "min": 1e-3, "max": 1e4}
+    {"path": "solver.q_cost", "label": "Tool position cost", "group": "Costs",
+     "kind": "float", "scale": "linear", "min": 0, "max": 100000}
   ],
   "source": {"mpc_root": "...", "mpc_commit": "...", "mpc_dirty": false,
              "gato_commit": "..."}
 }
 ```
 
-`available_N` lists only N whose module is already compiled (found without
-building). `kind` is `float`, `int`, `bool` or `choice` (with `choices`);
-`scale` is `log` or `linear`. Every field of `config` that a user may change
-has a parameter entry. Fixed adapter fields also have entries with
-`disabled: true` and a single allowed choice: `solver_params.linsys` is null
-(the reaching controller uses PCG), and `solver_params.exact_hessian` is false.
-All numeric ranges are enforced by the backend and published by
-`live_mpc.parameter_specs`; consumers should use the returned schema. Current
-upper bounds are SQP 100000, PCG 1000000 and ADMM 200. Inspection Run again
+`available_N_by_friction.off` / `.on` list the N whose loss-free or
+predictor-friction module `tiago_mpc`'s `find_binary` finds, among the offered
+knot counts 8, 16, 24, 32, 48, 64, 96 and 128; `available_N` is their union.
+`kind` is `float`, `int`, `bool` or `choice` (with `choices`, each a plain value
+or `{value, label}`); `scale` is `log` or `linear`; numeric entries may be
+`nullable` (`budget_s`). Every leaf of `config` has a parameter entry, so every
+default is shown. Fixed fields have `disabled: true` and a single allowed
+choice: `solver.linsys` is null, `solver.exact_hessian` is false, and
+`ee_frame` is the grasp frame the simulator tracks. `friction` is one choice
+between loss-free and the URDF friction with the fixed tanh width. All numeric
+ranges are enforced by the backend and published by `live_mpc.parameter_specs`;
+consumers should use the returned schema. Current upper bounds are SQP 100000,
+PCG 1000000 and ADMM 200. Inspection Run again
 has its own cap and capture-memory limits.
 
 ## Commands and GPU sharing
@@ -104,7 +121,9 @@ Use the complete command definitions in [execution-api.md](execution-api.md).
 start an identified continuation. Preview computes a prediction without plant
 motion. It is distinct from a separate cold Run again inspection and is not a
 promise of the exact first Play plan or a preserved optimizer checkpoint.
-Normal settings/N changes load compatible prebuilt modules and never compile.
+Normal settings/N changes load a compiled module (`Mpc(params, binary)`) and
+never compile; an N that is not compiled for the chosen predictor is rejected
+with "Not compiled".
 
 Before constructing, resetting, solving or disposing native solver state, the
 coordinator acquires the canonical experiment locks nonblockingly. While another
@@ -125,8 +144,11 @@ required for Replay, camera movement or scrubbing retained history.
  "knot_time_s": [...], "q": [[7 floats] x N], "ee_xyz": [[3 floats] x N],
  "reference_xyz": [[3 floats] x N],
  "stats": {"sqp_iters": 5, "pcg_iters": 410, "admm_iters": 100,
-           "admm_linsys_iters": 0, "solve_time_ms": 4.9,
-           "row_violation": [...], "controller_restarted": false}}
+           "admm_linsys_iters": 0, "admm_linsys_mode": "pcg",
+           "zero_pcg_rows": 0, "budget_hit": false, "solve_time_ms": 4.9,
+           "step_wall_s": 0.006, "row_violation": [...],
+           "controller_restarted": false},
+ "diagnostics": {"initial_merit": [...], "final_merit": [...], ...}}
 
 {"type": "state", "sim_time_s": 0.13, "settings_version": 3,
  "q": [7 floats], "qd": [7 floats],
@@ -161,10 +183,9 @@ not reconstructed from positions or passive resisting torques.
 Plans and states carry `joint_limits`, the physical URDF limits, with native
 `lower_position_rad`, `upper_position_rad`, `velocity_rad_s`, `effort_nm`, and
 `source`; limit use is measured against them. They also carry `mpc_bounds`: the
-rows actually installed in the solver after the resolved configuration's
-`limit_bounds` (for example the default 0.1 rad margin when a configuration
-omits `joint_margin_rad`), in the same native fields plus the resolved
-`limit_bounds`. Velocity/torque rows appear only when symmetric. Live histories
+rows actually installed in the solver from the `MpcParams` limit settings
+(`joint_margin_rad`, default 0.1 rad; `velocity_fraction`; `effort_fraction`),
+in the same native fields plus those values as `limit_bounds`. Velocity/torque rows appear only when symmetric. Live histories
 recorded before 2026-10-22 carry the MPC bounds as `joint_limits` instead. Reset
 clears episode plan count (`seq`); its next plan is 1. Settings/profile changes
 start a new history generation and plan sequence; identify a retained solve
@@ -173,4 +194,8 @@ remain monotonic independently.
 
 ## Independent joint friction
 
-`config.friction` contains boolean `simulation` and `prediction`, plus finite `predictor_smoothing_rad_s` in [0.001, 1]. New UI defaults enable both at 0.03 rad/s; legacy configurations without explicit losses preserve the loss-free meaning. `available_N_by_friction.off` / `.on` identify prebuilt predictor variants. See [friction](friction.md) for the retained laws, source provenance and explicit build contract.
+`config.plant.friction` (boolean) switches the simulator's friction;
+`config.friction` is the predictor's (`null` or the URDF friction with the fixed
+0.03 rad/s tanh width). Both default to loss-free. `available_N_by_friction.off`
+/ `.on` identify the compiled predictor variants. See [friction](friction.md)
+for the laws and the build contract.

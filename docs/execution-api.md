@@ -2,10 +2,10 @@
 
 This contract defines execution and authoritative history; [live-api.md](live-api.md)
 defines task/settings payloads and events. The visualizer owns execution timing
-and imports the unchanged
-`tiago_mpc` models, configuration, `reach_sim.rk4` and GATO MPC controller. The
-adapter's existing synchronous `solve`/`advance` methods remain available for
-the original conformance checks. No upstream warm-start policy is changed.
+and uses `tiago_mpc` unchanged: its model, `MpcParams` and `Mpc` (in the solver
+child) and `SimPlant` (in the coordinator). No upstream warm-start policy is
+changed. `scripts/check_conformance.py` compares this loop with `tiago_mpc`'s
+`experiments.reach.reach`.
 
 ## Settings and commands
 
@@ -31,7 +31,7 @@ starting a job with an explanatory error; never silently truncate duration or
 samples. Explicit precalculations have duration/rate/sample limits. Continuous
 On Play retains its growing recording in disk-backed history until paused;
 IPC chunks remain bounded and no recorded samples are silently dropped.
-The UI hides `controller.warm_start` while retaining its complete config value.
+`warm_start` (shift or hold) is an ordinary `MpcParams` setting in the UI.
 
 `POST /api/live/command` retains its accepted/settings-version response.
 
@@ -95,7 +95,8 @@ at a growing tip regardless of this toggle, until the user pauses.
 The HTTP parent spawns one persistent simulation coordinator (`execution_worker`).
 It owns the plant and `MultirateSession`, and calls a separate persistent
 `solver_worker` through `SimulatorAdapter`/`SolverProcess`. The solver child
-owns the upstream controller and CUDA state in its profile's prepared interpreter.
+owns `tiago_mpc`'s `Mpc` and its CUDA state in its profile's prepared
+interpreter; the coordinator imports no compiled GATO module.
 A native solve holding that child's GIL cannot block HTTP or CPU plotting.
 The coordinator holds experiment GPU leases across construction, calls and
 disposal; the child borrows those leases for each RPC. No worker is started per
@@ -173,20 +174,26 @@ recording supplies playback, scrubbing, executed path and trajectory fitting.
 ## Simulation clock and plan execution
 
 Simulation time advances according to the requested rates, irrespective of
-solve latency. Physics uses the unchanged RK4 function. Integer tick counters
+solve latency. Physics is `tiago_mpc`'s `SimPlant` with RK4 substeps of at most
+1/`simulation_hz`: each integration chunk applies the held command and advances
+the plant to the chunk's end time. Every session (Reset, anchor, settings
+change, rollback) starts a fresh `SimPlant` at the current native state on a
+simulation clock at the current time, because that clock never moves backward.
+Integer tick counters
 and exact event boundaries avoid accumulating floating-point scheduling drift.
 Noncommensurate rates require splitting an integration step at a control or TO
 boundary. At a coincident boundary, solve first, select control next, then
 integrate. A bounded precalculation lands exactly on its requested duration
 endpoint; continuous On Play has no duration endpoint.
 
-Decode each new GPU plan once to native coordinates. At every control tick,
-choose the nonterminal torque for elapsed plan time using zero-order hold and
-the independent prediction knot spacing. Hold that selected torque until the
+Plans arrive native from `tiago_mpc`'s `Plan` (N−1 knot torques). At every
+control tick, choose the nonterminal torque for elapsed plan time using
+zero-order hold and the independent prediction knot spacing (`hold_last`, the
+law of `tiago_mpc`'s `sample_knot` except past the horizon). Hold that selected torque until the
 next control update. If execution outlasts the prediction horizon, hold the
 last nonterminal torque until replanning and mark `plan_exhausted: true` on the
-affected state; never use a nonexistent terminal control. The existing upstream
-controller warm-start heuristic remains intact.
+affected state; never use a nonexistent terminal control (`sample_knot` would
+raise there). The upstream controller warm-start heuristic remains intact.
 
 Precalculation runs unpaced. On Play generation is paced to at most 1x and
 slows when computation cannot keep up. Recorded playback advances at 1x
