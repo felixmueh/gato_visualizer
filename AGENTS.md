@@ -399,9 +399,17 @@ not modify upstream sources or packages.
 
 **Build through tiago_mpc — Felix, 2026-10-22** (supersedes the visualizer's
 own identity validation and module discovery, and the rebuild backups): the
-default cache follows `tiago_mpc`'s convention, `<checkout>/.cache/gato` for
-every interpreter (Felix, 2026-10-23: one shared cache for host and container;
-GATO keys modules by toolchain and Python ABI, so both sides' builds coexist).
+default cache is `tiago_mpc`'s own default (Felix, 2026-10-23; supersedes
+`<checkout>/.cache/gato`). Without an explicit cache override the visualizer
+chooses no cache: `GATO_CACHE_DIR` stays unset in every process it starts
+(solver child, Build, probe) and `tiago_mpc.util.cache_root()` decides, which is
+the **main** checkout's `.cache/gato` also for a worktree, shared by host and
+container (GATO keys modules by toolchain and Python ABI, so both sides' builds
+coexist). The visualizer does not repeat that lookup: `source_runtime.default_cache`
+asks `cache_root()` in a subprocess, and the probe reports it as
+`selection.effective_cache`; Settings show that path labelled as `tiago_mpc`'s
+default. An explicit override (template or path, or a launch-time
+`GATO_CACHE_DIR`) sets `GATO_CACHE_DIR` as before.
 The source probe asks `find_binary` for each offered N, with and without
 predictor friction; `tiago_mpc` and GATO own the cache keys. Build selected N
 calls `compile_binary` per N in a CPU-only subprocess of the selected

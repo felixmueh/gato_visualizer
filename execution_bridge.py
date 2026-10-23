@@ -237,11 +237,11 @@ class ProcessLiveService:
         if solver_profile is None:
             if adapter_factory is None:
                 from source_runtime import resolve_selection
-                selection = resolve_selection(self.mpc_root, cache=os.environ.get("GATO_CACHE_DIR"))
+                selection = resolve_selection(self.mpc_root)
             else:
                 import sys
                 selection = dict(mpc_root=str(self.mpc_root), python=sys.executable,
-                                 cache=str(self.mpc_root / ".cache/gato"))
+                                 cache=None, effective_cache=None)
             solver_profile = dict(id="simulator", name="Simulator checkout", **selection)
         self.active_profile_id = solver_profile["id"]
         self.active_profile = deepcopy(solver_profile)
@@ -392,7 +392,7 @@ class ProcessLiveService:
         event). Returns False, changing nothing, for another selection, a changed source
         identity or an incompatible probe: those still need Apply and its restart."""
         from live_mpc import available_modules, source_identity
-        keys = ("mpc_root", "python", "cache")
+        keys = ("mpc_root", "python", "effective_cache")
         if not probe.get("compatible"):
             return False
         available = available_modules(probe)

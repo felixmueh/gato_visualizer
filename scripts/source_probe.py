@@ -2,7 +2,8 @@
 """Selected-interpreter source probe and explicitly requested GATO module builds.
 
 probe prints one JSON object: whether tiago_mpc's MPC API imports from the selected
-checkout, which modules find_binary finds (KNOT_COUNTS, with and without predictor
+checkout, the cache in effect (selection.effective_cache: the override, else
+tiago_mpc's cache_root() default), which modules find_binary finds (KNOT_COUNTS, with and without predictor
 friction), the MpcParams defaults and the coordinate contract. It never compiles.
 build runs compile_binary per requested N (CPU only), streams JSON progress and
 finishes with a {event: result, result: <probe>} line.
@@ -31,7 +32,11 @@ def load_source(selection):
     """tiago_mpc's mpc and tiago modules from the selected checkout, checked for the API
     the visualizer uses, plus the display model it will construct."""
     sys.dont_write_bytecode = True
-    os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    # An explicit override, else unset: tiago_mpc's cache_root() then picks its default.
+    if selection["cache"]:
+        os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    else:
+        os.environ.pop("GATO_CACHE_DIR", None)
     os.environ["PATH"] = str(Path(selection["python"]).parent) + os.pathsep + os.environ.get("PATH", "")
     root = Path(selection["mpc_root"])
     from live_mpc import PREDICTOR_SMOOTHING_RAD_S, import_tiago
@@ -77,7 +82,8 @@ def probe(selection, tiago, mpc, kinematics, friction):
                 model_identity=dict(full_urdf_sha256=digest(tiago.FULL_URDF), native_urdf_sha256=digest(tiago.arm_urdf())),
                 capabilities=dict(iteration_capture_by_friction=captures, python_iteration_capture=python_capture,
                                   exact_resume=False),
-                selection=selection, source=source_identity(selection["mpc_root"]),
+                selection=dict(selection, effective_cache=str(importlib.import_module("tiago_mpc.util").cache_root())),
+                source=source_identity(selection["mpc_root"]),
                 python=dict(executable=sys.executable, version=sys.version, prefix=sys.prefix))
 
 

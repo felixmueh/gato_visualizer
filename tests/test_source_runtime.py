@@ -28,14 +28,42 @@ class SourceSelectionTests(unittest.TestCase):
             checkout(root)
             selected = runtime.resolve_selection(root)
             self.assertEqual(selected["python"], str(root / "venv-host/bin/python"))
-            self.assertEqual(selected["cache"], str(root / ".cache/gato"))
-            # tiago_mpc's convention: the container's .venv uses the same cache.
-            self.assertEqual(runtime.resolve_selection(root, python="<checkout>/.venv/bin/python")["cache"],
-                             str(root / ".cache/gato"))
+            # No override: the visualizer chooses no cache; without tiago_mpc it is unknown.
+            self.assertIsNone(selected["cache"])
+            self.assertIsNone(selected["effective_cache"])
             (root / "venv-host/bin/python").unlink()
             self.assertEqual(runtime.resolve_selection(root)["python"], str(root / ".venv/bin/python"))
-            self.assertEqual(runtime.resolve_selection(root)["cache"], str(root / ".cache/gato"))
             self.assertFalse((root / ".cache").exists())
+
+    def test_default_cache_is_tiago_mpcs_main_checkout_cache_also_from_a_worktree(self):
+        """tiago_mpc's own util.cache_root() decides; an explicit override still wins."""
+        from tests.tiago_mpc_source import MPC_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            main, worktree = Path(directory).resolve() / "main", Path(directory).resolve() / "worktree"
+            (main / "tiago_mpc").mkdir(parents=True)
+            (main / "tiago_mpc/__init__.py").write_text("")
+            (main / "tiago_mpc/util.py").write_text((MPC_ROOT / "tiago_mpc/util.py").read_text())
+            git = lambda *args: subprocess.run(["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t",
+                                                *args], check=True, capture_output=True)
+            git("init", "-q"); git("add", "."); git("commit", "-qm", "util")
+            git("worktree", "add", "-q", "-b", "wt", str(worktree))
+            checkout(worktree)
+            with patch.dict(os.environ, GATO_CACHE_DIR="/launch/override/ignored/by/the/lookup"):
+                selected = runtime.resolve_selection(worktree)
+            self.assertIsNone(selected["cache"])
+            self.assertEqual(selected["effective_cache"], str(main / ".cache/gato"))
+            self.assertEqual(runtime.checkout_defaults(worktree)["cache"], str(main / ".cache/gato"))
+            self.assertEqual(runtime.resolve_templates(worktree)["cache"], dict(path=str(main / ".cache/gato"), default=True))
+            # Children see no GATO_CACHE_DIR, so tiago_mpc resolves the same default there.
+            with patch.dict(os.environ, GATO_CACHE_DIR="/inherited"):
+                self.assertNotIn("GATO_CACHE_DIR", runtime.cache_environment(selected))
+                self.assertNotIn("GATO_CACHE_DIR", runtime.build_command(selected, [32])[1])
+            self.assertNotIn("--cache", runtime.source_command(selected))
+            override = runtime.resolve_selection(worktree, cache="<checkout>/.cache/gato")
+            self.assertEqual(override["cache"], str(worktree / ".cache/gato"))
+            self.assertEqual(override["effective_cache"], str(worktree / ".cache/gato"))
+            self.assertEqual(runtime.cache_environment(override)["GATO_CACHE_DIR"], str(worktree / ".cache/gato"))
+            self.assertEqual(runtime.source_command(override)[-2:], ["--cache", str(worktree / ".cache/gato")])
 
     def test_checkout_token_is_substituted_for_interpreter_and_cache(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -73,10 +101,10 @@ class SourceSelectionTests(unittest.TestCase):
             root = Path(directory).resolve()
             checkout(root)
             self.assertEqual(runtime.checkout_defaults(root)["python"], "<checkout>/venv-host/bin/python")
-            self.assertEqual(runtime.checkout_defaults(root)["cache"], "<checkout>/.cache/gato")
+            self.assertIsNone(runtime.checkout_defaults(root)["cache"])  # no tiago_mpc here
             container = runtime.resolve_selection(root, python="<checkout>/.venv/bin/python")
             self.assertEqual(runtime.stored_selection(container), dict(mpc_root=str(root), python="<checkout>/.venv/bin/python"))
-            self.assertEqual(runtime.resolve_templates(root, "<checkout>/.venv/bin/python")["cache"]["path"], str(root / ".cache/gato"))
+            self.assertEqual(runtime.resolve_templates(root, cache="<checkout>/c")["cache"]["path"], str(root / "c"))
             (root / "venv-host/bin/python").unlink()
             self.assertEqual(runtime.default_interpreter_template(root), "<checkout>/.venv/bin/python")
             selection = runtime.resolve_selection(root)
@@ -104,7 +132,7 @@ class SourceSelectionTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertEqual(command[0], selection["python"])
             self.assertIn(str(runtime.PROBE_SCRIPT), command)
-            self.assertIn("--cache", command)
+            self.assertNotIn("--cache", command)  # no override: tiago_mpc decides
             command, env = runtime.build_command(selection, [32, 48], rebuild=True)
             self.assertIn("--rebuild", command)
             self.assertEqual(command[-4:-1], ["--N", "32", "48"])

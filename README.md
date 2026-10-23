@@ -14,9 +14,11 @@ The launcher uses `../tiago_mpc/venv-host` on the desktop. `TIAGO_PYTHON` can
 select another prepared interpreter; inside the existing container the launcher
 falls back to the checkout's `.venv`. It does not install Python packages there.
 
-The viewer uses the GATO modules that `tiago_mpc` compiled into the selected
-checkout's cache, `.cache/gato`, for every interpreter, host and container alike
-(tiago_mpc's convention). `tiago_mpc` compiles only on request; prepare the horizon modules during setup (`--prebuild` builds the
+The viewer uses the GATO modules that `tiago_mpc` compiled into its default
+cache: the main checkout's `.cache/gato`, also when the selected checkout is a
+worktree, for every interpreter, host and container alike. `tiago_mpc` decides
+this path (`tiago_mpc.util.cache_root()`); the viewer leaves `GATO_CACHE_DIR`
+unset unless a cache override is given. `tiago_mpc` compiles only on request; prepare the horizon modules during setup (`--prebuild` builds the
 loss-free N = 16, 32, 64, 128) or with the gear button (**Settings › Backend**):
 
 ```bash
@@ -67,16 +69,19 @@ and binary cache fields hold path templates. The literal token `<checkout>`
 stands for the selected checkout and is substituted when the path is used, so a
 saved template such as `<checkout>/.venv/bin/python` stays valid when the checkout
 changes (`~` is expanded too; absolute paths without the token keep working;
-any other `<…>` token is an error). The defaults are
+any other `<…>` token is an error). The interpreter defaults to
 `<checkout>/venv-host/bin/python` when that interpreter exists, else
-`<checkout>/.venv/bin/python`, and `<checkout>/.cache/gato` for either. The resolved
+`<checkout>/.venv/bin/python`. The cache defaults to `tiago_mpc`'s own default,
+which the field shows as its resolved path (tooltip "tiago_mpc's default"); a
+cache override is any other template or path. The resolved
 absolute path is the field's tooltip; a template that cannot be resolved is marked
 invalid, with the reason as tooltip. An edited template is a highlighted override
 with a reset arrow that restores the default. A value equal to the default is sent
 as "follow the checkout" and not saved; overrides are saved as typed, templates
 included. `POST /api/source/defaults` with `{"mpc_root": …}` (optionally
-`python`/`cache` templates) returns the default templates, their resolution and
-the resolution of the entered templates. Existing configs with absolute paths are
+`python`/`cache` templates) returns the default interpreter template, the default
+cache path (`cache`, with `cache_label`), their resolution and the resolution of
+the entered templates. Existing configs with absolute paths are
 not rewritten. Check source imports `tiago_mpc`'s MPC API in the selected
 interpreter and asks its `find_binary` which modules exist for the offered
 knot counts (8, 16, 24, 32, 48, 64, 96, 128), loss-free and with predictor
@@ -102,7 +107,7 @@ window to release the GPU safely.
 Startup source precedence is `--mpc-root` > `TIAGO_MPC_ROOT` > saved selection >
 `../tiago_mpc`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
 Selecting another source with CLI/environment chooses that project's default
-environment/cache unless explicitly overridden. Apply replaces those launch-time
+environment and `tiago_mpc`'s default cache unless explicitly overridden. Apply replaces those launch-time
 overrides for its restart. No packages are installed in the selected environment.
 
 Server configuration lives in [`visualizer.json`](visualizer.json). Its

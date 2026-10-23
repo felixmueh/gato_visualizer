@@ -11,7 +11,7 @@ const fixture = ({ beforeActivate = () => undefined, onSettled = () => {}, activ
     requests.push({ path, body: structuredClone(body) });
     if (path === '/api/solver-profiles' && body) { catalog.profiles = [...catalog.profiles.filter(item => item.id !== body.profile.id), body.profile]; return structuredClone(catalog); }
     if (path === '/api/solver-profiles') return structuredClone(catalog);
-    if (path === '/api/source/defaults') return { mpc_root: body.mpc_root, python: '<checkout>/venv-host/bin/python', cache: '<checkout>/.cache/gato', resolved: { python: `${body.mpc_root}/venv-host/bin/python`, cache: `${body.mpc_root}/.cache/gato` }, entered: {} };
+    if (path === '/api/source/defaults') return { mpc_root: body.mpc_root, python: '<checkout>/venv-host/bin/python', cache: '/main/.cache/gato', cache_label: "tiago_mpc's default", resolved: { python: `${body.mpc_root}/venv-host/bin/python`, cache: '/main/.cache/gato' }, entered: {} };
     if (path === '/api/solver-profiles/activate') { catalog.switch = { state: 'switching', profile_id: body.profile_id }; return activate ? activate(body) : { state: 'switching' }; }
     throw new Error(`Unexpected request ${path}`);
   };
@@ -26,7 +26,7 @@ test('profile editor saves named choices separately from simulator Apply and act
   // The active profile is shown by the select alone; no duplicate status text.
   assert.equal(h.liveContainer.querySelector('p').textContent, '');
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.ui.fields.cache.value, '<checkout>/.cache/gato'); assert.equal(h.ui.fields.cache.title, '/solvers/main/.cache/gato');
+  assert.equal(h.ui.fields.cache.value, '/main/.cache/gato'); assert.equal(h.ui.fields.cache.title, '/main/.cache/gato');
   const editorSelect = h.ui.editor.querySelector('select'); editorSelect.value = ''; await editorSelect.emit('change');
   h.ui.fields.name.value = 'New revision'; h.ui.fields.mpc_root.value = '/solvers/revision'; h.ui.fields.python.value = '/env/bin/python'; await h.ui.fields.name.emit('input');
   assert.equal(h.ui.activateButton.disabled, true); await h.ui.save.emit('click');

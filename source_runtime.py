@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parent
 PROBE_SCRIPT = ROOT / "scripts/source_probe.py"
@@ -18,8 +19,10 @@ PROBE_SCRIPT = ROOT / "scripts/source_probe.py"
 
 CHECKOUT_TOKEN = "<checkout>"
 _TOKEN = re.compile(r"<[^<>]*>")
-# tiago_mpc's convention (Felix, 2026-10-23): one cache for every interpreter, host and container.
-DEFAULT_CACHE_TEMPLATE = f"{CHECKOUT_TOKEN}/.cache/gato"
+# Without an explicit override the visualizer chooses no cache: GATO_CACHE_DIR stays
+# unset in every process it starts and tiago_mpc's cache_root() decides (the main
+# checkout's .cache/gato, also from a worktree; Felix, 2026-10-23).
+DEFAULT_CACHE_LABEL = "tiago_mpc's default"
 # The knot counts the probe looks up with find_binary and Build accepts.
 KNOT_COUNTS = (8, 16, 24, 32, 48, 64, 96, 128)
 
@@ -57,13 +60,45 @@ def _check_cache(path):
         raise ValueError(f"GATO cache is not a directory: {path}")
 
 
+_DEFAULT_CACHES = {}
+_DEFAULT_CACHE_CODE = ("import os, sys; sys.path.insert(0, sys.argv[1]); os.environ.pop('GATO_CACHE_DIR', None); "
+                       "from tiago_mpc.util import cache_root; print(cache_root())")
+
+
+def default_cache(mpc_root):
+    """tiago_mpc's own default cache for a checkout: util.cache_root() with GATO_CACHE_DIR
+    unset, so its git lookup is not duplicated here. util needs only the standard
+    library, hence this interpreter. None when the checkout has no such tiago_mpc."""
+    root = str(Path(mpc_root).expanduser().resolve())
+    if root not in _DEFAULT_CACHES:
+        environment = {key: value for key, value in os.environ.items() if key != "GATO_CACHE_DIR"}
+        try:
+            result = subprocess.run([sys.executable, "-I", "-c", _DEFAULT_CACHE_CODE, root], capture_output=True,
+                                    text=True, timeout=30, check=True, env=environment)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        _DEFAULT_CACHES[root] = result.stdout.strip().splitlines()[-1]
+    return _DEFAULT_CACHES[root]
+
+
+def cache_environment(selection, environment=None):
+    """Child environment: GATO_CACHE_DIR set to an explicit cache override, else unset."""
+    environment = dict(os.environ if environment is None else environment)
+    if selection.get("cache"):
+        environment["GATO_CACHE_DIR"] = selection["cache"]
+    else:
+        environment.pop("GATO_CACHE_DIR", None)
+    return environment
+
+
 def checkout_defaults(mpc_root):
-    """Default interpreter/cache templates of a checkout and their resolution; never raises for missing paths."""
+    """Default interpreter template and cache of a checkout and their resolution; never raises
+    for missing paths. The default cache is tiago_mpc's resolved path (None if unknown)."""
     root = Path(mpc_root).expanduser().resolve()
     python = default_interpreter_template(root)
-    cache = DEFAULT_CACHE_TEMPLATE
-    return dict(mpc_root=str(root), python=python, cache=cache,
-                resolved=dict(python=str(expand_template(python, root)), cache=str(expand_template(cache, root))))
+    cache = default_cache(root)
+    return dict(mpc_root=str(root), python=python, cache=cache, cache_label=DEFAULT_CACHE_LABEL,
+                resolved=dict(python=str(expand_template(python, root)), cache=cache))
 
 
 def resolve_templates(mpc_root, python=None, cache=None):
@@ -71,10 +106,15 @@ def resolve_templates(mpc_root, python=None, cache=None):
     root = Path(mpc_root).expanduser().resolve()
     defaults = checkout_defaults(root)
     python = (python or "").strip() or defaults["python"]
+    cache = (cache or "").strip() or None
     result = {}
     for key, value, check in (("python", python, _check_interpreter), ("cache", cache, _check_cache)):
+        if value is None:  # no cache override: tiago_mpc's default
+            result[key] = dict(path=defaults["cache"], default=True) if defaults["cache"] else \
+                dict(error=f"{DEFAULT_CACHE_LABEL} is unknown: the checkout has no importable tiago_mpc.util")
+            continue
         try:
-            path = expand_template((value or "").strip() or defaults[key], root)
+            path = expand_template(value, root)
             check(path)
             result[key] = dict(path=str(path))
         except ValueError as exc:
@@ -86,33 +126,39 @@ def stored_selection(selection):
     """Persisted form: the checkout plus templates that differ from the defaults (defaults keep following it)."""
     root = selection["mpc_root"]
     templates = selection.get("templates", {})
-    python = checkout_defaults(root)["python"]
-    defaults = dict(python=python, cache=DEFAULT_CACHE_TEMPLATE)
+    defaults = dict(python=default_interpreter_template(Path(root).expanduser().resolve()), cache=None)
     return dict(mpc_root=root, **{key: value for key, value in templates.items() if value and value != defaults[key]})
 
 
 def resolve_selection(mpc_root, python=None, cache=None):
-    """Resolved absolute selection plus the `templates` it came from (defaults filled in)."""
+    """Resolved absolute selection plus the `templates` it came from (default interpreter filled in).
+
+    `cache` is the explicit override (absolute) or None, which leaves the choice to
+    tiago_mpc; `effective_cache` is the cache in effect either way (None if unknown),
+    for display, fingerprints and comparisons."""
     root = Path(mpc_root).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Source checkout is not a directory: {root}")
-    defaults = checkout_defaults(root)
-    python = str(python) if python else defaults["python"]
-    templates = dict(python=python, cache=str(cache) if cache else DEFAULT_CACHE_TEMPLATE)
+    python = str(python) if python else default_interpreter_template(root)
+    templates = dict(python=python, cache=str(cache) if cache else None)
     # Keep the virtualenv executable path: resolving the symlink loses its environment.
     interpreter = expand_template(templates["python"], root)
     _check_interpreter(interpreter)
-    directory = expand_template(templates["cache"], root).resolve()
-    _check_cache(directory)
-    return dict(mpc_root=str(root), python=str(interpreter), cache=str(directory), templates=templates)
+    directory = None
+    if templates["cache"]:
+        directory = str(expand_template(templates["cache"], root).resolve())
+        _check_cache(Path(directory))
+    return dict(mpc_root=str(root), python=str(interpreter), cache=directory,
+                effective_cache=directory or default_cache(root), templates=templates)
 
 
 def source_command(selection, operation="probe", ns=()):
     """The selected interpreter runs scripts/source_probe.py (probe, or build ns)."""
     selected = resolve_selection(selection["mpc_root"], python=selection.get("python"), cache=selection.get("cache"))
     command = [selected["python"], str(PROBE_SCRIPT), operation,
-               "--mpc-root", selected["mpc_root"], "--python", selected["python"],
-               "--cache", selected["cache"]]
+               "--mpc-root", selected["mpc_root"], "--python", selected["python"]]
+    if selected["cache"]:
+        command += ["--cache", selected["cache"]]
     if ns:
         command += ["--N", *map(str, ns)]
     return command
@@ -128,7 +174,7 @@ def build_command(selection, counts, rebuild=False, prediction_friction=False):
         command.append("--prediction-friction")
     if rebuild:
         command.append("--rebuild")
-    return command, dict(os.environ, PYTHONUNBUFFERED="1")
+    return command, dict(cache_environment(selection), PYTHONUNBUFFERED="1")
 
 
 def probe_selection(selection, timeout=120):
@@ -138,7 +184,7 @@ def probe_selection(selection, timeout=120):
     try:
         command = source_command(selection)
         result = subprocess.run(command, capture_output=True, text=True,
-                                timeout=timeout, check=False)
+                                timeout=timeout, check=False, env=cache_environment(selection))
         try:
             payload = json.loads(result.stdout)
         except ValueError as exc:

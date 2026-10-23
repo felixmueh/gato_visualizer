@@ -104,7 +104,7 @@ class CompiledRefreshTests(unittest.TestCase):
                 live.command(settings)
             probe = live_probe()
             probe["available_N_by_friction"] = dict(off=[16, 32], on=[])
-            other = dict(live.active_profile, cache="/elsewhere/cache")
+            other = dict(live.active_profile, effective_cache="/elsewhere/cache")
             self.assertFalse(live.refresh_compiled(other, probe))  # another cache: Apply restarts
             self.assertFalse(live.refresh_compiled(live.active_profile, dict(compatible=False)))
             self.assertEqual(live.schema["available_N"], [16])

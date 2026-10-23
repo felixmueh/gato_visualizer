@@ -56,7 +56,8 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     root = args.mpc_root.expanduser().resolve()
     selection = resolve_selection(root, python=sys.executable, cache=os.environ.get("GATO_CACHE_DIR"))
-    os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    if selection["cache"]:  # an explicit override; else tiago_mpc's default
+        os.environ["GATO_CACHE_DIR"] = selection["cache"]
     import_tiago(root)
     sys.path.insert(0, str(root))  # tiago_mpc's experiments package
     from experiments.reach import Reach, reach

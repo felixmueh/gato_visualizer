@@ -29,9 +29,11 @@ class SourceSettingsTests(unittest.TestCase):
             (root / '.venv/bin').mkdir(parents=True); (root / '.venv/bin/python').symlink_to(sys.executable)
             resolved = lambda name: str(root.resolve() / name)
             defaults = service.defaults(dict(mpc_root=str(root)))
+            # Without tiago_mpc in the checkout, its default cache is unknown and marked so.
             self.assertEqual({key: defaults[key] for key in ('mpc_root', 'python', 'cache', 'resolved')},
-                             dict(mpc_root=str(root.resolve()), python='<checkout>/.venv/bin/python', cache='<checkout>/.cache/gato',
-                                  resolved=dict(python=resolved('.venv/bin/python'), cache=resolved('.cache/gato'))))
+                             dict(mpc_root=str(root.resolve()), python='<checkout>/.venv/bin/python', cache=None,
+                                  resolved=dict(python=resolved('.venv/bin/python'), cache=None)))
+            self.assertIn("tiago_mpc's default is unknown", defaults['entered']['cache']['error'])
             (root / 'venv-host/bin').mkdir(parents=True); (root / 'venv-host/bin/python').symlink_to(sys.executable)
             host = service.defaults(dict(mpc_root=str(root)))
             self.assertEqual(host['python'], '<checkout>/venv-host/bin/python')
@@ -67,11 +69,11 @@ class SourceSettingsTests(unittest.TestCase):
             (root / 'tools/bin').mkdir(parents=True); (root / 'tools/bin/python').symlink_to(sys.executable)
             path = Path(folder) / 'viewer.json'; path.write_text('{}')
             service = SourceSettings(SELECTION, path, Mock(), probe=lambda _: dict(compatible=True))
-            selection = selection_from_request(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/gato'))
+            selection = selection_from_request(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache=None))
             self.assertEqual(selection['python'], str(root.resolve() / 'tools/bin/python'))
-            service.apply(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/gato'))
+            service.apply(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache=None))
             stored = json.loads(path.read_text())['source']
-            # The default cache template is not stored (it follows the checkout); the override is, verbatim.
+            # No cache is stored without an override (tiago_mpc decides); the interpreter override is, verbatim.
             self.assertEqual(stored, dict(mpc_root=str(root.resolve()), python='<checkout>/tools/bin/python'))
             config = load_visualizer_config(path)
             self.assertEqual(config.source, stored)

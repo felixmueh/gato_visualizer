@@ -72,7 +72,7 @@ test('source window checks without compiling, streams explicit build status, the
   globalThis.clearTimeout = () => { poll = null; };
   const requests = [], button = new Element('button');
   let currentBuild = null, applied = false, beforeApply = 0, reloaded = 0;
-  const current = { compatible: true, selection: { mpc_root: '/source', python: '/source/venv-host/bin/python', cache: '/source/.cache/gato', templates: { python: '<checkout>/venv-host/bin/python', cache: '<checkout>/.cache/gato' } }, source: { mpc_branch: 'main', mpc_commit: 'abc', mpc_dirty: false }, available_N: [48] };
+  const current = { compatible: true, selection: { mpc_root: '/source', python: '/source/venv-host/bin/python', cache: null, effective_cache: '/main/.cache/gato', templates: { python: '<checkout>/venv-host/bin/python', cache: null } }, source: { mpc_branch: 'main', mpc_commit: 'abc', mpc_dirty: false }, available_N: [48] };
   const request = async (path, body) => {
     requests.push({ path, body });
     if (path === '/api/source') return { current, build: currentBuild };
@@ -112,8 +112,8 @@ test('source window checks without compiling, streams explicit build status, the
     assert.equal(action('apply').disabled, false);
     await action('apply').emit('click');
     assert.equal(beforeApply, 1); assert.equal(reloaded, 1);
-    // Default templates are not overrides: Apply lets the checkout resolve them.
-    assert.equal(field('cache').value, '<checkout>/.cache/gato');
+    // Defaults are not overrides: Apply lets the checkout (and tiago_mpc, for the cache) resolve them.
+    assert.equal(field('cache').value, '/main/.cache/gato');
     assert.equal(field('python').title, '/source/venv-host/bin/python');
     assert.deepEqual(requests.find(item => item.path.endsWith('/apply')).body, { mpc_root: '/source', python: null, cache: null });
     await ui.dialog.element.emit('keydown', { key: 'Escape' });
@@ -124,13 +124,14 @@ test('source window checks without compiling, streams explicit build status, the
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 10));
 
+// The backend's shape: the default cache is tiago_mpc's resolved path (its main checkout's).
 function templateDefaults(body, host = 'venv-host') {
-  const python = `<checkout>/${host}/bin/python`, cache = '<checkout>/.cache/gato', fill = text => text.replace('<checkout>', body.mpc_root);
+  const python = `<checkout>/${host}/bin/python`, cache = '/main/.cache/gato', fill = text => text.replace('<checkout>', body.mpc_root);
   const entered = {};
   for (const [key, template] of [['python', body.python || python], ['cache', body.cache || cache]]) {
-    entered[key] = /<(?!checkout>)[^>]*>/.test(template) ? { error: `Unknown token in ${template}` } : { path: fill(template) };
+    entered[key] = /<(?!checkout>)[^>]*>/.test(template) ? { error: `Unknown token in ${template}` } : { path: fill(template), ...(template === cache ? { default: true } : {}) };
   }
-  return { mpc_root: body.mpc_root, python, cache, resolved: { python: fill(python), cache: fill(cache) }, entered };
+  return { mpc_root: body.mpc_root, python, cache, cache_label: "tiago_mpc's default", resolved: { python: fill(python), cache }, entered };
 }
 
 test('path fields hold <checkout> templates; resolution is a tooltip, errors an invalid mark, edits an override until reset', async () => {
@@ -142,8 +143,10 @@ test('path fields hold <checkout> templates; resolution is a tooltip, errors an 
   const request = async (path, body) => { requests.push(body); return templateDefaults(body); };
   const tracked = trackCheckoutDefaults({ fields, resets, request, delay: 0 });
   await tracked.follow('/a');
-  assert.equal(fields.python.value, '<checkout>/venv-host/bin/python'); assert.equal(fields.cache.value, '<checkout>/.cache/gato');
+  assert.equal(fields.python.value, '<checkout>/venv-host/bin/python'); assert.equal(fields.cache.value, '/main/.cache/gato');
   assert.equal(fields.python.title, '/a/venv-host/bin/python'); assert.equal(fields.python.dataset.invalid, 'false');
+  assert.equal(fields.cache.title, "/main/.cache/gato (tiago_mpc's default)"); assert.equal(tracked.value('cache'), null);
+  assert.equal(resets.entries[1].button.title, "Reset to /main/.cache/gato (tiago_mpc's default)");
   assert.equal(tracked.value('python'), null); assert.equal(resets.entries.every(entry => entry.button.disabled), true);
   // An edit is an override, sent as typed, and highlighted until reset.
   fields.cache.value = '<checkout>/../shared/cache'; await fields.cache.emit('input'); await settle();
@@ -160,7 +163,7 @@ test('path fields hold <checkout> templates; resolution is a tooltip, errors an 
   assert.equal(fields.python.value, '<checkout>/venv-host/bin/python'); assert.equal(tracked.value('python'), null);
   assert.equal(fields.python.dataset.invalid, 'false');
   await resets.entries[1].button.emit('click', { stopPropagation() {} });
-  assert.equal(fields.cache.value, '<checkout>/.cache/gato'); assert.equal(tracked.value('cache'), null);
+  assert.equal(fields.cache.value, '/main/.cache/gato'); assert.equal(tracked.value('cache'), null);
   // A field still on the default text follows a changed default (container checkouts use .venv).
   const other = trackCheckoutDefaults({ fields: { python: doc.createElement('input'), cache: doc.createElement('input') }, resets: createSettingResets({ document: doc }),
     request: async (_path, body) => templateDefaults(body, body.mpc_root === '/old' ? 'venv-host' : '.venv') });
@@ -169,7 +172,7 @@ test('path fields hold <checkout> templates; resolution is a tooltip, errors an 
   const slow = trackCheckoutDefaults({ fields: { python: doc.createElement('input'), cache: doc.createElement('input') }, resets: createSettingResets({ document: doc }),
     request: async (_path, body) => { if (body.mpc_root === '/old') await new Promise(resolve => setTimeout(resolve, 5)); return templateDefaults(body); } });
   const stale = slow.follow('/old'); await slow.follow('/new'); await stale;
-  assert.equal(slow.defaults.cache, '<checkout>/.cache/gato'); assert.equal(slow.defaults.python, '<checkout>/venv-host/bin/python');
+  assert.equal(slow.defaults.cache, '/main/.cache/gato'); assert.equal(slow.defaults.python, '<checkout>/venv-host/bin/python');
 });
 
 test('source and profile refresh preserve the predictor friction choice, simulator friction and a null SQP time limit', () => {

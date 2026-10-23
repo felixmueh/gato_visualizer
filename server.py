@@ -735,7 +735,11 @@ def main(argv=None):
     if os.path.abspath(sys.executable) != os.path.abspath(selection["python"]):
         os.execve(selection["python"], [selection["python"], str(ROOT / "server.py"),
                   *(sys.argv[1:] if argv is None else argv)], os.environ.copy())
-    os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    # An explicit cache override, else unset: tiago_mpc's cache_root() decides.
+    if selection["cache"]:
+        os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    else:
+        os.environ.pop("GATO_CACHE_DIR", None)
     # SIGTERM stops like Ctrl-C: the services below close their child processes.
     # A second SIGTERM ends the server at once; the children then exit with it.
     def stop(signum, frame):
