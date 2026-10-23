@@ -157,8 +157,10 @@ the opt-in GPU script `scripts/check_conformance.py` runs
 `experiments.reach.reach` with `SimPlant` and `Mpc` in-process, then the
 visualizer's adapter, solver child and multirate session at the same rates,
 start, target and `MpcParams`, and compares states at every command tick,
-commands and plans, so drift in `tiago_mpc` fails loudly. It covers the
-default loss-free reach, not every profile, friction or inspection path.
+commands and plans, so drift in `tiago_mpc` fails loudly. By default the
+reference steps on the session's 1 ms grid for 3 s without arriving, and the
+comparison is bit for bit. It covers the default loss-free reach, not every
+profile, friction or inspection path.
 
 ## Model and coordinates
 

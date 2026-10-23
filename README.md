@@ -377,15 +377,21 @@ none of them needs a compiled module or the GPU. Run the opt-in GPU conformance
 check only when the experiment locks are free:
 
 ```bash
-"$python_bin" scripts/check_conformance.py --mpc-root /absolute/path/to/tiago_mpc --steps 3
+"$python_bin" scripts/check_conformance.py --mpc-root /absolute/path/to/tiago_mpc
 ```
 
 It runs `tiago_mpc`'s `experiments.reach.reach` with `SimPlant` (1 ms
 substeps) and `Mpc` in this process, then the visualizer's adapter, solver child
 and multirate session at 1000/100/100 Hz with the same `MpcParams`, start and
 target. It compares the states at every command tick, the commands and the plans
-(`--atol`, default 1e-9) over the ticks `reach` ran, which stops once the task is
-done. It needs the default loss-free N module and covers the default reach, not
+(`--atol`, default 1e-9) over `--steps` command ticks (default 300, that is 3 s).
+The reference reach gets a zero position tolerance, so it never arrives and runs
+the whole duration; the default reach would otherwise arrive within 0.1 s. By
+default the reference plant steps on the session's 1 ms grid, and the comparison
+is bit for bit. `--accumulated-ticks` keeps `run()`'s accumulated tick times
+instead: their last-bit differences in the substep lengths grow through GATO's
+float32 solves until the plans diverge after about 1 s, which is round-off, not
+a scheduling difference. It needs the default loss-free N module and covers the default reach, not
 every profile, friction or inspection path. Run it with the selected checkout's
 interpreter and pass the source explicitly (`--mpc-root`, else `TIAGO_MPC_ROOT`,
 else `../tiago_mpc`); it does not read the saved source selection. Both raw
