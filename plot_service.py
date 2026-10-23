@@ -6,6 +6,7 @@ from copy import deepcopy
 import hashlib
 import json
 import multiprocessing as mp
+import os
 from pathlib import Path
 import queue
 import threading
@@ -13,6 +14,7 @@ import time
 import uuid
 
 from plot_sources import SourceReader, inspect_source
+from solver_lifecycle import run_with_parent
 
 ROOT = Path(__file__).resolve().parent
 MAX_RESULT_BYTES = 8*1024*1024
@@ -191,8 +193,8 @@ class PlotService:
     def _start_worker(self):
         context = mp.get_context("spawn")
         self.commands, self.results = context.Queue(maxsize=1), context.Queue(maxsize=2)
-        self.process = context.Process(target=self.worker_target,
-            args=(self.commands, self.results, [str(ROOT/"plotters"), str(self.directory)],
+        self.process = context.Process(target=run_with_parent,
+            args=(os.getpid(), self.worker_target, self.commands, self.results, [str(ROOT/"plotters"), str(self.directory)],
                   str(self.mpc_root), self.default_scene), name="plot-cpu-compute", daemon=True)
         self.process.start()
         self.worker_available = True

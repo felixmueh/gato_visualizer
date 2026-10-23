@@ -50,6 +50,12 @@ bounded terminate/kill cleanup while the coordinator owns the GPU lease; logs
 remain retained. Ordinary solve requests and Pause/cancel remain cooperative.
 Explicit backend shutdown waits 10s, then stops its own coordinator if necessary;
 parent-death cleanup terminates its child, with borrowed leases held until exit.
+The backend handles SIGTERM like Ctrl-C and closes its services and their
+children. The multiprocessing children (simulation coordinator, plot worker)
+poll their parent and exit when it is gone, even after SIGKILL; a
+multiprocessing resource tracker then exits with them. They do not use the
+parent-death signal, which follows the starting thread, and HTTP handler
+threads may restart the plot worker.
 No other user's process is terminated.
 
 Normal settings and profile switching only load compiled modules: the child

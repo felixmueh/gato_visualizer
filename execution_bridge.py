@@ -4,6 +4,7 @@ from collections import deque
 from copy import deepcopy
 import json
 import multiprocessing as mp
+import os
 from pathlib import Path
 import queue
 import threading
@@ -12,6 +13,7 @@ import traceback
 
 from execution_session import DEFAULT_EXECUTION, MAX_RECORD_EVERY, validate_anchor, validate_execution
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
+from solver_lifecycle import run_with_parent
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
 SHUTDOWN_GRACE_SECONDS = 10
@@ -195,7 +197,6 @@ class ProcessLiveService:
         if solver_profile is None:
             if adapter_factory is None:
                 from source_runtime import resolve_selection
-                import os
                 selection = resolve_selection(self.mpc_root, cache=os.environ.get("GATO_CACHE_DIR"))
             else:
                 import sys
@@ -218,8 +219,8 @@ class ProcessLiveService:
         self.results = self.context.Queue(maxsize=8)
         self.revision = self.context.Value("q", 0)
         self.shutdown = self.context.Event()
-        self._process = self.context.Process(target=worker_target,
-            args=(self.mpc_root, self.commands, self.results, self.revision, self.shutdown,
+        self._process = self.context.Process(target=run_with_parent,
+            args=(os.getpid(), worker_target, self.mpc_root, self.commands, self.results, self.revision, self.shutdown,
                   adapter_factory, schema_factory, solver_profile, self.report_hz), name="live-mpc-compute", daemon=True)
         self._process.start()
         try:

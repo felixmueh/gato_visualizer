@@ -13,6 +13,7 @@ import os
 import math
 import queue
 from pathlib import Path
+import signal
 import sys
 import threading
 import uuid
@@ -722,6 +723,12 @@ def main(argv=None):
         os.execve(selection["python"], [selection["python"], str(ROOT / "server.py"),
                   *(sys.argv[1:] if argv is None else argv)], os.environ.copy())
     os.environ["GATO_CACHE_DIR"] = selection["cache"]
+    # SIGTERM stops like Ctrl-C: the services below close their child processes.
+    # A second SIGTERM ends the server at once; the children then exit with it.
+    def stop(signum, frame):
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)
     os.environ["PATH"] = str(Path(selection["python"]).parent) + os.pathsep + os.environ.get("PATH", "")
     try:
         scene, robot_xml, meshes = load_scene(args.mpc_root)
