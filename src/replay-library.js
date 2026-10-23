@@ -12,7 +12,7 @@ export function recordingLabel(item, items = []) {
 // carry an "uploads/" prefix. It is only ever matched against the catalog, so a
 // link cannot reach a file outside the configured library roots.
 export function replayLinkKey(item) {
-  if (!item || item.source === 'default' || !item.name) return null;
+  if (!item || item.source === 'default' || item.source === 'freeze' || !item.name) return null;
   return item.source === 'upload' ? `uploads/${item.name}` : item.name;
 }
 

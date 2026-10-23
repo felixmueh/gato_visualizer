@@ -50,6 +50,8 @@ test('direct replay links use the library path and stay inside the catalog', asy
   assert.equal(replayLinkKey(ingest),'reaching/study/run_017');
   assert.equal(replayLinkKey(upload),'uploads/reaching/study/run_017');
   assert.equal(replayLinkKey(items[2]),null);
+  // Server-owned freezes have no persistent library path to share.
+  assert.equal(replayLinkKey({id:'freeze-a',name:'Freeze · 12:34:56',source:'freeze'}),null);
   assert.equal(findLinkedItem(items,'reaching/study/run_017'),ingest);
   assert.equal(findLinkedItem(items,'uploads/reaching/study/run_017'),upload);
   for(const bad of ['../secret','/etc/passwd','reaching/../study/run_017','',null]) assert.equal(findLinkedItem(items,bad),undefined);

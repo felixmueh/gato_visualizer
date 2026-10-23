@@ -4,6 +4,8 @@ import URDFLoader from "urdf-loader";
 import { setupOnionSkin, ONION_COLOR, ONION_PREDICTION_COLOR } from './onion-skin-view.js';
 import { sampleAtOrBefore } from './onion-skin.js';
 import { setupLive } from "./live.js";
+import { createSession, outsideSpan, trackTime } from "./session.js";
+import { createTrackScene } from "./track-scene.js";
 import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
 import { createLimitTint } from "./limit-tint.js";
@@ -50,6 +52,7 @@ const icons = {
   panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
   calculate: '<path d="M13 2 5 13h6l-1 9 9-13h-6l1-7Z"/>',
   settings: '<path d="m10 3-.6 2.2-2 .9-2-.7-2 3.4 1.5 1.6v2.3L3.4 14l2 3.4 2-.7 2 .9.6 2.2h4l.6-2.2 2-.9 2 .7 2-3.4-1.5-1.6v-2.3L20.6 8l-2-3.4-2 .7-2-.9L14 3Z"/><circle cx="12" cy="11.4" r="3"/>',
+  freeze: '<rect x="4" y="4" width="12" height="12" rx="2"/><path d="M8 20h10a2 2 0 0 0 2-2V8M10 7v6M7 10h6"/>',
   onion: '<path d="M3 20a17 17 0 0 1 17-17M8 20A12 12 0 0 1 20 8M13 20a7 7 0 0 1 7-7"/>',
   chevron: '<path d="m8 5 7 7-7 7"/>',
 };
@@ -81,6 +84,9 @@ let scene;
 let robotBounds;
 let ready = false;
 let live;
+let session, trackScene;
+// Focus stays on the main track in this deliverable; all presentation reads use it.
+const focusedTrack = () => live?.mode === "live" ? session?.focused : null;
 let solverProfiles;
 const sourceSettings = setupSourceSettings({ button: $('source-settings-open'), onOpen: () => solverProfiles?.refresh().catch(() => {}), onPlottersReload: () => plotInspection.refresh(), beforeApply: () => {
   try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
@@ -122,8 +128,19 @@ setupSidebarResize({ shell: document.getElementById("workbench"), onLayout: () =
 const emptyTimingIntervals = [];
 const expandedTimeline = setupExpandedTimeline({
   onLayout: () => auxiliaryViews?.invalidate(),
+  onAggregate: aggregate => { if (live?.mode === 'live') session?.setAggregate(aggregate); },
+  onAddTrack: id => addSessionTrack(id).catch(showTrackError),
+  onTrackChange: (id, patch) => {
+    if ('offset_s' in patch) session.setOffset(id, patch.offset_s);
+    if ('visible' in patch) session.setVisible(id, patch.visible);
+    if ('display' in patch) session.setDisplay(id, patch.display);
+    auxiliaryViews?.invalidate();
+  },
+  onTrackReset: id => { session.resetOffset(id); auxiliaryViews?.invalidate(); },
+  onTrackRemove: id => { session.removeTrack(id); auxiliaryViews?.invalidate(); },
   onSeek: time => {
-    const input = $(live?.mode === 'live' ? 'live-history' : 'timeline');
+    if (focusedTrack()) { live.seek(time); return; }
+    const input = $('timeline');
     if (input.disabled) return;
     input.value = time;
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -134,10 +151,23 @@ expandedTimeline.bindSurface(linkedGraphContainer);
 let inspectedPrediction;
 const plotInspection = setupPlotInspection({
   episodeContainer: $('episode-plots'), solveContainer: $('solve-plots'), bottomContainer: linkedGraphContainer, viewport: $('viewport'), stripHandle: $('timeline-strip-resize'),
-  getSource: () => live?.mode === 'live'
-    ? { source: { kind: 'live', generation: live.history.generation }, revision: [live.history.cursor, displayedLivePlan?.seq, displayedLivePlan?.settings_version, displayedLivePlan?.origin], solveSeq: displayedLivePlan?.origin === 'preview' ? `preview:${displayedLivePlan.seq}` : null, label: 'Recorded Live MPC' }
-    : trajectory ? { source: { kind: 'replay', id: replayLibrary?.selectedId || 'default', trajectory_index: data?.trajectories?.indexOf(trajectory) ?? 0, ...(data?.source?.plot_revision ? { revision: data.source.plot_revision } : {}) }, revision: data?.source?.plot_revision || trajectory.id, label: trajectory.label || 'Imported recording' } : null,
-  getView: () => { const view = expandedTimeline.snapshot; return { window: view.visible, cursor: view.selectedTime, aggregate: view.aggregate, reveal: liveReveal(view.selectedTime), episodeClock: live?.mode === 'live' || trajectory?.kind === 'recorded', inspectSolve: workbench.activeTab === 'solve' };  },
+  getSource: () => {
+    const track = focusedTrack();
+    if (track) {
+      if (track.source?.kind === 'live' && !Number.isInteger(track.source.generation)) return null;
+      return { source: track.source, revision: [track.history?.cursor, track.plan?.seq, track.plan?.settings_version, track.plan?.origin],
+        solveSeq: track.plan?.origin === 'preview' ? `preview:${track.plan.seq}` : null, label: track.label };
+    }
+    return trajectory ? { source: { kind: 'replay', id: replayLibrary?.selectedId || 'default', trajectory_index: data?.trajectories?.indexOf(trajectory) ?? 0,
+      ...(data?.source?.plot_revision ? { revision: data.source.plot_revision } : {}) }, revision: data?.source?.plot_revision || trajectory.id, label: trajectory.label || 'Imported recording' } : null;
+  },
+  getView: () => {
+    const view = expandedTimeline.snapshot, track = focusedTrack(), offset = track?.offset_s || 0;
+    const aggregate = track ? session.aggregate : view.aggregate;
+    return { window: view.visible.map(time => time - offset), cursor: track ? trackTime(track, session.cursor) : view.selectedTime,
+      aggregate: { start: aggregate.start == null ? null : aggregate.start - offset, end: aggregate.end == null ? null : aggregate.end - offset },
+      reveal: liveReveal(track ? trackTime(track, session.cursor) : view.selectedTime), episodeClock: Boolean(track) || trajectory?.kind === 'recorded', inspectSolve: workbench.activeTab === 'solve' };
+  },
   getSolverProfile: () => ({ id: solverProfiles.snapshot.catalog.active_profile_id, switching: solverProfiles.snapshot.switching }),
   getLimitUse: () => limitUse,
   onInspectionStart: () => live?.holdForInspection(),
@@ -149,13 +179,16 @@ const plotInspection = setupPlotInspection({
 // up to the playback cursor, in step with the 3D view. Paused, scrubbed or
 // Replay views show all available data.
 function liveReveal(time) {
-  const history = live?.mode === 'live' ? live.history : null;
+  const history = focusedTrack()?.history || null;
   return history?.playing && (history.following || history.buffering || history.growing) && Number.isFinite(time) ? time : undefined;
 }
 function updateExpandedTimeline() {
   if (live?.mode === 'live') {
-    const history = live.history;
-    expandedTimeline.update({ mode: 'live', identity: history.generation, bounds: history.presentationBounds, time: history.selectedTime, intervals: history.intervals, ...onionSkin?.timeline });
+    const track = session?.focused, history = track?.history || live.history;
+    expandedTimeline.update({ mode: 'live', identity: session?.id, session, bounds: session?.span || history.presentationBounds,
+      time: session?.cursor ?? history.selectedTime, clockLabel: 'Session time',
+      intervals: history.intervals, breaches: history.breaches || [], revision: track?.historyRevision, tracks: session ? sessionLanes() : [], catalog: replayLibrary?.items || [],
+      aggregate: session?.aggregate, ...onionSkin?.timeline });
   } else {
     const duration = trajectory ? trajectory.time_s.at(-1) - trajectory.time_s[0] : 0;
     expandedTimeline.update({ mode: 'replay', identity: trajectory, bounds: [0, duration], time: elapsed, clockLabel: `${trajectory ? playbackClock(trajectory) : 'recorded'} time`.replace(/^./, letter => letter.toUpperCase()), intervals: emptyTimingIntervals, ...onionSkin?.timeline });
@@ -275,19 +308,19 @@ async function loadRobot(url) {
 function fitTaskPoints(options = {}) {
   return trajectoryFitPoints({
     replay: trajectory,
-    live: live?.mode === 'live',
-    taskKind: displayedLiveReference?.kind || live?.segmentOf(displayedLivePlan)?.task.kind || live?.settings?.task?.kind || 'reach',
-    plan: displayedLiveReference ? { ...displayedLivePlan, task_path_xyz: displayedLiveReference.points,
-      target_xyz: displayedLiveReference.target_xyz } : displayedLivePlan && { ...displayedLivePlan, task_path_xyz: live?.segmentOf(displayedLivePlan)?.task_path_xyz },
-    state: displayedLiveReference?.draft ? { ...(live?.displayedState || live?.state), target_xyz: displayedLiveReference.target_xyz } : live?.displayedState || live?.state,
+    live: Boolean(focusedTrack()),
+    taskKind: focusedTrack()?.reference?.kind || focusedTrack()?.context?.task?.kind || 'reach',
+    plan: focusedTrack()?.reference ? { ...focusedTrack().plan, task_path_xyz: focusedTrack().reference.points,
+      target_xyz: focusedTrack().reference.target_xyz } : focusedTrack()?.plan && { ...focusedTrack().plan, task_path_xyz: focusedTrack().context?.task_path_xyz },
+    state: focusedTrack()?.reference?.draft ? { ...(focusedTrack()?.displayedState || focusedTrack()?.state), target_xyz: focusedTrack().reference.target_xyz } : focusedTrack()?.displayedState || focusedTrack()?.state,
     taskStart: liveTaskStart,
-    precomputedPath: live?.mode === 'live' ? live.precomputedPath : undefined,
+    precomputedPath: focusedTrack()?.precomputedPath,
     ...options,
   });
 }
 
 function refreshFitAvailability() {
-  $('camera-arm').disabled = live?.mode === 'live' ? !live.fitAvailable : !fitTaskPoints().points.length;
+  $('camera-arm').disabled = focusedTrack() ? !focusedTrack().fitAvailable : !fitTaskPoints().points.length;
 }
 
 function setCamera(mode = "robot", options = {}) {
@@ -465,7 +498,7 @@ function togglePlay() {
 
 function updateOnionSkin() {
   if (!onionSkin) return;
-  const history = live?.mode === 'live' ? live.history : null;
+  const history = focusedTrack()?.history || null;
   if (history) {
     onionSkin.update({ mode: 'live', identity: `live:${history.generation}`, revision: live.historyRevision,
       times: history.length ? history.bounds : [], bounds: history.bounds, trackBounds: history.presentationBounds,
@@ -500,7 +533,10 @@ function animate(timestamp) {
   viewCube.update(timestamp);
   targetGizmo?.update();
   if (liveGroup?.userData.target) liveGroup.userData.target.visible = displayedLiveReference?.kind === 'figure8' || !targetGizmo?.active;
+  updateSessionScene();
   updateOnionSkin();
+  onionSkin?.sort(camera);
+  trackScene?.sort(camera);
   onionSpike?.beforeRender(camera);
   renderer.render(scene, camera);
   workbench.update(); updateExpandedTimeline(); plotInspection.update(); auxiliaryViews?.render(timestamp);
@@ -571,8 +607,9 @@ async function start() {
     }
     scene.add(robot);
     auxiliaryViews = setupAuxiliaryViews({ scene, top: $('auxiliary-top'), right: $('auxiliary-right'),
-      getBounds: () => visibleSceneBounds(robot, live?.mode === 'live' ? liveGroup : pathGroup),
-      visible: () => workbench.auxiliaryVisible, beforeRender: viewCamera => { onionSkin?.sort(viewCamera); onionSpike?.beforeRender(viewCamera); } });
+      getBounds: () => { const bounds = visibleSceneBounds(robot, focusedTrack() ? liveGroup : pathGroup);
+        if (focusedTrack() && trackScene?.group.visible) bounds.union(trackScene.bounds); return bounds; },
+      visible: () => workbench.auxiliaryVisible, beforeRender: viewCamera => { onionSkin?.sort(viewCamera); trackScene?.sort(viewCamera); onionSpike?.beforeRender(viewCamera); } });
     robot.traverse((object) => {
       if (object.isMesh) {
         object.material = object.material.clone();
@@ -585,6 +622,7 @@ async function start() {
       const input = $(live?.mode === 'live' ? 'live-history' : 'timeline');
       input.value = time; input.dispatchEvent(new Event('input', { bubbles: true }));
     } });
+    trackScene = createTrackScene({ robot, scene, jointNames: defaultData.joint_names });
     jointCells = createJointTable($("joint-list"), data.joint_names);
     setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
     populateReplay(data, {name: 'Starting pose'});
@@ -593,7 +631,11 @@ async function start() {
     setCamera("home");
     ready = true;
     await presentationSettings.ready;
-    live = setupLive({ presentationSettings: presentationSettings.settings, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item) });
+    live = setupLive({ presentationSettings: presentationSettings.settings, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item), onFreeze: async item => {
+      await addSessionTrack(item.id, item); await replayLibrary?.refresh();
+    } });
+    session = createSession();
+    live.setSession(session);
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
       moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Starting pose' });
@@ -606,6 +648,9 @@ async function start() {
       onionSpike = setupOnionSpike({ renderer, scene, camera, controls, robot, getTrajectory: () => playing || live?.mode === 'live' ? null : trajectory, getJointNames: () => data.joint_names, auxiliaryViews, setNormalVisible: value => onionSkin.setVisible(value) });
     }
     window.__motionStudio = {
+      get session() { return session ? { id: session.id, focusedId: session.focused?.id, span: session.span, cursor: session.cursor, rate: session.rate, aggregate: session.aggregate,
+        tracks: session.tracks.map(track => ({ id: track.id, kind: track.kind, source: track.source, label: track.label, color: track.color, offset_s: track.offset_s,
+          display: track.display, visible: track.visible, span: track.span, time: trackTime(track, session.cursor), outside: outsideSpan(track, session.cursor) })), ...trackScene?.snapshot } : null; },
       get onionSpike() { return onionSpike?.snapshot; },
       get onionSkin() { return onionSkin?.snapshot; },
       get auxiliaryViews() { return auxiliaryViews?.snapshot; },
@@ -668,6 +713,8 @@ function changeMode(mode) {
   updatePlaybackState();
   if (pathGroup) pathGroup.visible = mode === 'replay';
   if (liveGroup) liveGroup.visible = mode === 'live';
+  if (trackScene) trackScene.group.visible = mode === 'live';
+  if (mode !== 'live') setMainDimmed(false);
   $('path-legend').innerHTML = mode === 'live'
     ? '<span><i class="legend-line"></i>Prediction</span><span><i class="legend-reference"></i>Reference / target</span><span><i class="legend-executed"></i>Simulated motion</span>'
     : replayLegend();
@@ -722,7 +769,7 @@ function renderInspectedPrediction() {
   if (replayInspectionPrediction) replayInspectionPrediction.visible = false;
   if (!liveGroup) return;
   disposeLiveObject(livePrediction); livePrediction = undefined;
-  const plan = livePredictionForView(displayedLivePlan, inspectedPrediction);
+  const plan = livePredictionForView(focusedTrack()?.plan, inspectedPrediction);
   if (plan?.ee_xyz?.length) { livePrediction = plan === inspectedPrediction?.prediction ? makePredictionLine(plan.ee_xyz, inspectedPrediction) : makeLiveLine(plan.ee_xyz, pathColor, false); liveGroup.add(livePrediction); }
   refreshFitAvailability();
 }
@@ -730,6 +777,7 @@ function renderInspectedPrediction() {
 function showLiveReference(reference) {
   if (!liveGroup) return;
   auxiliaryViews?.invalidate();
+  reference = focusedTrack()?.reference ?? reference;
   displayedLiveReference = reference;
   disposeLiveObject(liveReference);
   if (liveGroup.userData.target) disposeLiveObject(liveGroup.userData.target);
@@ -750,7 +798,10 @@ function resetLiveTrace() {
 }
 
 function showLiveState(state, context = {}) {
-  if (!robot || !liveGroup) return;
+  if (!robot || !liveGroup || (session && session.focused?.kind !== 'live')) return;
+  const focused = focusedTrack();
+  state = focused?.displayedState || state;
+  context = { ...context, segment: focused?.context || context.segment };
   if (!context.historical && !context.interpolated) {
     if (lastLiveTime !== undefined && state.sim_time_s < lastLiveTime) liveTaskStart = undefined;
     if (!liveTaskStart) liveTaskStart = [...state.ee_xyz];
@@ -802,6 +853,7 @@ function applyFixedJoints(recording) {
   }
   for (const [name, value] of Object.entries(recording.fixed_joints || {})) robot.setJointValue(name, value);
   onionSkin?.setBase();
+  trackScene?.setBase();
 }
 
 function populateReplay(recording, item) {
@@ -876,4 +928,65 @@ function showStartingPose() {
   updateReplayLegend();
   updatePlaybackState();
   refreshFitAvailability();
+}
+
+
+function showTrackError(error) {
+  const message = $('timeline-track-message');
+  if (message) { message.textContent = error.message; message.hidden = false; }
+  else console.warn('Track unavailable:', error.message);
+}
+
+async function addSessionTrack(id, item) {
+  if (!session) throw new Error('The session is not ready.');
+  item ||= replayLibrary?.items.find(entry => entry.id === id);
+  const response = await fetch(`/api/replays/motion?id=${encodeURIComponent(id)}`);
+  const motion = await response.json();
+  if (!response.ok) throw new Error(motion.error || 'The track could not load.');
+  validateTrajectory(motion, defaultData.joint_names.length); validateReference(motion);
+  const track = session.addTrack({ kind: 'replay', source: { kind: 'replay', id: motion.id, revision: motion.revision },
+    label: item?.source === 'freeze' ? freezeTimeLabel(motion) : item?.name || motion.label,
+    defaultOffset: item?.source === 'freeze' ? 'zero' : 'align-start',
+    span: [motion.time_s[0], motion.time_s.at(-1)], timeBasis: motion.time_basis,
+    endEffectorFrame: motion.end_effector_frame,
+    settings: motion.provenance?.live?.settings || null,
+    motion, catalogSource: item?.source, catalogName: item?.name, provenance: motion.provenance });
+  const message = $('timeline-track-message'); if (message) message.hidden = true;
+  auxiliaryViews?.invalidate(); updateExpandedTimeline(); return track;
+}
+
+function freezeTimeLabel(motion) {
+  const timestamp = motion.provenance?.live?.frozen_at;
+  const date = timestamp && new Date(timestamp);
+  return date && Number.isFinite(date.getTime()) ? date.toLocaleTimeString([], { hour12: false }) : motion.label.replace(/^Freeze\s*[·:]?\s*/, '');
+}
+
+function sessionLanes() {
+  return session.tracks.map(track => ({ ...track, intervals: track.kind === 'live' ? session.focused.history?.intervals || [] : [] }));
+}
+
+let mainDimmed = false;
+const mainMaterials = new Map();
+function setMainDimmed(dimmed) {
+  if (!robot || mainDimmed === dimmed) return;
+  mainDimmed = dimmed;
+  robot.joints.arm_right_1_joint?.traverse(object => {
+    if (!object.isMesh) return;
+    for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+      if (!mainMaterials.has(material)) mainMaterials.set(material, { opacity: material.opacity, transparent: material.transparent, depthWrite: material.depthWrite });
+      const original = mainMaterials.get(material);
+      material.opacity = dimmed ? .35 : original.opacity;
+      material.transparent = dimmed || original.transparent;
+      material.depthWrite = dimmed ? false : original.depthWrite;
+      material.needsUpdate = true;
+    }
+  });
+}
+
+function updateSessionScene() {
+  if (!session || !trackScene) return;
+  const main = focusedTrack();
+  trackScene.update({ tracks: session.tracks, time: session.cursor, mainReference: main?.reference,
+    visible: Boolean(main) });
+  setMainDimmed(Boolean(main && !main.empty && outsideSpan(main, session.cursor)));
 }
