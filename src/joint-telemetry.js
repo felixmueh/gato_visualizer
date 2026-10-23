@@ -109,12 +109,12 @@ function refreshStartReset(rows) {
   const button = rows.startReset, pose = rows.startPose;
   if (!button) return;
   const changed = pose ? pose.value.flatMap((v, i) => Math.abs(v - pose.defaults[i]) > 1e-9 ? [jointLabel(pose, i)] : []) : [];
-  const enabled = changed.length > 0 && pose.editable;
+  const enabled = changed.length > 0 && pose.resettable;
   button.disabled = !enabled;
-  button.title = !pose ? 'Reset the start pose to the default (Live only)'
+  button.title = !pose ? 'Reset the start pose to the default (Live only: Replay has no run to reset)'
     : !changed.length ? 'The start pose is the default'
-    : `Reset the start pose to the default; a new run starts there at t = 0.\nDiffers: ${changed.join(', ')}`
-      + (pose.editable ? '' : '\nAvailable at t = 0, paused or stopped, in Live.');
+    : `Reset the start pose to the default and start a new run there at t = 0, also mid-run.\nDiffers: ${changed.join(', ')}`
+      + (pose.resettable ? '' : '\nNot available now: not connected, or the GPU is busy.');
 }
 
 // While the start pose is edited: the planning box is the URDF range shrunk by the
@@ -149,7 +149,7 @@ function createGauge(doc, quantity) {
 // onStartPoseDraft(q | null) shows a dragged start pose in the scene (null: back to
 // the shown state); onStartPoseCommit(q) sets it: one settings change per release,
 // Enter or reset arrow, never one per pointer move.
-export function createJointTable(container, names, { onStartPoseDraft = () => {}, onStartPoseCommit = () => {}, resetButton = null } = {}) {
+export function createJointTable(container, names, { onStartPoseDraft = () => {}, onStartPoseCommit = () => {}, onStartPoseReset = () => {}, resetButton = null } = {}) {
   const doc = container.ownerDocument;
   const heading = el(doc, 'div', 'joint-row joint-columns');
   // Colour is the cue; its meaning is a hover away.
@@ -181,7 +181,7 @@ export function createJointTable(container, names, { onStartPoseDraft = () => {}
   const commit = q => { if (q.some((v, i) => Math.abs(v - pose().value[i]) > 1e-12)) onStartPoseCommit(q); };
   resetButton?.addEventListener('click', event => {
     event.preventDefault();
-    if (pose()?.editable && !resetButton.disabled) commit([...pose().defaults]);
+    if (pose()?.resettable && !resetButton.disabled) onStartPoseReset();
   });
   rows.forEach((gauges, index) => {
     const { reset, input } = gauges, position = gauges[0];

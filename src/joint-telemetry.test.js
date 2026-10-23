@@ -116,11 +116,11 @@ test('hovering shows the tooltip at once with value, bounds, utilisation, distan
 
 // Start pose editing (Felix, 2026-10-23): behind the lock, in Live at the run start.
 const LIMITS = {lower_position_rad: [-2, -1], upper_position_rad: [2, 1], velocity_rad_s: [2, 2], effort_nm: [40, 40]};
-const pose = (changes = {}) => ({editable: true, value: [.5, 0], defaults: [.5, 0], lower: [-2, -1], upper: [2, 1],
+const pose = (changes = {}) => ({editable: true, resettable: true, value: [.5, 0], defaults: [.5, 0], lower: [-2, -1], upper: [2, 1],
   planning: {lower: [-1.9, -.9], upper: [1.9, .9]}, ...changes});
 function editableTable(storage = memory()) {
   const container = new Node('div'), drafts = [], commits = [];
-  const resetButton = new Node('button'), rows = createJointTable(container, ['a', 'b'], {onStartPoseDraft: q => drafts.push(q), onStartPoseCommit: q => commits.push(q), resetButton});
+  const resetButton = new Node('button'), rows = createJointTable(container, ['a', 'b'], {onStartPoseDraft: q => drafts.push(q), onStartPoseCommit: q => commits.push(q), onStartPoseReset: () => commits.push('reset'), resetButton});
   const button = new Node('button');
   setupJointLock({button, rows, storage});
   // A 200 px track: the URDF range spans its inner 86 % (7 % inset each side).
@@ -222,14 +222,16 @@ test('the start-pose Reset beside the lock is disabled at the default, enabled w
   updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: pose({value: [1, .3]})});
   assert.equal(resetButton.disabled, false);
   assert.match(resetButton.title, /Differs: J1 \+1\.000 rad \(default \+0\.500\), J2 \+0\.300 rad/);
-  click(); assert.deepEqual(commits, [[.5, 0]]);
+  click(); assert.deepEqual(commits, ['reset']);
   button.dispatch('click');
   updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: pose({value: [1, .3]})});
   assert.equal(resetButton.disabled, false);
-  // Not settable now (after t = 0, running): disabled, with the reason.
+  // Running or after t = 0 (not editable): still enabled. Disconnected: disabled, with the reason.
   updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: pose({value: [1, .3], editable: false})});
-  assert.equal(resetButton.disabled, true); assert.match(resetButton.title, /Available at t = 0/);
-  click(); assert.equal(commits.length, 1);
+  assert.equal(resetButton.disabled, false); click(); assert.equal(commits.length, 2);
+  updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: pose({value: [1, .3], editable: false, resettable: false})});
+  assert.equal(resetButton.disabled, true); assert.match(resetButton.title, /Not available now/);
+  click(); assert.equal(commits.length, 2);
   updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: null});
   assert.equal(resetButton.disabled, true);
 });

@@ -322,7 +322,7 @@ cursor at t = 0, the position column (headed START) is the start pose: dragging
 a gauge shows the arm at once (scene only) and commits on release, a Numbers
 cell commits on Enter, a reset arrow beside a modified joint restores that joint.
 A Reset button left of the lock, always shown (also locked), is disabled while the
-start pose is the default and otherwise restores the whole start pose in one
+start pose is the default (and in Replay) and otherwise, even mid-run, restores the whole start pose in one
 settings change; it replaces the former all-joints arrow and the lock's dot. A pose outside the
 MPC planning box (URDF range less `joint_margin_rad`) is flagged, not blocked.
 Elsewhere, in Replay or locked, the tab is read-only as before. Task geometry

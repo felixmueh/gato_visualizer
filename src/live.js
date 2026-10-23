@@ -988,8 +988,18 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       if (!pose) return null;
       if (poseDraft) pose.value = [...poseDraft];
       const shown = presentedState;
-      pose.editable = connected() && !clock.playing && (!shown || atRunStart(shown)) && status !== 'gpu_busy';
+      pose.resettable = connected() && status !== 'gpu_busy';
+      pose.editable = pose.resettable && !clock.playing && (!shown || atRunStart(shown));
       return pose;
+    },
+    // The Joints tab's Reset: the default start pose at any point of a run (running,
+    // paused or after t = 0); like every start-pose change it starts a new run at t = 0.
+    resetStartPose() {
+      const pose = this.startPose;
+      if (!pose?.resettable) return false;
+      poseDraft = null;
+      writePath(settings.config, START_POSE_PATH, [...pose.defaults]);
+      change(); renderView(); return true;
     },
     previewStartPose(q) {
       if (q && !this.startPose?.editable) return;

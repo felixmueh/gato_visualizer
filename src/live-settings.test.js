@@ -1319,6 +1319,13 @@ test('the start pose is edited at the run start only: a drag previews the arm, a
     h.$('live-history').value = '0.5'; h.$('live-history').emit('input'); await flush();
     assert.equal(live.startPose.editable, false);
     assert.equal(live.setStartPose(start), false);
+    // The Joints tab's Reset still works there: default start pose, new run at t = 0.
+    assert.equal(live.startPose.resettable, true);
+    assert.equal(live.resetStartPose(), true);
+    await new Promise(resolve => setTimeout(resolve, 380));
+    const back = h.commands.at(-1);
+    assert.equal(back.type, 'set_settings'); assert.equal(back.reset, true); assert.equal(back.anchor, undefined);
+    assert.deepEqual(back.config.plant.start_pose_rad, start);
     h.edit('solver_params.q_cost', 8);
     await new Promise(resolve => setTimeout(resolve, 380));
     assert.equal(h.commands.at(-1).reset, undefined); assert.equal(h.commands.at(-1).anchor.sim_time_s, .5);
