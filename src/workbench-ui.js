@@ -1,3 +1,5 @@
+import { setupTransportPopovers } from './transport-popover.js';
+
 // Keep Stop a playback preference. Its inversion dispatches only the existing
 // local Continue change handler, never a settings submission or new calculation.
 export function bindStopPreference(stop, continueInput) {
@@ -6,9 +8,9 @@ export function bindStopPreference(stop, continueInput) {
   continueInput.addEventListener('change', update); update();
   return update;
 }
-
 export function setupWorkbench({ document: doc = document, onLayout = () => {} } = {}) {
   const $ = id => doc.getElementById(id), shell = $('workbench');
+  setupTransportPopovers(doc);
   let currentTab = 'views';
   const selectTab = name => {
     currentTab = name;

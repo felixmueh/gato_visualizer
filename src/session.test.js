@@ -72,3 +72,15 @@ test('settings differences read segment headers and experiment params without Li
   assert.equal(track.differences[0].other, 10);
   session.updateMain({ context: other.context, settings: other.context.settings }); assert.deepEqual(track.differences, []);
 });
+
+test('editable comparison names start at A, retain source labels and survive Live generations', () => {
+  const session = createSession(), source = { id: 'freeze', label: 'Freeze · 14:32:05', provenance: { live: { complete: false } } };
+  const a = session.addTrack({ span: [0, 1], motion: source }), b = session.addTrack({ span: [0, 2], label: 'Catalog recording' });
+  assert.equal(session.focused.displayName, 'Live'); assert.equal(a.displayName, 'A'); assert.equal(b.displayName, 'B');
+  assert.equal(a.label, source.label); assert.equal(a.badges.some(badge => badge.label === 'Incomplete'), false);
+  session.setName(a.id, '  fast reach  '); assert.equal(a.displayName, 'fast reach'); assert.equal(a.label, source.label);
+  session.updateMain({ source: { kind: 'live', generation: 2 } }); assert.equal(a.displayName, 'fast reach');
+  session.setName(a.id, ' '); assert.equal(a.displayName, 'A');
+  assert.equal(session.setName('live', 'changed'), false); assert.equal(session.focused.displayName, 'Live');
+  assert.equal(source.label, 'Freeze · 14:32:05'); assert.equal(source.provenance.live.complete, false);
+});

@@ -11,6 +11,8 @@ export const GHOST_COLOR = 0x9ca9b8;
 export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', max = 24, method = 'plain', layer = 0 }) {
   const source = robot.joints?.[armRoot];
   if (!source) throw new Error(`Ghost arm root ${armRoot} is missing.`);
+  const sourceJoints = new Map();
+  source.traverse(object => { if (object.isURDFJoint) sourceJoints.set(object.urdfName, object); });
   if (max !== Infinity && (!Number.isInteger(max) || max < 1 || max > 24)) throw new Error('Ghost arm pool must contain 1–24 arms, or be uncapped (Infinity).');
   checkMethod(method);
   checkLayer(layer);
@@ -111,6 +113,17 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
       const changed = !ghost.q || q.length !== ghost.q.length || names.length !== ghost.names.length
         || q.some((value, i) => value !== ghost.q[i]) || names.some((name, i) => name !== ghost.names[i]);
       if (changed) {
+        // A primary pose may reuse a comparison slot whose descriptor also
+        // supplied fixed gripper joints. Restore omitted coordinates from the
+        // current solid source before applying the new explicit pose. Cloned
+        // mimic references ensure both passes reset without moving the source.
+        for (const name of ghost.names || []) {
+          if (names.includes(name)) continue;
+          const values = sourceJoints.get(name)?.jointValue;
+          if (!values?.length || !values.every(Number.isFinite)) continue;
+          ghost.color.joints.get(name)?.setJointValue(...values);
+          ghost.depth?.joints.get(name)?.setJointValue(...values);
+        }
         names.forEach((name, i) => {
           if (!Number.isFinite(q[i])) return;
           ghost.color.joints.get(name)?.setJointValue(q[i]);

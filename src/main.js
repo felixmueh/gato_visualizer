@@ -18,6 +18,7 @@ import { workbenchShell } from "./workbench-shell.js";
 import { setupExpandedTimeline } from "./expanded-timeline.js";
 import { setupPlotInspection } from "./plot-inspection.js";
 import { setupWorkbench } from "./workbench-ui.js";
+import { setupGhostControls } from './transport-popover.js';
 import { setupSidebarResize } from "./sidebar-width.js";
 import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry, setupJointViewToggle } from "./joint-telemetry.js";
@@ -96,6 +97,8 @@ document.addEventListener('open-settings', event => { sourceSettings.dialog.sele
 let limitTint, limitTintEnabled = true, limitUse = { ...DEFAULT_LIMIT_USE }, lastJointTelemetry;
 const presentationSettings = setupPresentationSettings({ container: sourceSettings.panels.ui, onChange: settings => {
   live?.setPresentationSettings(settings); limitTintEnabled = settings.limit_tint; limitTint?.setEnabled(limitTintEnabled);
+  onionSkin?.setSettings({ opacity: settings.ghost_opacity_percent / 100 });
+  auxiliaryViews?.invalidate();
   const next = pickLimitUse(settings);
   if (JSON.stringify(next) === JSON.stringify(limitUse)) return;
   limitUse = next; limitTint?.setSettings(limitUse);
@@ -123,6 +126,9 @@ let lastCameraFit;
 let jointCells = [];
 let auxiliaryViews;
 let onionSkin, onionSpike;
+const ghostControls = setupGhostControls({ onChange: settings => {
+  onionSkin?.setSettings(settings); auxiliaryViews?.invalidate();
+} });
 const workbench = setupWorkbench({ onLayout: () => auxiliaryViews?.invalidate() });
 setupSidebarResize({ shell: document.getElementById("workbench"), onLayout: () => auxiliaryViews?.invalidate() });
 const emptyTimingIntervals = [];
@@ -130,7 +136,9 @@ const expandedTimeline = setupExpandedTimeline({
   onLayout: () => auxiliaryViews?.invalidate(),
   onAggregate: aggregate => { if (live?.mode === 'live') session?.setAggregate(aggregate); },
   onAddTrack: id => addSessionTrack(id).catch(showTrackError),
+  onFreeze: () => $('live-freeze').click(),
   onTrackChange: (id, patch) => {
+    if ('displayName' in patch) session.setName(id, patch.displayName);
     if ('offset_s' in patch) session.setOffset(id, patch.offset_s);
     if ('visible' in patch) session.setVisible(id, patch.visible);
     if ('display' in patch) session.setDisplay(id, patch.display);
@@ -188,7 +196,7 @@ function updateExpandedTimeline() {
     expandedTimeline.update({ mode: 'live', identity: session?.id, session, bounds: session?.span || history.presentationBounds,
       time: session?.cursor ?? history.selectedTime, clockLabel: 'Session time',
       intervals: history.intervals, breaches: history.breaches || [], revision: track?.historyRevision, tracks: session ? sessionLanes() : [], catalog: replayLibrary?.items || [],
-      aggregate: session?.aggregate, ...onionSkin?.timeline });
+      aggregate: session?.aggregate, freezeAvailable: !$('live-freeze').disabled, ...onionSkin?.timeline });
   } else {
     const duration = trajectory ? trajectory.time_s.at(-1) - trajectory.time_s[0] : 0;
     expandedTimeline.update({ mode: 'replay', identity: trajectory, bounds: [0, duration], time: elapsed, clockLabel: `${trajectory ? playbackClock(trajectory) : 'recorded'} time`.replace(/^./, letter => letter.toUpperCase()), intervals: emptyTimingIntervals, ...onionSkin?.timeline });
@@ -503,7 +511,8 @@ function updateOnionSkin() {
     onionSkin.update({ mode: 'live', identity: `live:${history.generation}`, revision: live.historyRevision,
       times: history.length ? history.bounds : [], bounds: history.bounds, trackBounds: history.presentationBounds,
       cursor: history.selectedTime ?? history.bounds[1], reveal: liveReveal(history.selectedTime),
-      states: times => live.historyStates(times), jointNames: defaultData.joint_names, color: ONION_COLOR });
+      states: times => live.historyStates(times), jointNames: defaultData.joint_names, color: ONION_COLOR,
+      comparisons: trackScene?.onionSources || [] });
   } else {
     const times = trajectory?.time_s || [], offset = times[0] || 0;
     onionSkin.update({ mode: 'replay', identity: trajectory, revision: trajectory,
@@ -622,6 +631,7 @@ async function start() {
       const input = $(live?.mode === 'live' ? 'live-history' : 'timeline');
       input.value = time; input.dispatchEvent(new Event('input', { bubbles: true }));
     } });
+    onionSkin.setSettings({ ...ghostControls.settings, opacity: presentationSettings.settings.ghost_opacity_percent / 100 });
     trackScene = createTrackScene({ robot, scene, jointNames: defaultData.joint_names });
     jointCells = createJointTable($("joint-list"), data.joint_names);
     setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
@@ -650,7 +660,7 @@ async function start() {
     }
     window.__motionStudio = {
       get session() { return session ? { id: session.id, focusedId: session.focused?.id, span: session.span, cursor: session.cursor, rate: session.rate, aggregate: session.aggregate,
-        tracks: session.tracks.map(track => ({ id: track.id, kind: track.kind, source: track.source, label: track.label, color: track.color, offset_s: track.offset_s,
+        tracks: session.tracks.map(track => ({ id: track.id, kind: track.kind, source: track.source, label: track.label, displayName: track.displayName, color: track.color, offset_s: track.offset_s,
           display: track.display, visible: track.visible, span: track.span, time: trackTime(track, session.cursor), outside: outsideSpan(track, session.cursor) })), ...trackScene?.snapshot } : null; },
       get onionSpike() { return onionSpike?.snapshot; },
       get onionSkin() { return onionSkin?.snapshot; },
@@ -988,6 +998,6 @@ function updateSessionScene() {
   if (!session || !trackScene) return;
   const main = focusedTrack();
   trackScene.update({ tracks: session.tracks, time: session.cursor, mainReference: main?.reference,
-    visible: Boolean(main) });
+    visible: Boolean(main), opacity: presentationSettings.settings.ghost_opacity_percent / 100 });
   setMainDimmed(Boolean(main && !main.empty && outsideSpan(main, session.cursor)));
 }

@@ -1,14 +1,15 @@
 # Presentation settings
 
-`GET /api/presentation/settings` returns the saved preferences. `POST` replaces all eight fields and returns the same object:
+`GET /api/presentation/settings` returns the saved preferences. `POST` replaces all nine fields and returns the same object:
 
 ```json
 {"report_hz":20,"buffer_ms":200,"interpolate":false,"limit_tint":true,
+ "ghost_opacity_percent":55,
  "limit_near_percent":90,"limit_at_position_rad":0.003,
  "limit_at_velocity_rad_s":0.01,"limit_at_torque_percent":0.2}
 ```
 
-These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, `interpolate` a boolean, `limit_tint` a boolean, `limit_near_percent` within 1–100, `limit_at_position_rad` within 0–0.1, `limit_at_velocity_rad_s` within 0–1 and `limit_at_torque_percent` within 0–10. A saved `presentation` key without any of these fields takes their defaults. Source, build, plotting and replay preferences are preserved when saving this key.
+These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, `interpolate` a boolean, `limit_tint` a boolean, `ghost_opacity_percent` within 0–100, `limit_near_percent` within 1–100, `limit_at_position_rad` within 0–0.1, `limit_at_velocity_rad_s` within 0–1 and `limit_at_torque_percent` within 0–10. A saved `presentation` key without any of these fields takes their defaults. Source, build, plotting and replay preferences are preserved when saving this key.
 
 **Settings dialog (UI tab):** no Save button. Checkboxes apply on change. Numeric fields apply on a committed change (change, blur, Enter) or after 700 ms without typing, never per keystroke. A value outside its range is marked on the field with the reason as tooltip; it is neither applied nor saved and the last valid value stays in effect. Valid changes are saved through the POST above after a 400 ms debounce, so a burst (including `report_hz`, whose backend update happens with the POST) sends only the last value, with at most one request in flight. A failed save marks the section heading ("! not saved", reason in the tooltip) while the setting stays applied; the next change retries.
 
@@ -45,21 +46,29 @@ This is presentation only. Plot data still come from Python jobs at the existing
 ## Onion skin
 
 The nested-arcs button beside each transport bar’s expand chevron, or **O**
-while not typing, toggles onion skin. It starts off and remembers the toggle
-in browser `localStorage` under `motion-studio-onion-skin`; unavailable storage
-never prevents use. The button’s tooltip shows the current count and spacing.
-No backend presentation setting changes.
+while not typing, cycles onion skin: off, Live only, and (with comparison
+tracks) all tracks in their colours. Replay has off/on. It starts off and
+remembers the choice in browser storage. The button’s tooltip shows its mode,
+current count and effective spacing.
 
-Ghost arms show the recorded right arm and gripper only. Initial keyframes
-use the smallest absolute 1, 2, 5 × 10ᵏ second spacing with at most eight grid
-points, plus the final recorded state; a grid point within a quarter step of
-that final state is dropped. Live holds its spacing until growth exceeds
-sixteen grid points, then advances to the next sufficient nice step. Each
-keyframe snaps to the sample at or before it; duplicate snapped samples draw
-once. Grey denotes recorded motion, cyan a saved prediction trajectory.
+Hover or focus the button to open its settings above the transport: **Spacing
+(s)** defaults to 0.5 seconds and **Maximum arms** to 16 (integer 1–64). The
+maximum counts temporal ghost arms across all displayed tracks; each track's
+ordinary current arm/dot remains independent. When the whole recording would
+exceed the maximum, use an integer multiple
+of the requested spacing. The retained final endpoint can be closer to its
+preceding keyframe than that grid spacing. The two transports share these
+browser preferences. Arrow Up enters a panel from its button; Escape closes
+it. The same hover interaction above Precalculate edits its duration.
+
+Ghost arms show the recorded right arm and gripper only. Each keyframe snaps
+to the sample at or before it; duplicate snapped samples draw once. Grey
+denotes Live recorded motion, cyan a saved prediction trajectory, and comparison
+arms use their track colours and recorded base/gripper positions.
 Ghosts never interpolate, even when the solid robot’s playback does.
 
-Opacity rises linearly from 0.12 to 0.4 toward the episode cursor; ghosts
+**Settings → UI → Ghost arms opacity (%)** defaults to 55%, applied to temporal
+and comparison arms. Temporal ghosts fade with distance from the cursor; ghosts
 within 5 ms are hidden. Compact and expanded timelines mark the same snapped
 samples. Hover a ghost or tick for its recorded time; click to seek. Orbit
 drags of 4 px or more do not seek. Replay ticks use the transport’s relative
@@ -68,7 +77,7 @@ Live reveals only samples up to the cursor during growing playback, just like
 plots; paused history shows all retained states. A new generation clears the
 keyframes. Ghost transforms rebase when the recording’s fixed joints change.
 
-The pool is limited to 24 arms and shares the solid robot’s geometry while
+The temporal pool obeys the chosen maximum and shares the solid robot’s geometry while
 owning its materials. Ghosts use a depth pre-pass and appear in the main,
 Top and Right views. The 2026-10-23 laptop spike (Firefox 158, reported AMD
 Radeon R9 200 Series) measured 16.67 ms mean frame interval with eight ghosts
@@ -86,7 +95,7 @@ implementation report stay in this worktree’s ignored `_expr_data/onion-skin/`
 
 ## Session and tracks
 
-Live always has one browser-owned session, initially main track A only. The
+Live always has one browser-owned session, initially the main track **Live** only. The
 session time equals Live's recorded simulation time. Each immutable replay
 track samples at `session time − offset`, interpolating recorded samples and
 holding the nearest endpoint outside its span. Main-track playback retains the
@@ -99,22 +108,26 @@ their own source.
 freezes first under Temporary. Replays align their start with the main track's
 start (session zero when it is empty); freezes start at offset zero. Lanes show
 an effective offset, including zero, plus eye, Arm/Dot and removal controls.
+Replay names are editable and start at A, B, C; source names stay in tooltips.
+The remove button sits before the offset; Live has a second Freeze button
+beside its arm display control. A compact ruler sits directly above the Live
+row. Aggregate barriers and outside shading span every track rail.
 Dragging shifts a track without modifying recorded data; snapping within 6 px
 uses zero, the cursor and track endpoints. Alt-drag disables snapping;
 double-click resets the default offset. A lane's hover tooltip shows track
 time, all settings differences and provenance badges; its label shows the first
-two differences. Letters distinguish tracks when the five-colour palette repeats.
+two differences. Names distinguish tracks when the five-colour palette repeats.
 The main lane carries Live timing intervals and breach marks. A count on the
 collapsed timeline chevron keeps loaded tracks discoverable.
 
 Comparison ghosts use the shared arm renderer in an independent uncapped
 pre-pass pool, with one right arm per visible Arm track and its own recorded
-fixed-joint base. Dot tracks show an end-effector marker. Opacity is 0.35 in
-span and 0.15 outside. Paths are solid in the track colour, thinner and dimmer
+fixed-joint base. Dot tracks show an end-effector marker. Opacity follows the
+UI setting and dims outside the recorded span. Paths are solid in the track colour, thinner and dimmer
 than Live's white trace. A different reference is dashed in the same colour.
 Ghosts/dots appear in the main, Top and Right views; limit tint belongs only
-to the solid robot, and onion skin remains independent. Frame, wall-clock,
-model-hash and incomplete-run mismatches are marked once on the lane.
+to the solid robot. Frame, wall-clock and model-hash mismatches are marked
+once on the lane. Run completeness remains recorded in provenance.
 
 Play, Pause and scrub drive one session clock even without comparison tracks.
 Speed ranges from 0.25× to 4× except while following a growing Live tip, when
@@ -131,7 +144,7 @@ support local playback; calculation controls remain disabled.
 Freeze for comparison is available with at least two states, no active job and
 no dirty/pending settings. It exports the current run via `save_replay`, adds
 it at offset zero and seeks the episode cursor to the run start. Breach-stopped
-and cancelled runs are allowed and labelled incomplete. Freezes live only in
+and cancelled runs are allowed. Freezes live only in
 the server's RAM-backed runtime directory, survive page reloads, and are pruned
 to eight oldest-first; server shutdown deletes them. The browser's track list,
 offsets and display choices are not persisted or written to config. Focus

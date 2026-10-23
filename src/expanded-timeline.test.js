@@ -227,3 +227,48 @@ test('different Replay object identities reset independently while Live session 
   assert.deepEqual(timeline.snapshot.aggregate, { start: null, end: null });
   assert.deepEqual(timeline.snapshot.visible, [100, 110]);
 });
+
+test('compact Live rows show editable names, source tooltips and aligned remove/freeze action slots', async () => {
+  const changes = [], freezes = [], tracks = laneTracks();
+  tracks[1].displayName = 'A'; tracks[1].defaultName = 'A'; tracks[1].label = 'Source filename';
+  tracks[1].badges.push({ label: 'Incomplete', title: 'Incomplete run' });
+  const { timeline, nodes } = sessionTimelineFixture({ onTrackChange: (id, patch) => changes.push([id, patch]), onFreeze: () => freezes.push(true) });
+  const update = freezeAvailable => timeline.update({ mode: 'live', identity: 'session', bounds: [0, 10], time: 0, tracks, freezeAvailable });
+  update(true); await nodes.get('live-timeline-expand').emit('click');
+  assert.equal(nodes.get('timeline-bands').height, 20);
+  const rows = nodes.get('timeline-lanes').children, main = rows[0], replay = rows[1];
+  assert.equal(main.querySelector('.timeline-lane-label').textContent, 'Live');
+  const name = replay.querySelector('.timeline-lane-name'); assert.equal(name.value, 'A'); assert.match(name.title, /Source filename/);
+  name.value = 'slow run'; await name.emit('change'); assert.deepEqual(changes.at(-1), ['b', { displayName: 'slow run' }]);
+  assert.equal(replay.querySelectorAll('.timeline-lane-badge').some(node => node.textContent === 'Incomplete'), false);
+  const header = replay.querySelector('.timeline-lane-header');
+  assert(header.children.indexOf(replay.querySelector('.timeline-lane-remove')) < header.children.indexOf(replay.querySelector('.timeline-lane-offset')));
+  const mainHeader = main.querySelector('.timeline-lane-header');
+  assert(mainHeader.children.indexOf(main.querySelector('.timeline-lane-freeze')) > mainHeader.children.indexOf(main.querySelector('.timeline-lane-display')));
+  assert.equal(main.querySelector('.timeline-lane-remove').hidden, true); assert.equal(replay.querySelector('.timeline-lane-freeze').hidden, true);
+  await main.querySelector('.timeline-lane-freeze').emit('click'); assert.equal(freezes.length, 1);
+  update(false); await main.querySelector('.timeline-lane-freeze').emit('click'); assert.equal(freezes.length, 1);
+});
+
+test('scrubbing and aggregate selection operate on each lane while offset dragging stays separate', async () => {
+  const seeks = [], changes = [], tracks = laneTracks();
+  const { timeline, nodes } = sessionTimelineFixture({ onSeek: time => seeks.push(time), onTrackChange: (id, patch) => changes.push([id, patch]) });
+  timeline.update({ mode: 'live', identity: 'session', bounds: [0, 10], time: 0, tracks });
+  await nodes.get('live-timeline-expand').emit('click');
+  const rows = nodes.get('timeline-lanes').children, rail = rows[1].querySelector('.timeline-lane-rail'), clip = rows[1].querySelector('.timeline-lane-clip');
+  const pointer = (x, extra = {}) => ({ pointerId: 3, button: 0, clientX: x, clientY: 20, ...extra });
+  await rail.emit('pointerdown', pointer(120)); await rail.emit('pointermove', pointer(240)); await rail.emit('pointerup', pointer(240, { type: 'pointerup' }));
+  assert.equal(seeks.at(-1), 4);
+  await clip.emit('pointerdown', pointer(120, { shiftKey: true })); // Bubbles to rail in the browser; emit that stage explicitly.
+  await rail.emit('pointerdown', pointer(120, { shiftKey: true, target: clip }));
+  await rail.emit('pointermove', pointer(420, { shiftKey: true })); await rail.emit('pointerup', pointer(420, { type: 'pointerup', shiftKey: true }));
+  assert.deepEqual(timeline.snapshot.aggregate, { start: 2, end: 7 }); assert.deepEqual(changes, []);
+  assert.equal(nodes.get('timeline-window-shade-start').style.width, '20%'); assert.equal(nodes.get('timeline-window-shade-end').style.width, '30%');
+  const overlay = nodes.get('timeline-aggregate-overlay'), handle = nodes.get('timeline-window-start');
+  handle.className = 'timeline-window-handle'; handle.dataset.side = 'start';
+  await overlay.emit('pointerdown', pointer(120, { target: handle }));
+  await overlay.emit('pointermove', pointer(180, { target: handle })); await overlay.emit('pointerup', pointer(180, { type: 'pointerup' }));
+  assert.deepEqual(timeline.snapshot.aggregate, { start: 3, end: 7 });
+  await clip.emit('pointerdown', pointer(120)); await rail.emit('pointermove', pointer(150, { altKey: true })); await clip.emit('pointerup', pointer(150));
+  assert.deepEqual(changes.at(-1), ['b', { offset_s: 1.5 }]); assert.deepEqual(timeline.snapshot.aggregate, { start: 3, end: 7 });
+});

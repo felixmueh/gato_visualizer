@@ -89,14 +89,17 @@ export function expandedTimelineShell() {
     <div class="timeline-inspection-heading"><span id="timeline-clock-label">Recorded time</span><span id="timeline-timing-note">No timing data</span><div class="timeline-track-picker" id="timeline-track-picker" hidden><button id="timeline-add-track" aria-haspopup="menu" aria-expanded="false" aria-controls="timeline-track-menu">+ Add track</button><div id="timeline-track-menu" class="timeline-track-menu" role="menu" hidden></div></div><div class="timeline-zoom-controls"><button id="timeline-window-clear" class="timeline-window-clear" aria-label="Clear aggregate window" title="Clear aggregate window (Esc)" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg></button><button id="timeline-zoom-out" aria-label="Zoom timeline out" title="Zoom out (−)">−</button><button id="timeline-zoom-in" aria-label="Zoom timeline in" title="Zoom in (+)">+</button><button id="timeline-fit" title="Fit entire recording (0)">Fit</button></div></div>
     <p id="timeline-track-message" class="timeline-track-message" role="status" hidden></p>
     <div id="timeline-linked-graphs"></div>
-    <div id="timeline-inspector" class="timeline-inspector" role="slider" tabindex="0" aria-label="Inspect simulation time" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-describedby="timeline-gesture-hint"><canvas id="timeline-bands" aria-hidden="true"></canvas><div id="timeline-window-shade-start" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-shade-end" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-start" class="timeline-window-handle" data-side="start" role="slider" tabindex="-1" aria-label="Aggregate window start"></div><div id="timeline-window-end" class="timeline-window-handle" data-side="end" role="slider" tabindex="-1" aria-label="Aggregate window end"></div><div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"><span></span></div></div>
-    <div id="timeline-lanes" class="timeline-lanes" aria-label="Session tracks" hidden></div>
+    <div id="timeline-surface-stack" class="timeline-surface-stack">
+      <div id="timeline-inspector" class="timeline-inspector" role="slider" tabindex="0" aria-label="Inspect simulation time" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-describedby="timeline-gesture-hint"><canvas id="timeline-bands" aria-hidden="true"></canvas><div id="timeline-playhead" class="timeline-playhead" aria-hidden="true"><span></span></div></div>
+      <div id="timeline-lanes" class="timeline-lanes" aria-label="Session tracks" hidden></div>
+      <div id="timeline-aggregate-overlay" class="timeline-aggregate-overlay"><div id="timeline-window-shade-start" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-shade-end" class="timeline-window-shade" aria-hidden="true"></div><div id="timeline-window-start" class="timeline-window-handle" data-side="start" role="slider" tabindex="-1" aria-label="Aggregate window start"></div><div id="timeline-window-end" class="timeline-window-handle" data-side="end" role="slider" tabindex="-1" aria-label="Aggregate window end"></div></div>
+    </div>
     <div class="timeline-inspection-footer"><span id="timeline-gesture-hint" class="timeline-gesture-help" title="${GESTURE_HINT}"><span aria-hidden="true">?</span><span class="sr-only">${GESTURE_HINT}</span></span><span id="timeline-selection">0.000 s</span></div>
     <div id="timeline-inspection-tooltip" class="timeline-inspection-tooltip" role="tooltip" hidden></div>
   </section>`;
 }
 
-export function setupExpandedTimeline({ document: doc = document, onSeek, onLayout = () => {}, onAggregate = () => {}, onAddTrack = () => {}, onTrackChange = () => {}, onTrackReset = () => {}, onTrackRemove = () => {} }) {
+export function setupExpandedTimeline({ document: doc = document, onSeek, onLayout = () => {}, onAggregate = () => {}, onAddTrack = () => {}, onTrackChange = () => {}, onTrackReset = () => {}, onTrackRemove = () => {}, onFreeze = () => {} }) {
   const $ = id => doc.getElementById(id), panel = $('expanded-timeline'), surface = $('timeline-inspector');
   const canvas = $('timeline-bands'), playhead = $('timeline-playhead'), tooltip = $('timeline-inspection-tooltip');
   const toggles = ['live-timeline-expand', 'replay-timeline-expand'].map($);
@@ -104,6 +107,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   let source, sourceCount = -1, revision, index = [], paintKey = '', width = 0, paints = 0, drag = null, mode = 'replay';
   let keyframes = [], keyframeSource, keyframeRevision;
   let aggregate = { ...UNBOUNDED_AGGREGATE };
+  let freezeAvailable = false;
   let tracks = [], catalog = [], breaches = [], laneKey = '', catalogKey = '', lanePaints = 0, laneDrag = null;
   const lanes = $('timeline-lanes'), picker = $('timeline-track-picker'), addTrack = $('timeline-add-track'), menu = $('timeline-track-menu');
   const laneNodes = new Map(), workspaces = new Map();
@@ -133,7 +137,9 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     const row = doc.createElement('div'); row.className = 'timeline-lane'; row.dataset.trackId = track.id;
     const header = doc.createElement('div'); header.className = 'timeline-lane-header';
     const chip = doc.createElement('span'); chip.className = 'timeline-lane-chip';
-    const label = doc.createElement('span'); label.className = 'timeline-lane-label';
+    const label = doc.createElement(track.kind === 'live' ? 'span' : 'input'); label.className = 'timeline-lane-label';
+    if (track.kind !== 'live') { label.type = 'text'; label.setAttribute('aria-label', 'Track name'); label.classList.toggle('timeline-lane-name', true); }
+    const information = doc.createElement('div'); information.className = 'timeline-lane-information';
     const badges = doc.createElement('span'); badges.className = 'timeline-lane-badges';
     const differences = doc.createElement('span'); differences.className = 'timeline-lane-differences';
     const offset = doc.createElement('input'); offset.type = 'text'; offset.className = 'timeline-lane-offset'; offset.setAttribute('inputmode', 'decimal');
@@ -142,17 +148,28 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     const eye = doc.createElement('button'); eye.type = 'button'; eye.className = 'timeline-lane-visibility';
     const display = doc.createElement('button'); display.type = 'button'; display.className = 'timeline-lane-display';
     const remove = doc.createElement('button'); remove.type = 'button'; remove.className = 'timeline-lane-remove'; remove.textContent = '×';
+    const freeze = doc.createElement('button'); freeze.type = 'button'; freeze.className = 'timeline-lane-freeze'; freeze.title = 'Freeze for comparison'; freeze.setAttribute('aria-label', 'Freeze for comparison');
+    freeze.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="12" height="12" rx="2"/><path d="M8 20h10a2 2 0 0 0 2-2V8M10 7v6M7 10h6"/></svg>';
     const rail = doc.createElement('div'); rail.className = 'timeline-lane-rail';
     const clip = doc.createElement('div'); clip.className = 'timeline-lane-clip'; clip.tabIndex = track.kind === 'live' ? -1 : 0;
     const bands = doc.createElement('canvas'); bands.className = 'timeline-lane-bands'; bands.setAttribute('aria-hidden', 'true');
     const cursor = doc.createElement('div'); cursor.className = 'timeline-lane-cursor'; cursor.setAttribute('aria-hidden', 'true');
-    clip.append(bands); rail.append(clip, cursor); header.append(chip, label, badges, differences, offset, unit, eye, display, remove); row.append(header, rail);
-    const node = { row, chip, label, badges, differences, offset, eye, display, remove, rail, clip, bands, cursor, track, bandsKey: '' };
+    clip.append(bands); rail.append(clip, cursor); information.append(label, badges, differences); header.append(chip, information, remove, offset, unit, eye, display, freeze); row.append(header, rail);
+    const node = { row, chip, label, badges, differences, offset, eye, display, remove, freeze, rail, clip, bands, cursor, track, bandsKey: '' };
     function applyOffset() {
       const value = Number(offset.value.replace(/s\s*$/, '').trim());
       if (!offset.value.trim() || !Number.isFinite(value)) { offset.value = offsetText(node.track.offset_s || 0); return; }
       onTrackChange(track.id, { offset_s: value });
     }
+    if (track.kind !== 'live') {
+      const applyName = () => onTrackChange(track.id, { displayName: label.value.trim() || node.track.defaultName || node.track.displayName });
+      label.addEventListener('change', applyName);
+      label.addEventListener('keydown', event => {
+        if (event.key === 'Enter') { applyName(); label.blur?.(); }
+        if (event.key === 'Escape') { label.value = node.track.displayName || node.track.defaultName; label.blur?.(); event.stopPropagation(); }
+      });
+    }
+    freeze.addEventListener('click', () => { if (node.track.kind === 'live' && !freeze.disabled) onFreeze(); });
     offset.addEventListener('change', applyOffset);
     offset.addEventListener('keydown', event => { if (event.key === 'Enter') { applyOffset(); offset.blur?.(); } else if (event.key === 'Escape') { offset.value = offsetText(node.track.offset_s || 0); offset.blur?.(); event.stopPropagation(); } });
     eye.addEventListener('click', () => onTrackChange(track.id, { visible: node.track.visible === false }));
@@ -161,11 +178,11 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     clip.addEventListener('dblclick', event => { event.preventDefault(); if (node.track.kind !== 'live') onTrackReset(track.id); });
     clip.addEventListener('keydown', event => {
       if (node.track.kind === 'live') return;
-      if (event.key === 'Home') { event.preventDefault(); onTrackReset(track.id); }
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); onTrackChange(track.id, { offset_s: node.track.offset_s + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? .001 : .01) }); }
+      if (event.key === 'Home') { event.preventDefault(); event.stopPropagation(); onTrackReset(track.id); }
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); onTrackChange(track.id, { offset_s: node.track.offset_s + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? .001 : .01) }); }
     });
     clip.addEventListener('pointerdown', event => {
-      if (node.track.kind === 'live' || event.button !== 0) return;
+      if (node.track.kind === 'live' || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return;
       event.preventDefault(); event.stopPropagation(); hideTooltip();
       laneDrag = { id: track.id, pointer: event.pointerId, x: event.clientX, offset: node.track.offset_s || 0, span: [...window], width: Math.max(1, rail.clientWidth) };
       clip.setPointerCapture(event.pointerId); clip.classList.toggle('dragging', true);
@@ -179,10 +196,11 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
         onTrackChange(track.id, { offset_s: snapOffset(raw, candidates, secondsPerPixel, { alt: event.altKey, span: item.span }) });
         return;
       }
+      if (drag) return;
       const rect = rail.getBoundingClientRect(), sessionTime = window[0] + (event.clientX - rect.left) / Math.max(1, rail.clientWidth) * (window[1] - window[0]);
       const entries = item.kind === 'live' ? visibleTimelineIntervals(index, [sessionTime - .000001, sessionTime + .000001]) : [];
       const entry = entries.find(entry => entry.severity === 'red') || entries.find(entry => entry.severity === 'yellow') || entries[0];
-      tooltip.textContent = `${item.letter || ''} · ${(sessionTime - (item.offset_s || 0)).toFixed(3)} s${entry ? ` · ${intervalDescription(entry.item)}` : ''}`; tooltip.hidden = false;
+      tooltip.textContent = `${item.displayName || (item.kind === 'live' ? 'Live' : item.letter) || ''} · ${(sessionTime - (item.offset_s || 0)).toFixed(3)} s${entry ? ` · ${intervalDescription(entry.item)}` : ''}`; tooltip.hidden = false;
     });
     function endLaneDrag(event) {
       if (laneDrag?.id !== track.id || laneDrag.pointer !== event.pointerId) return;
@@ -191,7 +209,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     }
     for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) clip.addEventListener(type, endLaneDrag);
     rail.addEventListener('pointerleave', hideTooltip);
-    rail.addEventListener('click', event => { if (event.target === rail) seek(window[0] + (event.clientX - rail.getBoundingClientRect().left) / Math.max(1, rail.clientWidth) * (window[1] - window[0])); });
+    bindSurface(rail, { lane: true });
     lanes.append(row); return node;
   }
   function paintLanes() {
@@ -202,7 +220,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     if (!shown || !expanded) return;
     const ids = new Set(tracks.map(track => track.id));
     for (const [id, node] of laneNodes) if (!ids.has(id)) { node.row.remove(); laneNodes.delete(id); }
-    const key = JSON.stringify([window, revision, surface.clientWidth, doc.defaultView?.devicePixelRatio || 1, breaches, tracks.map(track => [track.id, track.label, track.letter, track.color, track.span, track.offset_s, track.visible, track.display, track.empty, track.differences, track.badges])]);
+    const key = JSON.stringify([window, revision, freezeAvailable, surface.clientWidth, doc.defaultView?.devicePixelRatio || 1, breaches, tracks.map(track => [track.id, track.label, track.displayName, track.defaultName, track.letter, track.color, track.span, track.offset_s, track.visible, track.display, track.empty, track.differences, track.badges])]);
     if (key === laneKey) return;
     laneKey = key; lanePaints++;
     const span = window[1] - window[0], x = time => span ? (time - window[0]) / span * 100 : 0;
@@ -212,17 +230,20 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       const main = track.kind === 'live', offset = track.offset_s || 0, differences = track.differences || [];
       node.row.classList.toggle('muted', track.visible === false); node.row.classList.toggle('main-track', main);
       node.chip.style.backgroundColor = colorText(track.color); node.clip.style.backgroundColor = colorText(track.color);
-      node.label.textContent = `${track.letter || (main ? 'A' : '')} · ${track.label || (main ? 'Live' : track.id)}`;
-      node.label.title = [node.label.textContent, ...differences.map(diffText)].join('\n');
+      const name = main ? 'Live' : track.displayName || track.defaultName || String.fromCharCode(64 + tracks.indexOf(track));
+      if (main) node.label.textContent = name;
+      else if (doc.activeElement !== node.label) node.label.value = name;
+      node.label.title = [track.catalogName || track.label || name, ...differences.map(diffText)].join('\n');
       node.differences.textContent = differences.slice(0, 2).map(diffText).join(' · '); node.differences.title = differences.map(diffText).join('\n');
-      node.badges.replaceChildren(...(track.badges || []).map(badge => { const element = doc.createElement('span'); element.className = 'timeline-lane-badge'; element.textContent = badge.label || '⚠'; element.title = badge.title || ''; return element; }));
+      node.badges.replaceChildren(...(track.badges || []).filter(badge => badge.label !== 'Incomplete').map(badge => { const element = doc.createElement('span'); element.className = 'timeline-lane-badge'; element.textContent = badge.label || '⚠'; element.title = badge.title || ''; return element; }));
       if (doc.activeElement !== node.offset) node.offset.value = offsetText(offset);
       node.offset.disabled = main; node.offset.title = main ? 'Live offset is fixed at 0 s' : 'Offset in session time; double-click the lane to reset';
       node.eye.textContent = track.visible === false ? '○' : '●'; node.eye.title = track.visible === false ? 'Show track' : 'Hide track';
-      node.eye.setAttribute('aria-label', `${track.visible === false ? 'Show' : 'Hide'} track ${track.letter || track.id}`); node.eye.setAttribute('aria-pressed', String(track.visible !== false)); node.eye.disabled = main;
+      node.eye.setAttribute('aria-label', `${track.visible === false ? 'Show' : 'Hide'} track ${name}`); node.eye.setAttribute('aria-pressed', String(track.visible !== false)); node.eye.disabled = main;
       node.display.textContent = track.display === 'dot' ? 'Dot' : 'Arm'; node.display.title = main ? 'Focused solid robot' : 'Toggle ghost arm / end-effector dot'; node.display.disabled = main;
-      node.display.setAttribute('aria-label', `Track ${track.letter || track.id} display: ${track.display === 'dot' ? 'dot' : 'arm'}`);
-      node.remove.hidden = main; node.remove.title = 'Remove track'; node.remove.setAttribute('aria-label', `Remove track ${track.letter || track.id}`);
+      node.display.setAttribute('aria-label', `Track ${name} display: ${track.display === 'dot' ? 'dot' : 'arm'}`);
+      node.remove.hidden = main; node.remove.title = 'Remove track'; node.remove.setAttribute('aria-label', `Remove track ${name}`);
+      node.freeze.hidden = !main; node.freeze.disabled = !freezeAvailable;
       const left = x(track.span[0] + offset), right = x(track.span[1] + offset);
       node.clip.hidden = track.empty || right < 0 || left > 100; node.clip.style.left = `${Math.max(0, left)}%`; node.clip.style.width = `${Math.max(0, Math.min(100, right) - Math.max(0, left))}%`;
       node.clip.title = main ? 'Live' : 'Drag to offset; Alt disables snapping; double-click resets';
@@ -260,12 +281,11 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     const key = [window[0], window[1], width, ratio, sourceCount, revision, mode, keyframeRevision, tracks.length].join('|');
     if (paintKey === key) return;
     paintKey = key; paints++;
-    const height = 74;
+    const hasLanes = mode === 'live' && tracks.length > 0, height = hasLanes ? 20 : 74;
     canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
     const context = canvas.getContext('2d');
     context.scale(ratio, ratio); context.clearRect(0, 0, width, height);
     const span = window[1] - window[0], x = time => (time - window[0]) / (span || 1) * width;
-    const hasLanes = mode === 'live' && tracks.length > 0;
     if (!hasLanes) { context.fillStyle = '#263548'; context.fillRect(0, 39, width, 25); }
     // Render normal, then yellow, then red so MPC retains priority at every zoom.
     const visible = visibleTimelineIntervals(index, window);
@@ -279,15 +299,15 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     context.font = '10px "IBM Plex Mono", monospace';
     for (const tick of timelineTicks(window, width)) {
       const left = tick.fraction * width;
-      context.strokeStyle = '#526174'; context.beginPath(); context.moveTo(left, 24); context.lineTo(left, 74); context.stroke();
+      context.strokeStyle = '#526174'; context.beginPath(); context.moveTo(left, hasLanes ? 15 : 24); context.lineTo(left, height); context.stroke();
       context.fillStyle = '#b3c7d7';
-      context.fillText(tick.label, clamp(left + 4, 2, Math.max(2, width - context.measureText(tick.label).width - 2)), 16);
+      context.fillText(tick.label, clamp(left + 4, 2, Math.max(2, width - context.measureText(tick.label).width - 2)), hasLanes ? 11 : 16);
     }
     for (const keyframe of keyframes) {
       if (keyframe.time < window[0] || keyframe.time > window[1]) continue;
       const left = clamp(x(keyframe.time), 1, Math.max(1, width - 1));
       context.fillStyle = typeof keyframe.color === 'number' ? `#${keyframe.color.toString(16).padStart(6, '0')}` : keyframe.color || '#aeb9c5';
-      context.fillRect(left - 1, KEYFRAME_TICK_TOP, 2, KEYFRAME_TICK_BOTTOM - KEYFRAME_TICK_TOP);
+      context.fillRect(left - 1, hasLanes ? 15 : KEYFRAME_TICK_TOP, 2, hasLanes ? 5 : KEYFRAME_TICK_BOTTOM - KEYFRAME_TICK_TOP);
     }
     $('timeline-timing-note').innerHTML = index.length ? '<span class="timeline-mpc-key">MPC over budget</span> · <span class="timeline-simulation-key">Simulation / combined</span>' : 'No timing data';
     $('timeline-timing-note').classList.toggle('has-timing', Boolean(index.length));
@@ -344,7 +364,8 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     // Linked plots share the timeline gestures, but only the ruler has ticks.
     if (element !== surface) return null;
     const rect = surface.getBoundingClientRect(), y = event.clientY - rect.top;
-    if (y < KEYFRAME_TICK_TOP - 3 || y > KEYFRAME_TICK_BOTTOM + 3) return null;
+    const compact = mode === 'live' && tracks.length > 0;
+    if (y < (compact ? 15 : KEYFRAME_TICK_TOP) - 3 || y > (compact ? 20 : KEYFRAME_TICK_BOTTOM) + 3) return null;
     const span = window[1] - window[0], x = event.clientX - rect.left;
     let closest = null, distance = KEYFRAME_HIT_RADIUS;
     for (const keyframe of keyframes) {
@@ -367,7 +388,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   }
   $('timeline-zoom-in').addEventListener('click', () => zoom(.5));
   $('timeline-zoom-out').addEventListener('click', () => zoom(2));
-  function bindSurface(element) {
+  function bindSurface(element, { lane = false } = {}) {
   element.addEventListener('wheel', event => {
     event.preventDefault(); hideTooltip();
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? surface.clientWidth : 1;
@@ -403,6 +424,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       }
       return;
     }
+    if (lane) return;
     const keyframe = keyframeAt(event, element);
     if (keyframe) { tooltip.textContent = `${(keyframe.sampleTime ?? keyframe.time).toFixed(3)} s`; tooltip.hidden = false; return; }
     const time = timeAt(event), epsilon = Math.max(Number.EPSILON, (window[1] - window[0]) / Math.max(width, 1) / 2);
@@ -437,6 +459,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   });
   }
   bindSurface(surface);
+  bindSurface($('timeline-aggregate-overlay'));
   const observer = new ResizeObserver(() => redraw()); observer.observe(surface);
   return {
     seek, zoom, pan, bindSurface, setAggregate, clearAggregate: () => setAggregate(UNBOUNDED_AGGREGATE),
@@ -446,7 +469,8 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       if (reset && laneDrag) { const node = laneNodes.get(laneDrag.id), pointer = laneDrag.pointer; laneDrag = null; node?.clip.classList.toggle('dragging', false); if (node?.clip.hasPointerCapture(pointer)) node.clip.releasePointerCapture(pointer); }
       if (reset && mode === 'live' && identity != null) workspaces.set(identity, { aggregate: { ...aggregate }, window: [...window], fitted });
       identity = next.identity; mode = next.mode; bounds = timelineBounds(next.bounds);
-      tracks = next.tracks || []; catalog = next.catalog || []; breaches = next.breaches || []; paintCatalog();
+      tracks = next.tracks || []; catalog = next.catalog || []; breaches = next.breaches || [];
+      freezeAvailable = next.freezeAvailable ?? !$('live-freeze')?.disabled; paintCatalog();
       selected = clamp(Number.isFinite(next.time) ? next.time : bounds[0], ...bounds);
       if (reset) {
         // Live uses one stable session identity across generation changes.

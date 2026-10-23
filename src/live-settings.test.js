@@ -6,6 +6,7 @@ import { setupLive as createLive } from './live.js';
 const setupLive = options => createLive({ presentationSettings: { report_hz: 20, buffer_ms: 0, interpolate: true }, ...options });
 import { DEFAULT_EXECUTION } from './live-execution.js';
 import { createSession } from './session.js';
+import { bindStopPreference } from './workbench-ui.js';
 
 // Exercise the real settings/mode/SSE controller without a GPU or renderer.
 function harness() {
@@ -405,7 +406,47 @@ test('Play at an idle recorded end restarts history locally; an active growing t
   }
 });
 
-test('On Play resumes at the existing history tip and keeps waiting for continuous computation regardless of Stop', async () => {
+test('On Play Stop replays existing motion through the session end without starting another calculation', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const session = createSession(), live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); live.setSession(session);
+    bindStopPreference(h.$('live-stop-at-end'), h.$('live-continue'));
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
+    await flush(); source.emit(plan(1, 1));
+    assert.equal(h.$('live-stop-at-end').disabled, false);
+    assert.equal(h.$('live-stop-at-end').checked, true);
+    assert.match(h.$('live-stop-at-end').title, /session end/);
+    for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+    session.addTrack({ span: [0, 1] });
+    const before = h.commands.length;
+    // Stop is a local preference in On Play too; neither direction configures
+    // the solver, replaces the generation or starts a job.
+    h.$('live-stop-at-end').checked = false; h.$('live-stop-at-end').emit('change');
+    h.$('live-stop-at-end').checked = true; h.$('live-stop-at-end').emit('change');
+    assert.equal(live.settings.execution.continue_at_end, false);
+    assert.equal(h.commands.length, before);
+    h.$('live-history-latest').emit('click'); h.$('live-play').emit('click'); await flush();
+    assert.equal(live.playing, true); assert.equal(live.history.selectedTime, .2);
+    live.frame(0); live.frame(500); assert.equal(session.cursor, .7); assert.equal(live.playing, true);
+    live.frame(1000); assert.equal(session.cursor, 1); assert.equal(live.playing, false);
+    assert.equal(live.displayedState.sim_time_s, .2); assert.equal(h.commands.length, before);
+    // Play at the finite session end starts its recording again locally.
+    h.$('live-play').emit('click'); live.frame(0); live.frame(100);
+    assert.equal(session.cursor, .1); assert.equal(live.playing, true); assert.equal(h.commands.length, before);
+    h.$('live-play').emit('click'); await flush();
+    session.removeTrack(session.tracks[1].id);
+    live.seek(0); h.$('live-play').emit('click'); live.frame(0); live.frame(500);
+    assert.equal(session.cursor, .2); assert.equal(live.playing, false);
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 0);
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('On Play Continue resumes the existing tip, while Stop can follow an already active calculation', async () => {
   const h = harness();
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
@@ -413,11 +454,11 @@ test('On Play resumes at the existing history tip and keeps waiting for continuo
     const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
     await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
     await flush(); source.emit(plan(1, 1));
-    assert.equal(h.$('live-stop-at-end').disabled, true);
-    assert.match(h.$('live-stop-at-end').title, /continues until paused/);
+    assert.equal(h.$('live-stop-at-end').disabled, false);
     assert.match(h.$('live-duration').title, /Precalculation duration/);
     for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
-    h.$('live-history-latest').emit('click'); assert.equal(live.settings.execution.continue_at_end, false);
+    h.$('live-history-latest').emit('click');
+    h.$('live-continue').checked = true; h.$('live-continue').emit('change');
     h.$('live-play').emit('click'); await flush();
     assert.equal(live.history.selectedTime, .2); assert.equal(live.playing, true);
     assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
@@ -429,9 +470,12 @@ test('On Play resumes at the existing history tip and keeps waiting for continuo
     source.emit({ type: 'status', state: 'paused', settings_version: 1, job_active: false });
     live.frame(performance.now() + 4000);
     assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
-    h.$('live-calculation').value = 'manual'; h.$('live-calculation').emit('input');
-    assert.equal(h.$('live-stop-at-end').disabled, false);
+    h.$('live-continue').checked = false; h.$('live-continue').emit('change');
     assert.equal(live.settings.execution.continue_at_end, false);
+    source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true });
+    h.$('live-play').emit('click'); live.frame(performance.now() + 5000);
+    assert.equal(live.playing, true); assert.equal(live.history.following, true);
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
   } finally {
     h.$('replay-mode').emit('click'); await flush();
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
@@ -451,6 +495,7 @@ test('slow growing playback keeps task handles disabled and reference geometry s
     const appendState = time => source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
       q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
     appendState(0); appendState(.2); h.$('live-history-latest').emit('click');
+    h.$('live-continue').checked = true; h.$('live-continue').emit('change');
     assert.equal(live.targetInteraction.available, true);
     h.$('live-play').emit('click'); await flush();
     source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true, calculation_rtf: .5 });
@@ -821,6 +866,7 @@ test('Live batches keep a right-edge cursor with smooth recorded motion, and scr
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
     append(0); append(.2);
     source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length }); await flush();
+    h.$('live-continue').checked = true; h.$('live-continue').emit('change');
     h.$('live-history-latest').emit('click'); h.$('live-play').emit('click'); await flush();
     source.emit({ type: 'status', state: 'playing', generation: 1, settings_version: 1, job_active: true });
     live.frame(0);
@@ -886,7 +932,8 @@ test('Play captures live-follow intent before delayed acknowledgement and incomi
     h.$('live-history-latest').emit('click');
     let acknowledge;
     h.setCommandHandler(command => command.type === 'play' ? new Promise(resolve => { acknowledge = resolve; }) : { ok: true, json: async () => ({ accepted: true }) });
-    assert.equal(live.settings.execution.continue_at_end, false); // Default on_play still follows.
+    h.$('live-continue').checked = true; h.$('live-continue').emit('change');
+    assert.equal(live.settings.execution.continue_at_end, true);
     assert.equal(live.targetInteraction.available, true);
     h.$('live-play').emit('click');
     assert.equal(live.playing, true);
@@ -921,6 +968,7 @@ test('late Play responses cannot override Pause, scrub, settings edits, or mode 
       for (const time of [0, .2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
         q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
       h.$('live-history-latest').emit('click');
+      h.$('live-continue').checked = true; h.$('live-continue').emit('change');
       let acknowledgePlay, acknowledgePause;
       h.setCommandHandler(command => {
         if (command.type === 'play') return new Promise(resolve => { acknowledgePlay = resolve; });

@@ -47,6 +47,22 @@ test('limit-state fields apply at once, validate their range and save', async t 
   assert.equal(h.posts.at(-1).limit_near_percent, 80); assert.equal(h.posts.at(-1).limit_at_torque_percent, 0.2);
 });
 
+test('ghost opacity defaults stronger and applies and persists without changing numerical settings', async t => {
+  const h = await harness(t);
+  assert.equal(h.field('ghost_opacity_percent').value, '55');
+  const field = h.field('ghost_opacity_percent');
+  field.value = '70'; field.listeners.change();
+  assert.equal(h.changes.at(-1).ghost_opacity_percent, 70);
+  assert.equal(h.changes.at(-1).report_hz, 10);
+  h.tick(400); await settle();
+  assert.equal(h.store.ghost_opacity_percent, 70);
+  for (const value of ['-1', '101', '', 'NaN']) {
+    field.value = value; field.listeners.change();
+    assert.equal(field.dataset.invalid, 'true');
+    assert.equal(h.ui.settings.ghost_opacity_percent, 70);
+  }
+});
+
 test('presentation loads from its own endpoint and has no Save button', async t => {
   const h = await harness(t);
   assert.deepEqual(h.ui.settings, { ...DEFAULT_PRESENTATION, report_hz: 10, buffer_ms: 350, interpolate: true, limit_tint: false });

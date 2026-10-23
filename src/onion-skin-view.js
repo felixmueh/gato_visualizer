@@ -1,6 +1,6 @@
 import { Raycaster, Vector2 } from 'three';
 import { createGhostArms } from './ghost-arm.js';
-import { onionKeyframes, onionOpacity } from './onion-skin.js';
+import { onionKeyframes, onionOpacity, onionBudgets, DEFAULT_GHOST_SETTINGS, validateGhostSettings } from './onion-skin.js';
 
 export const ONION_STORAGE_KEY = 'motion-studio-onion-skin';
 export const ONION_COLOR = 0xaeb7c2;
@@ -8,37 +8,44 @@ export const ONION_PREDICTION_COLOR = 0x34d8d4;
 const cssColor = color => `#${color.toString(16).padStart(6, '0')}`;
 const timeLabel = time => `${time.toFixed(3)} s`;
 
-// Owns presentation only. The caller supplies immutable recorded sample holds
-// and cursor/track clocks; neither seeking nor toggling requests computation.
+// The temporal pool owns all sources' keyframes and picking. Current comparison
+// arms/dots stay in TrackScene, independent of the onion mode and strict budget.
 export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
   const $ = id => document.getElementById(id);
   const buttons = ['live', 'replay'].map(mode => $(`${mode}-onion-skin`));
   const tooltip = $('onion-skin-tooltip');
-  let enabled = false, normalVisible = true;
-  try { enabled = localStorage.getItem(ONION_STORAGE_KEY) === 'true'; } catch {}
-  // Qualified by the 2026-10-23 laptop spike; the same ghosts render in all views.
-  const ghosts = createGhostArms({ robot, scene, max: 24, method: 'prepass' });
-  let source, identity, revision, selection = { step: null, times: [] }, poses = [];
+  let ghostMode = 'off', normalVisible = true, settings = { ...DEFAULT_GHOST_SETTINGS };
+  try {
+    const saved = localStorage.getItem(ONION_STORAGE_KEY);
+    if (['primary', 'all'].includes(saved)) ghostMode = saved;
+    else if (saved === 'true') ghostMode = 'primary';
+  } catch {}
+  const ghosts = createGhostArms({ robot, scene, max: Infinity, method: 'prepass' });
+  const cache = new Map();
+  let source, poses = [], primarySelection = { step: null, times: [] };
   let timelineKeyframes = [], keyframeRevision = 0, paintKey;
   let lastPointer, pendingHover, down;
   const raycaster = new Raycaster(), pointer = new Vector2();
+  const enabled = () => ghostMode !== 'off';
+  const effectiveMode = () => ghostMode === 'all' && source?.mode === 'live' && source.comparisons?.length ? 'all' : enabled() ? 'primary' : 'off';
 
-  function seek(time) { if (source) onSeek(time - (source.offset || 0)); }
+  function seek(pose) { onSeek(pose.seekTime); }
   function hideTooltip() { tooltip.hidden = true; }
-  function showTooltip(time, x, y) {
+  function showTooltip(pose, x, y) {
     const bounds = $('viewport').getBoundingClientRect();
-    tooltip.textContent = timeLabel(time);
-    tooltip.style.setProperty('--ghost-color', cssColor(source?.color ?? ONION_COLOR));
+    tooltip.textContent = pose.label ? `${pose.label} · ${timeLabel(pose.time)} (${timeLabel(pose.seekTime)} session)` : timeLabel(pose.time);
+    tooltip.style.setProperty('--ghost-color', cssColor(pose.color ?? ONION_COLOR));
     tooltip.style.left = `${Math.min(bounds.width - 85, Math.max(0, x - bounds.left + 14))}px`;
     tooltip.style.top = `${Math.min(bounds.height - 35, Math.max(0, y - bounds.top + 14))}px`;
     tooltip.hidden = false;
   }
   function hit(event) {
-    if (!enabled || !normalVisible || !source) return null;
+    if (!enabled() || !normalVisible || !source) return null;
     const bounds = element.getBoundingClientRect();
     pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1, -(event.clientY - bounds.top) / bounds.height * 2 + 1);
     raycaster.setFromCamera(pointer, camera);
-    return ghosts.pick(raycaster);
+    const picked = ghosts.pick(raycaster);
+    return picked ? poses.find(pose => pose.id === picked.id) : null;
   }
   function hover(event) {
     lastPointer = event;
@@ -48,9 +55,8 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
       if (!lastPointer || down || lastPointer.buttons) { hideTooltip(); return; }
       const picked = hit(lastPointer);
       if (picked) {
-        // Registered after the solid link handler, whose tooltip takes priority.
         if (!$('limit-tint-tooltip').hidden) { hideTooltip(); return; }
-        showTooltip(picked.time, lastPointer.clientX, lastPointer.clientY);
+        showTooltip(picked, lastPointer.clientX, lastPointer.clientY);
       } else hideTooltip();
     });
   }
@@ -67,16 +73,21 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
     const press = down; down = null;
     if (press?.id === event.pointerId && !press.dragged && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 4 && press.picked) {
       const picked = hit(event);
-      if (picked?.id === press.picked.id) seek(picked.time);
+      if (picked?.id === press.picked.id) seek(picked);
     }
   });
   element.addEventListener('pointercancel', () => { down = null; hideTooltip(); });
 
-  function toggle() {
-    enabled = !enabled;
-    try { localStorage.setItem(ONION_STORAGE_KEY, String(enabled)); } catch {}
+  function setMode(value) {
+    if (!['off', 'primary', 'all'].includes(value)) throw new Error('Choose off, primary or all ghost arms.');
+    ghostMode = value;
+    try { localStorage.setItem(ONION_STORAGE_KEY, value); } catch {}
     paintKey = undefined; hideTooltip();
     if (source) update(source);
+  }
+  function toggle() {
+    const modes = source?.mode === 'live' && source.comparisons?.length ? ['off', 'primary', 'all'] : ['off', 'primary'];
+    setMode(modes[(modes.indexOf(effectiveMode()) + 1) % modes.length]);
   }
   buttons.forEach(button => button.addEventListener('click', toggle));
   document.addEventListener('keydown', event => {
@@ -85,50 +96,74 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
   });
 
   function repaintTicks(visible) {
-    const key = JSON.stringify([enabled, source.mode, source.trackBounds, visible.map(pose => [pose.id, pose.time]), source.color]);
+    const key = JSON.stringify([effectiveMode(), source.mode, source.trackBounds, visible.map(pose => [pose.id, pose.time, pose.seekTime, pose.color, pose.label])]);
     if (key === paintKey) return;
     paintKey = key; keyframeRevision++;
     for (const mode of ['live', 'replay']) $(`${mode}-onion-ticks`).replaceChildren();
-    timelineKeyframes = enabled ? visible.map(pose => ({ time: pose.time - (source.offset || 0), color: source.color, sampleTime: pose.time })) : [];
-    if (!enabled) return;
+    timelineKeyframes = enabled() ? visible.map(pose => ({ time: pose.seekTime, color: pose.color, sampleTime: pose.time, trackId: pose.sourceId })) : [];
+    if (!enabled()) return;
     const [start, end] = source.trackBounds, span = end - start;
     for (const pose of visible) {
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'onion-tick';
-      button.title = timeLabel(pose.time); button.setAttribute('aria-label', `Keyframe ${timeLabel(pose.time)}`);
-      button.style.left = `${span ? 100 * (pose.time - (source.offset || 0) - start) / span : 0}%`;
-      button.style.setProperty('--ghost-color', cssColor(source.color));
-      button.addEventListener('click', event => { event.stopPropagation(); seek(pose.time); });
-      button.addEventListener('pointerenter', event => showTooltip(pose.time, event.clientX, event.clientY));
+      button.title = pose.label ? `${pose.label} · ${timeLabel(pose.time)}` : timeLabel(pose.time);
+      button.setAttribute('aria-label', `Keyframe ${button.title}`);
+      button.style.left = `${span ? 100 * (pose.seekTime - start) / span : 0}%`;
+      button.style.setProperty('--ghost-color', cssColor(pose.color));
+      button.addEventListener('click', event => { event.stopPropagation(); seek(pose); });
+      button.addEventListener('pointerenter', event => showTooltip(pose, event.clientX, event.clientY));
       button.addEventListener('pointerleave', hideTooltip);
       $(`${source.mode}-onion-ticks`).append(button);
     }
   }
   function update(next) {
     source = next;
-    const reset = identity !== next.identity;
-    if (reset || revision !== next.revision) {
-      selection = onionKeyframes(next.times, { previousStep: next.mode === 'live' && !reset ? selection.step : undefined });
-      const samples = next.states(selection.times);
-      const seen = new Set();
-      poses = samples.flatMap((sample, i) => {
-        if (!sample || seen.has(sample.time)) return [];
-        seen.add(sample.time);
-        return [{ id: `${i}:${sample.time}`, q: sample.q, jointNames: next.jointNames, time: sample.time, keyframeTime: selection.times[i], color: next.color }];
-      });
-      identity = next.identity; revision = next.revision; hideTooltip();
-    }
-    const visible = poses.filter(pose => next.reveal == null || pose.time <= next.reveal);
-    const displayed = enabled && normalVisible ? visible.map(pose => ({ ...pose, opacity: onionOpacity(pose.time, next.cursor, next.bounds) })) : [];
+    const sources = [{ ...next, id: 'primary', seekOffset: -(next.offset || 0) }];
+    if (effectiveMode() === 'all') sources.push(...(next.comparisons || []).filter(item => item.visible !== false));
+    const budgets = onionBudgets(sources, settings.maxCount), activeIds = new Set();
+    poses = [];
+    sources.forEach((item, sourceIndex) => {
+      const key = item.id || `comparison-${sourceIndex}`, budget = budgets[sourceIndex];
+      activeIds.add(key);
+      const settingsKey = `${settings.interval_s}:${budget}`;
+      let cached = cache.get(key);
+      if (!cached || cached.identity !== item.identity || cached.revision !== item.revision || cached.settingsKey !== settingsKey) {
+        const selection = budget ? onionKeyframes(item.times, { interval_s: settings.interval_s, maxCount: budget,
+          previousStep: cached?.identity === item.identity && cached.settingsKey === settingsKey && next.mode === 'live' ? cached.selection.step : undefined }) : { step: null, times: [] };
+        const samples = selection.times.length ? item.states(selection.times) : [];
+        const seen = new Set();
+        const recorded = samples.flatMap((sample, index) => {
+          if (!sample || seen.has(sample.time)) return [];
+          seen.add(sample.time);
+          return [{ id: `${key}:${sample.time}`, q: sample.q, time: sample.time, keyframeTime: selection.times[index] }];
+        });
+        cached = { identity: item.identity, revision: item.revision, settingsKey, selection, recorded }; cache.set(key, cached); hideTooltip();
+      }
+      if (sourceIndex === 0) primarySelection = cached.selection;
+      for (const pose of cached.recorded) poses.push({ ...pose, sourceId: key, jointNames: item.jointNames, base: item.base,
+        color: item.color ?? ONION_COLOR, cursor: item.cursor, bounds: item.bounds, reveal: item.reveal,
+        seekTime: pose.time + (item.seekOffset || 0), label: sourceIndex ? item.label : undefined });
+    });
+    for (const key of cache.keys()) if (!activeIds.has(key)) cache.delete(key);
+    const visible = poses.filter(pose => pose.reveal == null || pose.time <= pose.reveal);
+    const displayed = enabled() && normalVisible ? visible.map(pose => ({ ...pose, opacity: onionOpacity(pose.time, pose.cursor, pose.bounds, settings.opacity) })) : [];
     ghosts.set(displayed); ghosts.update(camera); repaintTicks(visible);
-    const count = displayed.filter(pose => pose.opacity > 0).length;
-    const title = `Onion skin · ${count} ghost arms${selection.step ? ` · every ${Number(selection.step.toPrecision(6))} s` : ''}${enabled ? '' : ' · off'} (O)`;
-    buttons.forEach(button => { button.setAttribute('aria-pressed', String(enabled)); button.title = title; });
+    const count = displayed.filter(pose => pose.opacity > 0).length, mode = effectiveMode();
+    const title = `Ghost arms · ${mode === 'off' ? 'off' : mode === 'all' ? 'all tracks' : next.mode === 'live' ? 'Live only' : 'on'} · ${count}/${settings.maxCount}${primarySelection.step ? ` · every ${Number(primarySelection.step.toPrecision(6))} s` : ''} (O)`;
+    buttons.forEach(button => {
+      button.setAttribute('aria-pressed', String(enabled())); button.setAttribute('data-ghost-mode', mode); button.title = title;
+    });
   }
-  buttons.forEach(button => { button.setAttribute('aria-pressed', String(enabled)); });
+  buttons.forEach(button => button.setAttribute('aria-pressed', String(enabled())));
   return {
-    update, setVisible(value) { normalVisible = value; if (source) update(source); }, sort: viewCamera => ghosts.update(viewCamera), setBase: () => ghosts.setBase(),
+    update, setMode, cycle: toggle, get mode() { return effectiveMode(); }, get settings() { return { ...settings }; },
+    setSettings(value) { settings = validateGhostSettings({ ...settings, ...value }); if (source) update(source); },
+    setVisible(value) { normalVisible = value; if (source) update(source); }, sort: viewCamera => ghosts.update(viewCamera), setBase: () => ghosts.setBase(),
     get timeline() { return { keyframes: timelineKeyframes, keyframeRevision }; },
-    get snapshot() { return { enabled, step: selection.step, keyframeTimes: selection.times.slice(), snappedTimes: poses.map(pose => pose.time), opacities: enabled && source ? poses.map(pose => source.reveal != null && pose.time > source.reveal ? 0 : onionOpacity(pose.time, source.cursor, source.bounds)) : [], ghostCount: ghosts.snapshot.count, renderer: ghosts.snapshot }; },
+    get snapshot() { return { enabled: enabled(), mode: effectiveMode(), settings: { ...settings }, step: primarySelection.step,
+      keyframeTimes: primarySelection.times.slice(), snappedTimes: poses.map(pose => pose.time),
+      opacities: enabled() && source ? poses.map(pose => pose.reveal != null && pose.time > pose.reveal ? 0 : onionOpacity(pose.time, pose.cursor, pose.bounds, settings.opacity)) : [],
+      poses: poses.map(pose => ({ id: pose.id, sourceId: pose.sourceId, time: pose.time, sessionTime: pose.seekTime, color: pose.color })),
+      ghostCount: ghosts.snapshot.count, renderer: ghosts.snapshot }; },
   };
 }

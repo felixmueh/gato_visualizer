@@ -103,3 +103,24 @@ test('recorded gripper coordinates stay independent per track without overriding
   assert.equal(solidFinger.jointValue[0], .02);
   tracks.dispose();
 });
+
+test('temporal sources hold recorded native samples and retain each track base, gripper and session offset', () => {
+  const { tracks, robot } = fixture({ gripper: true }), arm = track('arm', { defaultName: 'A', displayName: 'A' });
+  arm.motion.fixed_joints = { gripper_right_finger_joint: .07 };
+  arm.motion.arm_base = [1, 0, 0, 3, 0, 1, 0, 0, 0, 0, 1, 2, 0, 0, 0, 1];
+  tracks.update({ tracks: [arm], time: 4, opacity: .8 });
+  const [source] = tracks.onionSources;
+  assert.equal(source.id, 'arm'); assert.equal(source.cursor, 3); assert.equal(source.seekOffset, 1);
+  assert.equal(source.label, 'A');
+  assert.equal(source.base.elements[12], 3); assert.equal(source.color, arm.color);
+  assert.deepEqual(source.states([3, 4]), [{ time: 2, q: [.07, 0] }, { time: 4, q: [.07, 1] }]);
+  assert.deepEqual(source.jointNames, ['gripper_right_finger_joint', 'arm_right_1_joint']);
+  assert.equal(tracks.snapshot.sampled[0].opacity, .8);
+  const states = source.states; arm.displayName = 'Comparison reach';
+  tracks.update({ tracks: [arm], time: 9, opacity: .8 });
+  assert.equal(source.label, 'Comparison reach'); assert.equal(source.states, states);
+  assert(tracks.snapshot.sampled[0].opacity < .8); assert.equal(tracks.onionSources[0], source);
+  arm.visible = false; tracks.update({ tracks: [arm], time: 3 }); assert.equal(tracks.onionSources[0].visible, false);
+  assert.equal(robot.joints.arm_right_1_joint.jointValue[0], 0);
+  tracks.dispose();
+});

@@ -74,7 +74,7 @@ function letter(index) {
 
 let sessionSequence = 0;
 export function createSession() {
-  const main = { id: 'live', kind: 'live', source: { kind: 'live', generation: null }, letter: 'A', label: 'Live', color: 0xffffff,
+  const main = { id: 'live', kind: 'live', source: { kind: 'live', generation: null }, letter: 'A', label: 'Live', displayName: 'Live', color: 0xffffff,
     offset_s: 0, defaultOffset: 'zero', visible: true, display: 'arm', span: [0, 0], empty: true, timeBasis: 'simulation', settings: null };
   const tracks = [main], listeners = new Set();
   let cursor = 0, rate = 1, aggregate = { start: null, end: null }, nextTrack = 1, revision = 0;
@@ -87,7 +87,6 @@ export function createSession() {
         main.endEffectorFrame && track.endEffectorFrame && main.endEffectorFrame !== track.endEffectorFrame ? { label: 'Frame', title: `End-effector frame ${track.endEffectorFrame} differs from Live ${main.endEffectorFrame}; tool paths are not comparable.` } : null,
         track.timeBasis === 'wall' ? { label: 'Wall', title: 'Recorded wall time differs from Live simulation time.' } : null,
         track.motion?.model_warning ? { label: 'Model', title: typeof track.motion.model_warning === 'string' ? track.motion.model_warning : JSON.stringify(track.motion.model_warning) } : null,
-        track.motion?.provenance?.live?.complete === false ? { label: 'Incomplete', title: 'Incomplete run' } : null,
       ].filter(Boolean);
     }
   };
@@ -100,14 +99,14 @@ export function createSession() {
     updateMain(fields) {
       const compare = fields.context !== main.context || fields.settings !== main.settings || fields.endEffectorFrame !== main.endEffectorFrame;
       const changed = compare || fields.empty !== main.empty || fields.span?.[0] !== main.span?.[0] || fields.span?.[1] !== main.span?.[1] || fields.source?.generation !== main.source?.generation;
-      Object.assign(main, fields, { id: 'live', kind: 'live', offset_s: 0, defaultOffset: 'zero' });
+      Object.assign(main, fields, { id: 'live', kind: 'live', displayName: 'Live', offset_s: 0, defaultOffset: 'zero' });
       if (compare) comparisons(); if (changed) notify(); return main;
     },
     addTrack(input) {
       const motion = input.motion || {}, catalogSource = input.catalogSource || input.item?.source;
       const index = nextTrack++;
       const track = { ...input, id: input.trackId || `track-${index}`, kind: 'replay', source: input.source || { kind: 'replay', id: motion.id || input.id, revision: motion.revision || input.revision },
-        motion, letter: letter(index), label: input.label || motion.label || input.item?.name || 'Replay', color: input.color ?? TRACK_PALETTE[(index - 1) % TRACK_PALETTE.length],
+        motion, letter: letter(index), defaultName: letter(index - 1), displayName: String(input.displayName || '').trim() || letter(index - 1), label: input.label || motion.label || input.item?.name || 'Replay', color: input.color ?? TRACK_PALETTE[(index - 1) % TRACK_PALETTE.length],
         catalogSource, defaultOffset: input.defaultOffset || (catalogSource === 'freeze' ? 'zero' : 'align-start'),
         visible: input.visible !== false, display: input.display === 'dot' ? 'dot' : 'arm',
         span: input.span || [motion.time_s?.[0] ?? 0, motion.time_s?.at(-1) ?? 0],
@@ -120,6 +119,7 @@ export function createSession() {
       tracks.push(track); comparisons(); notify(); return track;
     },
     removeTrack(id) { const index = tracks.findIndex(track => track.id === id); if (index < 1) return false; tracks.splice(index, 1); notify(); return true; },
+    setName(id, value) { const track = getTrack(id); if (!track || track.kind === 'live') return false; const name = String(value ?? '').trim() || track.defaultName; if (track.displayName !== name) { track.displayName = name; notify(); } return true; },
     setOffset(id, value) {
       const track = getTrack(id); if (!track || track.kind === 'live') return false;
       if (!Number.isFinite(value)) throw new Error('Track offset must be finite.');

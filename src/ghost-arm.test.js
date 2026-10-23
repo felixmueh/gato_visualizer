@@ -134,3 +134,29 @@ test('uncapped track pool preserves per-pose world bases through fixed-joint cha
   assert(orders.every(Number.isFinite));
   ghosts.dispose(); onion.dispose();
 });
+
+test('reusing a comparison slot restores omitted gripper joints and cloned mimics to the primary source', () => {
+  const { scene, robot, joint, ghosts: oldPool } = fixture('prepass'); oldPool.dispose();
+  const gripper = new URDFJoint(); gripper.urdfName = 'gripper'; gripper.jointType = 'prismatic'; gripper.limit.upper = .1;
+  const mimic = new URDFMimicJoint(); mimic.urdfName = 'gripper_mimic'; mimic.jointType = 'prismatic'; mimic.limit.upper = .1;
+  gripper.mimicJoints = [mimic]; gripper.add(mimic); gripper.setJointValue(.02); joint.add(gripper);
+  const ghosts = createGhostArms({ robot, scene, max: Infinity, method: 'prepass' });
+  ghosts.set([pose({ id: 'comparison', jointNames: ['gripper', 'arm_right_1_joint'], q: [.07, .4] })]);
+  const group = scene.getObjectByName('ghost-arm'), color = group.children[0], depth = group.children[1].children[0];
+  const find = (root, name) => root.getObjectsByProperty('urdfName', name)[0];
+  assert.equal(find(color, 'gripper').jointValue[0], .07); assert.equal(find(depth, 'gripper_mimic').jointValue[0], .07);
+  ghosts.set([]); // A removed track leaves its slot available for primary ghosts.
+  ghosts.set([pose({ id: 'primary', q: [.4] })]);
+  for (const root of [color, depth]) {
+    assert.equal(find(root, 'gripper').jointValue[0], .02); assert.equal(find(root, 'gripper_mimic').jointValue[0], .02);
+    assert.equal(root.jointValue[0], .4);
+  }
+  let sets = 0;
+  for (const root of [color, depth]) root.traverse(object => {
+    if (!object.isURDFJoint) return;
+    const original = object.setJointValue.bind(object); object.setJointValue = (...values) => { sets++; return original(...values); };
+  });
+  ghosts.set([pose({ id: 'primary', q: [.4], opacity: .5 })]); assert.equal(sets, 0);
+  assert.equal(gripper.jointValue[0], .02); assert.equal(mimic.jointValue[0], .02); assert.equal(joint.jointValue[0], 0);
+  ghosts.dispose();
+});

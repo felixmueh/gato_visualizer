@@ -30,6 +30,7 @@ class PresentationConfigTests(unittest.TestCase):
             self.assertEqual(load_visualizer_config(path).presentation, DEFAULT_PRESENTATION)
             service = PresentationSettings(path)
             updated = dict(DEFAULT_PRESENTATION, report_hz=10, buffer_ms=1000, interpolate=True, limit_tint=False,
+                           ghost_opacity_percent=70,
                            limit_near_percent=80, limit_at_position_rad=0, limit_at_velocity_rad_s=.05,
                            limit_at_torque_percent=1.5)
             self.assertEqual(service.update(updated), updated)
@@ -41,6 +42,8 @@ class PresentationConfigTests(unittest.TestCase):
         for changes in (dict(report_hz=True), dict(report_hz=0), dict(report_hz=121),
                         dict(report_hz=float('nan')), dict(buffer_ms=-1), dict(buffer_ms=10001),
                         dict(buffer_ms=float('inf')), dict(interpolate=1), dict(limit_tint=1),
+                        dict(ghost_opacity_percent=-1), dict(ghost_opacity_percent=101),
+                        dict(ghost_opacity_percent=True), dict(ghost_opacity_percent=float('nan')),
                         dict(limit_near_percent=0), dict(limit_near_percent=101), dict(limit_near_percent=True),
                         dict(limit_at_position_rad=-.001), dict(limit_at_position_rad=.2),
                         dict(limit_at_velocity_rad_s=float('nan')), dict(limit_at_torque_percent=11)):
@@ -57,6 +60,7 @@ class PresentationConfigTests(unittest.TestCase):
             path.write_text(json.dumps(dict(presentation=older)))
             self.assertEqual(load_visualizer_config(path).presentation, dict(DEFAULT_PRESENTATION, **older))
             self.assertEqual(DEFAULT_PRESENTATION['limit_near_percent'], 90)
+            self.assertEqual(DEFAULT_PRESENTATION['ghost_opacity_percent'], 55)
             self.assertEqual(DEFAULT_PRESENTATION['limit_at_position_rad'], .003)
             self.assertEqual(DEFAULT_PRESENTATION['limit_at_velocity_rad_s'], .01)
             self.assertEqual(DEFAULT_PRESENTATION['limit_at_torque_percent'], .2)

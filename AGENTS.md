@@ -251,7 +251,7 @@ control update per 10 ms knot.
 
 ## Session model — Felix, 2026-10-23
 
-Live always has a browser-owned session with main track A (current generation,
+Live always has a browser-owned session with main track Live (current generation,
 offset 0), one session clock, transport and focus. Library recordings and RAM
 freezes are immutable replay tracks, aligned by presentation-only offsets;
 freezes default to 0, library replays align starts. Focus remains on Live in
@@ -265,7 +265,13 @@ Freeze exports through the selected `tiago_mpc`'s `save_replay`, rewinds the
 cursor to the run start, and retains up to eight files in the server-owned
 RAM runtime directory. Track loading never switches the current Replay.
 Do not add focus switching, Keep, comparison plots, session persistence or
-historical branch browsing in this phase. See [presentation](docs/presentation.md#session-and-tracks).
+historical branch browsing in this phase. Replay names are editable, initially
+A/B/C. The compact ruler sits above Live and aggregate barriers/shading span
+all rows. Hover settings above Precalculate edit duration; those above Ghost
+arms edit spacing and a strict total maximum. Ghosts cycle off/Live/all tracks;
+UI settings set their opacity (55% default). Recorded On Play playback respects
+Stop; starting an empty On Play run still calculates continuously until paused.
+See [presentation](docs/presentation.md#session-and-tracks).
 
 ## Model and coordinates
 

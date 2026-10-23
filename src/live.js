@@ -144,6 +144,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   let profileSwitching = false, profileUnavailable = false, profileNError = false, schemaReload = 0, suppressInitialPreview = false;
   let populationBindings = [];
   let session, unsubscribeSession, freezing = false;
+  let calculateWhilePlaying = false;
   let precomputedRevision = -1, precomputedPoints;
   const latestServerEvents = new Map();
   // Each history segment's constant context (task, limits, identities), sent once
@@ -158,7 +159,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
   const transportConnected = () => liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && !needsInitialPreview;
   const connected = () => transportConnected() && !profileNError;
-  const continueAtEnd = () => connected() && (settings?.execution.calculation === 'on_play' || Boolean(settings?.execution.continue_at_end));
+  const continueAtEnd = () => connected() && (calculateWhilePlaying || Boolean(settings?.execution.continue_at_end));
   // Completion metadata can precede later history pages. Do not drain a short
   // final tail until the local download is caught up.
   const growingHistory = () => Boolean((connected() && (job.job_active || extensionPending)) || fetching || fetchAgain);
@@ -187,7 +188,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       fitAvailable: Boolean(history.length || plan?.ee_xyz?.length || segmentOf(plan)?.task_path_xyz?.length) });
     session.setCursor(clock.time ?? (history.length ? history.bounds[0] : session.span[0]));
   }
-  function pausePlayback() { ++playbackIntent; clock.pause(); extensionPending = false; renderDirty = true; }
+  function pausePlayback() { ++playbackIntent; clock.pause(); calculateWhilePlaying = false; extensionPending = false; renderDirty = true; }
   const acceptTaskAnchors = item => {
     if (validPoints([item?.task_anchors?.reach])) defaultTargetWorld = [...item.task_anchors.reach];
     if (validPoints([item?.task_anchors?.figure8])) figure8BaseWorld = [...item.task_anchors.figure8];
@@ -213,10 +214,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     } catch (error) { if (!profileSwitching) message(`Command failed: ${error.message}`, true); return false; }
   }
   function calculationControls() {
-    const stop = $('live-stop-at-end'), continuous = settings?.execution?.calculation === 'on_play';
-    stop.disabled = continuous;
-    stop.title = continuous ? 'Live Play continues until paused. Stop at end applies to precalculated playback.'
-      : 'Stop at the recorded end; uncheck to continue simulation';
+    const stop = $('live-stop-at-end');
+    stop.disabled = false;
+    stop.title = 'Stop at the session end when replaying recorded motion; uncheck to continue simulation';
     stop.closest('label')?.setAttribute('title', stop.title);
     $('live-duration').title = 'Precalculation duration; Live Play continues until paused.';
   }
@@ -894,9 +894,15 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const noMotion = history.length < 2;
     if (clock.time == null) clock.seek(sessionBounds()[0]);
     // A calculation stopped by a limit breach continues from its tip on Play, in every mode.
-    const resume = continueAtEnd() || (!noMotion && Math.abs(clock.time - history.bounds[1]) < 1e-7 && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7);
-    // Finite precalculations replay from the start when Stop is selected.
-    // On Play resumes continuous computation from the existing recording tip.
+    const atTip = Math.abs(clock.time - history.bounds[1]) < 1e-7;
+    const breachResume = !noMotion && atTip && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7;
+    // Starting a new On Play run follows its calculation. Replaying an idle
+    // recording respects Stop, even when that recording was made On Play.
+    // Capture the intent before incoming states can make an empty run nonempty.
+    calculateWhilePlaying = settings?.execution.calculation === 'on_play'
+      && (noMotion || (job.job_active && atTip) || breachResume);
+    const resume = continueAtEnd() || breachResume;
+    // An idle finite session replays from its start when Stop is selected.
     if (anyPlayableSessionSpan() && (!job.job_active || !connected()) && (!extensionPending || !connected()) && !resume && clock.time >= sessionBounds()[1] - 1e-7) clock.seek(sessionBounds()[0]);
     const shouldExtend = connected() && ((noMotion && (resume || sessionBounds()[1] <= sessionBounds()[0])) || (clock.time >= history.bounds[1] - 1e-7 && resume));
     const follow = resume && (noMotion || clock.time >= history.bounds[1] - 1e-7);

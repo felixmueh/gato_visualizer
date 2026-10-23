@@ -1,5 +1,15 @@
 import { expandedTimelineShell } from './expanded-timeline.js';
 
+function ghostControl(mode, icon) {
+  return `<div class="transport-popover" data-transport-popover>
+    <button id="${mode}-onion-skin" class="transport-button onion-skin-toggle" data-popover-trigger aria-controls="${mode}-ghost-settings" aria-expanded="false" aria-label="Onion skin" aria-pressed="false" title="Onion skin · off (O)">${icon('onion')}</button>
+    <div id="${mode}-ghost-settings" class="transport-popover-panel" data-popover-panel role="group" aria-label="Ghost arm settings" hidden>
+      <label>Spacing (s)<input id="${mode}-ghost-interval_s" type="number" min=".01" max="3600" step=".1" value=".5" aria-label="Ghost arm spacing seconds" data-tip="Requested keyframe spacing. Spacing widens to cover the recording within the maximum; the final endpoint is retained." title="Requested keyframe spacing. Spacing widens to cover the recording within the maximum; the final endpoint is retained."></label>
+      <label>Maximum arms<input id="${mode}-ghost-maxCount" type="number" min="1" max="64" step="1" value="16" aria-label="Maximum ghost arms" data-tip="Maximum temporal ghost arms across the displayed tracks." title="Maximum temporal ghost arms across the displayed tracks."></label>
+    </div>
+  </div>`;
+}
+
 export function workbenchShell(icon) {
   return `<div class="workspace workbench" id="workbench">
     <aside class="sidebar left-sidebar" id="left-sidebar" aria-label="Task and settings">
@@ -56,11 +66,15 @@ export function workbenchShell(icon) {
         <label class="replay-speed live-speed"><span class="sr-only">Session playback speed</span><select id="live-speed" aria-label="Session playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
         <label class="stop-option" title="Stop at the recorded end; uncheck to continue simulation"><input id="live-stop-at-end" type="checkbox" checked>Stop</label>
         <div class="transport-calculation"><label class="sr-only" for="live-calculation">Calculation mode</label><select id="live-calculation" aria-label="Calculation mode"><option value="on_play">On Play</option><option value="manual">Manual</option><option value="automatic">Automatic</option></select>
-          <button id="live-precalculate" class="transport-button" disabled aria-label="Precalculate" title="Precalculate closed-loop motion">${icon('calculate')}</button>
+          <div class="transport-popover" data-transport-popover>
+            <button id="live-precalculate" class="transport-button" data-popover-trigger aria-controls="live-calculation-settings" aria-expanded="false" disabled aria-label="Precalculate" title="Precalculate closed-loop motion">${icon('calculate')}</button>
+            <div id="live-calculation-settings" class="transport-popover-panel" data-popover-panel role="group" aria-label="Precalculation settings" hidden>
+              <label>Duration (s)<input id="live-duration" type="number" min=".01" step="any" value="10" aria-label="Calculation duration seconds"></label>
+            </div>
+          </div>
           <button id="live-freeze" class="transport-button" disabled aria-label="Freeze for comparison" title="Freeze for comparison">${icon('freeze')}</button>
-          <label class="duration-input"><input id="live-duration" type="number" min=".01" step="any" value="10" aria-label="Calculation duration seconds"><span>s</span></label>
         </div>
-        <button id="live-onion-skin" class="transport-button onion-skin-toggle" aria-label="Onion skin" aria-pressed="false" title="Onion skin · off (O)">${icon('onion')}</button>
+        ${ghostControl('live', icon)}
         <button id="live-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div hidden><input id="live-continue" type="checkbox"><button id="live-preview">Preview</button><button id="live-cancel">Cancel calculation</button><button id="live-history-latest">Go latest</button></div>
       </section>
@@ -70,10 +84,10 @@ export function workbenchShell(icon) {
           <button id="restart" class="transport-button" disabled title="Reset playback" aria-label="Reset playback">${icon('restart')}</button>
           <div class="transport-track"><div id="replay-onion-ticks" class="onion-ticks"></div><input type="range" id="timeline" min="0" max="1" step="any" value="0" disabled aria-label="Trajectory time"></div>
           <div class="transport-time"><strong id="time-current">0.00</strong> / <span id="time-total">—</span> s</div>
-          <label class="stop-option" title="Stop at the end; uncheck to loop this recording"><input id="replay-stop-at-end" type="checkbox" checked>Stop</label>
           <label class="replay-speed"><span class="sr-only">Playback speed</span><select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+          <label class="stop-option" title="Stop at the end; uncheck to loop this recording"><input id="replay-stop-at-end" type="checkbox" checked>Stop</label>
         </div>
-        <button id="replay-onion-skin" class="transport-button onion-skin-toggle" aria-label="Onion skin" aria-pressed="false" title="Onion skin · off (O)">${icon('onion')}</button>
+        ${ghostControl('replay', icon)}
         <button id="replay-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div class="transport-metadata" hidden><span id="timeline-middle"></span><span id="timeline-end"></span><span class="keyboard-hint"></span></div>
       </section>

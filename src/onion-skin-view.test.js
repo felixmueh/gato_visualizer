@@ -77,14 +77,14 @@ test('cursor-only updates reuse recorded samples and ticks while updating ghost 
   assert.equal(before.renderer.layer, 0); // Main, Top and Right cameras share ghosts.
   const tick = elements.get('replay-onion-ticks').children[1];
   assert.equal(motion.calls(), 1);
-  assert.deepEqual(before.snappedTimes, [0, .7, 1.4, 2.8, 4]);
+  assert.deepEqual(before.snappedTimes, [0, .7, 1.4, 2.1, 2.8, 3.5, 4]);
   view.update({ ...motion.next, cursor: 2 });
   assert.equal(motion.calls(), 1);
   assert.equal(view.timeline.keyframeRevision, revision);
   assert.equal(elements.get('replay-onion-ticks').children[1], tick);
   assert.notDeepEqual(view.snapshot.opacities, before.opacities);
   assert.equal(joint.jointValue[0], 0);
-  assert.match(elements.get('replay-onion-skin').title, /every 1 s/);
+  assert.match(elements.get('replay-onion-skin').title, /every 0.5 s/);
   view.update({ ...motion.next, revision: 2 });
   assert.equal(motion.calls(), 2);
 });
@@ -98,7 +98,7 @@ test('Live reveal follows the cursor and a new empty generation clears ghosts an
   assert.equal(elements.get('replay-onion-ticks').children.length, 0);
   view.update({ ...motion.next, reveal: undefined });
   assert.equal(motion.calls(), 1);
-  assert.equal(view.timeline.keyframes.length, 5);
+  assert.equal(view.timeline.keyframes.length, 7);
   const empty = source({ mode: 'live', identity: 'live:2', revision: 0, times: [], bounds: [0, 0], trackBounds: [0, 0] });
   view.update(empty.next);
   assert.equal(view.snapshot.ghostCount, 0);
@@ -156,4 +156,78 @@ test('ghost clicks seek while an orbit drag does not seek even after returning t
   await element.emit('pointermove', { ...pointer, clientX: 310, buttons: 1 });
   await element.emit('pointerup', pointer);
   assert.deepEqual(seeks, [1]);
+});
+
+test('Live cycles off, primary and colored all-track ghosts under one strict maximum; Replay keeps two states', async t => {
+  const { view, elements } = fixture(t, { enabled: false });
+  const primary = source({ mode: 'live', identity: 'live:1' }), comparison = source({ id: 'track-b', identity: 'track-b',
+    times: [10, 11, 12], cursor: 10.1, bounds: [10, 12], seekOffset: -9, color: 0xb48cff, label: 'B' });
+  const next = { ...primary.next, comparisons: [comparison.next] };
+  view.setSettings({ maxCount: 4, interval_s: .5 }); view.update(next);
+  assert.equal(view.mode, 'off');
+  await elements.get('live-onion-skin').emit('click'); assert.equal(view.mode, 'primary');
+  assert(view.snapshot.poses.every(pose => pose.sourceId === 'primary'));
+  await elements.get('live-onion-skin').emit('click'); assert.equal(view.mode, 'all');
+  assert(view.snapshot.ghostCount <= 4); assert(view.snapshot.poses.length <= 4);
+  const comparisonPoses = view.snapshot.poses.filter(pose => pose.sourceId === 'track-b');
+  assert(comparisonPoses.length > 0); assert(comparisonPoses.every(pose => pose.color === 0xb48cff));
+  assert.equal(comparisonPoses.at(-1).sessionTime, 3);
+  assert.equal(elements.get('live-onion-skin').getAttribute('data-ghost-mode'), 'all');
+  await elements.get('live-onion-skin').emit('click'); assert.equal(view.mode, 'off'); assert.equal(view.snapshot.ghostCount, 0);
+  view.update({ ...primary.next, mode: 'replay', comparisons: [comparison.next] });
+  await elements.get('replay-onion-skin').emit('click'); assert.equal(view.mode, 'primary');
+  await elements.get('replay-onion-skin').emit('click'); assert.equal(view.mode, 'off');
+});
+
+test('spacing and maximum update selection, opacity preserves samples, and a one-arm cap retains only the endpoint', t => {
+  const { view } = fixture(t), motion = source(); view.update(motion.next);
+  view.setSettings({ opacity: .8 }); assert.equal(motion.calls(), 1);
+  assert.equal(view.settings.interval_s, .5); assert.equal(view.settings.maxCount, 16);
+  const before = view.snapshot.opacities;
+  view.setSettings({ opacity: .4 }); assert.equal(motion.calls(), 1);
+  assert.deepEqual(view.snapshot.opacities, before.map(opacity => opacity / 2));
+  view.setSettings({ interval_s: 1, maxCount: 3 }); assert.equal(motion.calls(), 2);
+  assert(view.snapshot.snappedTimes.length <= 3);
+  view.setSettings({ maxCount: 1 }); assert.deepEqual(view.snapshot.snappedTimes, [4]);
+  assert.throws(() => view.setSettings({ maxCount: 65 }), /1 to 64/);
+  assert.equal(view.settings.maxCount, 1);
+});
+
+test('comparison ghosts hold native samples and seek session time through ticks and direct picking', async t => {
+  const { view, elements, element, seeks } = fixture(t), primary = source({ mode: 'live', times: [], bounds: [0, 0], trackBounds: [0, 3] });
+  const comparison = source({ id: 'track-b', times: [10], bounds: [10, 10], cursor: 9, seekOffset: -9,
+    color: 0xb48cff, label: 'B', states: () => [{ time: 10, q: [0] }] });
+  view.setMode('all'); view.update({ ...primary.next, comparisons: [comparison.next] });
+  assert.equal(view.snapshot.ghostCount, 1); assert.deepEqual(view.snapshot.snappedTimes, [10]);
+  const tick = elements.get('live-onion-ticks').children[0];
+  assert(Math.abs(parseFloat(tick.style.left) - 100 / 3) < 1e-10);
+  await tick.emit('pointerenter', { clientX: 100, clientY: 100 });
+  assert.match(elements.get('onion-skin-tooltip').textContent, /B.*10.000 s.*1.000 s.*session/);
+  await tick.emit('click'); assert.deepEqual(seeks, [1]);
+  const pointer = { pointerId: 1, button: 0, clientX: 300, clientY: 100 };
+  await element.emit('pointerdown', pointer); await element.emit('pointerup', pointer);
+  assert.deepEqual(seeks, [1, 1]);
+});
+
+test('the temporal pool supports the selectable 64-arm budget and immediately enforces a reduced cap', t => {
+  const { view } = fixture(t), times = Array.from({ length: 101 }, (_, index) => index / 10);
+  const motion = source({ times, cursor: .025 });
+  view.setSettings({ interval_s: .01, maxCount: 64 }); view.update(motion.next);
+  assert(view.snapshot.ghostCount > 24); assert(view.snapshot.ghostCount <= 64);
+  view.setSettings({ maxCount: 2 }); assert(view.snapshot.ghostCount <= 2);
+});
+
+test('comparison renaming refreshes tick titles and hover labels without resampling recorded states', async t => {
+  const { view, elements } = fixture(t), primary = source({ mode: 'live', times: [], trackBounds: [0, 3] });
+  const comparison = source({ id: 'track-a', identity: 'saved', times: [10, 11], bounds: [10, 11], cursor: 9,
+    seekOffset: -9, color: 0xb48cff, label: 'A' });
+  const next = { ...primary.next, comparisons: [comparison.next] };
+  view.setMode('all'); view.update(next);
+  const oldTick = elements.get('live-onion-ticks').children[0], calls = comparison.calls();
+  assert.match(oldTick.title, /^A ·/);
+  comparison.next.label = 'Renamed reach'; view.update(next);
+  const tick = elements.get('live-onion-ticks').children[0];
+  assert.notEqual(tick, oldTick); assert.match(tick.title, /^Renamed reach ·/); assert.equal(comparison.calls(), calls);
+  await tick.emit('pointerenter', { clientX: 100, clientY: 100 });
+  assert.match(elements.get('onion-skin-tooltip').textContent, /^Renamed reach ·/);
 });

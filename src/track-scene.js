@@ -2,8 +2,10 @@ import { Box3, Group, Matrix4, Mesh, MeshBasicMaterial, SphereGeometry } from 't
 import { createGhostArms } from './ghost-arm.js';
 import { createPathLine } from './path-lines.js';
 import { sampleTrajectory } from './playback.js';
-import { TRACK_OPACITY, TRACK_OUTSIDE_OPACITY } from './session.js';
-export { TRACK_OPACITY, TRACK_OUTSIDE_OPACITY } from './session.js';
+import { TRACK_OPACITY as PREVIOUS_TRACK_OPACITY, TRACK_OUTSIDE_OPACITY as PREVIOUS_OUTSIDE_OPACITY } from './session.js';
+import { DEFAULT_GHOST_SETTINGS, sampleAtOrBefore } from './onion-skin.js';
+export const TRACK_OPACITY = DEFAULT_GHOST_SETTINGS.opacity;
+export const TRACK_OUTSIDE_OPACITY = TRACK_OPACITY * (PREVIOUS_OUTSIDE_OPACITY / PREVIOUS_TRACK_OPACITY);
 
 export const TRACK_PATH_OPACITY = .65;
 export const TRACK_PATH_WIDTH = 1.75;
@@ -49,7 +51,7 @@ export function createTrackScene({ robot, scene, jointNames = [] }) {
   const group = new Group(); group.name = 'session-tracks'; scene.add(group);
   const ghosts = createGhostArms({ robot, scene: group, max: Infinity, method: 'prepass' });
   const records = new Map();
-  let disposed = false, sampled = [], normalVisible = true;
+  let disposed = false, sampled = [], normalVisible = true, onionSources = [];
 
   function remove(record) {
     record.group.traverse(object => {
@@ -77,25 +79,36 @@ export function createTrackScene({ robot, scene, jointNames = [] }) {
     // those constant values once; native trajectory samples always win.
     const fixed = Object.entries(track.motion.fixed_joints || {})
       .filter(([name, value]) => armJoints.has(name) && !moving.has(name) && Number.isFinite(value));
-    return { group: container, path, dot, base, motion: track.motion,
-      poseNames: [...fixed.map(([name]) => name), ...movingNames], fixedQ: fixed.map(([, value]) => value),
+    const poseNames = [...fixed.map(([name]) => name), ...movingNames], fixedQ = fixed.map(([, value]) => value), motion = track.motion;
+    const onionSource = { id: track.id, identity: motion, revision: motion.revision, times: motion.time_s,
+      bounds: [motion.time_s[0], motion.time_s.at(-1)], jointNames: poseNames, base,
+      states: times => times.map(time => {
+        const index = sampleAtOrBefore(motion.time_s, time);
+        return index < 0 ? null : { time: motion.time_s[index], q: [...fixedQ, ...motion.q[index]] };
+      }) };
+    return { group: container, path, dot, base, motion,
+      poseNames, fixedQ, onionSource,
       reference: null, mainReference: undefined, referenceInitialized: false };
   }
-  function update({ tracks = [], time = 0, mainReference, visible = true }) {
+  function update({ tracks = [], time = 0, mainReference, visible = true, opacity: ghostOpacity = TRACK_OPACITY }) {
     if (disposed) return;
     normalVisible = visible; group.visible = visible;
     const loaded = tracks.filter(track => track.kind !== 'live' && track.motion?.time_s?.length);
     const ids = new Set(loaded.map(track => track.id));
     for (const [id, record] of records) if (!ids.has(id)) { remove(record); records.delete(id); }
-    const poses = []; sampled = [];
+    const poses = []; sampled = []; onionSources = [];
+    ghostOpacity = Number.isFinite(ghostOpacity) ? Math.max(0, Math.min(1, ghostOpacity)) : TRACK_OPACITY;
     for (const track of loaded) {
       let record = records.get(track.id);
       if (record && record.motion !== track.motion) { remove(record); records.delete(track.id); record = null; }
       if (!record) { record = makeRecord(track); records.set(track.id, record); }
       const trackTime = time - (track.offset_s || 0), motion = track.motion;
       const outside = trackTime < motion.time_s[0] || trackTime > motion.time_s.at(-1);
-      const sample = sampleTrajectory(motion, trackTime), opacity = outside ? TRACK_OUTSIDE_OPACITY : TRACK_OPACITY;
+      const sample = sampleTrajectory(motion, trackTime), opacity = ghostOpacity * (outside ? PREVIOUS_OUTSIDE_OPACITY / PREVIOUS_TRACK_OPACITY : 1);
       const shown = track.visible !== false;
+      Object.assign(record.onionSource, { cursor: trackTime, seekOffset: track.offset_s || 0, color: track.color,
+        label: track.displayName || track.defaultName || track.label || track.id, visible: shown && visible });
+      onionSources.push(record.onionSource);
       record.group.visible = shown;
       record.path.material.color.set(track.color);
       record.dot.material.color.set(track.color); record.dot.material.opacity = opacity;
@@ -129,6 +142,7 @@ export function createTrackScene({ robot, scene, jointNames = [] }) {
   }
   return {
     group, update, sort: camera => ghosts.update(camera), setBase: () => ghosts.setBase(),
+    get onionSources() { return onionSources; },
     get bounds() {
       const bounds = new Box3(), local = new Box3();
       group.updateWorldMatrix(true, true);
