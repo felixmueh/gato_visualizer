@@ -90,7 +90,7 @@ follows the package API that experiments use, without shims.
   `mpc.step`, plan statistics from `Plan.stats`.
 - **Replays:** the MPC-bound overlay comes from the replay's
   `provenance.params`. The legacy default recording loader is gone; the app
-  starts at the starting pose.
+  starts at the start pose.
 - **Run again on recordings from before the migration** reports
   "unavailable: pre-migration recording"; there is no converter.
 - **Default `tiago_mpc` root is `../tiago_mpc`.** The frozen

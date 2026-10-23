@@ -20,12 +20,18 @@ export function canonicalOrientation(quaternion = [0, 0, 0, 1]) {
   return normalized.map(value => value * sign);
 }
 
+// The reset-to-default arrow, shared by the settings fields and the Joints tab's start pose.
+export function createResetButton(doc, key, name) {
+  const button = doc.createElement('button'); button.type = 'button'; button.className = 'setting-reset';
+  button.dataset.resetSetting = key; button.setAttribute('aria-label', `Reset ${name} to default`);
+  button.title = `Reset ${name} to default`; button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg>';
+  return button;
+}
+
 export function createSettingResets({ document: doc = document } = {}) {
   let entries = [];
   const bind = ({ key, name, input, host = input?.closest?.('label') || input, getValue, getDefault, reset, event = 'input', group = 'settings', focusTarget = input }) => {
-    const button = doc.createElement('button'); button.type = 'button'; button.className = 'setting-reset';
-    button.dataset.resetSetting = key; button.setAttribute('aria-label', `Reset ${name} to default`);
-    button.title = `Reset ${name} to default`; button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg>';
+    const button = createResetButton(doc, key, name);
     const wrapper = doc.createElement('div'); wrapper.className = 'setting-reset-field';
     // Keep the reset outside the label: clicking it must not also toggle a
     // checkbox or focus a different field through label activation.

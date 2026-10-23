@@ -16,8 +16,8 @@ import { setupPlotInspection } from "./plot-inspection.js";
 import { setupWorkbench } from "./workbench-ui.js";
 import { setupSidebarResize } from "./sidebar-width.js";
 import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
-import { createJointTable, updateJointTable, sampleTelemetry, setupJointViewToggle } from "./joint-telemetry.js";
-import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartingScene } from "./replay-library.js";
+import { createJointTable, updateJointTable, sampleTelemetry, setupJointViewToggle, setupJointLock } from "./joint-telemetry.js";
+import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartPoseScene } from "./replay-library.js";
 import { setupTargetGizmo } from "./target-gizmo.js";
 import { setupViewCube } from "./view-cube.js";
 import { fitPerspectivePoints, objectWorldPoints, trajectoryFitPoints, TRAJECTORY_FIT_PADDING } from "./camera-fit.js";
@@ -162,7 +162,9 @@ function updateExpandedTimeline() {
 // tighter MPC bounds (`mpc_bounds`), when known, appear only in tooltips.
 function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_limits, torqueKind = "applied", mpcBounds = data?.mpc_bounds) {
   lastJointTelemetry = [q, qd, torque, limits, torqueKind, mpcBounds];
-  updateJointTable(jointCells, {q, qd, torque, limits, mpcBounds, torqueKind, settings: limitUse});
+  // In Live the position column shows, and unlocked edits, the start pose at the run start.
+  const startPose = live?.mode === 'live' ? live.startPose : null;
+  updateJointTable(jointCells, {q, qd, torque, limits, mpcBounds, torqueKind, settings: limitUse, startPose});
   limitTint?.update({q, qd, torque, limits});
 }
 const pathColor = 0x34d8d4;
@@ -525,7 +527,7 @@ async function start() {
     }
     data = await response.json();
     defaultData = data;
-    if (!data.trajectories?.length && !isStartingScene(data))
+    if (!data.trajectories?.length && !isStartPoseScene(data))
       throw new Error("No trajectories were found in this recording.");
     if (!data.joint_names?.length)
       throw new Error("The scene does not specify robot joints.");
@@ -556,9 +558,12 @@ async function start() {
     });
     limitTint = createLimitTint({ robot, jointNames: data.joint_names, camera, element: renderer.domElement, tooltip: $("limit-tint-tooltip") });
     limitTint.setEnabled(limitTintEnabled); limitTint.setSettings(limitUse);
-    jointCells = createJointTable($("joint-list"), data.joint_names);
+    // Dragging shows the pose at once (scene only); release or Enter sets the start pose.
+    jointCells = createJointTable($("joint-list"), data.joint_names, {
+      onStartPoseDraft: q => live?.previewStartPose(q), onStartPoseCommit: q => live?.setStartPose(q) });
+    setupJointLock({ button: $("joint-lock"), rows: jointCells, onChange: () => { if (lastJointTelemetry) updateJointTelemetry(...lastJointTelemetry); } });
     setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
-    populateReplay(data, {name: 'Starting pose'});
+    populateReplay(data, {name: 'Start pose'});
     robot.updateMatrixWorld(true);
     robotBounds = new THREE.Box3().setFromObject(robot);
     setCamera("home");
@@ -567,7 +572,7 @@ async function start() {
     live = setupLive({ presentationSettings: presentationSettings.settings, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item) });
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
       moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });
-    replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Starting pose' });
+    replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Start pose' });
     $("connection-label").textContent = "Local source";
     document.querySelector(".connection").classList.add("connected");
     $("load-overlay").hidden = true;
@@ -639,7 +644,7 @@ function changeMode(mode) {
   if (mode === 'replay') {
     applyFixedJoints(data);
     updatePose();
-    $('scene-title').textContent = trajectory?.label || 'Starting pose';
+    $('scene-title').textContent = trajectory?.label || 'Start pose';
     if (!trajectory) showJointLabels();
   } else {
     applyFixedJoints(defaultData);
@@ -716,7 +721,7 @@ function resetLiveTrace() {
 
 function showLiveState(state, context = {}) {
   if (!robot || !liveGroup) return;
-  if (!context.historical && !context.interpolated) {
+  if (!context.historical && !context.interpolated && !state.start_pose_draft) {
     if (lastLiveTime !== undefined && state.sim_time_s < lastLiveTime) liveTaskStart = undefined;
     if (!liveTaskStart) liveTaskStart = [...state.ee_xyz];
   }
@@ -724,6 +729,14 @@ function showLiveState(state, context = {}) {
     robot.setJointValue(name, state.q[i]);
   });
   updateJointTelemetry(state.q, state.qd, state.torque_nm, context.segment?.joint_limits || defaultData.joint_limits, "applied", context.segment?.mpc_bounds || null);
+  // A start pose not yet run (dragged or pending) has no simulated tool point yet.
+  if (state.start_pose_draft) {
+    if (liveMarker) liveMarker.visible = false;
+    if (liveTrace) setPathPointCount(liveTrace, 0);
+    lastLiveTime = undefined;
+    return;
+  }
+  if (liveMarker) liveMarker.visible = true;
   const referenceTarget = context.referenceTarget || (!displayedLiveReference?.draft ? state.target_xyz : null);
   if (Array.isArray(referenceTarget) && referenceTarget.length === 3 && referenceTarget.every(Number.isFinite) && liveGroup.userData.target) liveGroup.userData.target.position.fromArray(referenceTarget);
   if (context.tracePoints) {
@@ -784,13 +797,13 @@ function populateReplay(recording, item) {
   $('source-run').textContent = item.name || path || 'Local saved trajectory';
   $('source-run').title = path;
   if (recording.trajectories.length) selectTrajectory(recording.trajectories[0].id);
-  else showStartingPose();
+  else showStartPose();
 }
 
 async function loadReplayScene(next, item) {
   if (next.robot_url !== defaultData.robot_url) throw new Error('This recording uses a different robot description.');
   if (JSON.stringify(next.joint_names) !== JSON.stringify(defaultData.joint_names)) throw new Error('This recording uses different robot joints.');
-  const starting = item.id === 'default' && isStartingScene(next);
+  const starting = item.id === 'default' && isStartPoseScene(next);
   if (!next.trajectories?.length && !starting) throw new Error('This recording has no trajectories.');
   for (const entry of next.trajectories) {
     validateTrajectory(entry, next.joint_names.length);
@@ -810,7 +823,7 @@ function showJointLabels() {
   updateJointTelemetry(data.joint_names.map((name) => robot.joints[name].angle));
 }
 
-function showStartingPose() {
+function showStartPose() {
   $('replay-timeline').hidden = false;
   document.querySelector('#replay-controls .keyboard-hint').hidden = true;
   trajectory = undefined;
@@ -825,17 +838,17 @@ function showStartingPose() {
   $('play').disabled = $('restart').disabled = $('timeline').disabled = true;
   $('timeline').value = 0;
   $('timeline').style.setProperty('--progress', '0%');
-  $('trajectory-kind').textContent = 'STARTING POSE';
+  $('trajectory-kind').textContent = 'START POSE';
   $('trajectory-kind').classList.remove('prediction');
   $('trajectory-description').textContent = 'Upload .npz recordings or choose a recording from the library to view motion.';
   for (const id of ['duration-stat', 'samples-stat', 'distance-stat', 'error-stat', 'time-current', 'time-total', 'timeline-middle', 'timeline-end']) $(id).textContent = '—';
   $('playback-kind').textContent = 'NO RECORDING';
-  $('playback-title').textContent = 'Starting pose';
+  $('playback-title').textContent = 'Start pose';
   $('timing-note').textContent = 'Upload a recording or choose one from the library.';
   if (live?.mode !== 'live') {
     applyFixedJoints(data);
     showJointLabels();
-    $('scene-title').textContent = 'Starting pose';
+    $('scene-title').textContent = 'Start pose';
   }
   updateReplayLegend();
   updatePlaybackState();

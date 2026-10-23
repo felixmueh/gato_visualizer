@@ -204,3 +204,12 @@ test('a draft saved before tiago_mpc 31c405a keeps the new warm-up and SQP time-
   const saved = { config: { N: 32, warmup: 0, budget_s: .05, plant: { friction: false } }, task: { kind: 'reach' } };
   assert.deepEqual(restoreCompatibleSettings(schema, saved).config, { N: 32, warmup: true, max_sqp_time_s: null, plant: { friction: false } });
 });
+
+test('a restart restores a start pose within the URDF range and drops one outside it', () => {
+  const schema = { available_N: [32], defaults: { config: { N: 32, plant: { start_pose_rad: [0, 0] } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
+    parameters: [{ path: 'N', kind: 'int' }, { path: 'plant.start_pose_rad', kind: 'joints', lower: [-1, -1], upper: [1, 1] }], tasks: [] };
+  const restore = value => restoreCompatibleSettings(schema, { config: { plant: { start_pose_rad: value } } }).config.plant.start_pose_rad;
+  assert.deepEqual(restore([.5, -1]), [.5, -1]);
+  assert.deepEqual(restore([.5, 2]), [0, 0]);
+  assert.deepEqual(restore([.5]), [0, 0]);
+});

@@ -8,7 +8,7 @@ inspect its predicted tool path, then play the simulated closed-loop motion.
 
 Use a prepared sibling `../tiago_mpc` checkout with canonical models, fetched
 LFS meshes and GATO dependencies (select another checkout with `--mpc-root`,
-`TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the starting pose,
+`TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the start pose,
 ready for Live or for replays from the library or uploads.
 The launcher uses `../tiago_mpc/venv-host` on the desktop. `TIAGO_PYTHON` can
 select another prepared interpreter; inside the existing container the launcher
@@ -35,7 +35,7 @@ laptop Python environment, or internet connection is needed after setup.
 opens Replay with that library path (shown in the library without `.npz`;
 uploads use an `uploads/` prefix) selected and loaded. Selecting a recording
 keeps the address bar on its link, so the current URL is always shareable;
-**Copy link** beside the path copies it. The starting pose and Live carry
+**Copy link** beside the path copies it. The start pose and Live carry
 no parameter. A missing or unreadable path shows the library's usual message
 and error list, and the link opens the recording once it appears (for example
 when its export finishes). Links match library entries only, never file paths.
@@ -233,7 +233,7 @@ simulation settings: `tiago_mpc`'s robot path never clips. See
 Select Live, adjust the target offset and settings, and inspect the prediction.
 The prediction computes one optimized horizon from the displayed state. It
 does not advance the simulated plant. **Reset state** returns to the comfortable
-starting pose, clears recorded motion, and restarts the episode's plan count.
+start pose, clears recorded motion, and restarts the episode's plan count.
 Live settings stay intact when switching to Replay and back; replay metadata
 never replaces the Live configuration. The first Live connection after loading
 the application starts a fresh episode at the comfortable pose and time zero.

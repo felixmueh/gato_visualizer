@@ -23,7 +23,7 @@ export function workbenchShell(icon) {
       </section>
       <section id="replay-section">
         <label class="field-label" for="recording-select">RECORDING</label>
-        <div class="select-wrap"><select id="recording-select" aria-label="Recording library"><option value="default">Starting pose</option></select></div>
+        <div class="select-wrap"><select id="recording-select" aria-label="Recording library"><option value="default">Start pose</option></select></div>
         <div class="recording-path-row"><p id="recording-path" class="recording-path"></p><span id="recording-model-warning" class="recording-model-warning" role="img" hidden>⚠</span><button id="recording-link" class="recording-link" title="Copy a direct link to this recording" aria-label="Copy a direct link to this recording" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5l3-3M7 4.5l1.2-1.2a2.5 2.5 0 013.5 3.5L10.5 8M9 11.5l-1.2 1.2a2.5 2.5 0 01-3.5-3.5L5.5 8"/></svg></button></div><p id="recording-update" class="recording-update" role="status"></p>
         <button id="recording-reload" class="secondary-action recording-reload" hidden>Reload recording</button>
         <div class="upload-actions"><button id="upload-files" class="secondary-action">Upload .npz</button><button id="upload-folder" class="secondary-action">Upload folder</button></div>
@@ -89,7 +89,7 @@ export function workbenchShell(icon) {
         <details class="source-section"><summary>Source</summary><span id="mode-label">TRAJECTORY REPLAY</span><div class="connection"><i></i><span id="connection-label">Connecting</span></div><div class="source-name">tiago_mpc <span id="source-commit"></span></div><p id="source-run"></p><p id="live-source" class="settings-note source-live"></p></details>
       </section>
       <section id="inspection-solve" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-solve" hidden><div id="solve-plots"></div></section>
-      <section id="inspection-joints" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-joints" hidden><div class="section-heading"><h2 title="Right arm, native joint values">Right arm</h2><div class="joint-view-toggle" role="group" aria-label="Joints presentation"><button id="joint-view-gauges" type="button" title="Limit gauges">Gauges</button><button id="joint-view-numbers" type="button" title="Exact values">Numbers</button></div></div><div class="joint-list" id="joint-list" data-view="gauges"></div></section>
+      <section id="inspection-joints" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-joints" hidden><div class="section-heading"><h2 title="Right arm, native joint values">Right arm</h2><button id="joint-lock" class="joint-lock" type="button"></button><div class="joint-view-toggle" role="group" aria-label="Joints presentation"><button id="joint-view-gauges" type="button" title="Limit gauges">Gauges</button><button id="joint-view-numbers" type="button" title="Exact values">Numbers</button></div></div><div class="joint-list" id="joint-list" data-view="gauges"></div></section>
     </aside>
   </div>`;
 }
