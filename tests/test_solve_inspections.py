@@ -212,7 +212,7 @@ class NativeOperationTests(unittest.TestCase):
             (root/'models/tiago_pro').mkdir(parents=True)
             full=root/'models/tiago_pro/tiago_pro.urdf';full.write_text('<robot/>')
             reduced=root/'reduced.urdf';reduced.write_text('<robot/>')
-            session.tiago.FULL_URDF,session.tiago.ARM_URDF=full,reduced
+            session.tiago.FULL_URDF,session.tiago.arm_urdf=full,lambda:reduced
             session.model_identity.update(full_urdf_sha256=hashlib.sha256(full.read_bytes()).hexdigest(),
                                           native_urdf_sha256=hashlib.sha256(reduced.read_bytes()).hexdigest())
             result=inspect_solve(session,dict(id='native' ,problem=captured_problem(p),sqp_iters=1000,

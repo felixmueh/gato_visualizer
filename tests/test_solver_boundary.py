@@ -3,6 +3,7 @@ and the context the coordinator retains. A fake Mpc stands in for the GPU."""
 from contextlib import contextmanager
 from copy import deepcopy
 import importlib
+import os
 from pathlib import Path
 import socket
 import tempfile
@@ -88,8 +89,8 @@ def fake_gpu():
         live_probe()  # puts the selected tiago_mpc on sys.path
         module = importlib.import_module("tiago_mpc.mpc")
         FakeMpc.instances.clear()
-        with patch.multiple(module, Mpc=FakeMpc, find_binary=lambda params: Path(__file__),
-                            cache_root=lambda: Path(cache)), patch("traceback.print_exc"):
+        with patch.multiple(module, Mpc=FakeMpc, find_binary=lambda params: Path(__file__)), \
+                patch.dict(os.environ, GATO_CACHE_DIR=cache), patch("traceback.print_exc"):
             yield
 
 

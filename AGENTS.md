@@ -95,6 +95,12 @@ follows the package API that experiments use, without shims.
   "unavailable: pre-migration recording"; there is no converter.
 - **Default `tiago_mpc` root is `../tiago_mpc`.** The frozen
   `tiago_mpc_vis_baseline` worktree is no longer used.
+- **The reduced arm is derived, not a file in the checkout** (tiago_mpc,
+  2026-10-23). `tiago.arm_urdf()` derives it with the grasp frame from
+  `models/tiago_pro/tiago_pro.urdf` into the cache (`GATO_CACHE_DIR`) and
+  returns its path; `tiago.runtime_urdf(friction)` the GPU copy. The display
+  model is still read from the checkout's full URDF and meshes, which must be
+  real files: a Git LFS pointer is a source error.
 
 ### Warm-up and the SQP time limit — Felix, 2026-10-23
 

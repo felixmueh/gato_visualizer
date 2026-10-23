@@ -13,7 +13,7 @@ import pinocchio as pin
 
 from server import JOINT_NAMES, RobotKinematics, SourceError, decode_prediction, decode_prediction_telemetry, load_scene, make_server
 
-from tiago_mpc_source import MPC_ROOT
+from tiago_mpc_source import MPC_ROOT, arm_urdf
 
 
 class PredictionTests(unittest.TestCase):
@@ -56,9 +56,21 @@ class CanonicalSourceTests(unittest.TestCase):
                 self.assertRaisesRegex(SourceError, "Canonical full robot model is missing"):
             load_scene(empty)
 
+    def test_lfs_pointer_mesh_is_a_source_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            models = Path(folder) / "models/tiago_pro"
+            (models / "meshes").mkdir(parents=True)
+            urdf = models / "tiago_pro.urdf"
+            urdf.write_bytes((MPC_ROOT / "models/tiago_pro/tiago_pro.urdf").read_bytes())
+            for mesh in ET.parse(urdf).iter("mesh"):
+                (models / "meshes" / Path(mesh.get("filename")).name).write_text(
+                    "version https://git-lfs.github.com/spec/v1\n")
+            with self.assertRaisesRegex(SourceError, "Git LFS pointer"):
+                load_scene(folder)
+
     def test_full_and_reduced_fk_agree_after_torso_transform(self):
         full = RobotKinematics(MPC_ROOT / "models/tiago_pro/tiago_pro.urdf")
-        reduced = pin.buildModelFromUrdf(str(MPC_ROOT / "models/tiago_right/tiago_right_arm.urdf"))
+        reduced = pin.buildModelFromUrdf(str(arm_urdf()))
         data = reduced.createData()
         fid = reduced.getFrameId("arm_right_tool_joint")
         rows = np.array([[-.39, -1.73, -.38, -2.35, 0, -1.21, .04],

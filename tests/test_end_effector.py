@@ -2,7 +2,9 @@
 from dataclasses import replace
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -12,7 +14,7 @@ from live_presentation import LiveRenderer, snapshot
 from replay_format import load_replay
 from server import JOINT_NAMES, RobotKinematics, replay_scene
 
-from tiago_mpc_source import MPC_ROOT, replay_exporter
+from tiago_mpc_source import MPC_ROOT, arm_urdf, replay_exporter
 
 ROOT = Path(__file__).resolve().parents[1]
 tools = replay_exporter()
@@ -28,10 +30,8 @@ class EndEffectorTests(unittest.TestCase):
         models.mkdir()
         (models / "tiago_pro").symlink_to(MPC_ROOT / "models/tiago_pro", target_is_directory=True)
         self.full = models / "tiago_pro/tiago_pro.urdf"
-        reduced_dir = models / "tiago_right"
-        reduced_dir.mkdir()
-        self.reduced = reduced_dir / "tiago_right_arm.urdf"
-        tree = ET.parse(MPC_ROOT / "models/tiago_right/tiago_right_arm.urdf")
+        self.reduced = self.root / "tiago_right_arm.urdf"
+        tree = ET.parse(arm_urdf())
         # A nontrivial test TCP ensures production code reads the URDF origin
         # rather than copying TIAGo's current grasp offset into the viewer.
         ET.SubElement(tree.getroot(), "link", name="test_grasp_link")
@@ -40,6 +40,10 @@ class EndEffectorTests(unittest.TestCase):
         ET.SubElement(joint, "child", link="test_grasp_link")
         ET.SubElement(joint, "origin", xyz="0.01 -0.02 0.13", rpy="0.1 0.2 -0.3")
         tree.write(self.reduced)
+        # The viewer asks the checkout of the full URDF for its reduced arm.
+        derived = patch("live_mpc.import_tiago", return_value=SimpleNamespace(arm_urdf=lambda: self.reduced))
+        derived.start()
+        self.addCleanup(derived.stop)
         self.q = np.array([[-.39, -1.73, -.38, -2.35, 0, -1.21, .04],
                            [-.25, -1.6, -.5, -2.1, .1, -1., -.1]])
         self.path = tools.save_replay(self.root / "replay.npz", time_s=[0, .03], q=self.q,

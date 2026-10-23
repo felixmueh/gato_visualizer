@@ -161,7 +161,11 @@ class RobotKinematics:
         if self.ee_frame >= self.model.nframes:
             # Application TCP frames live in the reduced model, leaving the
             # canonical display URDF and historical replay hashes unchanged.
-            reduced_urdf = reduced_urdf or Path(urdf).parents[1] / "tiago_right/tiago_right_arm.urdf"
+            # tiago_mpc derives the reduced arm into the cache (GATO_CACHE_DIR, the
+            # selected cache in the backend) from the checkout's full URDF.
+            if reduced_urdf is None:
+                from live_mpc import import_tiago
+                reduced_urdf = import_tiago(Path(urdf).parents[2]).arm_urdf()
             joint = next((j for j in ET.parse(reduced_urdf).getroot().findall("joint")
                           if j.get("name") == end_effector_frame), None)
             if joint is None or joint.get("type") != "fixed":
@@ -210,6 +214,9 @@ def canonical_model_assets(mpc_root):
         mesh_path = mpc_root / "models/tiago_pro/meshes" / basename
         if not mesh_path.is_file() or mesh_path.suffix.lower() != ".stl":
             raise SourceError(f"Missing canonical STL mesh: {mesh_path}")
+        with mesh_path.open("rb") as stream:  # the browser would draw a pointer as nothing
+            if stream.read(23) == b"version https://git-lfs":
+                raise SourceError(f"Git LFS pointer instead of a mesh (git lfs pull): {mesh_path}")
         url = f"/assets/meshes/{basename}"
         assets[url] = mesh_path.resolve()
         mesh.set("filename", url)
