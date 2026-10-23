@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
-import { setupOnionSkin, ONION_COLOR } from './onion-skin-view.js';
+import { setupOnionSkin, ONION_COLOR, ONION_PREDICTION_COLOR } from './onion-skin-view.js';
 import { sampleAtOrBefore } from './onion-skin.js';
 import { setupLive } from "./live.js";
 import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
@@ -169,7 +169,7 @@ function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_
   updateJointTable(jointCells, {q, qd, torque, limits, mpcBounds, torqueKind, settings: limitUse});
   limitTint?.update({q, qd, torque, limits});
 }
-const pathColor = 0x34d8d4;
+const pathColor = ONION_PREDICTION_COLOR;
 const targetColor = 0xffb547;
 
 function setupScene() {

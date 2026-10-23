@@ -4,6 +4,7 @@ import { onionKeyframes, onionOpacity } from './onion-skin.js';
 
 export const ONION_STORAGE_KEY = 'motion-studio-onion-skin';
 export const ONION_COLOR = 0xaeb7c2;
+export const ONION_PREDICTION_COLOR = 0x34d8d4;
 const cssColor = color => `#${color.toString(16).padStart(6, '0')}`;
 const timeLabel = time => `${time.toFixed(3)} s`;
 
