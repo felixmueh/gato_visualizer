@@ -20,11 +20,12 @@ export function canonicalOrientation(quaternion = [0, 0, 0, 1]) {
   return normalized.map(value => value * sign);
 }
 
+export const RESET_ICON = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg>';
 // The reset-to-default arrow, shared by the settings fields and the Joints tab's start pose.
 export function createResetButton(doc, key, name) {
   const button = doc.createElement('button'); button.type = 'button'; button.className = 'setting-reset';
   button.dataset.resetSetting = key; button.setAttribute('aria-label', `Reset ${name} to default`);
-  button.title = `Reset ${name} to default`; button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg>';
+  button.title = `Reset ${name} to default`; button.innerHTML = RESET_ICON;
   return button;
 }
 

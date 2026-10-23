@@ -1,5 +1,5 @@
 import { DEFAULT_LIMIT_USE, LIMIT_QUANTITIES, formatLimitDistance, limitBounds, quantityLimitUse } from './limit-use.js';
-import { createResetButton } from './setting-resets.js';
+import { createResetButton, RESET_ICON } from './setting-resets.js';
 
 // Positions/velocities interpolate; actuator commands hold until the next command.
 export function sampleTelemetry(trajectory, time) {
@@ -95,14 +95,26 @@ export function setupJointLock({ button, rows, storage = globalThis.localStorage
 }
 
 function refreshLock(rows) {
-  const button = rows.lockButton, pose = rows.startPose;
+  const button = rows.lockButton;
   if (!button) return;
-  const changed = pose ? pose.value.flatMap((v, i) => Math.abs(v - pose.defaults[i]) > 1e-9
-    ? [`J${i + 1} ${signed(v, 3)} rad (default ${signed(pose.defaults[i], 3)})`] : []) : [];
-  button.dataset.modified = String(changed.length > 0);
-  button.title = (rows.locked ? 'Locked: the joints are read-only. Unlock to set the start pose.'
-    : 'Unlocked: in Live at t = 0, drag a position or type it to set the start pose; a new run starts there. Click to lock.')
-    + (changed.length ? `\nStart pose modified: ${changed.join(', ')}` : '');
+  button.title = rows.locked ? 'Locked: the joints are read-only. Unlock to set the start pose.'
+    : 'Unlocked: in Live at t = 0, drag a position or type it to set the start pose; a new run starts there. Click to lock.';
+}
+
+// The start-pose Reset beside the lock (Felix, 2026-10-23): always shown, locked or
+// not; disabled while the start pose is the default (or cannot be set now), else it
+// returns the whole start pose to the default as one settings change.
+const jointLabel = (pose, i) => `J${i + 1} ${signed(pose.value[i], 3)} rad (default ${signed(pose.defaults[i], 3)})`;
+function refreshStartReset(rows) {
+  const button = rows.startReset, pose = rows.startPose;
+  if (!button) return;
+  const changed = pose ? pose.value.flatMap((v, i) => Math.abs(v - pose.defaults[i]) > 1e-9 ? [jointLabel(pose, i)] : []) : [];
+  const enabled = changed.length > 0 && pose.editable;
+  button.disabled = !enabled;
+  button.title = !pose ? 'Reset the start pose to the default (Live only)'
+    : !changed.length ? 'The start pose is the default'
+    : `Reset the start pose to the default; a new run starts there at t = 0.\nDiffers: ${changed.join(', ')}`
+      + (pose.editable ? '' : '\nAvailable at t = 0, paused or stopped, in Live.');
 }
 
 // While the start pose is edited: the planning box is the URDF range shrunk by the
@@ -137,7 +149,7 @@ function createGauge(doc, quantity) {
 // onStartPoseDraft(q | null) shows a dragged start pose in the scene (null: back to
 // the shown state); onStartPoseCommit(q) sets it: one settings change per release,
 // Enter or reset arrow, never one per pointer move.
-export function createJointTable(container, names, { onStartPoseDraft = () => {}, onStartPoseCommit = () => {} } = {}) {
+export function createJointTable(container, names, { onStartPoseDraft = () => {}, onStartPoseCommit = () => {}, resetButton = null } = {}) {
   const doc = container.ownerDocument;
   const heading = el(doc, 'div', 'joint-row joint-columns');
   // Colour is the cue; its meaning is a hover away.
@@ -161,14 +173,16 @@ export function createJointTable(container, names, { onStartPoseDraft = () => {}
     Object.assign(gauges, { row, name, label, reset, input });
     container.append(row); return gauges;
   });
-  const resetAll = createResetButton(doc, 'config.plant.start_pose_rad', 'start pose');
-  resetAll.hidden = true; heading.children[0].append(resetAll);
-  Object.assign(rows, { heading, container, positionLabel: labels[1], resetAll, locked: true, startPose: null });
+  if (resetButton) { resetButton.innerHTML = RESET_ICON; resetButton.setAttribute('aria-label', 'Reset the start pose to the default'); }
+  Object.assign(rows, { heading, container, positionLabel: labels[1], startReset: resetButton, locked: true, startPose: null });
   rows.tooltip = createGaugeTooltip(container);
 
   const pose = () => rows.startPose;
   const commit = q => { if (q.some((v, i) => Math.abs(v - pose().value[i]) > 1e-12)) onStartPoseCommit(q); };
-  resetAll.addEventListener('click', event => { event.preventDefault(); if (startEditing(rows)) commit([...pose().defaults]); });
+  resetButton?.addEventListener('click', event => {
+    event.preventDefault();
+    if (pose()?.editable && !resetButton.disabled) commit([...pose().defaults]);
+  });
   rows.forEach((gauges, index) => {
     const { reset, input } = gauges, position = gauges[0];
     reset.addEventListener('click', event => {
@@ -271,7 +285,6 @@ export function updateJointTable(rows, { q, qd, torque, limits, mpcBounds = null
   const editContext = editing ? { ...startPose, outside } : null;
   if (rows.container) rows.container.dataset.startPose = editing ? 'edit' : '';
   if (rows.positionLabel) rows.positionLabel.textContent = editing ? 'START' : 'POS';
-  if (rows.resetAll) rows.resetAll.hidden = !modified.some(Boolean);
   rows.forEach((gauges, index) => {
     const values = [q?.[index], qd?.[index], torque?.[index]];
     gauges.forEach((parts, j) => updateGauge(parts, LIMIT_QUANTITIES[j], values[j], { limits, mpcBounds, index, torqueKind, settings, startPose: j === 0 ? editContext : null }));
@@ -285,6 +298,7 @@ export function updateJointTable(rows, { q, qd, torque, limits, mpcBounds = null
     }
   });
   refreshLock(rows);
+  refreshStartReset(rows);
   rows.tooltip?.refresh();
 }
 

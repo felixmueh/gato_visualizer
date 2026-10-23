@@ -560,7 +560,7 @@ async function start() {
     limitTint.setEnabled(limitTintEnabled); limitTint.setSettings(limitUse);
     // Dragging shows the pose at once (scene only); release or Enter sets the start pose.
     jointCells = createJointTable($("joint-list"), data.joint_names, {
-      onStartPoseDraft: q => live?.previewStartPose(q), onStartPoseCommit: q => live?.setStartPose(q) });
+      onStartPoseDraft: q => live?.previewStartPose(q), onStartPoseCommit: q => live?.setStartPose(q), resetButton: $("joint-start-reset") });
     setupJointLock({ button: $("joint-lock"), rows: jointCells, onChange: () => { if (lastJointTelemetry) updateJointTelemetry(...lastJointTelemetry); } });
     setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
     populateReplay(data, {name: 'Start pose'});

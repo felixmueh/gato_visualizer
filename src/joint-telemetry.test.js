@@ -120,13 +120,13 @@ const pose = (changes = {}) => ({editable: true, value: [.5, 0], defaults: [.5, 
   planning: {lower: [-1.9, -.9], upper: [1.9, .9]}, ...changes});
 function editableTable(storage = memory()) {
   const container = new Node('div'), drafts = [], commits = [];
-  const rows = createJointTable(container, ['a', 'b'], {onStartPoseDraft: q => drafts.push(q), onStartPoseCommit: q => commits.push(q)});
+  const resetButton = new Node('button'), rows = createJointTable(container, ['a', 'b'], {onStartPoseDraft: q => drafts.push(q), onStartPoseCommit: q => commits.push(q), resetButton});
   const button = new Node('button');
   setupJointLock({button, rows, storage});
   // A 200 px track: the URDF range spans its inner 86 % (7 % inset each side).
   rows[0][0].track.getBoundingClientRect = () => ({left: 100, width: 200});
   rows[0][0].gauge.setPointerCapture = () => {};
-  return {container, rows, button, drafts, commits, storage};
+  return {resetButton, container, rows, button, drafts, commits, storage};
 }
 
 test('the lock is locked by default, remembered per viewer, and locked joints are read-only as before', () => {
@@ -199,17 +199,37 @@ test('reset arrows return one joint or all to the default, and a pose outside th
   const {rows, button, commits} = editableTable();
   button.dispatch('click');
   updateJointTable(rows, {q: [1.95, .3], limits: LIMITS, startPose: pose({value: [1.95, .3]})});
-  assert.deepEqual([rows[0].reset.hidden, rows[1].reset.hidden, rows.resetAll.hidden], [false, false, false]);
+  assert.deepEqual([rows[0].reset.hidden, rows[1].reset.hidden], [false, false]);
   assert.equal(rows[0].row.dataset.planning, 'outside'); assert.equal(rows[1].row.dataset.planning, '');
   assert(rows[0].label.title.endsWith(OUTSIDE_PLANNING));
   assert.match(rows[0][0].gauge.dataset.tip, /Planning box −1\.900 … \+1\.900 rad · default \+0\.500 rad/);
-  assert.match(button.title, /Start pose modified: J1 \+1\.950 rad \(default \+0\.500\), J2 \+0\.300 rad/);
   rows[1].reset.dispatch('click', {preventDefault() {}, stopPropagation() {}});
-  rows.resetAll.dispatch('click', {preventDefault() {}});
-  assert.deepEqual(commits, [[1.95, 0], [.5, 0]]);
-  // Locked, the modification stays visible on the lock only.
+  assert.deepEqual(commits, [[1.95, 0]]);
+  // Locked, the per-joint arrows are hidden but the start-pose Reset stays.
   button.dispatch('click');
   updateJointTable(rows, {q: [1.95, .3], limits: LIMITS, startPose: pose({value: [1.95, .3]})});
-  assert.equal(rows.resetAll.hidden, true); assert.equal(rows[0].row.dataset.planning, '');
-  assert.equal(button.dataset.modified, 'true');
+  assert.equal(rows[0].row.dataset.planning, '');
+  assert.equal(button.dataset.modified, undefined);
+});
+
+test('the start-pose Reset beside the lock is disabled at the default, enabled when modified (also locked) and resets all joints once', () => {
+  const {rows, resetButton, button, commits} = editableTable();
+  assert.equal(rows.locked, true);
+  const click = () => resetButton.dispatch('click', {preventDefault() {}});
+  updateJointTable(rows, {q: [.5, 0], limits: LIMITS, startPose: pose()});
+  assert.equal(resetButton.disabled, true); assert.match(resetButton.title, /is the default/);
+  click(); assert.deepEqual(commits, []);
+  updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: pose({value: [1, .3]})});
+  assert.equal(resetButton.disabled, false);
+  assert.match(resetButton.title, /Differs: J1 \+1\.000 rad \(default \+0\.500\), J2 \+0\.300 rad/);
+  click(); assert.deepEqual(commits, [[.5, 0]]);
+  button.dispatch('click');
+  updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: pose({value: [1, .3]})});
+  assert.equal(resetButton.disabled, false);
+  // Not settable now (after t = 0, running): disabled, with the reason.
+  updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: pose({value: [1, .3], editable: false})});
+  assert.equal(resetButton.disabled, true); assert.match(resetButton.title, /Available at t = 0/);
+  click(); assert.equal(commits.length, 1);
+  updateJointTable(rows, {q: [1, .3], limits: LIMITS, startPose: null});
+  assert.equal(resetButton.disabled, true);
 });

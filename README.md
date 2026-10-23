@@ -377,10 +377,13 @@ beyond (the states of [Presentation settings](docs/presentation.md#joint-limit-s
 The lock left of the switch keeps the tab read-only (locked, the default,
 remembered per viewer). Unlocked, in Live at t = 0, the position column is
 headed START and edits the start pose (above): drag a gauge, or type a
-position and press Enter; circular arrows reset one joint or all to the
-default. Away from t = 0, in Replay or locked, the tab shows the state at the
-cursor as before; a dot on the lock marks a modified start pose, listed in its
-tooltip. Velocity and torque are never editable.
+position and press Enter; a circular arrow beside each modified joint resets
+it. A Reset button at the top of the tab, left of the lock, is always shown:
+greyed out while the start pose is the default, enabled when it differs (also
+locked), and then returns the whole start pose to the default as one settings
+change; its tooltip lists the differing joints. It is disabled where the start
+pose cannot be set (running or after t = 0). Away from t = 0, in Replay or
+locked, the joint table shows the state at the cursor as before. Velocity and torque are never editable.
 A **Gauges / Numbers** switch in the tab header swaps the bars for a compact
 table of the same cells: position (rad), velocity (rad/s) and torque (N m) as
 signed numbers in the same state colours. Both views read the same telemetry

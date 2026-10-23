@@ -333,17 +333,20 @@ a {
 .joint-unit { color: #5f7389; font-size: 7px; text-transform: none; }
 .joint-view-toggle { display: inline-flex; gap: 2px; padding: 2px; border-radius: 4px; background: #1f2d3c; }
 /* The Joints lock (Felix, 2026-10-23): locked by default; unlocked, the start pose is editable at t = 0. */
-.joint-lock { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 21px; margin-left: auto; margin-right: 4px; padding: 0; border: 0; border-radius: 4px; background: #1f2d3c; color: #8fa4b9; cursor: pointer; }
+.joint-lock { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 21px; margin-right: 4px; padding: 0; border: 0; border-radius: 4px; background: #1f2d3c; color: #8fa4b9; cursor: pointer; }
+.joint-start-reset { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 21px; margin-left: auto; margin-right: 3px; padding: 0; border: 0; border-radius: 4px; background: #1f2d3c; color: #86ddd5; cursor: pointer; }
+.joint-start-reset svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.joint-start-reset:hover:not(:disabled) { color: #b2f4e8; }
+.joint-start-reset:disabled { color: #4d5f72; cursor: default; opacity: .6; }
 .joint-lock svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .joint-lock:hover { color: #b2f4e8; }
 .joint-lock[data-locked='false'] { background: #243e47; color: #86ddd5; }
-.joint-lock[data-modified='true']::after { content: ''; position: absolute; top: 3px; right: 3px; width: 4px; height: 4px; border-radius: 50%; background: #71bdb6; }
 .joint-heading-label { display: inline; }
-.joint-name .setting-reset, .joint-columns .setting-reset { width: 14px; min-width: 14px; height: 16px; padding: 0; border: 0; background: transparent; color: #71bdb6; cursor: pointer; }
-.joint-name .setting-reset svg, .joint-columns .setting-reset svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-.joint-name .setting-reset[hidden], .joint-columns .setting-reset[hidden] { display: inline-flex; visibility: hidden; }
-.joint-name .setting-reset:hover, .joint-columns .setting-reset:hover { color: #b2f4e8; }
-.joint-list:not([data-start-pose='edit']) .joint-name .setting-reset, .joint-list:not([data-start-pose='edit']) .joint-columns .setting-reset { display: none; }
+.joint-name .setting-reset { width: 14px; min-width: 14px; height: 16px; padding: 0; border: 0; background: transparent; color: #71bdb6; cursor: pointer; }
+.joint-name .setting-reset svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.joint-name .setting-reset[hidden] { display: inline-flex; visibility: hidden; }
+.joint-name .setting-reset:hover { color: #b2f4e8; }
+.joint-list:not([data-start-pose='edit']) .joint-name .setting-reset { display: none; }
 .joint-list[data-start-pose='edit'] .joint-row { grid-template-columns: 36px repeat(3, minmax(0, 1fr)); }
 .joint-list[data-start-pose='edit'] .joint-name { gap: 2px; }
 .joint-list[data-start-pose='edit'] .limit-gauge[data-quantity='position'] { cursor: ew-resize; touch-action: none; }
