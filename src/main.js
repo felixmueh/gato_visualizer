@@ -780,7 +780,7 @@ function populateReplay(recording, item) {
   const commit = recording.source?.repository_commit || recording.source?.commit;
   $('source-commit').textContent = commit ? String(commit).slice(0, 7) : 'recording';
   $('source-commit').title = commit || 'Uploaded or watched recording';
-  const path = item.path || recording.source?.recording || '';
+  const path = item.path || '';
   $('source-run').textContent = item.name || path || 'Local saved trajectory';
   $('source-run').title = path;
   if (recording.trajectories.length) selectTrajectory(recording.trajectories[0].id);
