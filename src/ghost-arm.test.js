@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BoxGeometry, Group, LineBasicMaterial, LineSegments, Mesh, MeshStandardMaterial, Matrix4, Raycaster, Scene, Vector3 } from 'three';
+import { BoxGeometry, Group, LineBasicMaterial, LineSegments, Mesh, MeshStandardMaterial, Matrix4, PerspectiveCamera, Raycaster, Scene, Vector3 } from 'three';
 import { URDFJoint, URDFMimicJoint } from 'urdf-loader/src/URDFClasses.js';
 import { createGhostArms } from './ghost-arm.js';
+import { WebGLRenderList } from 'three/src/renderers/webgl/WebGLRenderLists.js';
 
 function fixture(method = 'plain', layer = 0) {
   const scene = new Scene(), robot = new Group(), torso = new Group();
@@ -159,4 +160,49 @@ test('reusing a comparison slot restores omitted gripper joints and cloned mimic
   ghosts.set([pose({ id: 'primary', q: [.4], opacity: .5 })]); assert.equal(sets, 0);
   assert.equal(gripper.jointValue[0], .02); assert.equal(mimic.jointValue[0], .02); assert.equal(joint.jointValue[0], 0);
   ghosts.dispose();
+});
+
+test('actual Three transparent sorting keeps globally ordered ghost depth/color pairs across pools and lifecycle changes', () => {
+  const { scene, robot, joint, ghosts: original } = fixture(); original.dispose();
+  const nested = new Group(); nested.add(new Mesh(new BoxGeometry(.1, .1, .1), new MeshStandardMaterial())); joint.add(nested);
+  const trackParent = new Group(); scene.add(trackParent);
+  const current = createGhostArms({ robot, scene: trackParent, max: Infinity, method: 'prepass' });
+  const temporal = createGhostArms({ robot, scene, max: Infinity, method: 'prepass' });
+  const at = (id, z) => pose({ id, q: [0], base: new Matrix4().makeTranslation(0, 0, z) });
+  current.set([at('current', 1)]); temporal.set([at('far', 0), at('near', 2)]);
+  const camera = new PerspectiveCamera(50, 1, .01, 100);
+  function tag() {
+    for (const [container, labels] of [[trackParent.getObjectByName('ghost-arms'), ['current']], [scene.children.find(object => object.name === 'ghost-arms'), ['far', 'near']]]) {
+      container?.children.forEach((group, i) => group.traverse(object => { if (object.isMesh) object.userData.drawLabel = `${labels[i]}:${object.material.colorWrite ? 'color' : 'depth'}`; }));
+    }
+  }
+  function drawOrder() {
+    tag(); scene.updateMatrixWorld(true); const list = WebGLRenderList();
+    // This is projectObject's Group-order inheritance and real render-list sort,
+    // not an independent comparator that could agree with a broken renderer.
+    function project(object, groupOrder = 0) {
+      if (!object.visible) return;
+      if (object.isGroup) groupOrder = object.renderOrder;
+      if (object.isMesh && object.userData.drawLabel) list.push(object, object.geometry, object.material, groupOrder,
+        new Vector3().setFromMatrixPosition(object.matrixWorld).project(camera).z, null);
+      object.children.forEach(child => project(child, groupOrder));
+    }
+    project(scene); list.sort();
+    return list.transparent.map(item => item.object.userData.drawLabel).filter((label, i, all) => !i || all[i - 1] !== label);
+  }
+  try {
+    camera.position.set(.5, 0, 4); camera.lookAt(.5, 0, 0); camera.updateMatrixWorld(true);
+    current.update(camera); temporal.update(camera); // Existing main/aux render hooks update both pools.
+    assert.deepEqual(drawOrder(), ['far:depth', 'far:color', 'current:depth', 'current:color', 'near:depth', 'near:color']);
+    camera.position.z = -4; camera.lookAt(.5, 0, 0); camera.updateMatrixWorld(true); current.update(camera);
+    assert.deepEqual(drawOrder(), ['near:depth', 'near:color', 'current:depth', 'current:color', 'far:depth', 'far:color']);
+    temporal.setMethod('flat'); current.update(camera);
+    assert.deepEqual(drawOrder(), ['near:color', 'current:depth', 'current:color', 'far:color']);
+    temporal.setMethod('prepass'); current.update(camera);
+    assert.deepEqual(drawOrder(), ['near:depth', 'near:color', 'current:depth', 'current:color', 'far:depth', 'far:color']);
+    current.dispose(); temporal.update(camera);
+    const groups = scene.children.find(object => object.name === 'ghost-arms').children;
+    assert.equal(groups[1].renderOrder, -2); assert.equal(groups[0].renderOrder, -2 + 1 / 3); // Disposed pools leave no rank slots.
+    assert.deepEqual(drawOrder(), ['near:depth', 'near:color', 'far:depth', 'far:color']);
+  } finally { current.dispose(); temporal.dispose(); }
 });

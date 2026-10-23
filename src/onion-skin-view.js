@@ -1,6 +1,6 @@
 import { Raycaster, Vector2 } from 'three';
 import { createGhostArms } from './ghost-arm.js';
-import { onionKeyframes, onionOpacity, onionBudgets, DEFAULT_GHOST_SETTINGS, validateGhostSettings } from './onion-skin.js';
+import { onionKeyframes, onionOpacity, onionBudgets, temporalGhostColor, DEFAULT_GHOST_SETTINGS, validateGhostSettings } from './onion-skin.js';
 
 export const ONION_STORAGE_KEY = 'motion-studio-onion-skin';
 export const ONION_COLOR = 0xaeb7c2;
@@ -143,12 +143,12 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
       }
       if (sourceIndex === 0) primarySelection = cached.selection;
       for (const pose of cached.recorded) poses.push({ ...pose, sourceId: key, jointNames: item.jointNames, base: item.base,
-        color: item.color ?? ONION_COLOR, cursor: item.cursor, bounds: item.bounds, range: item.range, hideCursor: item.hideCursor, reveal: item.reveal,
+        color: item.color ?? ONION_COLOR, displayColor: temporalGhostColor(pose.time, item.range, item.color ?? ONION_COLOR), cursor: item.cursor, bounds: item.bounds, range: item.range, hideCursor: item.hideCursor, reveal: item.reveal,
         seekTime: pose.time + (item.seekOffset || 0), label: sourceIndex ? item.label : undefined });
     });
     for (const key of cache.keys()) if (!activeIds.has(key)) cache.delete(key);
     const visible = poses.filter(pose => pose.reveal == null || pose.time <= pose.reveal);
-    const displayed = enabled() && normalVisible ? visible.map(pose => ({ ...pose, opacity: onionOpacity(pose.time, pose.cursor, pose.range, { ...settings, hideCursor: pose.hideCursor }) })) : [];
+    const displayed = enabled() && normalVisible ? visible.map(pose => ({ ...pose, color: pose.displayColor, opacity: onionOpacity(pose.time, pose.cursor, pose.range, { ...settings, hideCursor: pose.hideCursor }) })) : [];
     ghosts.set(displayed); ghosts.update(camera); repaintTicks(visible);
     const count = displayed.filter(pose => pose.opacity > 0).length, mode = effectiveMode();
     const title = `Ghost arms · ${mode === 'off' ? 'off' : mode === 'all' ? 'all tracks' : next.mode === 'live' ? 'Live only' : 'on'} · ${count}/${settings.maxCount}${settings.spacingEnabled && primarySelection.step ? ` · every ${Number(primarySelection.step.toPrecision(6))} s` : settings.spacingEnabled ? '' : ' · evenly distributed'} (O)`;
@@ -165,7 +165,7 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
     get snapshot() { return { enabled: enabled(), mode: effectiveMode(), settings: { ...settings }, step: primarySelection.step,
       keyframeTimes: primarySelection.times.slice(), snappedTimes: poses.map(pose => pose.time),
       opacities: enabled() && source ? poses.map(pose => pose.reveal != null && pose.time > pose.reveal ? 0 : onionOpacity(pose.time, pose.cursor, pose.range, { ...settings, hideCursor: pose.hideCursor })) : [],
-      poses: poses.map(pose => ({ id: pose.id, sourceId: pose.sourceId, time: pose.time, sessionTime: pose.seekTime, color: pose.color })),
+      poses: poses.map(pose => ({ id: pose.id, sourceId: pose.sourceId, time: pose.time, sessionTime: pose.seekTime, color: pose.color, displayColor: pose.displayColor })),
       ghostCount: ghosts.snapshot.count, renderer: ghosts.snapshot }; },
   };
 }

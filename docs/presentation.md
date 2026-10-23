@@ -82,7 +82,11 @@ Ghosts never interpolate, even when the solid robot’s playback does.
 (%)**, defaulting to 55% and 25%. Temporal ghosts interpolate linearly between
 these values using their aligned timestamp within the aggregate range. The
 fade stays fixed while scrubbing, and either endpoint may be stronger. Current
-comparison arms use the start opacity. Ghosts within 5 ms of the solid arm's
+comparison arms use the start opacity. Temporal ghosts also darken subtly
+through the aggregate range: their hue and saturation stay fixed while
+lightness falls to 85% of the track colour's starting lightness. This cue is
+independent of opacity and cursor position; ticks, labels and current comparison
+arms retain their original track colour. Ghosts within 5 ms of the solid arm's
 cursor are hidden to avoid overlap; hiding Live's solid arm also reveals its
 coincident ghost. Compact and expanded timelines mark the same snapped
 samples. Hover a ghost or tick for its recorded time; click to seek. Orbit
@@ -94,7 +98,10 @@ keyframes. Ghost transforms rebase when the recording’s fixed joints change.
 
 The temporal pool obeys the chosen maximum and shares the solid robot’s geometry while
 owning its materials. Ghosts use a depth pre-pass and appear in the main,
-Top and Right views. The 2026-10-23 laptop spike (Firefox 158, reported AMD
+Top and Right views. Current comparison and temporal pools share a scene-wide
+far-to-near order, keeping each ghost's depth and colour passes adjacent for
+every camera. This prevents one pool's depth pass from hiding another pool's
+unfinished colour pass. The 2026-10-23 laptop spike (Firefox 158, reported AMD
 Radeon R9 200 Series) measured 16.67 ms mean frame interval with eight ghosts
 and Views visible, below the handoff’s 20 ms threshold; the auxiliary-view
 increment was below 5 ms. These are browser frame intervals from one run,

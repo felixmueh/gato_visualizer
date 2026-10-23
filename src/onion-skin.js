@@ -1,6 +1,9 @@
+import { Color } from 'three';
+
 export const ONION_MIN_OPACITY = .25;
 export const ONION_MAX_OPACITY = .55;
 export const ONION_CURSOR_HIDE_S = .005;
+export const TEMPORAL_END_LIGHTNESS = .85;
 export const DEFAULT_GHOST_SETTINGS = Object.freeze({ opacityStart: ONION_MAX_OPACITY, opacityEnd: ONION_MIN_OPACITY, spacingEnabled: true, interval_s: .5, maxCount: 16 });
 
 export function validateGhostSettings(value = {}) {
@@ -74,10 +77,22 @@ export function sampleAtOrBefore(times, time) {
   return Math.max(0, low - 1);
 }
 
+export function aggregateFraction(time, range) {
+  const start = range?.[0] ?? 0, end = range?.[1] ?? start, span = end - start;
+  return span > 0 ? Math.max(0, Math.min(1, (time - start) / span)) : 0;
+}
+
+/** Subtle temporal lightness cue, independent of alpha and cursor. The base
+ * colour remains the track identity used by ticks, labels and current arms. */
+export function temporalGhostColor(time, range, baseColor) {
+  const color = new Color(baseColor), hsl = color.getHSL({});
+  const factor = 1 + (TEMPORAL_END_LIGHTNESS - 1) * aggregateFraction(time, range);
+  return color.setHSL(hsl.h, hsl.s, hsl.l * factor).getHex();
+}
+
 export function onionOpacity(time, cursor, range, { opacityStart = ONION_MAX_OPACITY, opacityEnd = ONION_MIN_OPACITY, hideCursor = true } = {}) {
   if (hideCursor && Math.abs(time - cursor) <= ONION_CURSOR_HIDE_S) return 0;
-  const start = range?.[0] ?? 0, end = range?.[1] ?? start, span = end - start;
-  const fraction = span > 0 ? Math.max(0, Math.min(1, (time - start) / span)) : 0;
+  const fraction = aggregateFraction(time, range);
   return opacityStart + (opacityEnd - opacityStart) * fraction;
 }
 

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { onionKeyframes, onionBudgets, sampleAtOrBefore, onionOpacity, visibleOnionKeyframes, validateGhostSettings, DEFAULT_GHOST_SETTINGS, ONION_MIN_OPACITY, ONION_MAX_OPACITY, ONION_CURSOR_HIDE_S } from './onion-skin.js';
+import { Color } from 'three';
+import { onionKeyframes, onionBudgets, sampleAtOrBefore, onionOpacity, visibleOnionKeyframes, validateGhostSettings, DEFAULT_GHOST_SETTINGS, ONION_MIN_OPACITY, ONION_MAX_OPACITY, ONION_CURSOR_HIDE_S, TEMPORAL_END_LIGHTNESS, aggregateFraction, temporalGhostColor } from './onion-skin.js';
 
 test('fixed seconds spacing takes a capped prefix from the selected range without widening or a forced endpoint', () => {
   assert.deepEqual(onionKeyframes([0, 10], { range: [2, 8], interval_s: 1, maxCount: 4 }), { step: 1, times: [2, 3, 4, 5] });
@@ -86,4 +87,25 @@ test('Live reveal hides future ghosts while growing, and completed history shows
   assert.equal(visibleOnionKeyframes(times, 1.5, false), times);
   const snapped = [{ time: 0, q: [1] }, { time: 1, q: [2] }, { time: 2, q: [3] }];
   assert.deepEqual(visibleOnionKeyframes(snapped, 1.5, true), snapped.slice(0, 2));
+});
+
+
+test('temporal colour darkens lightness gently across the aggregate while preserving palette hue and saturation', () => {
+  const range = [2, 8];
+  assert.equal(TEMPORAL_END_LIGHTNESS, .85);
+  for (const base of [0xb48cff, 0x6fa8ff, 0x6fdc8c, 0xff7eb6, 0xc8a27a, 0xaeb7c2]) {
+    const original = new Color(base).getHSL({});
+    assert.equal(temporalGhostColor(2, range, base), base);
+    const middle = new Color(temporalGhostColor(5, range, base)).getHSL({}), end = new Color(temporalGhostColor(8, range, base)).getHSL({});
+    assert(original.l > middle.l && middle.l > end.l);
+    // Display colours are 8-bit hex; tolerances allow one-channel rounding.
+    assert(Math.abs(middle.l - original.l * .925) < .003);
+    assert(Math.abs(end.l - original.l * .85) < .003);
+    for (const tint of [middle, end]) { assert(Math.abs(tint.h - original.h) < .005); assert(Math.abs(tint.s - original.s) < .006); }
+    assert.equal(temporalGhostColor(-20, range, base), base);
+    assert.equal(temporalGhostColor(50, range, base), temporalGhostColor(8, range, base));
+    assert.equal(temporalGhostColor(5, [5, 5], base), base);
+    assert.equal(temporalGhostColor(105, [102, 108], base), temporalGhostColor(5, range, base));
+  }
+  assert.equal(aggregateFraction(5, range), .5); assert.equal(aggregateFraction(-1, range), 0); assert.equal(aggregateFraction(20, range), 1);
 });

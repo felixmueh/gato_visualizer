@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { BoxGeometry, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene } from 'three';
 import { URDFJoint } from 'urdf-loader/src/URDFClasses.js';
 import { setupOnionSkin, ONION_COLOR, ONION_PREDICTION_COLOR, ONION_STORAGE_KEY } from './onion-skin-view.js';
-import { sampleAtOrBefore } from './onion-skin.js';
+import { sampleAtOrBefore, temporalGhostColor } from './onion-skin.js';
 import { plotDOM } from './plot-dom-test-helper.js';
 
 function fixture(t, { enabled = true, storageThrows = false } = {}) {
@@ -302,4 +302,26 @@ test('all-track even distributions keep aggregate-aligned endpoints and fade thr
   comparison.next.seekOffset = 0; view.update(next);
   assert.equal(view.snapshot.poses.some(pose => pose.sourceId === 'track-a'), false);
   assert.equal(view.snapshot.poses.length, 6); // Disjoint sources consume no budget.
+});
+
+
+test('temporal display colours align across source offsets, stay cursor-independent and keep identity ticks unchanged', async t => {
+  const { view, elements, scene } = fixture(t), base = 0xb48cff;
+  const primary = source({ mode: 'live', identity: 'live', color: base, times: Array.from({ length: 11 }, (_, i) => i), range: [2, 8], cursor: 20 });
+  const comparison = source({ id: 'track-a', identity: 'saved', color: base, times: Array.from({ length: 11 }, (_, i) => 100 + i), bounds: [100, 110], seekOffset: -98, cursor: 120, label: 'A' });
+  const next = { ...primary.next, comparisons: [comparison.next] };
+  view.setSettings({ spacingEnabled: false, maxCount: 6 }); view.setMode('all'); view.update(next);
+  const before = view.snapshot, first = before.poses.filter(pose => pose.sourceId === 'primary'), second = before.poses.filter(pose => pose.sourceId === 'track-a');
+  assert.deepEqual(first.map(pose => pose.displayColor), second.map(pose => pose.displayColor));
+  assert(before.poses.every(pose => pose.color === base));
+  assert.equal(first[0].displayColor, base); assert.notEqual(first[2].displayColor, base);
+  assert.equal(first[2].displayColor, temporalGhostColor(8, [2, 8], base));
+  const rendered = scene.getObjectByName('ghost-arms').children.at(-1).children[0].getObjectByProperty('isMesh', true).material.color.getHex();
+  assert.equal(rendered, second.at(-1).displayColor);
+  const tick = elements.get('live-onion-ticks').children.at(-1);
+  assert.equal(tick.style['--ghost-color'], '#b48cff');
+  await tick.emit('pointerenter', { clientX: 100, clientY: 100 }); assert.equal(elements.get('onion-skin-tooltip').style['--ghost-color'], '#b48cff');
+  view.update({ ...next, cursor: -20 }); view.setSettings({ opacityStart: .9, opacityEnd: .7 });
+  assert.deepEqual(view.snapshot.poses.map(pose => pose.displayColor), before.poses.map(pose => pose.displayColor));
+  assert.equal(primary.calls(), 1); assert.equal(comparison.calls(), 1);
 });

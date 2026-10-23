@@ -6,6 +6,19 @@ import {
 export const GHOST_METHODS = Object.freeze(['plain', 'prepass', 'flat']);
 export const GHOST_COLOR = 0x9ca9b8;
 
+// Independent current-track and temporal pools render into the same depth
+// buffer. Their depth/color passes must share one order, including when a
+// caller attaches its pool beneath a presentation Group.
+const sceneGhosts = new WeakMap();
+function owningScene(object) {
+  while (!object.isScene && object.parent) object = object.parent;
+  return object;
+}
+function shown(object) {
+  for (let ancestor = object; ancestor; ancestor = ancestor.parent) if (!ancestor.visible) return false;
+  return true;
+}
+
 // Recorded poses only. Geometry belongs to the solid robot; every material and
 // transform below belongs to this pool. Keyframe selection belongs to its caller.
 export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', max = 24, method = 'plain', layer = 0 }) {
@@ -21,7 +34,9 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
   container.layers.set(layer);
   scene.add(container);
   const base = new Matrix4(), inverseScene = new Matrix4(), box = new Box3();
-  const cameraPosition = new Vector3();
+  const cameraPosition = new Vector3(), sceneRoot = owningScene(scene);
+  let registered = sceneGhosts.get(sceneRoot);
+  if (!registered) { registered = new Set(); sceneGhosts.set(sceneRoot, registered); }
   const pool = [];
   let disposed = false;
 
@@ -82,7 +97,7 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
     container.add(group);
     const ghost = { group, color, material, depth, depthGroup, depthMaterial,
       sphere: new Sphere(), pose: null, q: null, names: null, base: null };
-    pool.push(ghost);
+    pool.push(ghost); registered.add(ghost);
     return ghost;
   }
 
@@ -154,12 +169,14 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
   function update(camera) {
     if (disposed || !camera) return;
     camera.getWorldPosition(cameraPosition);
-    const ordered = pool.filter((ghost) => ghost.group.visible)
-      .sort((a, b) => b.sphere.center.distanceToSquared(cameraPosition) - a.sphere.center.distanceToSquared(cameraPosition));
+    const ordered = [...registered].filter(ghost => shown(ghost.group))
+      .sort((a, b) => b.sphere.center.distanceToSquared(cameraPosition) - a.sphere.center.distanceToSquared(cameraPosition) || a.group.id - b.group.id);
     ordered.forEach((ghost, rank) => {
       // Group order sorts before a mesh's renderOrder. Paths/markers inherit
       // group order 0, so negative ghost orders keep those overlays on top.
-      const denominator = max === Infinity ? ordered.length + 1 : max + 1;
+      // Unique adjacent pass slots across every pool prevent another ghost's
+      // prepass from overwriting depth between this ghost's two passes.
+      const denominator = ordered.length + 1;
       const order = -2 + rank / denominator;
       ghost.group.renderOrder = order;
       ghost.color.groups.forEach((group) => { group.renderOrder = order; });
@@ -184,6 +201,7 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
 
   function clearPool() {
     pool.forEach((ghost) => {
+      registered.delete(ghost);
       ghost.material.dispose();
       ghost.depthMaterial?.dispose();
       ghost.group.removeFromParent();
