@@ -4,7 +4,7 @@ Status: accepted; records the implemented history/reporting/playback decisions.
 
 Latest-value events are useful for status but cannot supply complete executed
 motion, deadline intervals or inspection data. Retain every committed plan,
-control update, integration endpoint and timing interval in disk-backed history.
+control update, recorded state and timing interval in the run's history.
 Batch publication at a wall-clock report cadence and split reports into bounded
 IPC packets. The parent commits each packet before notifying clients; SSE notices
 may coalesce because clients fetch cursor pages from authoritative history.
@@ -21,12 +21,16 @@ Finite jobs have explicit capacity limits; continuous history grows on disk.
 A slow numerical boundary can delay publication, and neither bounded packets
 nor larger HTTP pages guarantee real-time throughput.
 
-Amendment (Felix, 2026-10-23): with 500 Hz commands the execution setting
-`record_every` records states and commands at every n-th physics step (default
-2); plans and intervals stay complete and 1 restores every endpoint. It is a
-visible, labelled recording choice, never backpressure: reporting and IPC still
-discard nothing that was recorded. See
-[recording substeps](../execution-api.md#recording-substeps).
+Amendment (Felix, 2026-10-23; replaces the same day's `record_every` amendment):
+the history records at the control events, every command, plan and interval and
+the state at every command tick and TO update; physics steps between them are
+simulated, not recorded. This is the recording rule, never backpressure:
+reporting and IPC still discard nothing that was recorded. Context constant
+within a segment is written once, in the segment header, not with every record.
+Only the current run is kept, in RAM-backed runtime files, so continuous history
+grows in RAM, not on disk. See [recording](../execution-api.md#recording),
+[segment header](../execution-api.md#segment-header) and
+[runtime files](../execution-api.md#runtime-files).
 
 Current limits/defaults: [presentation.md](../presentation.md).
 History cursors and interval timing: [execution-api.md](../execution-api.md).

@@ -32,8 +32,9 @@ owns simulation, scheduling, exact references and native states; `SolverProcess`
 launches `solver_worker.py` with the selected Python using `subprocess`, which
 works inside the existing daemon coordinator. A private socket carries framed
 JSON metadata and typed binary array buffers for ordinary solve replies, avoiding
-q/v/u JSON lists. Native stdout/stderr go to the owning checkout's ignored
-`_expr_data/live/solver-processes/` directory.
+q/v/u JSON lists. Native stdout/stderr go to `solver-processes/` in the
+RAM-backed [runtime directory](execution-api.md#runtime-files), which keeps the
+logs of the last 16 children.
 
 The coordinator owns creation, configuration, calls and graceful destruction
 under the canonical experiment GPU locks. The child never acquires those locks. Each RPC lends duplicated file descriptors

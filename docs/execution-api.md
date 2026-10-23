@@ -16,7 +16,6 @@ changed. `scripts/check_conformance.py` compares this loop with `tiago_mpc`'s
   "simulation_hz": 1000,
   "control_hz": 500,
   "to_hz": 100,
-  "record_every": 2,
   "calculation": "on_play",
   "duration_s": 10,
   "continue_at_end": false
@@ -25,15 +24,15 @@ changed. `scripts/check_conformance.py` compares this loop with `tiago_mpc`'s
 
 Rates are positive and obey `simulation_hz >= control_hz >= to_hz`. Commands
 default to 500 Hz, as `tiago_mpc`'s experiments (Felix, 2026-10-23); simulation
-stays at 1000 Hz and TO at 100 Hz. `record_every` is an integer within 1–1000;
-see [Recording substeps](#recording-substeps).
+stays at 1000 Hz and TO at 100 Hz. What is recorded follows the control events,
+not a setting; see [Recording](#recording).
 `config.dt_s` is the independent prediction knot interval. The backend validates
 all settings before acceptance. Static previews accept large positive SQP/PCG
 budgets within the native integer range; the prior small MVP caps no longer
 define their intended scope. Reject an unsupported history capacity before
 starting a job with an explanatory error; never silently truncate duration or
 samples. Explicit precalculations have duration/rate/sample limits. Continuous
-On Play retains its growing recording in disk-backed history until paused;
+On Play retains its growing recording in the current run's history until paused;
 IPC chunks remain bounded and no recorded samples are silently dropped.
 `warm_start` (shift or hold) is an ordinary `MpcParams` setting in the UI.
 
@@ -76,7 +75,8 @@ displayed native positions, velocities and task time. For example, play to
 covers task/simulation time 5–15 s. It reseeds the controller for the changed
 configuration (with the warm-up, [live-api.md](live-api.md#commands-and-gpu-sharing)) while preserving the selected plant state and figure-eight
 phase. The active UI history contains the new segment; it does not stitch in
-the old 0–5 s prefix. Superseded history files remain on disk.
+the old 0–5 s prefix. The superseded run's history file is deleted
+([runtime files](#runtime-files)).
 
 This accepted simplification does not add episode branching or change ordinary
 Play, which extends the existing history tip without a settings edit. Plot
@@ -147,15 +147,20 @@ report cadence without changing numerical clocks or dropping history:
 }
 ```
 
-`records` contains existing native `plan` and `state` payloads, explicit control
-updates, and the interval records below. Every record carries `generation` and
-`settings_version`. A control update has `type: "control"`, `sim_time_s`, native
+`records` starts with the generation's [segment header](#segment-header), followed
+by native `plan` and `state` payloads, explicit control updates, and the interval
+and breach records below. Every record carries `generation` and
+`settings_version`; the generation names the segment whose header holds its
+constant context. A state has `sim_time_s`, native `q`, `qd`, the applied
+`torque_nm`, `ee_xyz`, `target_xyz`, `distance_m`, `arrived`, `plan_seq`,
+`control_updates` and `horizon_exhausted`/`plan_exhausted`. A control update has
+`type: "control"`, `sim_time_s`, native
 `torque_nm`, `plan_seq`, `plan_elapsed_s`, and `horizon_exhausted` (also exposed
 as `plan_exhausted`). Control timestamps distinguish when the held command
 changed from endpoint state torques, which record the input producing that state.
-History includes the initial state, every solved plan, every completed timing
-interval and, with `record_every` 1, every integration endpoint and control
-update; [Recording substeps](#recording-substeps) thins only those two. Saved states retain actual applied
+History includes the initial state, every solved plan, every command, every
+completed timing interval and the states at the control events
+([Recording](#recording)). Saved states retain actual applied
 torque. Predictions retain only their nonterminal control samples. A generation
 mismatch returns HTTP 409; clients discard the obsolete page and synchronize
 to the active generation. `complete` means the requested calculation finished,
@@ -176,44 +181,100 @@ after every asynchronous response. History must not silently inherit the old
 60-second/2000-sample/256-plan presentation eviction limits. One authoritative
 recording supplies playback, scrubbing, executed path and trajectory fitting.
 
-## Recording substeps
+## Recording
 
-`record_every` (UI **Record every**, shown with its spacing in milliseconds)
-records states and commands at every n-th physics step; Felix, 2026-10-23.
-It counts physics steps, the finest grid, so 1 records every integration
-endpoint and command (the conformance script runs with 1). With n > 1 a state
-is recorded when its endpoint lies on every n-th tick of the session's physics
-grid, and at the end of every `advance_interval` call (each TO boundary, the
-job end); chunk ends lie on the recording grid. A command is recorded only at
-a recorded state's time. Plans and interval records are always complete.
-Each state and control record carries `record_every`.
+Felix, 2026-10-23 (replaces the `record_every` setting): Live records at the
+control events, not at physics steps. `MultirateSession` records every command,
+every plan and every interval, and the simulated state at every command tick and
+every control (TO) update: the union of both time sets, which need not coincide at
+noncommensurate rates. It also records the state at the end of each call (job end,
+pause, a bounded chunk, which ends on a command tick) and at a breaching tick.
+Physics still integrates at `simulation_hz`; the steps between two recorded states
+are simulated but not recorded. Nothing the session computes depends on what is
+recorded: breach detection, plan exhaustion, overrun timing, clipping counts and
+the step/command/solve counters see every step. Values derived from the history
+(arrival flag and distance, limit use, plots and aggregates, the executed path,
+playback) see the recorded states only; extrema between them are not recorded.
+Finite jobs estimate stored states from this rule before starting
+(`estimated_states`: command ticks plus TO ticks plus the end).
 
-The default 2 records, at 1000/500/100 Hz, every 500 Hz command and the state
-it produced: 500 states, 500 commands, 100 plans and 100 intervals per simulated
-second (1200 records) against 1000 states, 100 commands, 100 plans and 100
-intervals (1300 records) at the former 1000/100/100 default with every step.
-Measured on the GPU for a 2 s loss-free reach (2026-10-23, stored JSONL): about
-7.1 MB per simulated second at 1000/100/100 with every step, 7.4 MB at
-1000/500/100 with every step and 5.7 MB at the new default. Plans (about 36 kB
-each for the reach, 52 kB for the figure eight) are half or more of the bytes
-and are never thinned; a state is about 3.4 kB, a command 0.76 kB.
+At the defaults (1000/500/100 Hz) this records every 2 ms, exactly the times the
+former default `record_every` 2 recorded: per simulated second 500 states, 500
+commands, 100 plans and 100 intervals. The conformance script records the same
+way.
 
-Recording never changes the simulation or the solves: the plant still steps
-every physics tick and the controller every command tick. Values computed by
-the session (plan exhaustion, step/command/solve counts, achieved rates,
-interval timing and severity) see every step. Plan exhaustion is monotone
-within a plan and the end of every call is recorded, so a recorded state shows
-any exhaustion of its TO interval. Values derived from the history (arrival
-flag and distance, limit use, plots and aggregates, the executed path,
-playback) see the recorded states only; position and velocity extrema between
-them are not recorded. Finite jobs estimate stored states from this rule
-before starting (`estimated_states`).
+### Segment header
 
-The display labels a thinned recording once where it could otherwise claim full
-resolution: the history summary ("· every 2nd step") and, in the hover notes of
-episode plots that read states or commands, a structured `recording` field of
-the plot spec (like `display_reduction`). The Live history has no export; a
-replay export from `tiago_mpc` is not affected.
+Every generation is one segment: Reset, settings changes (with their anchor),
+precalculation and profile activation start one; ordinary Play extends it. Its
+first record is a header holding everything constant within it, written once
+instead of with every record:
+
+```json
+{"type": "segment", "generation": 4, "settings_version": 3, "sim_time_s": 5.0,
+ "context": {"settings": {"config": {...}, "task": {...}, "execution": {...}},
+             "source": {...}, "simulator_identity": {...}, "solver_profile": {...},
+             "problem_configuration": {...}, "model_identity": {...},
+             "joint_limits": {...}, "mpc_bounds": {...}, "constraint_bounds_native": [...],
+             "task": {...}, "task_path_xyz": null, "task_anchors": {...},
+             "end_effector_frame": "...", "position_tol_m": 0.05, "speed_l1_tol_rad_s": 1.0}}
+```
+
+`settings` are the segment's complete effective settings: `config` (`asdict(MpcParams)`
+with the `plant` group: simulator friction and limit handling), `task` and
+`execution` (rates, calculation mode, duration); `source` is the simulator
+checkout's identity. `simulator_identity`, `solver_profile`, `model_identity`,
+`problem_configuration` and the bounds identify the plant, the predictor and the
+installed problem. `task_path_xyz` is the figure-eight path (null for a reach);
+`position_tol_m` and `speed_l1_tol_rad_s` are the arrival rule. State, control,
+plan, breach and interval records keep only their own data (a plan keeps its own
+reference window, `reference_native`/`reference_xyz`, and `target_xyz`).
+
+Every reader takes the context from the header: the history store returns a
+retained plan merged with its segment's context (Run again), the preview store
+starts with a copy of the header, the plot reader exposes it as `raw["segment"]`
+(and its `joint_limits`/`mpc_bounds` as before), and the browser receives it once
+per segment (history page or SSE `segment` event) and looks it up by generation.
+Histories recorded before this format have no header and fail with "Live history
+has no segment header" (development data; Felix agreed).
+
+### History size
+
+Measured on the GPU (2026-10-23, defaults, loss-free, stored JSONL, 2 s runs;
+before: `8a84365` with `record_every` 2):
+
+| Run | Before | After | Records per simulated second |
+| --- | --- | --- | --- |
+| Reach | 5.7 MB/s | 2.8 MB/s | 1200 (unchanged; plus one header) |
+| Figure eight | 7.3 MB/s | 2.8 MB/s | 1200 (unchanged; plus one header) |
+
+A state shrinks from about 3.4 kB to 0.8 kB, a command from 0.76 kB to 0.32 kB, a
+plan from 36 kB (reach) or 52 kB (figure eight) to about 22 kB; the header is
+16 kB (reach) or 31 kB (figure eight, with its path) once per segment. Plans are
+now about 78 % of the bytes. The recorded values are identical at the same times
+(states, commands, plans and intervals, excluding wall-clock fields), and every
+plot output is identical by digest on the same data.
+
+## Runtime files
+
+Felix, 2026-10-23: runtime scratch lives in RAM-backed files, and the Live
+history keeps only the current run. The runtime directory is
+`/dev/shm/tiago-mpc-visualizer-<uid>/` (created 0700; `TIAGO_VISUALIZER_RUNTIME_DIR`
+overrides it; `runtime_files.py`, Linux tmpfs only). It holds `history/` (one JSONL
+file per generation), `solves/` (preview captures of that generation),
+`solver-processes/` (child logs, the last 16 kept) and `coordinator-lifecycle/`.
+Uploads, config, builds and their logs, exported replays and Run again results
+stay in this checkout's `_expr_data/`.
+
+`HistoryStore` deletes a generation's file when it stops being current (a new
+generation: Reset, settings change, precalculation, profile activation; close at
+shutdown or source restart) and, at start, files of ended server runs (names carry
+the owner pid, so concurrent servers keep theirs). History pages and Run again
+open the current file under the store lock, so a read in progress survives the
+replacement; a request for a replaced generation gets "History changed" (HTTP 409
+for pages). `HistoryStore.kept` is the hook for runs kept on purpose later; nothing
+uses it yet. Startup prints the directory and warns when it is not on tmpfs or has
+less than 512 MiB free; a full directory fails the run with a message naming it.
 
 ## Limit handling
 
@@ -228,18 +289,17 @@ orthogonal simulation settings in `config.plant` handle them in Live
   `SimPlant.apply`. The state and control records carry the applied (clipped)
   torque; a control record whose command clipping changed adds
   `planned_torque_nm`, the knot torque before clipping. Every interval record
-  carries `clipped_commands`, the number of clipped commands in it, counted at
-  full rate (also those `record_every` does not record). Plans keep their
+  carries `clipped_commands`, the number of clipped commands in it. Plans keep their
   planned torques.
 - **Stop on breach** (`stop_on_breach: {position, velocity, torque}`, all
-  true): `MultirateSession` checks simulated values at full rate, never the
-  thinned recording: position and velocity at every physics endpoint against
+  true): `MultirateSession` checks simulated values at full rate, never only the
+  recorded ones: position and velocity at every physics endpoint against
   the raw URDF position and velocity limits, the applied torque (after
   clipping) at every command against the effort limit. Planned knots are never
   checked. A breach ends the session's call at that tick: a torque breach right
   after its command, before integrating; a position or velocity breach at the
-  physics endpoint. The tick's state and command are recorded even off the
-  recording grid, followed by a breach record and the partial interval:
+  physics endpoint. The tick's state is recorded (also between command ticks),
+  followed by a breach record and the partial interval:
 
   ```json
   {"type": "breach", "sim_time_s": 0.03,

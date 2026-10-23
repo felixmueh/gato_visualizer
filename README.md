@@ -98,7 +98,7 @@ backend** is for another source, interpreter or cache, or changed source code;
 it saves the selected paths, closes the numerical worker, restarts in the
 selected interpreter, and reloads all source-bound models/renderers/replay
 bindings. This starts a fresh Live session while retaining compatible controls,
-saved replays and disk history. Restart may wait for an active solve or timing
+saved replays; the Live history starts afresh. Restart may wait for an active solve or timing
 window to release the GPU safely.
 
 Startup source precedence is `--mpc-root` > `TIAGO_MPC_ROOT` > saved selection >
@@ -260,10 +260,9 @@ without rewinding history. At a growing recording's end, playback waits for new 
 Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz** (defaults 1000, 500 and
 100). Simulation Hz controls RK4 integration, Control Hz samples the active plan's
 torque, and TO Hz requests new plans. The prediction knot interval is separate.
-**Record every** n physics steps (default 2, shown with its spacing in ms) thins
-the recorded states and commands; plans and timing intervals stay complete, and
-the simulation and solves are unchanged. 1 records every step; the history
-summary and plot notes say "every 2nd step" when thinned. The warm-start policy is
+The history records every command, plan and timing interval and the state at
+every command tick and TO update (every 2 ms at the defaults); the physics steps
+between them are simulated, not recorded. The warm-start policy is
 the `MpcParams` setting `warm_start` (shift or hold); there is no exact time
 alignment of the warm start. Large SQP/PCG budgets
 are available within backend limits; they may make calculation slower than 1×.
@@ -376,9 +375,13 @@ torque. Live torque reports the last command actually applied to the plant.
 The canonical full URDF supplies the torso-to-root transform for every tool
 path and reference. Models and existing recordings stay in `tiago_mpc` and are
 read-only; the viewer imports its MPC (`tiago_mpc.mpc`), plant (`SimPlant`)
-and model code unchanged. All new logs, configuration snapshots and validation
-artifacts live under this checkout's ignored `_expr_data/`; compiled modules stay
-in the selected GATO cache (see [Run](#run)).
+and model code unchanged. The Live history (current run only), preview captures
+and solver logs are RAM-backed runtime files in `/dev/shm/tiago-mpc-visualizer-<uid>/`
+(Linux tmpfs; `TIAGO_VISUALIZER_RUNTIME_DIR` overrides it; startup prints it and
+warns when it is not RAM-backed); see [runtime files](docs/execution-api.md#runtime-files).
+Build logs, configuration snapshots, Run again results and validation artifacts
+live under this checkout's ignored `_expr_data/`; compiled modules stay in the
+selected GATO cache (see [Run](#run)).
 
 ## Development
 
@@ -412,7 +415,7 @@ without the SQP time limit, warm-up on), start, target and rates: commands
 every 2 ms (500 Hz, the reach's default), a control update every 10 ms knot,
 physics on a 1 ms grid. `run()` warms up from the start state before its first
 tick; the session's configure reseeds with the same `Mpc.warmup`. The session
-records every step (`record_every` 1). It compares
+records as Live does, the state at every command tick. It compares
 the states at every command tick, the commands and the plans (`--atol`, default
 1e-9) over `--steps` knot intervals (default 300, that is 3 s). The reference
 reach gets a zero position tolerance, so it never arrives and runs the whole

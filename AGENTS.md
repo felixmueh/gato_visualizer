@@ -175,15 +175,49 @@ above. Re-implement only what the visualizer's own clocks need: the multirate
 schedule and its zero-order hold of a plan's knot torques (as `tiago_mpc`'s
 `sample_knot`, except that it holds the last torque past the horizon).
 
-**Live commands at 500 Hz; recording substeps — Felix, 2026-10-23.** Live's
-default Control Hz (the thesis's command rate) is 500, as `tiago_mpc`'s
-experiments; simulation 1000 Hz and TO 100 Hz are unchanged, and the labels stay.
-The execution setting **Record every** (`record_every`, default 2) records
-states and commands at every n-th physics step so the history stays
-manageable; plans and timing intervals stay complete. It thins only what is
-recorded, never the simulation, the solves or what the session computes, and
-the display labels a thinned recording. See
-[recording substeps](docs/execution-api.md#recording-substeps).
+**Live commands at 500 Hz — Felix, 2026-10-23.** Live's default Control Hz (the
+thesis's command rate) is 500, as `tiago_mpc`'s experiments; simulation 1000 Hz
+and TO 100 Hz are unchanged, and the labels stay.
+
+**Live history format — Felix, 2026-10-23** (replaces the **Record every**
+setting `record_every` of the same day). Two rules:
+
+- **Record at the control events.** The history records every command, plan and
+  timing interval and the simulated state at every command tick and every TO
+  update (the union of both), plus the end of each call and a breaching tick.
+  Physics still integrates at Simulation Hz; nothing the session computes
+  (breaches, plan exhaustion, overruns, clipping counts) depends on what is
+  recorded. There is no recording setting and no "thinned" label.
+- **Constant context once per segment.** Each generation's history starts with a
+  `segment` header holding everything constant within it: the complete effective
+  settings (config with its plant group, task, execution), the source identity,
+  simulator and solver-profile identities, problem configuration, joint limits,
+  MPC and constraint bounds, task path and anchors, arrival rule. State, control,
+  plan, breach and interval records keep only their own data and name their
+  segment by `generation`. Every reader (history store, plots, previews, Run
+  again, browser) takes the context from the header; the browser receives it once
+  per segment. Histories without a header (recorded before this change) fail
+  clearly; there is no converter.
+
+See [recording](docs/execution-api.md#recording) and
+[segment header](docs/execution-api.md#segment-header).
+
+**The Live history keeps only the current run — Felix, 2026-10-23.** A run's
+history file and its preview captures are deleted when the run stops being the
+current one (a new generation, Reset, settings or profile change, shutdown or
+restart); files left by ended server runs are deleted at start; solver-process
+logs keep the last 16. Readers of a replaced run get "History changed". Runs kept
+on purpose (a later comparison feature) go through `HistoryStore.kept`.
+
+**Avoid excessive disk writes — Felix, 2026-10-23.** Runtime scratch such as the
+Live history lives in RAM-backed files (tmpfs, Linux only); write to disk only
+what must persist. Reasons: the visualizer must run on HDDs, and SSD wear. The
+runtime directory is `/dev/shm/tiago-mpc-visualizer-<uid>/` (mode 0700),
+overridable with `TIAGO_VISUALIZER_RUNTIME_DIR` (`runtime_files.py`); it holds the
+Live history, preview captures, solver-process and coordinator logs. Uploads,
+config, builds and their logs, exported replays and Run again results stay on disk.
+Startup warns when the directory is not on tmpfs or nearly full (a container's
+`/dev/shm` defaults to 64 MB). See [runtime files](docs/execution-api.md#runtime-files).
 
 Conformance (Felix, 2026-10-22, replaces the comparison with `reach_sim.py`):
 the opt-in GPU script `scripts/check_conformance.py` runs
@@ -331,7 +365,7 @@ numerical worker; never swap Python/CUDA imports in an existing worker. A Build
 into the running solver's own checkout, interpreter and cache only adds modules
 and is listed without a restart (Felix, 2026-10-23, above).
 Reconstruct source-bound robot/render/replay objects and start fresh Live history;
-retain saved replays/disk history and compatible UI settings. Path precedence is
+retain saved replays and compatible UI settings. Path precedence is
 `--mpc-root`, then `TIAGO_MPC_ROOT`, then the saved selection, then `../tiago_mpc`.
 An explicit Apply replaces launch-time source/environment overrides for that
 restart. nvcc 12.9 rejects host GCC 15; Felix's shell uses

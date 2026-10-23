@@ -77,8 +77,9 @@ continue behind paused playback. Reset returns both to zero. Settings changes
 preserve the captured displayed state/time and deterministic task anchor.
 The task transform controls edit the static anchor/orientation; the moving
 reference marker follows task time. The schema's `tasks` list supplies both task
-defaults plus editable figure8 parameter descriptors. Plans/states include `task_kind` and their
-instantaneous world `target_xyz`; tracking does not report target arrival.
+defaults plus editable figure8 parameter descriptors. The segment header holds the
+`task` (with its `kind`); plans and states include their instantaneous world
+`target_xyz`; tracking does not report target arrival.
 
 This is a simulation diagnostic using the selected solver and fixed simulator.
 The figure-eight geometry is defined in `live_mpc.figure8_reference`; it does
@@ -87,7 +88,7 @@ not qualify the dynamics/cost settings of historical experiments.
 The solver reference is in the reduced arm's root (torso) frame; the backend
 converts world-frame values with the transform derived from the full URDF.
 
-Plan and state events include `task_anchors: {"reach": [x,y,z],
+The schema and each segment header include `task_anchors: {"reach": [x,y,z],
 "figure8": [x,y,z]}` in world coordinates, before task offsets. These fixed
 anchors identify the imported default reaching target and comfortable-pose
 tracking start. They do not move when the simulated state, task position,
@@ -155,7 +156,7 @@ at that time gets (the figure-eight window from the state's time). With
 reset. A reseed repeating the previous one with no solve in between is skipped.
 The warm-up is no plan: it creates no record and is not part of an interval's
 timing. Like a solve, the call has no deadline. The solver log
-(`_expr_data/live/solver-processes/`) has one line per warm-up.
+(`solver-processes/` in the [runtime directory](execution-api.md#runtime-files)) has one line per warm-up.
 
 Before constructing, resetting, solving or disposing native solver state, the
 coordinator acquires the canonical experiment locks nonblockingly. While another
@@ -205,33 +206,37 @@ All positions are in the full robot's root frame. `q` values are native joint
 coordinates, already converted from the GPU convention with the joint-6 sign.
 The current report default is 20 Hz of wall time, with immediate boundary
 flushes; see [presentation.md](presentation.md). SSE latest values/notices may
-coalesce, but all committed numerical records remain in the disk-backed history
+coalesce, but all committed numerical records remain in the current run's history
 and are fetched through cursor pages. Browser motion uses that history, not SSE
 arrival times. SSE socket writes run on client HTTP threads independently of
 numerical execution. Status fields include execution/job/generation information
 defined in [execution-api.md](execution-api.md); the examples above show core
 fields rather than an exhaustive schema.
 
-Figure-eight plans additionally carry `task_path_xyz`, a complete world-frame
-reference loop. `reference_xyz` remains the reference over the predicted horizon.
+Context that is constant within a segment (generation) is not repeated in plans
+and states: it arrives once in the generation's `segment` record, as the first
+history record and as an SSE `segment` event (also on reconnect), and the browser
+looks it up by `generation`
+([segment header](execution-api.md#segment-header)). For a figure eight it holds
+`task_path_xyz`, a complete world-frame reference loop; `reference_xyz` remains
+each plan's reference over its predicted horizon.
 
 Joint telemetry is native throughout: each plan also includes `qd_rad_s[N,7]`,
 `torque_nm[N-1,7]`, `torque_time_s` (nonterminal knot offsets),
 `torque_kind: "predicted"`, and an exclusive `torque_end_time_s` at the terminal
 knot. The terminal knot has no actuator control. Each state includes
-`torque_nm[7]` for the last control actually applied to the simulated plant,
-`torque_kind: "applied"`, or null before any plant step; with Clip effort on
+`torque_nm[7]` for the last control actually applied to the simulated plant
+(applied torque), or null before any plant step; with Clip effort on
 it is the clipped command ([limit handling](execution-api.md#limit-handling)). Solving a preview
 never changes the last applied control. These are actuator torques; they are
 not reconstructed from positions or passive resisting torques.
 
-Plans and states carry `joint_limits`, the physical URDF limits, with native
+The segment header carries `joint_limits`, the physical URDF limits, with native
 `lower_position_rad`, `upper_position_rad`, `velocity_rad_s`, `effort_nm`, and
-`source`; limit use is measured against them. They also carry `mpc_bounds`: the
+`source`; limit use is measured against them. It also carries `mpc_bounds`: the
 rows actually installed in the solver from the `MpcParams` limit settings
 (`joint_margin_rad`, default 0.1 rad; `velocity_fraction`; `effort_fraction`),
-in the same native fields plus those values as `limit_bounds`. Velocity/torque rows appear only when symmetric. Live histories
-recorded before 2026-10-22 carry the MPC bounds as `joint_limits` instead. Reset
+in the same native fields plus those values as `limit_bounds`. Velocity/torque rows appear only when symmetric. Reset
 clears episode plan count (`seq`); its next plan is 1. Settings/profile changes
 start a new history generation and plan sequence; identify a retained solve
 within its source/generation, not by sequence alone. SSE transport event IDs

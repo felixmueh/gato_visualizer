@@ -38,9 +38,10 @@ remain complete measurements; duration coverage clips to the selected bounds.
 `.bounds` uses episode time, including nonzero segment starts. `.raw` retains the
 whole captured episode and additional experiment fields. Normalized records use
 `states`, `plans`, `intervals`, `torque_samples`, and optional `joint_limits`.
-`joint_limits` are the recorded limits (Live: URDF; Live histories before
-2026-10-22: the MPC's bounds); the physical scene/URDF limits are
-`scene_joint_limits`, and the MPC bounds, when known, `mpc_bounds`.
+`joint_limits` are the recorded limits (Live: the URDF limits of the segment
+header); the physical scene/URDF limits are `scene_joint_limits`, and the MPC
+bounds, when known, `mpc_bounds`. A Live source also exposes the segment header's
+whole constant context as `raw['segment']`; the selected Solve is merged with it.
 `gato_visualizer.plotting.limit_use` computes limit use against the physical
 limits (`episode.joint_limit_use` is its example); `limit_settings(raw)` gives
 the app's current near/at thresholds.

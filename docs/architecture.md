@@ -60,9 +60,11 @@ ownership or playback timing from an old helper alone.
 Simulation, control and TO frequencies are independent of prediction knot
 spacing and wall-clock report frequency. At coincident numerical boundaries,
 solve first, select the control, then integrate. Every plan and completed
-deadline interval is retained, and with `record_every` 1 every integration
-endpoint and control change; larger values thin only those two ([recording
-substeps](execution-api.md#recording-substeps)) and never change the simulation. A slow solve
+deadline interval is retained, as is every command and the state at every
+command tick and TO update ([recording](execution-api.md#recording)); recording
+never changes the simulation. Each generation's history starts with a segment
+header holding its constant context; records name it by generation and every
+reader takes the context from it ([segment header](execution-api.md#segment-header)). A slow solve
 slows wall-clock progress; it does not advance plant time. Live defaults to
 20 Hz reports, a 200 ms simulation-time playback buffer and sample hold.
 Changing these presentation preferences does not reset settings, generation or
@@ -97,8 +99,10 @@ only refreshes the available N (`ProcessLiveService.refresh_compiled`); profile
 activation replaces only the solver and starts a new segment.
 Neither ordinary settings nor profile activation compiles: `Mpc(params, binary)`
 only loads. Build selected N is the explicit build path; it calls `compile_binary`
-into the selected project cache. Logs, binary traces
-and local history belong in this checkout's ignored `_expr_data/`; the shared
+into the selected project cache. The Live history (current run only), preview
+captures and solver/coordinator logs are RAM-backed runtime files
+([runtime files](execution-api.md#runtime-files)); build logs, binary traces and
+other retained data belong in this checkout's ignored `_expr_data/`; the shared
 ingest directory contains portable replay handoffs only. See AGENTS for storage
 exceptions and preservation rules.
 
@@ -142,7 +146,8 @@ and coordinate an idle GPU window when such work is authorized and relevant.
 
 The prototype provides simulated motion, no physical-robot command or collision
 qualification, and diagnostic timings rather than benchmark evidence. History
-files survive replacement, but there is no historical-generation/branch browser.
+files are deleted when replaced (only the current run is kept); there is no
+historical-generation/branch browser.
 Ordinary solves do not retain full incoming optimizer state or intermediate
 trajectory traces; missing historical data stays unavailable. These limits are
 part of the current contract, not implicit permission to expand scientific scope.
