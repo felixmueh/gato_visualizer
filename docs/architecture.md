@@ -100,9 +100,9 @@ activation replaces only the solver and starts a new segment.
 Neither ordinary settings nor profile activation compiles: `Mpc(params, binary)`
 only loads. Build selected N is the explicit build path; it calls `compile_binary`
 into the selected project cache. The Live history (current run only), preview
-captures and solver/coordinator logs are RAM-backed runtime files
-([runtime files](execution-api.md#runtime-files)); build logs, binary traces and
-other retained data belong in this checkout's ignored `_expr_data/`; the shared
+captures, Run again traces and solver/coordinator logs are RAM-backed runtime files
+([runtime files](execution-api.md#runtime-files)); build logs, uploads and other
+retained data belong in this checkout's ignored `_expr_data/`; the shared
 ingest directory contains portable replay handoffs only. See AGENTS for storage
 exceptions and preservation rules.
 

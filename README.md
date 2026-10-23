@@ -187,7 +187,8 @@ plan association. **Pin solve** retains its identity and SQP selection with a
 muted red indicator. Its separate SQP strip selects recorded iterations without
 moving the episode clock. **Run again** offers a finite SQP cap and optional
 wall budget, creates a separate pinned result with genuine iteration snapshots,
-and preserves the original episode. Initialization is explicitly cold; **Stop**
+and preserves the original episode. The result lasts as long as its Live run or
+loaded replay stays current. Initialization is explicitly cold; **Stop**
 terminates only that inspection worker. Older data without captured inputs
 disables it; its tooltip gives the reason. Short badges mark what changes how a
 plan reads (**final only**, **no path**, **cold start**, an unusual cursor
@@ -375,13 +376,15 @@ torque. Live torque reports the last command actually applied to the plant.
 The canonical full URDF supplies the torso-to-root transform for every tool
 path and reference. Models and existing recordings stay in `tiago_mpc` and are
 read-only; the viewer imports its MPC (`tiago_mpc.mpc`), plant (`SimPlant`)
-and model code unchanged. The Live history (current run only), preview captures
-and solver logs are RAM-backed runtime files in `/dev/shm/tiago-mpc-visualizer-<uid>/`
-(Linux tmpfs; `TIAGO_VISUALIZER_RUNTIME_DIR` overrides it; startup prints it and
-warns when it is not RAM-backed); see [runtime files](docs/execution-api.md#runtime-files).
-Build logs, configuration snapshots, Run again results and validation artifacts
-live under this checkout's ignored `_expr_data/`; compiled modules stay in the
-selected GATO cache (see [Run](#run)).
+and model code unchanged. The Live history (current run only), preview captures,
+Run again results (only while their Live run or replay is current), solver logs
+and the server's `TMPDIR` (set by `scripts/start.sh`) are RAM-backed runtime files
+in `/dev/shm/tiago-mpc-visualizer-<uid>/` (Linux tmpfs; `TIAGO_VISUALIZER_RUNTIME_DIR`
+overrides it; startup prints it and warns when it is not RAM-backed); see
+[runtime files](docs/execution-api.md#runtime-files). Only what must persist is
+written to disk: uploads, the config file (only when a setting actually changes),
+build logs and validation artifacts under this checkout's ignored `_expr_data/`;
+compiled modules stay in the selected GATO cache (see [Run](#run)).
 
 ## Development
 

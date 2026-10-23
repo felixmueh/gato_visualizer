@@ -198,10 +198,21 @@ warm initialization nor exact optimizer continuation. Requested cap/budget,
 actual completed count, stop reason, original selection, and the model, binary,
 process epoch and source actually used are retained independently.
 
-The solver child writes `_expr_data/solve-inspections/<id>/iterations.npz`
+The solver child writes `<runtime>/solve-inspections/p<pid>/<id>/iterations.npz`
 (float32 raw GPU-coordinate XU snapshots, integer PCG rows, and line-search
 flags) and captures the hashed full/reduced URDF inputs used for later CPU FK. It
-publishes `metadata.json` last. The shared metadata, captured problem
+publishes `metadata.json` last.
+
+Results are RAM-backed runtime files ([runtime files](execution-api.md#runtime-files))
+and keep only what is still needed (Felix, 2026-10-23): each belongs to the source
+it was run from, a Live generation or a replay (recording and revision; a result
+run from a result inherits its source). It is deleted when that source stops being
+current: a new Live generation (Reset, settings or profile change, precalculation),
+or loading another recording or a new revision of it (the server's current replay is
+the one most recently loaded by any browser). A job that ends after its source
+changed reports `failed` and keeps nothing; failed and cancelled jobs leave nothing;
+shutdown and source restart delete all results, and start deletes those of ended
+servers (by owner pid). Results do not survive a restart. The shared metadata, captured problem
 and effective configuration are written once. The socket returns only a small
 artifact descriptor: full traces never become JSON RPC, HTTP or plot context
 arrays. Seed is index 0 after native initialization; 1..K are the actual outer
@@ -246,12 +257,13 @@ allocation ceiling is also checked before construction.
 `failed`, `cancelled` or `busy`. Running jobs expose `phase` and `message`.
 Completed jobs include `{source: {kind: "inspection", id}, iterations_run,
 stop_reason, requested, original, original_solve_id, actual_solver_profile}`.
-The existing plot endpoints accept `{kind: "inspection", id}` as their source;
-result IDs remain usable from retained disk artifacts after job expiry/restart.
+The existing plot endpoints accept `{kind: "inspection", id}` as their source
+while the result's source is current, also after job expiry; afterwards they
+report the result as no longer available.
 
 `POST /api/solve-inspections/jobs/<id>/stop` requires `{}`. It cancels a queued
 job before construction or explicitly terminates only the isolated inspection
 child. The coordinator retains the GPU leases until that child exits. There is
 no graceful mid-SQP checkpoint and no partial trace result. Ordinary Live
-Pause/cancel never uses this termination behavior. Jobs and failed/interrupted
-artifact directories remain distinct from the original episode records.
+Pause/cancel never uses this termination behavior. Jobs remain distinct from the
+original episode records; failed or interrupted jobs leave no files.

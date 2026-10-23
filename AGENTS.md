@@ -220,8 +220,14 @@ Live history lives in RAM-backed files (tmpfs, Linux only); write to disk only
 what must persist. Reasons: the visualizer must run on HDDs, and SSD wear. The
 runtime directory is `/dev/shm/tiago-mpc-visualizer-<uid>/` (mode 0700),
 overridable with `TIAGO_VISUALIZER_RUNTIME_DIR` (`runtime_files.py`); it holds the
-Live history, preview captures, solver-process and coordinator logs. Uploads,
-config, builds and their logs, exported replays and Run again results stay on disk.
+Live history, preview captures, Run again results, solver-process and coordinator
+logs and `TMPDIR` (`scripts/start.sh`). Uploads, config, builds and their logs and
+exported replays stay on disk; the config file is rewritten only when a setting
+changes. **Run again results keep only what is still needed (Felix, 2026-10-23):**
+they belong to the Live run or loaded replay they came from and are deleted when it
+stops being current (new generation, another recording or revision loaded), on
+failure or cancellation, at shutdown and, as leftovers of ended servers (pid-owned
+directories), at start. They no longer survive a restart.
 Startup warns when the directory is not on tmpfs or nearly full (a container's
 `/dev/shm` defaults to 64 MB). See [runtime files](docs/execution-api.md#runtime-files).
 

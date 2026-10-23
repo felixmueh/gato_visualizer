@@ -130,8 +130,8 @@ Capture support is checked against the actual selected Python/native module.
 The implemented orchestration and cold-start limits are in [inspection.md](inspection.md).
 
 An inspection operation must retain full trajectory traces as binary artifacts
-under this checkout's `_expr_data/solve-inspections/` and return a compact
-descriptor. Never transport all iteration trajectories through JSON RPC or plot
+in the RAM-backed runtime directory (`solve-inspections/`, kept while their source
+is current; see [inspection](inspection.md)) and return a compact descriptor. Never transport all iteration trajectories through JSON RPC or plot
 context. Plot readers load the binary trace; only the selected iteration's
 prediction and small iteration-index/status metadata cross HTTP. Inspection
 results remain separate from applied plans and never advance the plant.
