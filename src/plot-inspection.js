@@ -82,6 +82,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
   for (const event of ['dragend', 'drop']) doc.addEventListener(event, hideDropZone, true);
   bottomContainer.addEventListener('dragleave', event => { if (!bottomContainer.contains?.(event.relatedTarget)) bottomContainer.classList.toggle('timeline-drop-over', false); });
   const scrollButtons = [['↑', -100], ['↓', 100]].map(([label, amount]) => button(label, () => bottomCards.scrollBy({ top: amount, behavior: 'smooth' }), `Scroll timeline plot rows ${amount < 0 ? 'up' : 'down'}`));
+  scrollButtons.forEach(item => { item.hidden = true; });
   bottomTitle.append(...scrollButtons);
   // Docked plot layout of the last render: instance ids and displayed heights.
   let docked = { ids: [], heights: [], chrome: 0 }, chromePerCard = STRIP_CARD_CHROME;
@@ -271,7 +272,7 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       if (Math.abs(measured - chromePerCard) > 1) { chromePerCard = measured; docked.chrome = measured * docked.ids.length; const heights = fitStripHeights(docked.ids.map(id => state.height(id, 'timeline')), { room, chrome: docked.chrome }); if (heights.some((value, index) => value !== docked.heights[index])) { docked.heights = heights; docked.ids.forEach((id, index) => cardHandles.get(`${id}:timeline`)?.setView({ height: heights[index] })); } }
     }
     // The last card's resize grip reaches 3 px below the rows; that is not overflow.
-    const overflow = (bottomCards.scrollHeight || 0) > (bottomCards.clientHeight || 0) + 4;
+    const overflow = docked.ids.length > 0 && (bottomCards.scrollHeight || 0) > (bottomCards.clientHeight || 0) + 4;
     scrollButtons.forEach(item => { item.hidden = !overflow; });
   }
   function resizeHandle(item, placement, key, fallback) {

@@ -509,3 +509,21 @@ test('docked plots resize their own height: dividers follow the mouse, the panel
     ui.destroy();
   } finally { globalThis.document = original; }
 });
+
+test('the docked strip shows its row-scroll buttons only for overflowing docked plots', async () => {
+  const { document } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  const view = { window: [0, 10], cursor: 2, inspectSolve: false }, source = { source: { kind: 'replay', id: 'r' } };
+  const request = async (_path, body) => ({ state: 'complete', catalog: [jointDef], context: { clock: 'replay:r', bounds: [0, 20] }, results: (body.plots || []).map(item => ({ instance_id: item.instance_id, spec: { version: 1, kind: 'lines', title: 'Recorded data', x: { identity: 'episode_time', clock: 'replay:r' }, y: {}, series: [{ x: [0, 20], y: [0, 1] }] } })) });
+  const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom, getSource: () => source, getView: () => view, request, storage: null });
+  const scrollButtons = () => bottom.querySelectorAll('button').filter(item => item.title.startsWith('Scroll timeline plot rows'));
+  try {
+    const rows = bottom.children[1]; Object.assign(rows, { scrollHeight: 120, clientHeight: 28 });
+    assert.equal(scrollButtons().length, 2);
+    assert(scrollButtons().every(item => item.hidden));
+    ui.update(); await flush(); await ui.refresh();
+    assert(scrollButtons().every(item => item.hidden), 'an empty strip has no rows to scroll');
+    const item = ui.state.add(jointDef, 'episode'); item.timeline = true; await ui.refresh();
+    assert(scrollButtons().every(button => !button.hidden));
+  } finally { ui.destroy(); globalThis.document = original; }
+});
