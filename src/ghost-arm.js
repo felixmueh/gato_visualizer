@@ -135,8 +135,9 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
     const ordered = pool.filter((ghost) => ghost.group.visible)
       .sort((a, b) => b.sphere.center.distanceToSquared(cameraPosition) - a.sphere.center.distanceToSquared(cameraPosition));
     ordered.forEach((ghost, rank) => {
-      // Keep all ghosts below path orders 3–4 and markers 5–6.
-      const order = 1 + rank / (max + 1);
+      // Group order sorts before a mesh's renderOrder. Paths/markers inherit
+      // group order 0, so negative ghost orders keep those overlays on top.
+      const order = -2 + rank / (max + 1);
       ghost.group.renderOrder = order;
       ghost.color.groups.forEach((group) => { group.renderOrder = order; });
       if (ghost.depthGroup) {

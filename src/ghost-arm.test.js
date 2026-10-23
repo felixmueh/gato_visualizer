@@ -79,7 +79,7 @@ test('method changes preserve poses, pool stays bounded and prepass order is per
   ghosts.update(camera);
   for (const group of scene.getObjectByName('ghost-arms').children) {
     assert(group.children[1].renderOrder < group.renderOrder);
-    assert(group.renderOrder < 3);
+    assert(group.renderOrder < 0); // Paths inherit transparent group order 0.
   }
   ghosts.setMethod('flat');
   assert.equal(ghosts.snapshot.count, 24); assert.equal(ghosts.snapshot.nominalCalls, 24);
