@@ -258,6 +258,26 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.service.job(job["job_id"])["state"], "superseded")
         store.close()
 
+    def test_thinned_live_recording_labels_state_plots_only(self):
+        history, solves = HistoryStore(self.folder/"thinned"), HistoryStore(self.folder/"thinned-solves")
+        try:
+            history.append([dict(type="state", sim_time_s=t/500, q=[t/10]*7, record_every=2) for t in range(5)] +
+                           [dict(type="interval", start_time_s=0., end_time_s=.008, to_budget_s=.01, solve_wall_s=.001,
+                                 physics_wall_s=.001, total_wall_s=.002, severity="none")])
+            self.service.live = SimpleNamespace(history_store=history, inspection_store=solves,
+                condition=threading.RLock(), latest={}, generation=0)
+            self.wait_for(lambda: self.service.settings()["ready"])
+            body = dict(source=dict(kind="live", generation=0), context="episode", plots=[
+                dict(instance_id="joint", plot_id="episode.joint", inputs={}),
+                dict(instance_id="timing", plot_id="episode.timing", inputs={})])
+            result = self.wait_job(self.service.submit(body)["job_id"])
+            self.assertEqual(result["state"], "complete", result)
+            specs = {item["instance_id"]: item["spec"] for item in result["results"]}
+            self.assertEqual(specs["joint"]["recording"], dict(record_every=2))
+            self.assertNotIn("recording", specs["timing"])
+        finally:
+            history.close(); solves.close()
+
     def test_worker_timeout_leaves_service_reloadable(self):
         project = self.folder/"blocking"
         project.mkdir()

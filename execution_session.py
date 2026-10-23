@@ -9,19 +9,28 @@ import math
 import time
 import numpy as np
 
-DEFAULT_EXECUTION = dict(simulation_hz=1000., control_hz=100., to_hz=100.,
+# Commands at 500 Hz, as tiago_mpc's experiments (Felix, 2026-10-23). Recording
+# every 2nd physics step keeps each command and the state it produced, while the
+# history per simulated second stays below the former 1000/100/100 complete record.
+DEFAULT_EXECUTION = dict(simulation_hz=1000., control_hz=500., to_hz=100., record_every=2,
                          calculation="on_play", duration_s=10., continue_at_end=False)
+MAX_RECORD_EVERY = 1000
 
 
 def validate_execution(value):
     if not isinstance(value, dict) or set(value) != set(DEFAULT_EXECUTION):
-        raise ValueError("execution requires simulation_hz, control_hz, to_hz, calculation, duration_s and continue_at_end")
+        raise ValueError("execution requires simulation_hz, control_hz, to_hz, record_every, calculation, duration_s and continue_at_end")
     value = deepcopy(value)
     for field, lo, hi in (("simulation_hz", 1, 100000), ("control_hz", .01, 100000),
                            ("to_hz", .01, 100000), ("duration_s", .001, 120)):
         number = value[field]
         if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or not lo <= number <= hi:
             raise ValueError(f"{field} must be finite within [{lo}, {hi}]")
+    every = value["record_every"]
+    if (isinstance(every, bool) or not isinstance(every, (int, float)) or not math.isfinite(every)
+            or every != int(every) or not 1 <= every <= MAX_RECORD_EVERY):
+        raise ValueError(f"record_every must be an integer within [1, {MAX_RECORD_EVERY}]")
+    value["record_every"] = int(every)
     if not value["simulation_hz"] >= value["control_hz"] >= value["to_hz"]:
         raise ValueError("Rates require Simulation Hz >= Control Hz >= TO Hz")
     if value["calculation"] not in ("on_play", "manual", "automatic"):
@@ -68,12 +77,18 @@ def interval_record(start, end, budget, solve_wall, physics_wall, total_wall, **
 
 
 class MultirateSession:
-    """Advance one TO interval at a time, retaining every physics endpoint.
+    """Advance one TO interval at a time, recording physics endpoints and commands.
 
     Integer tick counters avoid cumulative clock drift and permit noninteger
     rate ratios. A coincident boundary solves first, then updates control.
     Last nonterminal torque is held on plan exhaustion, explicitly marked. The
     plant starts at the adapter's state; whoever moves that state replaces the session.
+
+    record_every only thins what is returned, never what is simulated or solved.
+    With 1 every endpoint and command is recorded. With n > 1 a state is recorded
+    on every n-th physics tick and at the end of each call (TO boundaries, chunk
+    and job ends), a command only at a recorded state's time. Plans and intervals
+    are always complete; counters and flags are computed at every step.
     """
     def __init__(self, adapter, execution, version=0, clock=time.perf_counter):
         self.adapter = adapter
@@ -96,6 +111,14 @@ class MultirateSession:
     def _tick_time(self, tick, rate):
         return self.origin+tick/self.execution[rate]
 
+    def _recorded(self, t):
+        """Whether t lies on the recording grid: every record_every-th physics tick."""
+        every = self.execution["record_every"]
+        if every == 1:
+            return True
+        tick = round((t-self.origin)*self.execution["simulation_hz"])
+        return tick % every == 0 and abs(self._tick_time(tick, "simulation_hz")-t) <= 1e-12
+
     def _state(self):
         # Native adapters detach directly into IPC-ready state records. Keep
         # the immutable-snapshot conversion for adapters without that contract.
@@ -108,6 +131,7 @@ class MultirateSession:
         state["horizon_exhausted"] = self.horizon_exhausted
         state["plan_exhausted"] = self.horizon_exhausted
         state["control_updates"] = self.control_updates
+        state["record_every"] = self.execution["record_every"]
         if self.plan is not None:
             state["plan_seq"] = self.plan["seq"]
         return state
@@ -116,11 +140,12 @@ class MultirateSession:
         return self._state()
 
     def chunk_end(self, window_s=.1):
-        """A bounded chunk ends on a physics grid, adding no artificial steps."""
-        rate = self.execution["simulation_hz"]
+        """A bounded chunk ends on the recording grid, a subset of the physics grid,
+        adding no artificial steps and no extra recorded state."""
+        rate, every = self.execution["simulation_hz"], self.execution["record_every"]
         tick = max(self.sim_tick+1,
                    int(math.ceil((self.adapter.t-self.origin+window_s)*rate-1e-9)))
-        return self.origin+tick/rate
+        return self.origin+(-(-tick//every)*every)/rate
 
     def _solve(self):
         started = self.clock()
@@ -172,11 +197,15 @@ class MultirateSession:
                 # Endpoint states record the torque that produced that endpoint.
                 self.control_updates += 1
                 self.control_tick += 1
-                records.append(dict(type="control", sim_time_s=float(a.t), torque_nm=a.u.tolist(),
+                # A command is recorded where its state is: at the call's start
+                # (a recorded endpoint) or on the recording grid.
+                if a.t <= start+1e-12 or self._recorded(a.t):
+                    records.append(dict(type="control", sim_time_s=float(a.t), torque_nm=a.u.tolist(),
                                     plan_seq=self.plan["seq"], plan_elapsed_s=elapsed,
                                     horizon_exhausted=self.horizon_exhausted, plan_exhausted=self.horizon_exhausted,
                                     solver_profile=self.plan.get("solver_profile", {}).get("profile"),
-                                    solver_process_epoch=self.plan.get("solver_profile", {}).get("process_epoch")))
+                                    solver_process_epoch=self.plan.get("solver_profile", {}).get("process_epoch"),
+                                    record_every=self.execution["record_every"]))
             while self._tick_time(self.sim_tick, "simulation_hz") <= a.t+1e-12:
                 self.sim_tick += 1
             until = min(interval_end, self._tick_time(self.sim_tick, "simulation_hz"),
@@ -194,9 +223,10 @@ class MultirateSession:
             a.applied_torque = a.u.copy()
             self.steps += 1
             physics_wall += self.clock()-physics_start
-            snapshot_started = self.clock()
-            records.append(self._state())
-            snapshot_wall += self.clock()-snapshot_started
+            if until >= interval_end-1e-12 or self._recorded(until):
+                snapshot_started = self.clock()
+                records.append(self._state())
+                snapshot_wall += self.clock()-snapshot_started
         # Copying history/serialization/FK/IPC and pacing do not count as plant
         # execution cost. Measured overhead is scheduler + numerical execution.
         elapsed_wall = self.clock()-started

@@ -63,3 +63,13 @@ test('retention caps time, state count, and distinct prediction count with an ac
     assert.deepEqual(history.at().tracePoints, [[7, 0, 0], [8, 0, 0], [9, 0, 0]]);
   }
 });
+
+test('history reports the recording step of its states and forgets it on clear', () => {
+  const history = createLiveHistory();
+  history.addState(state(0));
+  assert.equal(history.recordEvery, 1);
+  history.addState({ ...state(.002), record_every: 2 });
+  assert.equal(history.recordEvery, 2);
+  history.clear();
+  assert.equal(history.recordEvery, 1);
+});

@@ -1281,6 +1281,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .parameter-row { grid-template-columns: minmax(0, 1fr) 88px; font-size: 10px; }
 .studio-workbench .parameter-row input:not([type="checkbox"]), .studio-workbench .parameter-row select { width: 100%; padding: 5px 6px; }
 .studio-workbench .execution-rate-row, .studio-workbench .horizon-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 14px 0; }
+.studio-workbench .record-every-row { margin: -8px 0 14px; }
+.studio-workbench .record-every-row label { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #a4b5c6; font-size: 9px; }
+.studio-workbench .record-every-row .duration-input span { white-space: nowrap; }
 .studio-workbench .execution-rate-row label, .studio-workbench .horizon-field { display: grid; gap: 6px; min-width: 0; color: #a4b5c6; font-size: 9px; }
 .studio-workbench .execution-rate-row input, .studio-workbench .horizon-field input, .studio-workbench .horizon-field select { min-width: 0; width: 100%; color: #d9e5ef; border: 1px solid #3b4e63; border-radius: 4px; background: #1b2939; padding: 6px 5px; font: 10px 'IBM Plex Mono', monospace; }
 .studio-workbench .compact-horizon { margin-bottom: 2px; }

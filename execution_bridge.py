@@ -10,7 +10,7 @@ import threading
 import time
 import traceback
 
-from execution_session import DEFAULT_EXECUTION, validate_anchor, validate_execution
+from execution_session import DEFAULT_EXECUTION, MAX_RECORD_EVERY, validate_anchor, validate_execution
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
@@ -238,7 +238,7 @@ class ProcessLiveService:
         self.task = deepcopy(self.schema["defaults"]["task"])
         self.execution = deepcopy(self.schema["defaults"].get("execution", DEFAULT_EXECUTION))
         self.schema["execution"] = dict(defaults=deepcopy(self.execution),
-            max_duration_s=120, max_states=MAX_STATES,
+            max_duration_s=120, max_states=MAX_STATES, max_record_every=MAX_RECORD_EVERY,
             rates_order=["simulation_hz", "control_hz", "to_hz"])
         self.history_store = HistoryStore(Path(__file__).resolve().parent / "_expr_data/live/history")
         self.inspection_store = HistoryStore(Path(__file__).resolve().parent / "_expr_data/live/solves")

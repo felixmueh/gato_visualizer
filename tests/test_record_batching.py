@@ -41,9 +41,9 @@ class CompletedRecordsTests(unittest.TestCase):
 
 
 class WorkerRecordBatchingTests(unittest.TestCase):
-    def run_worker(self, action=None):
+    def run_worker(self, action=None, record_every=1):
         schema = fake_schema(None)
-        execution = dict(schema['defaults']['execution'], calculation='on_play', duration_s=.2)
+        execution = dict(schema['defaults']['execution'], calculation='on_play', duration_s=.2, record_every=record_every)
         config, task = deepcopy(schema['defaults']['config']), deepcopy(schema['defaults']['task'])
         commands, messages, shutdown = queue.Queue(), [], threading.Event()
         revision = SimpleNamespace(value=0)
@@ -107,6 +107,16 @@ class WorkerRecordBatchingTests(unittest.TestCase):
         self.assertTrue(packets[-1]['complete'])
         self.assertEqual(sum(r['type'] == 'state' for m in packets for r in m['records']), 201)
         self.assertEqual(messages[-1]['events'][0]['message'], 'Precalculation complete')
+
+    def test_default_recording_thins_states_but_keeps_commands_plans_and_intervals(self):
+        # 1000/500/100 with every 2nd physics step: each 500 Hz command and the
+        # state it produced are recorded; plans and intervals are complete.
+        self.assertEqual(fake_schema(None)['defaults']['execution']['record_every'], 2)
+        messages, batches = self.run_worker(record_every=2)
+        self.assert_committed_batches(messages, batches)
+        records = [r for m in messages if m['kind'] == 'records' for r in m['records']]
+        count = lambda kind: sum(r['type'] == kind for r in records)
+        self.assertEqual((count('state'), count('control'), count('plan'), count('interval')), (101, 100, 20, 20))
 
     def test_commands_flush_old_records_before_status_or_new_generation(self):
         for action in ('pause', 'cancel', 'inspection_pause', 'switch_solver_profile', 'set_settings'):

@@ -165,7 +165,7 @@ class ReportingCadenceTests(unittest.TestCase):
         schema = fake_schema(None)
         commands, messages, shutdown = queue.Queue(), [], threading.Event()
         revision = SimpleNamespace(value=0)
-        execution = dict(schema['defaults']['execution'], calculation='manual', duration_s=.2)
+        execution = dict(schema['defaults']['execution'], calculation='manual', duration_s=.2, record_every=1)
         commands.put(dict(type='precalculate', token=0, generation=3, settings_version=1,
                           config=deepcopy(schema['defaults']['config']),
                           task=deepcopy(schema['defaults']['task']), execution=execution))

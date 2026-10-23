@@ -8,9 +8,9 @@ export function createLiveHistory(options = {}) {
   let currentPlan = null;
   let intervals = [];
   let planAfterState = false;
-  let revision = 0, metricCache = null, truncated = false;
+  let revision = 0, metricCache = null, truncated = false, recordEvery = 1;
   const changed = () => { revision++; metricCache = null; };
-  const clear = () => { samples = []; intervals = []; currentPlan = null; planAfterState = false; truncated = false; changed(); };
+  const clear = () => { samples = []; intervals = []; currentPlan = null; planAfterState = false; truncated = false; recordEvery = 1; changed(); };
   const trim = () => {
     const newest = samples.at(-1)?.state.sim_time_s;
     while (samples.length > 1 && (samples.length > limits.maxSamples || newest - samples[0].state.sim_time_s > limits.maxSeconds)) { samples.shift(); truncated = true; }
@@ -48,6 +48,8 @@ export function createLiveHistory(options = {}) {
     }
     const plan = currentPlan && currentPlan.sim_time_s <= state.sim_time_s + 1e-9 ? currentPlan : null;
     const sample = { state, plan };
+    // Recordings record states at every record_every-th physics step (1: all).
+    if (state.record_every > recordEvery) recordEvery = state.record_every;
     if (samples.length && Math.abs(samples.at(-1).state.sim_time_s - state.sim_time_s) < 1e-9) samples[samples.length - 1] = sample;
     else samples.push(sample);
     planAfterState = false;
@@ -114,6 +116,7 @@ export function createLiveHistory(options = {}) {
     },
     get pathPoints() { return samples.map(sample => sample.state.ee_xyz); },
     get length() { return samples.length; },
+    get recordEvery() { return recordEvery; },
     get bounds() { return samples.length ? [samples[0].state.sim_time_s, samples.at(-1).state.sim_time_s] : [0, 0]; },
     get limits() { return { ...limits }; },
   };

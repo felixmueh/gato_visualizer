@@ -33,7 +33,7 @@ class FrictionTests(unittest.TestCase):
                     type="plan", seq=1, N=3, dt_s=.02, _states=np.zeros((3, 14)), _torques=torques, stats=dict(solve_time_ms=1.))
                 adapter.state_record = lambda rtf=0, version=0: dict(type="state")
                 q, qd = adapter.x[:7].copy(), adapter.x[7:].copy()
-                session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=rate))
+                session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=rate, record_every=1))
                 states = [r for r in session.advance_interval(.01) if r["type"] == "state"]
                 steps = round(.01*rate)
                 self.assertEqual(len(states), steps)

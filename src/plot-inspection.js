@@ -2,6 +2,7 @@ import { createFloatingDialog } from './floating-dialog.js';
 import { createPlotState, timelineEligible, awaitPlotJob, displayLimits, episodeFrame } from './plot-state.js';
 import { aggregateBounded, aggregateLabel } from './expanded-timeline.js';
 import { renderPlot } from './plot-renderer.js';
+import { recordEveryLabel } from './live-execution.js';
 import { sourceRequest } from './source-settings.js';
 import { setupSolveRun } from './solve-run.js';
 import { stripRoom, fitStripHeights, resizeStrip, resizeStripCard, STRIP_CARD_CHROME, STRIP_PLOT_DEFAULT } from './timeline-strip.js';
@@ -294,7 +295,10 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     grip.addEventListener('dblclick', event => { event.preventDefault(); event.stopPropagation(); state.resize(item.id, placement, undefined); renderCards(); });
     return grip;
   }
-  function reductionNotes(spec) { return (spec?.display_reduction || []).map(item => `Display shows ${item.displayed} of ${item.original} points${item.series ? ` of ${item.series}` : ''}; peaks and gaps kept.`); }
+  function reductionNotes(spec) {
+    const recording = spec?.recording?.record_every > 1 ? [`States and commands recorded ${recordEveryLabel(spec.recording.record_every)} (physics steps); plans and timing intervals are complete.`] : [];
+    return [...recording, ...(spec?.display_reduction || []).map(item => `Display shows ${item.displayed} of ${item.original} points${item.series ? ` of ${item.series}` : ''}; peaks and gaps kept.`)];
+  }
   function renderSolve() {
     const selected = state.selected, records = selected?.iterations || [], index = records.findIndex(item => item.index === state.iteration);
     const finalKey = selected ? JSON.stringify([lastSolveSourceKey, selected.id]) : null;

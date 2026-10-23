@@ -130,9 +130,17 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                     if paths is not None:
                         # Top level: the context and inspection share selected_solve.
                         payload["iteration_paths"] = paths
+                    # A Live segment records one record_every (execution setting); plans
+                    # and intervals are always complete, states and commands may be thinned.
+                    record_every = max((s.get("record_every", 1) for s in states[:1] + states[-1:]), default=1)
                     for plot in request.get("plots", []):
                         try:
                             spec = registry.evaluate(plot["plot_id"], view, plot.get("inputs", {}))
+                            definition = registry.definitions[plot["plot_id"]]
+                            if (scope == "episode" and record_every > 1 and spec.get("kind") != "unavailable" and
+                                    {"states", "controls", "torque_samples"} & {*definition["requires"], *definition["optional"]}):
+                                # Structured like display_reduction: the browser shows it on hover.
+                                spec["recording"] = dict(record_every=record_every)
                             if scope == "solve" and selected is None:
                                 spec = dict(version=1, kind="unavailable", title=spec.get("title", plot["plot_id"]),
                                             message="No recorded solve is associated with this selection.")

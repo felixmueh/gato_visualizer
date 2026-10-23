@@ -61,10 +61,15 @@ class CompletedRecords:
 
 
 def estimated_states(execution, duration=None):
-    # Integration splits at physics, control and TO grids; summing tick counts
-    # safely overestimates endpoints even when grids coincide.
+    """Recorded states, safely overestimated (MultirateSession's recording rule)."""
     span = execution["duration_s"] if duration is None else duration
-    return 1+int(np.ceil(span*(execution["simulation_hz"]+execution["control_hz"]+execution["to_hz"])))
+    every = execution["record_every"]
+    if every == 1:
+        # Integration splits at physics, control and TO grids; summing tick
+        # counts overestimates endpoints even when grids coincide.
+        return 1+int(np.ceil(span*(execution["simulation_hz"]+execution["control_hz"]+execution["to_hz"])))
+    # The recording grid plus the end of every call: TO boundaries and the job end.
+    return 2+int(np.ceil(span*(execution["simulation_hz"]/every+execution["to_hz"])))
 
 
 def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory=None, schema_factory=None, solver_profile=None, report_hz=DEFAULT_PRESENTATION["report_hz"]):

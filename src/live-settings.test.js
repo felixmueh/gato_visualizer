@@ -668,6 +668,11 @@ test('active-task defaults, pose group and execution reset route through normal 
     reset('task.pose').emit('click'); assert.deepEqual(live.settings.task.target_offset_m, [0, 0, 0]); assert.deepEqual(live.settings.task.orientation_xyzw, [0, 0, 0, 1]);
     h.$('live-duration').value = '20'; h.$('live-duration').emit('input'); assert.equal(reset('execution.duration_s').disabled, false);
     reset('execution.duration_s').emit('click'); assert.equal(live.settings.execution.duration_s, DEFAULT_EXECUTION.duration_s);
+    // Record every shows its effective spacing and resets to the default.
+    assert.equal(Number(h.$('live-record-every').value), 2); assert.equal(h.$('live-record-interval').textContent, 'steps · 2 ms');
+    h.$('live-record-every').value = '5'; h.$('live-record-every').emit('input');
+    assert.equal(live.settings.execution.record_every, 5); assert.equal(h.$('live-record-interval').textContent, 'steps · 5 ms');
+    reset('execution.record_every').emit('click'); assert.equal(live.settings.execution.record_every, DEFAULT_EXECUTION.record_every);
     reset('task.kind').emit('click'); assert.equal(live.settings.task.kind, 'reach'); assert.equal(reset('task.kind').disabled, true);
     h.$('replay-mode').emit('click'); await flush();
   } finally {
