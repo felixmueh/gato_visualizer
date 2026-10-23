@@ -103,6 +103,8 @@ def save_local_settings(path, **updates):
     with _SAVE_LOCK:
         selected = Path(path).expanduser().resolve()
         settings = json.loads(selected.read_text())
+        if all(key in settings and settings[key] == value for key, value in updates.items()):
+            return  # unchanged: no disk write
         settings.update(updates)
         descriptor, name = tempfile.mkstemp(prefix=selected.name + ".", suffix=".tmp", dir=selected.parent)
         temporary = Path(name)

@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from visualizer_config import DEFAULT_INGEST_DIRECTORY, load_visualizer_config
+from visualizer_config import DEFAULT_INGEST_DIRECTORY, load_visualizer_config, save_local_settings
 
 
 class VisualizerConfigTests(unittest.TestCase):
@@ -24,6 +24,17 @@ class VisualizerConfigTests(unittest.TestCase):
             path.write_text("{}")
             self.assertEqual(load_visualizer_config(path).ingest_directory,
                              DEFAULT_INGEST_DIRECTORY)
+
+    def test_saving_unchanged_settings_writes_nothing(self):
+        # Avoid excessive disk writes (Felix, 2026-10-23).
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "viewer.json"
+            path.write_text(json.dumps(dict(presentation=dict(report_hz=20))))
+            before = path.stat().st_ino, path.stat().st_mtime_ns
+            save_local_settings(path, presentation=dict(report_hz=20))
+            self.assertEqual((path.stat().st_ino, path.stat().st_mtime_ns), before)
+            save_local_settings(path, presentation=dict(report_hz=30))
+            self.assertEqual(json.loads(path.read_text())["presentation"], dict(report_hz=30))
 
     def test_malformed_or_unknown_settings_fail_with_context(self):
         with tempfile.TemporaryDirectory() as folder:
