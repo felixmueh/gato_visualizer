@@ -192,8 +192,11 @@ The default 2 records, at 1000/500/100 Hz, every 500 Hz command and the state
 it produced: 500 states, 500 commands, 100 plans and 100 intervals per simulated
 second (1200 records) against 1000 states, 100 commands, 100 plans and 100
 intervals (1300 records) at the former 1000/100/100 default with every step.
-State records are several kilobytes, so the bytes per simulated second also
-stay below the former default (measured sizes: the branch's report).
+Measured on the GPU for a 2 s loss-free reach (2026-10-23, stored JSONL): about
+7.1 MB per simulated second at 1000/100/100 with every step, 7.4 MB at
+1000/500/100 with every step and 5.7 MB at the new default. Plans (about 36 kB
+each for the reach, 52 kB for the figure eight) are half or more of the bytes
+and are never thinned; a state is about 3.4 kB, a command 0.76 kB.
 
 Recording never changes the simulation or the solves: the plant still steps
 every physics tick and the controller every command tick. Values computed by
