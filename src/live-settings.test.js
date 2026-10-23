@@ -5,6 +5,7 @@ import { setupLive as createLive } from './live.js';
 // presentation is covered explicitly below without changing their clocks.
 const setupLive = options => createLive({ presentationSettings: { report_hz: 20, buffer_ms: 0, interpolate: true }, ...options });
 import { DEFAULT_EXECUTION } from './live-execution.js';
+import { createSession } from './session.js';
 
 // Exercise the real settings/mode/SSE controller without a GPU or renderer.
 function harness() {
@@ -30,7 +31,7 @@ function harness() {
     focus() { document.activeElement = this; }
     append(...children) {
       this.children.push(...children);
-      for (const child of children) if (child) child.parentElement = this;
+      for (const child of children) if (child && typeof child === 'object') child.parentElement = this;
       if (this.tagName === 'select') {
         for (const child of children) if (!this.value || child.selected) this.value = child.value;
       }
@@ -65,7 +66,7 @@ function harness() {
     ],
   };
   const commands = [], sources = [];
-  let version = 0, historyHandler, commandHandler;
+  let version = 0, historyHandler, commandHandler, freezeHandler;
   class EventSource {
     static OPEN = 1;
     constructor() { this.readyState = 0; sources.push(this); }
@@ -76,6 +77,7 @@ function harness() {
   const fetch = async (url, options) => {
     if (url.includes('/history?')) return historyHandler(url);
     if (url.endsWith('/schema')) return { ok: true, json: async () => structuredClone(schema) };
+    if (url.endsWith('/freeze')) return freezeHandler(JSON.parse(options.body));
     const command = JSON.parse(options.body); commands.push(command);
     if (command.type === 'set_settings') version++;
     if (commandHandler) return commandHandler(command, version);
@@ -85,7 +87,7 @@ function harness() {
     const element = path.startsWith('target-offset-') ? $(path) : created.find(el => el.dataset.path === path);
     element.value = String(value); element.emit('input');
   };
-  return { $, document, EventSource, fetch, commands, sources, created, edit, schema, setHistoryHandler(value) { historyHandler = value; }, setCommandHandler(value) { commandHandler = value; }, setVersion(value) { version = value; } };
+  return { $, document, EventSource, fetch, commands, sources, created, edit, schema, setHistoryHandler(value) { historyHandler = value; }, setCommandHandler(value) { commandHandler = value; }, setFreezeHandler(value) { freezeHandler = value; }, setVersion(value) { version = value; } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // A segment header: the constant context of a generation's records, sent once.
@@ -1274,5 +1276,93 @@ test('On Play stops at a breach announced at the very time it resumed from, with
     live.frame(performance.now() + 100); live.frame(performance.now() + 200);
     assert.equal(live.playing, false); assert.equal(h.$('live-message').textContent, 'torque breach');
     assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+test('one session clock plays comparison tails at the chosen rate and edits clamp to recorded main states', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  h.schema.defaults.execution.calculation = 'manual';
+  const records = [1, 2].map(time => ({ type: 'state', generation: 1, settings_version: 1, sim_time_s: time,
+    q: Array(7).fill(time), qd: Array(7).fill(.2), ee_xyz: [time, 0, 1] }));
+  records.unshift({ ...segment('reach', { settings: h.schema.defaults, end_effector_frame: 'grasp' }), generation: 1, settings_version: 1 });
+  h.setHistoryHandler(() => ({ ok: true, json: async () => ({ generation: 1, records, next_cursor: records.length, complete: true }) }));
+  try {
+    const session = createSession(), seen = [];
+    const live = setupLive({ onMode() {}, onPlan() {}, onState(state) { seen.push([session.cursor, state.sim_time_s]); }, onReset() {} }); live.setSession(session);
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
+    await flush(); source.emit(plan(1, 1)); source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length }); await flush();
+    session.addTrack({ span: [0, 4], source: { kind: 'replay', id: 'other', revision: 'a' } });
+    session.setAggregate({ start: 1.1, end: null });
+    live.seek(1); h.$('live-speed').value = '2'; h.$('live-speed').emit('change');
+    h.$('live-play').emit('click'); live.frame(0); live.frame(500); live.frame(1000);
+    assert.equal(session.cursor, 3); assert.equal(live.history.selectedTime, 3); assert.deepEqual(live.history.sessionBounds, [1, 5]);
+    assert.equal(live.displayedState.sim_time_s, 2); assert.equal(session.focused.displayedState.sim_time_s, 2);
+    assert.equal(h.$('live-playback-rate').textContent, '2×'); assert.equal(h.$('live-speed').disabled, false);
+    assert(seen.some(([cursor, recorded]) => cursor === 3 && recorded === 2));
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 0);
+    h.$('live-play').emit('click'); await flush();
+    h.$('live-continue').checked = true; h.$('live-continue').emit('change');
+    live.seek(2); h.$('live-speed').value = '4'; h.$('live-speed').emit('change');
+    source.emit({ type: 'status', state: 'calculating', settings_version: 1, generation: 1, job_active: true });
+    h.$('live-play').emit('click'); await flush();
+    assert.equal(h.$('live-speed').disabled, true); assert.equal(h.$('live-speed').value, '1');
+    h.$('live-play').emit('click'); await flush();
+    assert.equal(h.$('live-speed').disabled, false); assert.equal(h.$('live-speed').value, '4');
+    source.emit({ type: 'status', state: 'paused', settings_version: 1, generation: 1, job_active: false });
+    h.edit('solver_params.q_cost', 6); await new Promise(resolve => setTimeout(resolve, 380));
+    assert.deepEqual(h.commands.at(-1).anchor, { sim_time_s: 2, q: Array(7).fill(2), qd: Array(7).fill(.2) });
+    assert.deepEqual(session.aggregate, { start: 1.1, end: null });
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+test('unavailable Live keeps an empty main track and plays comparisons locally across a Replay roundtrip', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  h.schema.available_N = [];
+  try {
+    const session = createSession(), live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); live.setSession(session);
+    await flush(); assert.equal(h.$('live-mode').disabled, false);
+    h.$('live-mode').emit('click'); assert.equal(live.mode, 'live'); assert.equal(h.sources.length, 0);
+    assert.equal(session.focused.empty, true); assert.equal(h.$('live-play').disabled, true);
+    const track = session.addTrack({ span: [5, 6] });
+    assert.equal(h.$('live-play').disabled, false); assert.equal(h.$('live-precalculate').disabled, true);
+    live.seek(0); h.$('live-play').emit('click'); live.frame(0); live.frame(250);
+    assert.equal(live.playing, true); assert.equal(session.cursor, .25);
+    h.$('live-play').emit('click'); await flush(); assert.equal(live.playing, false);
+    h.$('replay-mode').emit('click'); await flush(); h.$('live-mode').emit('click');
+    assert.equal(session.tracks[1], track); assert.equal(session.cursor, .25);
+    live.seek(.75); assert.equal(session.cursor, .75); assert.deepEqual(h.commands, []);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+test('Freeze posts the current generation, adds a replay track and rewinds before an Automatic edit', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  h.schema.defaults.execution.calculation = 'automatic';
+  const records = [3, 4].map(time => ({ type: 'state', generation: 1, settings_version: 1, sim_time_s: time,
+    q: Array(7).fill(time), qd: Array(7).fill(.1), ee_xyz: [time, 0, 1] }));
+  records.unshift({ ...segment('reach', { settings: h.schema.defaults }), generation: 1, settings_version: 1 });
+  h.setHistoryHandler(() => ({ ok: true, json: async () => ({ generation: 1, records, next_cursor: records.length, complete: true }) }));
+  const requests = [], item = { id: 'freeze-test', revision: 'r1', source: 'freeze', name: 'Freeze B' };
+  h.setFreezeHandler(body => { requests.push(body); return { ok: true, json: async () => ({ accepted: true, item }) }; });
+  try {
+    const session = createSession(), frozen = [];
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {}, onFreeze: async value => {
+      frozen.push(value); session.addTrack({ span: [3, 4], catalogSource: value.source, source: { kind: 'replay', id: value.id, revision: value.revision } });
+    } }); live.setSession(session);
+    await flush(); assert.equal(h.$('live-freeze').disabled, true);
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
+    await flush(); source.emit(plan(1, 1)); source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length }); await flush(); live.frame(0);
+    source.emit({ type: 'status', state: 'calculating', settings_version: 1, generation: 1, job_active: true });
+    assert.equal(h.$('live-freeze').disabled, true);
+    source.emit({ type: 'status', state: 'paused', settings_version: 1, generation: 1, job_active: false });
+    assert.equal(h.$('live-freeze').disabled, false); live.seek(4);
+    h.$('live-freeze').emit('click'); assert.equal(h.$('live-freeze').disabled, true); await flush();
+    assert.deepEqual(requests, [{ generation: 1 }]); assert.deepEqual(frozen, [item]);
+    assert.equal(session.tracks[1].offset_s, 0); assert.equal(live.sessionTime, 3); assert.equal(live.displayedState.sim_time_s, 3);
+    h.edit('solver_params.q_cost', 7); assert.equal(h.$('live-freeze').disabled, true);
+    await new Promise(resolve => setTimeout(resolve, 380));
+    assert.deepEqual(h.commands.at(-1).anchor, { sim_time_s: 3, q: Array(7).fill(3), qd: Array(7).fill(.1) });
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });

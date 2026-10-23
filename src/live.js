@@ -7,6 +7,7 @@ import { DEFAULT_PRESENTATION, validatePresentation } from './presentation-setti
 // frame conversions belong in the browser.
 import { createLiveHistory } from './live-history.js';
 import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
+import { sessionSpan } from './session.js';
 const HISTORY_PAGE_SIZE = 1024;
 
 export function cloneSettings(value) {
@@ -129,7 +130,7 @@ export function validPoints(points) {
     Array.isArray(point) && point.length === 3 && point.every(Number.isFinite));
 }
 
-export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {} }) {
+export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {}, onFreeze = async () => {} }) {
   const $ = id => document.getElementById(id);
   let schema, settings, defaultSettings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
@@ -142,6 +143,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   let desiredReference, referenceKey, renderedReference;
   let profileSwitching = false, profileUnavailable = false, profileNError = false, schemaReload = 0, suppressInitialPreview = false;
   let populationBindings = [];
+  let session, unsubscribeSession, freezing = false;
+  let precomputedRevision = -1, precomputedPoints;
   const latestServerEvents = new Map();
   // Each history segment's constant context (task, limits, identities), sent once
   // in its `segment` record; plans and states name their segment by generation.
@@ -155,10 +158,30 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
   const transportConnected = () => liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && !needsInitialPreview;
   const connected = () => transportConnected() && !profileNError;
-  const continueAtEnd = () => settings.execution.calculation === 'on_play' || settings.execution.continue_at_end;
+  const continueAtEnd = () => liveReady && (settings?.execution.calculation === 'on_play' || Boolean(settings?.execution.continue_at_end));
   // Completion metadata can precede later history pages. Do not drain a short
   // final tail until the local download is caught up.
   const growingHistory = () => Boolean(job.job_active || extensionPending || fetching || fetchAgain);
+  const sessionBounds = () => session ? sessionSpan(session.tracks.map(track => track.kind === 'live' ? { ...track, span: history.bounds, empty: !history.length } : track)) : history.bounds;
+  const presentationBounds = () => session ? sessionSpan(session.tracks.map(track => track.kind === 'live' ? { ...track, span: clock.presentationBounds(history.bounds), empty: !history.length } : track)) : clock.presentationBounds(history.bounds);
+  const localComparisonPlayback = () => Boolean(session?.tracks.some(track => track.kind === 'replay' && track.visible !== false && track.span?.[1] > track.span?.[0]));
+  function historySnapshot() { return { length: history.length, bounds: history.bounds, sessionBounds: sessionBounds(), presentationBounds: presentationBounds(), following: clock.following, buffering: clock.buffering, playing: clock.playing, growing: growingHistory(), selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals, breaches: history.breaches }; }
+  function precomputedPath() {
+    if (dirty || pending || !historyComplete || fetching || history.length < 2 || settings?.execution.calculation === 'on_play') return undefined;
+    if (precomputedRevision !== historyRevision) { precomputedPoints = history.pathPoints; precomputedRevision = historyRevision; }
+    return precomputedPoints;
+  }
+  function syncSession(shownState = presentedState || state, shownPlan = renderedPlan) {
+    if (!session) return;
+    const segment = segments.get(generation), context = segment?.context;
+    session.updateMain({ source: { kind: 'live', generation }, span: history.bounds, empty: !history.length, segment, context,
+      settings: context?.settings || null, endEffectorFrame: context?.end_effector_frame || context?.settings?.config?.ee_frame,
+      state, displayedState: shownState, plan: shownPlan, reference: desiredReference, limits: history.limits,
+      metricHistory: history.metricSnapshot, historyRevision, history: historySnapshot(),
+      precomputedPath: precomputedPath(),
+      fitAvailable: Boolean(history.length || plan?.ee_xyz?.length || segmentOf(plan)?.task_path_xyz?.length) });
+    session.setCursor(clock.time ?? (history.length ? history.bounds[0] : session.span[0]));
+  }
   function pausePlayback() { ++playbackIntent; clock.pause(); extensionPending = false; renderDirty = true; }
   const acceptTaskAnchors = item => {
     if (validPoints([item?.task_anchors?.reach])) defaultTargetWorld = [...item.task_anchors.reach];
@@ -168,6 +191,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     segments.set(record.generation, record);
     while (segments.size > 4) segments.delete(segments.keys().next().value);
     acceptTaskAnchors(record.context); renderDirty = true;
+    syncSession();
   }
   const displayedAnchor = () => {
     const value = presentedState || history.at(clock.time)?.state || state;
@@ -193,11 +217,12 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   }
   function controlsEnabled() {
     const unavailable = !connected();
-    $('live-play').disabled = unavailable;
+    $('live-play').disabled = unavailable && !localComparisonPlayback();
     $('live-preview').disabled = unavailable;
     $('live-reset').disabled = unavailable;
     $('live-precalculate').disabled = unavailable;
     $('live-cancel').disabled = !transportConnected() || (!job.job_active && !pending);
+    if ($('live-freeze')) $('live-freeze').disabled = unavailable || history.length < 2 || Boolean(job.job_active) || dirty || pending || freezing;
     $('live-play').textContent = clock.playing ? 'Pause' : 'Play';
     $('live-play').setAttribute('aria-label', clock.playing ? 'Pause live history' : 'Play live history');
     calculationControls();
@@ -506,7 +531,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     listen($('live-continue'), 'change', () => { settings.execution.continue_at_end = $('live-continue').checked; });
     refreshFrictionAvailability();
     resetIndicators.update();
-    calculationControls();
+    controlsEnabled();
     $('live-mode').disabled = false; message(profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', profileNError);
   }
   function useGeneration(next, force = false) {
@@ -518,6 +543,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     state = undefined; clock.seek(null);
     if (wasPlaying) clock.play(performance.now(), { follow: following, growing: true });
     extensionPending = false; renderedPlan = undefined; renderDirty = true;
+    syncSession();
     fetchHistory();
     return true;
   }
@@ -551,6 +577,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         if (extensionPending && historyComplete && history.bounds[1] > extensionStartTime + 1e-8) extensionPending = false;
         if (appliedRecords) historyRevision++; renderDirty = true;
         if (!clock.playing && clock.time == null && history.length) clock.seek(history.bounds[0]);
+        syncSession();
       }
     } catch (error) { message(`History download failed: ${error.message}`, true); }
     finally { fetching = false; if (fetchAgain) { fetchAgain = false; fetchHistory(); } controlsEnabled(); }
@@ -657,24 +684,28 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     }), ...breaches);
   }
   function refreshHistoryControls() {
-    const [start, end] = clock.presentationBounds(history.bounds), timeline = $('live-history'), time = clock.time ?? end;
+    const [start, end] = presentationBounds(), timeline = $('live-history'), time = clock.time ?? end;
+    const mainStart = history.bounds[0];
     const recordedEnd = history.bounds[1];
-    timeline.min = start; timeline.max = end; timeline.value = Math.max(start, Math.min(end, time)); timeline.disabled = history.length < 2;
+    timeline.min = start; timeline.max = end; timeline.value = Math.max(start, Math.min(end, time)); timeline.disabled = end <= start;
     timeline.style.setProperty('--progress', `${end > start ? 100 * (time - start) / (end - start) : 0}%`);
     $('live-history-latest').disabled = !history.length || Math.abs(time - recordedEnd) < 1e-8;
-    $('live-history-position').textContent = history.length ? clock.buffering ? `${number(time, 2)} s · Buffering` : clock.following ? `${number(time, 2)} s · Live` : `${number(time, 2)} / ${number(end, 2)} s` : 'No state history yet';
+    $('live-history-position').textContent = history.length || end > start ? clock.buffering ? `${number(time, 2)} s · Buffering` : clock.following ? `${number(time, 2)} s · Live` : `${number(time, 2)} / ${number(end, 2)} s` : 'No state history yet';
     const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time) || history.intervals.at(-1);
     if (!timeline.matches?.(':hover')) timeline.title = interval ? intervalDescription(interval) : 'Recorded simulation time';
     timeline.setAttribute('aria-valuetext', `${number(time, 3)} seconds${interval ? ` · ${intervalDescription(interval)}` : ''}`);
-    $('live-history-window').textContent = `Recorded ${number(start, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
-    $('live-history-note').textContent = clock.buffering ? `Buffering ${number(Math.max(0, recordedEnd - time) * 1000)} / ${number(presentation.buffer_ms)} ms of recorded simulation time. Pause or scrub to inspect history.` : clock.following ? `Following Live at 1× · recorded through ${number(recordedEnd, 2)} s. Calculation may limit progress. Pause or scrub to inspect the full recording.` : clock.playing ? 'History playback at 1×. At the recorded end, calculation may limit progress.' : 'Scrub or Play recorded history. Go latest only moves the view; Continue controls new motion at the end.';
+    $('live-history-window').textContent = `Recorded ${number(mainStart, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
+    $('live-history-note').textContent = clock.buffering ? `Buffering ${number(Math.max(0, recordedEnd - time) * 1000)} / ${number(presentation.buffer_ms)} ms of recorded simulation time. Pause or scrub to inspect history.` : clock.following ? `Following Live at ${clock.effectiveRate}× · recorded through ${number(recordedEnd, 2)} s. Calculation may limit progress. Pause or scrub to inspect the full recording.` : clock.playing ? `Session playback at ${clock.effectiveRate}×. At the Live tip, Continue may wait for calculation.` : 'Scrub or Play recorded history. Go latest only moves the view; Continue controls new motion at the end.';
+    const speed = $('live-speed');
+    if (speed) { speed.value = String(clock.effectiveRate); speed.disabled = clock.rateForced; speed.title = clock.rateForced ? 'Following a growing Live tip at 1×' : 'Session playback speed'; }
     paintIntervals();
     // Paint only on recorded changes, then rescale its full-history coordinates
     // to the presented end without rebuilding interval DOM on animation frames.
-    const span = recordedEnd - start, visibleFraction = span > 0 ? (end - start) / span : 1;
+    const span = recordedEnd - mainStart, visibleSpan = end - start;
     const intervals = $('live-history-intervals');
-    intervals.style.width = `${100 / (visibleFraction || 1)}%`;
-    intervals.style.clipPath = `inset(0 ${100 * (1 - visibleFraction)}% 0 0)`;
+    intervals.style.left = `${visibleSpan > 0 ? 100 * (mainStart - start) / visibleSpan : 0}%`;
+    intervals.style.width = `${visibleSpan > 0 ? 100 * span / visibleSpan : 100}%`;
+    intervals.style.clipPath = `inset(0 ${span > 0 ? Math.max(0, 100 * (recordedEnd - end) / span) : 0}% 0 0)`;
   }
   function renderView() {
     const selected = presentation.interpolate ? history.interpolateAt(clock.time, { trace: false }) : history.at(clock.time, { trace: false });
@@ -704,13 +735,14 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     $('live-restarted').hidden = !stats.controller_restarted;
     $('live-sim-time').textContent = number(shownState?.sim_time_s, 2);
     $('live-rtf').textContent = Number.isFinite(job.calculation_rtf) ? `${number(job.calculation_rtf, 2)}×` : '—';
-    $('live-playback-rate').textContent = clock.buffering ? 'Buffering' : clock.playing ? (clock.time >= history.bounds[1] - 1e-7 && (job.job_active || extensionPending) ? 'Waiting' : '1×') : 'Paused';
+    $('live-playback-rate').textContent = clock.buffering ? 'Buffering' : clock.playing ? (continueAtEnd() && clock.time >= history.bounds[1] - 1e-7 && (job.job_active || extensionPending) ? 'Waiting' : `${clock.effectiveRate}×`) : 'Paused';
     $('live-distance').textContent = Number.isFinite(shownState?.distance_m) ? `${number(shownState.distance_m * 1000, 1)} mm` : '—';
     $('live-arrival').textContent = shownState?.arrived ? 'Arrival flag reached · holding target' : 'Following task reference';
     const execution = settings?.execution || DEFAULT_EXECUTION;
     $('live-rates').textContent = `Nominal simulated Hz: TO ${number(execution.to_hz)} · control ${number(execution.control_hz)} · physics ${number(execution.simulation_hz)}. Achieved per calculation-wall second: TO ${number(job.mpc_hz, 1)} · control ${number(job.control_hz, 1)} · physics ${number(job.simulation_hz, 1)}.`;
-    $('live-play').classList.toggle('compute-limited', clock.playing && clock.time >= history.bounds[1] - .001 && Boolean(job.job_active) && job.calculation_rtf < .99);
+    $('live-play').classList.toggle('compute-limited', clock.playing && continueAtEnd() && clock.time >= history.bounds[1] - .001 && Boolean(job.job_active) && job.calculation_rtf < .99);
     refreshPlanLabel(shownPlan); refreshHistoryControls();
+    syncSession(shownState, editing ? null : shownPlan || null);
     if (mode === 'live') {
       // An old optimizer output must not look like a prediction of the edited
       // task. Desired geometry still redraws while its replacement is pending.
@@ -748,14 +780,14 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (mode !== 'live') return;
     if (clock.playing) {
       const before = clock.time;
-      const tick = clock.tick(timestamp, history.bounds, { followAtEnd: continueAtEnd(), growing: growingHistory() });
+      const tick = clock.tick(timestamp, sessionBounds(), { followBounds: history.bounds, followAtEnd: continueAtEnd(), growing: growingHistory() });
       // Playback stops at a recorded limit breach; Play continues from it.
       const breach = before != null && history.breachCrossed(before, tick.time);
       if (breach) { clock.seek(breach.sim_time_s); pausePlayback(); message(breach.message, true); controlsEnabled(); }
       else if (tick.atEnd && !job.job_active && !fetching) {
         // A calculation stopped by a breach never extends past it: playback stops at
         // its tip once that is downloaded (also for a breach at the time it resumed from).
-        if (job.breach) { if (history.bounds[1] >= job.breach.sim_time_s - 1e-9) { pausePlayback(); message(job.message, true); controlsEnabled(); } }
+        if (job.breach && continueAtEnd()) { if (history.bounds[1] >= job.breach.sim_time_s - 1e-9) { pausePlayback(); message(job.message, true); controlsEnabled(); } }
         else if (continueAtEnd()) extendHistory();
         else if (!extensionPending) { pausePlayback(); controlsEnabled(); }
       }
@@ -763,9 +795,14 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     }
     if (renderDirty) renderView();
   }
+  function seek(time) {
+    const [start, end] = sessionBounds();
+    inspectingPreview = false; pausePlayback(); clock.seek(Math.max(start, Math.min(end, time)));
+    controlsEnabled(); renderView();
+  }
   function showLatest() { inspectingPreview = false; clock.seek(history.bounds[1]); if (clock.playing && continueAtEnd()) clock.follow(); renderView(); }
   async function switchMode(next) {
-    if (next === mode || (next === 'live' && !liveReady)) return;
+    if (next === mode) return;
     clearTimeout(settingsTimer); submission++; mode = next; pausePlayback();
     document.body.classList.toggle('live-mode', mode === 'live');
     for (const id of ['live-panel', 'live-controls']) $(id).hidden = mode !== 'live';
@@ -773,6 +810,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     for (const name of ['replay', 'live']) { $(`${name}-mode`).classList.toggle('active', name === mode); $(`${name}-mode`).setAttribute('aria-pressed', name === mode); }
     $('mode-label').textContent = mode === 'live' ? 'LIVE MPC · SIMULATION' : 'TRAJECTORY REPLAY'; onMode(mode);
     if (mode === 'live') {
+      if (!liveReady) { needsInitialPreview = false; controlsEnabled(); refreshPlanLabel(); renderView(); return; }
       needsInitialPreview = !suppressInitialPreview && !profileSwitching && !profileUnavailable; suppressInitialPreview = false;
       const connection = new EventSource('/api/live/events'); source = connection; controlsEnabled(); refreshPlanLabel();
       connection.onmessage = event => { if (source === connection && mode === 'live') receive(event); };
@@ -798,6 +836,27 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const result = await send({ type: 'precalculate', ...(anchor ? { anchor } : {}) });
     if (result?.generation != null) useGeneration(result.generation);
   });
+  $('live-freeze')?.addEventListener('click', async () => {
+    if ($('live-freeze').disabled) return;
+    const frozenGeneration = generation, start = history.bounds[0];
+    freezing = true; controlsEnabled();
+    try {
+      const response = await fetch('/api/live/freeze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ generation: frozenGeneration }) });
+      const result = await response.json();
+      if (!response.ok || !result.accepted || !result.item) throw new Error(result.error || `HTTP ${response.status}`);
+      await onFreeze(result.item);
+      // A new user edit can replace the generation while the export downloads.
+      // Keep that edit's captured anchor instead of seeking its replacement.
+      if (generation === frozenGeneration && !dirty && !pending) { frozenAnchor = undefined; seek(start); }
+    } catch (error) { message(`Freeze failed: ${error.message}`, true); }
+    finally { freezing = false; controlsEnabled(); }
+  });
+  $('live-speed')?.addEventListener('change', event => {
+    if (clock.rateForced) { refreshHistoryControls(); return; }
+    const rate = Number(event.target.value);
+    if (!Number.isFinite(rate) || rate < .25 || rate > 4) return;
+    clock.setRate(rate); session?.setRate(rate); renderDirty = true; renderView();
+  });
   $('live-cancel').addEventListener('click', async () => {
     if (await send({ type: 'cancel' })) {
       pending = false; extensionPending = false; job = { ...job, job_active: false }; pausePlayback();
@@ -812,9 +871,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       pausePlayback(); extensionPending = false;
       const intent = playbackIntent;
       controlsEnabled(); renderView();
-      await send({ type: 'pause' });
+      if (transportConnected()) await send({ type: 'pause' });
       if (intent !== playbackIntent) return;
-      if (settings.execution.calculation === 'on_play') { pending = false; job = { ...job, job_active: false }; }
+      if (settings?.execution.calculation === 'on_play') { pending = false; job = { ...job, job_active: false }; }
       controlsEnabled(); renderView(); return;
     }
     // Settings submission pauses synchronously; capture this Play intent after
@@ -824,13 +883,13 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (settingsRequest && !await settingsRequest) return;
     if (intent !== playbackIntent) return;
     const noMotion = history.length < 2;
-    if (clock.time == null) clock.seek(history.bounds[0]);
+    if (clock.time == null) clock.seek(sessionBounds()[0]);
     // A calculation stopped by a limit breach continues from its tip on Play, in every mode.
-    const resume = continueAtEnd() || (!noMotion && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7);
+    const resume = continueAtEnd() || (!noMotion && Math.abs(clock.time - history.bounds[1]) < 1e-7 && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7);
     // Finite precalculations replay from the start when Stop is selected.
     // On Play resumes continuous computation from the existing recording tip.
-    if (!noMotion && !job.job_active && !extensionPending && !resume && clock.time >= history.bounds[1] - 1e-7) clock.seek(history.bounds[0]);
-    const shouldExtend = noMotion || (clock.time >= history.bounds[1] - 1e-7 && resume);
+    if (!noMotion && !job.job_active && !extensionPending && !resume && clock.time >= sessionBounds()[1] - 1e-7) clock.seek(sessionBounds()[0]);
+    const shouldExtend = (noMotion && (resume || sessionBounds()[1] <= sessionBounds()[0])) || (clock.time >= history.bounds[1] - 1e-7 && resume);
     const follow = resume && (noMotion || clock.time >= history.bounds[1] - 1e-7);
     // Publish local intent immediately. Arriving history may grow the recorded
     // end while Play is acknowledged; it must not change the chosen follow mode.
@@ -843,9 +902,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     history.clear(); historyRevision++; plan = null; state = undefined; presentedState = undefined; clock.seek(null); onReset();
     const result = await send({ type: 'reset' }); if (result?.generation != null) useGeneration(result.generation); renderView();
   });
-  $('live-history').addEventListener('input', event => { if (!event.target.disabled) { inspectingPreview = false; pausePlayback(); clock.seek(Number(event.target.value)); controlsEnabled(); renderView(); } });
+  $('live-history').addEventListener('input', event => { if (!event.target.disabled) seek(Number(event.target.value)); });
   $('live-history').addEventListener('pointermove', event => {
-    const bounds = event.target.getBoundingClientRect(), [start, end] = clock.presentationBounds(history.bounds);
+    const bounds = event.target.getBoundingClientRect(), [start, end] = presentationBounds();
     const time = start + Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * (end - start);
     const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time);
     const breach = history.breaches.find(item => Math.abs(item.sim_time_s - time) <= .01 * (end - start));
@@ -919,8 +978,21 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       sessionStorage.removeItem('source-restart-live-settings');
       if (retained) { settings = restoreCompatibleSettings(schema, JSON.parse(retained)); dirty = !settingValuesEqual(settings, defaultSettings); }
     } catch {}
-    liveReady = true; populate(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = true; $('live-mode').title = error.message; showSetupNotice(error.message); });
+    liveReady = true; populate(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = false; $('live-mode').title = error.message; showSetupNotice(error.message); });
   return {
+    setSession(value) {
+      unsubscribeSession?.(); session = value; clock.setRate(session.rate);
+      unsubscribeSession = session.subscribe(() => {
+        clock.setRate(session.rate); renderDirty = true;
+        if ($('live-play').disabled !== (!connected() && !localComparisonPlayback())) controlsEnabled();
+      });
+      syncSession(); renderDirty = true;
+    },
+    seek,
+    get sessionTime() { return clock.time ?? session?.cursor ?? history.bounds[0]; },
+    get playbackRate() { return clock.effectiveRate; },
+    get segment() { return segments.get(generation); },
+    get currentSegment() { return segments.get(generation); },
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
       const kind = $('live-task').value, base = kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
@@ -962,10 +1034,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     get historyRevision() { return historyRevision; },
     get generation() { return generation; },
     get metricHistory() { return history.metricSnapshot; },
-    get history() { return { length: history.length, bounds: history.bounds, presentationBounds: clock.presentationBounds(history.bounds), following: clock.following, buffering: clock.buffering, playing: clock.playing, growing: growingHistory(), selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
+    get history() { return historySnapshot(); },
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || segmentOf(plan)?.task_path_xyz?.length); },
     segmentOf,
-    get precomputedPath() { return !dirty && !pending && historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
+    get precomputedPath() { return precomputedPath(); },
     get settings() { return settings ? cloneSettings(settings) : null; }, get status() { return status; },
     get pending() { return profileSwitching || pending || (mode === 'live' && !connected()); }, get playing() { return clock.playing; },
     holdForInspection() {
