@@ -95,6 +95,12 @@ follows the package API that experiments use, without shims.
   "unavailable: pre-migration recording"; there is no converter.
 - **Default `tiago_mpc` root is `../tiago_mpc`.** The frozen
   `tiago_mpc_vis_baseline` worktree is no longer used.
+- **The reduced arm is derived, not a file in the checkout** (tiago_mpc,
+  2026-10-23). `tiago.arm_urdf()` derives it with the grasp frame from
+  `models/tiago_pro/tiago_pro.urdf` into the cache (`GATO_CACHE_DIR`) and
+  returns its path; `tiago.runtime_urdf(friction)` the GPU copy. The display
+  model is still read from the checkout's full URDF and meshes, which must be
+  real files: a Git LFS pointer is a source error.
 
 ### Warm-up and the SQP time limit — Felix, 2026-10-23
 
@@ -212,12 +218,21 @@ on purpose (a later comparison feature) go through `HistoryStore.kept`.
 **Avoid excessive disk writes — Felix, 2026-10-23.** Runtime scratch such as the
 Live history lives in RAM-backed files (tmpfs, Linux only); write to disk only
 what must persist. Reasons: the visualizer must run on HDDs, and SSD wear. The
-runtime directory is `/dev/shm/tiago-mpc-visualizer-<uid>/` (mode 0700),
+runtime directory is `<system temp>/tiago-mpc-visualizer-<uid>/` (Python's
+`tempfile.gettempdir()`, `/tmp` on this host, which is tmpfs; mode 0700),
 overridable with `TIAGO_VISUALIZER_RUNTIME_DIR` (`runtime_files.py`); it holds the
-Live history, preview captures, solver-process and coordinator logs. Uploads,
-config, builds and their logs, exported replays and Run again results stay on disk.
-Startup warns when the directory is not on tmpfs or nearly full (a container's
-`/dev/shm` defaults to 64 MB). See [runtime files](docs/execution-api.md#runtime-files).
+Live history, preview captures, Run again results, solver-process and coordinator
+logs. The server and its children use the normal system temp directory; nothing
+points `TMPDIR` into the checkout (Felix, 2026-10-23). Uploads, config, builds and their logs and
+exported replays stay on disk; the config file is rewritten only when a setting
+changes. **Run again results keep only what is still needed (Felix, 2026-10-23):**
+they belong to the Live run or loaded replay they came from and are deleted when it
+stops being current (new generation, another recording or revision loaded), on
+failure or cancellation, at shutdown and, as leftovers of ended servers (pid-owned
+directories), at start. They no longer survive a restart.
+Startup warns when the directory is not on tmpfs (for example a distribution whose
+`/tmp` is on disk; then set the override to a tmpfs such as `/dev/shm`) or nearly
+full. See [runtime files](docs/execution-api.md#runtime-files).
 
 Conformance (Felix, 2026-10-22, replaces the comparison with `reach_sim.py`):
 the opt-in GPU script `scripts/check_conformance.py` runs

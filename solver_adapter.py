@@ -33,11 +33,12 @@ class SimulatorAdapter:
         from server import RobotKinematics
         self.mpc_root = Path(mpc_root).resolve()
         self.tiago = tiago = import_tiago(self.mpc_root)
+        arm = tiago.arm_urdf()
         self.kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME,
-                                          reduced_urdf=tiago.ARM_URDF)
+                                          reduced_urdf=arm)
         self.contract = model_contract(self.kinematics, tiago)
         digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
-        self.model_identity = dict(full_urdf_sha256=digest(tiago.FULL_URDF), native_urdf_sha256=digest(tiago.ARM_URDF),
+        self.model_identity = dict(full_urdf_sha256=digest(tiago.FULL_URDF), native_urdf_sha256=digest(arm),
                                    end_effector_frame=tiago.GRASP_FRAME, source=source_identity(self.mpc_root))
         limits = tiago.limits()
         self.simulator_identity = dict(deepcopy(self.model_identity), joint_names=list(tiago.RIGHT_ARM_JOINTS),

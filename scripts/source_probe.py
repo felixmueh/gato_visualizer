@@ -43,11 +43,13 @@ def load_source(selection):
     if not hasattr(mpc.Mpc, "warmup") or not hasattr(mpc.TIAGO, "max_sqp_time_s"):
         raise ValueError("tiago_mpc.mpc lacks Mpc.warmup or MpcParams.max_sqp_time_s; "
                          "the visualizer needs tiago_mpc 31c405a or later (steps 15 and 16)")
+    if not hasattr(tiago, "arm_urdf"):
+        raise ValueError("tiago_mpc.tiago lacks arm_urdf; the visualizer needs tiago_mpc's derived arm (2026-10-23)")
     # An importable solver alone cannot make a checkout displayable. Check the same
     # full model/assets and grasp-frame binding the restarted backend will construct.
     from server import RobotKinematics, canonical_model_assets
     canonical_model_assets(root)
-    kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.ARM_URDF)
+    kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.arm_urdf())
     return tiago, mpc, kinematics, tiago.urdf_friction(PREDICTOR_SMOOTHING_RAD_S)
 
 
@@ -72,7 +74,7 @@ def probe(selection, tiago, mpc, kinematics, friction):
                 available_N_by_friction=available, modules=modules,
                 defaults=json.loads(json.dumps(asdict(mpc.TIAGO))), friction=json.loads(json.dumps(asdict(friction))),
                 contract=model_contract(kinematics, tiago),
-                model_identity=dict(full_urdf_sha256=digest(tiago.FULL_URDF), native_urdf_sha256=digest(tiago.ARM_URDF)),
+                model_identity=dict(full_urdf_sha256=digest(tiago.FULL_URDF), native_urdf_sha256=digest(tiago.arm_urdf())),
                 capabilities=dict(iteration_capture_by_friction=captures, python_iteration_capture=python_capture,
                                   exact_resume=False),
                 selection=selection, source=source_identity(selection["mpc_root"]),

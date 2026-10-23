@@ -259,12 +259,19 @@ plot output is identical by digest on the same data.
 
 Felix, 2026-10-23: runtime scratch lives in RAM-backed files, and the Live
 history keeps only the current run. The runtime directory is
-`/dev/shm/tiago-mpc-visualizer-<uid>/` (created 0700; `TIAGO_VISUALIZER_RUNTIME_DIR`
-overrides it; `runtime_files.py`, Linux tmpfs only). It holds `history/` (one JSONL
+`<system temp>/tiago-mpc-visualizer-<uid>/` (Python's `tempfile.gettempdir()`, `/tmp`
+on this host, which is tmpfs; created 0700; `TIAGO_VISUALIZER_RUNTIME_DIR` overrides
+it; `runtime_files.py`, Linux tmpfs only). It holds `history/` (one JSONL
 file per generation), `solves/` (preview captures of that generation),
-`solver-processes/` (child logs, the last 16 kept) and `coordinator-lifecycle/`.
-Uploads, config, builds and their logs, exported replays and Run again results
-stay in this checkout's `_expr_data/`.
+`solve-inspections/p<pid>/<id>/` (Run again results, see
+[inspection](inspection.md#fresh-inspection-service-and-binary-data-flow)),
+`solver-processes/` (child logs, the last 16 kept) and `coordinator-lifecycle/`. The
+server and everything it spawns (Build's compiler intermediates, Node's compile
+cache) use the normal system temp directory. Only what must persist
+goes to disk: uploads (`_expr_data/uploads/`), the config file (atomically rewritten
+only when a setting actually changes), builds with their request, log and receipt
+(`_expr_data/source-builds/`, plus modules in the GATO cache) and replays exported by
+experiments.
 
 `HistoryStore` deletes a generation's file when it stops being current (a new
 generation: Reset, settings change, precalculation, profile activation; close at

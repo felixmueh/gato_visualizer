@@ -27,6 +27,12 @@ def replay_exporter():
         sys.modules.update(others)
 
 
+def arm_urdf():
+    """MPC_ROOT's reduced arm, which tiago_mpc derives into its cache (GATO_CACHE_DIR)."""
+    from live_mpc import import_tiago
+    return import_tiago(MPC_ROOT).arm_urdf()
+
+
 _PROBE = None
 
 
@@ -42,7 +48,7 @@ def live_probe():
         from solver_process import model_contract
         tiago = import_tiago(MPC_ROOT)
         mpc = importlib.import_module("tiago_mpc.mpc")
-        kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.ARM_URDF)
+        kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.arm_urdf())
         plain = lambda value: json.loads(json.dumps(value))
         _PROBE = dict(compatible=True, available_N=[], available_N_by_friction=dict(off=[], on=[]), modules=[],
                       defaults=plain(asdict(mpc.TIAGO)),

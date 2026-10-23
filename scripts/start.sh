@@ -10,8 +10,6 @@ if [[ "${1:-}" == "--prebuild" ]]; then
   exec "$python_bin" scripts/prebuild.py "$@"
 fi
 python_bin="$(python3 scripts/launch_python.py "$@")"
-mkdir -p "$visualizer_root/_expr_data/tmp"
-export TMPDIR="$visualizer_root/_expr_data/tmp"
 export PYTHONPYCACHEPREFIX="$visualizer_root/.cache/pycache"
 if [[ ! -d node_modules ]]; then
   npm --cache "$visualizer_root/.cache/npm" --logs-dir "$visualizer_root/_expr_data/npm-logs" ci

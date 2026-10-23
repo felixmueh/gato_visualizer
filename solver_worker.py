@@ -71,11 +71,12 @@ class SolverSession:
         from server import RobotKinematics
         self.tiago = import_tiago(root)
         self.module = importlib.import_module("tiago_mpc.mpc")
+        arm = self.tiago.arm_urdf()
         self.kinematics = RobotKinematics(self.tiago.FULL_URDF, end_effector_frame=self.tiago.GRASP_FRAME,
-                                          reduced_urdf=self.tiago.ARM_URDF)
+                                          reduced_urdf=arm)
         digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
         self.model_identity = dict(full_urdf_sha256=digest(self.tiago.FULL_URDF),
-                                   native_urdf_sha256=digest(self.tiago.ARM_URDF))
+                                   native_urdf_sha256=digest(arm))
         self.mpc = None
         self.restarted = True
         self.seed = None  # (state, reference) of the last reseed while no solve followed
@@ -101,7 +102,7 @@ class SolverSession:
         solver = self.mpc.controller.solver
         rows = capture_constraint_bounds(solver, self.mpc.signs)
         configuration = asdict(params)
-        gpu_urdf, _ = self.tiago.runtime_urdf(m.cache_root(), params.friction)
+        gpu_urdf, _ = self.tiago.runtime_urdf(params.friction)
         self.configuration = configuration
         self.model_identity = dict(self.model_identity, gpu_urdf_sha256=hashlib.sha256(gpu_urdf.read_bytes()).hexdigest(),
                                    end_effector_frame=params.ee_frame)

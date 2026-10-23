@@ -212,7 +212,7 @@ class NativeOperationTests(unittest.TestCase):
             (root/'models/tiago_pro').mkdir(parents=True)
             full=root/'models/tiago_pro/tiago_pro.urdf';full.write_text('<robot/>')
             reduced=root/'reduced.urdf';reduced.write_text('<robot/>')
-            session.tiago.FULL_URDF,session.tiago.ARM_URDF=full,reduced
+            session.tiago.FULL_URDF,session.tiago.arm_urdf=full,lambda:reduced
             session.model_identity.update(full_urdf_sha256=hashlib.sha256(full.read_bytes()).hexdigest(),
                                           native_urdf_sha256=hashlib.sha256(reduced.read_bytes()).hexdigest())
             result=inspect_solve(session,dict(id='native' ,problem=captured_problem(p),sqp_iters=1000,
@@ -254,10 +254,10 @@ class JobTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.folder=Path(self.temp.name)
         self.history=HistoryStore(self.folder/'history');self.history.append([segment(),dict(recorded(plan()),type='plan',id='7',seq=7)])
         self.profile=dict(id='active',mpc_root='/selected/mpc',python='/selected/python',cache='/selected/cache')
-        self.live=SimpleNamespace(history_store=self.history, pauses=[],
+        self.live=SimpleNamespace(history_store=self.history, pauses=[], generation=0, generation_listeners=[],
                                   pause_for_inspection=lambda identifier,timeout:self.live.pauses.append(identifier))
         self.profiles=SimpleNamespace(active_selection=lambda identifier=None:deepcopy(self.profile))
-        self.plots=SimpleNamespace(mpc_root='/simulator',default_scene={},
+        self.plots=SimpleNamespace(mpc_root='/simulator',default_scene={},replays=SimpleNamespace(current=None,listeners=[]),
             _descriptor=lambda source:self.history.plot_source(source['generation']))
         self.probe=lambda selection:dict(compatible=True,available_N=[3],available_N_by_friction=dict(off=[3],on=[]),
             contract=contract(),capabilities=dict(iteration_capture_by_friction=dict(off={'3':True},on={})))
@@ -316,6 +316,51 @@ class JobTests(unittest.TestCase):
         self.assertLess(len(json.dumps(result)),20000)
         self.assertNotIn('xu',json.dumps(result))
         self.assertTrue(Path(self.service.descriptor(result['id'])['binary_path']).exists())
+
+    def new_generation(self,generation):
+        self.live.generation=generation
+        for listener in self.live.generation_listeners:listener(generation)
+
+    def test_results_live_in_ram_only_while_their_source_is_current(self):
+        # Felix, 2026-10-23: runtime scratch; a Live result goes with its run.
+        result=self.wait(self.service.submit(self.request())['id'])
+        folder=Path(self.service.descriptor(result['id'])['path']).parent
+        self.assertEqual(folder.parent,self.folder/'inspections'/f'p{os.getpid()}')
+        self.new_generation(0)  # the same run stays current
+        self.assertTrue(folder.is_dir())
+        self.new_generation(1)
+        self.assertFalse(folder.exists())
+        with self.assertRaisesRegex(ValueError,'no longer current'):self.service.descriptor(result['id'])
+
+    def test_replay_results_go_when_another_recording_is_loaded(self):
+        self.plots._descriptor=lambda source:dict(kind='replay',id=source['id'],revision='r1')
+        self.service._problem=lambda request:(captured_problem(plan()),'7')
+        notify=lambda current:[listener(current) for listener in self.plots.replays.listeners]
+        self.plots.replays.current=('a','r1')
+        result=self.wait(self.service.submit(dict(self.request(),source=dict(kind='replay',id='a')))['id'])
+        self.assertEqual(result['state'],'completed',result)
+        folder=Path(self.service.descriptor(result['id'])['path']).parent
+        self.new_generation(1)  # Live changes do not touch Replay results
+        self.assertTrue(folder.is_dir())
+        notify(('a','r2'))  # the same recording reloaded at a new revision
+        self.assertFalse(folder.exists())
+
+    def test_failed_jobs_leftovers_and_close_leave_nothing(self):
+        stale=self.folder/'other'/'p999999999'/'old';stale.mkdir(parents=True)
+        InspectionService(self.plots,self.profiles,directory=self.folder/'other').close()
+        self.assertEqual(list((self.folder/'other').iterdir()),[])  # ended server's leftovers and own results
+        class Failing(self.remote):
+            def request(remote,operation,**payload):
+                if operation=='inspect':
+                    Path(payload['artifact_directory'],'partial').write_text('x')
+                    raise RuntimeError('native failure')
+                return super().request(operation,**payload)
+        self.service.process_factory=Failing
+        result=self.wait(self.service.submit(self.request())['id'])
+        self.assertEqual(result['state'],'failed',result)
+        self.assertFalse((self.service.directory/result['id']).exists())
+        self.service.close()
+        self.assertFalse(self.service.directory.exists())
 
     def test_profile_with_templates_is_checked(self):
         # Profiles carry a templates dict since 8f7fdd5; Run again failed with

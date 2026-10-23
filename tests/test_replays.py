@@ -258,6 +258,8 @@ class ReplayTests(unittest.TestCase):
 
     def test_recursive_catalog_errors_recover_after_file_changes_and_snapshot_stays_loaded(self):
         library = self.library()
+        changes = []
+        library.listeners.append(changes.append)  # the current replay (Run again results follow it)
         ingest = library.ingest_directory / "group/subfolder"
         ingest.mkdir(parents=True)
         replay_path = ingest / "reach.npz"
@@ -282,6 +284,10 @@ class ReplayTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "ready" for item in second["items"]))
         np.testing.assert_array_equal(snapshot["trajectories"][0]["q"], self.q)
         np.testing.assert_array_equal(library.scene(ready["id"])["trajectories"][0]["q"], self.q+.01)
+        library.scene("default")
+        self.assertEqual(changes, [(ready["id"], ready["revision"]), (ready["id"], changed["revision"]),
+                                   ("default", "default")])
+        self.assertEqual(library.current, ("default", "default"))
 
     def test_catalog_newest_first_across_ingest_and_upload_without_changing_identity(self):
         library = self.library()

@@ -6,7 +6,6 @@ from copy import deepcopy
 import json
 import math
 import os
-import re
 import shutil
 from pathlib import Path
 import threading
@@ -15,8 +14,8 @@ import uuid
 
 from inspection_problem import captured_problem
 from plot_sources import SourceReader, inspect_source, serializable
+from runtime_files import ended_owner, owner_tag, runtime_directory
 
-ROOT = Path(__file__).resolve().parent
 TERMINAL = {"completed", "failed", "cancelled", "busy"}
 
 
@@ -64,10 +63,25 @@ def profile_fingerprint(profile):
 
 
 class InspectionService:
+    """Run again jobs and their results.
+
+    Results are runtime scratch (Felix, 2026-10-23): RAM-backed files under
+    <runtime>/solve-inspections/p<pid>/<id>/, kept only while their source is
+    current. A Live result goes when its generation stops being current, a Replay
+    result when another recording (or revision) is loaded; failed or cancelled jobs
+    leave nothing; leftovers of ended servers go at start and everything at close.
+    """
     def __init__(self, plots, profiles, *, live=None, directory=None, process_factory=None,
                  locks_factory=None, probe=None, pause_timeout_s=15):
         self.plots, self.profiles, self.live = plots, profiles, live
-        self.directory = Path(directory or ROOT / "_expr_data/solve-inspections").resolve()
+        base = Path(directory or runtime_directory("solve-inspections")).resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        for folder in base.iterdir():
+            if ended_owner(folder.name):
+                shutil.rmtree(folder, ignore_errors=True)
+        self.directory = base / owner_tag()
+        self.directory.mkdir(exist_ok=True)
+        self.results = {}  # id -> (owner, descriptor) of completed results still current
         self.process_factory, self.locks_factory, self.probe = process_factory, locks_factory, probe
         self.pause_timeout_s = pause_timeout_s
         self.lock = threading.Condition()
@@ -81,6 +95,39 @@ class InspectionService:
         self.closed = False
         self.thread = threading.Thread(target=self._pump, name="solve-inspections", daemon=True)
         self.thread.start()
+        if live is not None and hasattr(live, "generation_listeners"):
+            live.generation_listeners.append(lambda generation: self._discard(
+                lambda owner: owner[0] == "live" and owner[1] != generation))
+        replays = getattr(plots, "replays", None)
+        if replays is not None and hasattr(replays, "listeners"):
+            replays.listeners.append(lambda current: self._discard(
+                lambda owner: owner[0] == "replay" and owner[1:] != current))
+
+    def _owner(self, descriptor):
+        """The source a result belongs to: ("live", generation) or ("replay", id, revision)."""
+        if descriptor.get("kind") == "live":
+            return ("live", descriptor.get("generation"))
+        if descriptor.get("kind") == "inspection":
+            with self.lock:
+                if descriptor["id"] not in self.results:
+                    raise ValueError("Inspection result is not available")
+                return self.results[descriptor["id"]][0]
+        return ("replay", descriptor.get("id"), descriptor.get("revision"))
+
+    def _current(self, owner):
+        if owner[0] == "live":
+            return self.live is None or owner[1] == getattr(self.live, "generation", owner[1])
+        current = getattr(getattr(self.plots, "replays", None), "current", None)
+        return current is None or owner[1:] == current
+
+    def _discard(self, stale):
+        """Delete the results whose source stopped being current."""
+        with self.lock:
+            identifiers = [key for key, (owner, _) in self.results.items() if stale(owner)]
+            for identifier in identifiers:
+                del self.results[identifier]
+        for identifier in identifiers:
+            shutil.rmtree(self.directory / identifier, ignore_errors=True)
 
     def _request(self, body, capability=False):
         if not isinstance(body, dict) or set(body)-{"source", "selection", "profile_id", "sqp_iters", "budget_s"}:
@@ -104,7 +151,7 @@ class InspectionService:
             if budget is not None and (isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget) or budget <= 0):
                 raise ValueError("budget_s must be null or a positive finite number of seconds")
         descriptor = self.plots._descriptor(source)
-        return dict(body=deepcopy(body), descriptor=descriptor, profile=profile)
+        return dict(body=deepcopy(body), descriptor=descriptor, profile=profile, owner=self._owner(descriptor))
 
     def _problem(self, request):
         selection = deepcopy(request["body"]["selection"])
@@ -218,24 +265,9 @@ class InspectionService:
 
     def descriptor(self, identifier):
         with self.lock:
-            job = self.jobs.get(identifier)
-            if job is not None:
-                if job["state"] != "completed":
-                    raise ValueError("Inspection result is not available")
-                return deepcopy(job["_artifact"])
-        # Binary artifacts survive job expiry/backend restart. Only opaque
-        # generated ids can address files beneath this checkout's own storage.
-        if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
-            raise ValueError("Invalid retained inspection id")
-        folder = self.directory / identifier
-        path, binary = folder / "metadata.json", folder / "iterations.npz"
-        if not path.is_file() or not binary.is_file():
-            raise ValueError("Inspection result is not available")
-        metadata = json.loads(path.read_text())
-        if metadata.get("id") != identifier:
-            raise ValueError("Retained inspection identity is inconsistent")
-        return dict(kind="inspection", id=identifier, path=str(path), binary_path=str(binary),
-                    revision=identifier, iterations_run=metadata["iterations_run"], stop_reason=metadata["stop_reason"])
+            if identifier not in self.results:
+                raise ValueError("Inspection result is not available: its source is no longer current")
+            return deepcopy(self.results[identifier][1])
 
     def stop(self, identifier):
         with self.lock:
@@ -273,7 +305,10 @@ class InspectionService:
             finally:
                 with self.lock:
                     self.active = self.remote = None
+                    kept = identifier in self.results
                     self.lock.notify_all()
+                if not kept:  # failed, cancelled, busy or no longer current: nothing to keep
+                    shutil.rmtree(self.directory / identifier, ignore_errors=True)
 
     def _execute(self, identifier, job):
         from live_mpc import GPULocks
@@ -332,10 +367,13 @@ class InspectionService:
                 problem=problem, original=dict(job["original"], solve_id=solve_id),
                 actual_solver_profile=actual, **requested)
             with self.lock:
-                if not job.get("_cancelled"):
+                if not job.get("_cancelled") and not self._current(request["owner"]):
+                    job.update(state="failed", message="Source changed during Run again; result discarded")
+                elif not job.get("_cancelled"):
+                    self.results[identifier] = (request["owner"], descriptor)
                     job.update(state="completed", phase="completed", message="Fresh cold inspection solve recorded",
                                source=dict(kind="inspection", id=identifier), artifact={key: descriptor[key]
-                                   for key in ("iterations_run", "stop_reason")}, _artifact=descriptor,
+                                   for key in ("iterations_run", "stop_reason")},
                                iterations_run=descriptor["iterations_run"], stop_reason=descriptor["stop_reason"])
         finally:
             if remote is not None:
@@ -350,3 +388,7 @@ class InspectionService:
         for identifier in identifiers:
             self.stop(identifier)
         self.thread.join(timeout=10)
+        # Shutdown or restart: no source is current any more.
+        with self.lock:
+            self.results.clear()
+        shutil.rmtree(self.directory, ignore_errors=True)

@@ -231,7 +231,7 @@ class DisplaySourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             selection = dict(mpc_root=str(root), python=sys.executable, cache=str(root/'cache'))
-            tiago = SimpleNamespace(FULL_URDF=root/'full.urdf', ARM_URDF=root/'reduced.urdf', GRASP_FRAME='grasp',
+            tiago = SimpleNamespace(FULL_URDF=root/'full.urdf', arm_urdf=lambda: root/'reduced.urdf', GRASP_FRAME='grasp',
                                     urdf_friction=lambda width: SimpleNamespace(width_rad_s=width))
             mpc = SimpleNamespace(MpcParams=1, TIAGO=SimpleNamespace(max_sqp_time_s=.01),
                                   Mpc=SimpleNamespace(warmup=3), find_binary=4, compile_binary=5)

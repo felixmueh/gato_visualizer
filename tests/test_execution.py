@@ -426,8 +426,10 @@ class SpawnTests(unittest.TestCase):
         self.assertAlmostEqual(states[-1]['sim_time_s'],2.125)
         self.assertTrue(self.service.latest['history']['complete'])
         oldgen=self.service.generation
+        changes=[];self.service.generation_listeners.append(changes.append)  # Run again results follow it
         self.service.command(dict(type='reset'))
         self.wait(lambda:self.service.latest.get('plan',{}).get('generation')==oldgen+1)
+        self.assertEqual(changes,[oldgen+1])
         self.assertEqual(self.service.latest['plan']['seq'],1)
         self.assertEqual([r for r in self.records() if r['type']=='state'][0]['sim_time_s'],0)
 

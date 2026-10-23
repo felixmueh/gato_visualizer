@@ -14,7 +14,7 @@ import traceback
 
 from execution_session import DEFAULT_EXECUTION, validate_anchor, validate_execution
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
-from runtime_files import ENVIRONMENT as RUNTIME_ENVIRONMENT, runtime_directory
+from runtime_files import ENVIRONMENT as RUNTIME_ENVIRONMENT, ended_owner, owner_tag, runtime_directory
 from solver_lifecycle import run_with_parent
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
@@ -25,16 +25,6 @@ NO_SEGMENT = ("Live history has no segment header; histories recorded before the
 
 class HistoryGenerationError(ValueError):
     pass
-
-
-def _server_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        pass
-    return True
 
 
 class HistoryStore:
@@ -58,8 +48,7 @@ class HistoryStore:
         self.path = None
         self.kept = set()
         for path in self.directory.glob("history-*.jsonl"):
-            owner = path.name.split("-")[1]
-            if not (owner.startswith("p") and owner[1:].isdigit() and _server_alive(int(owner[1:]))):
+            if ended_owner(path.name.split("-")[1]):
                 path.unlink(missing_ok=True)
         self.reset(0)
 
@@ -79,7 +68,7 @@ class HistoryStore:
             self.state_count = 0
             self.end_time = 0.
             self.complete = True
-            self.path = self.directory / f"history-p{os.getpid()}-{time.time_ns()}-g{generation}.jsonl"
+            self.path = self.directory / f"history-{owner_tag()}-{time.time_ns()}-g{generation}.jsonl"
             self.stream = self.path.open("w+b")
 
     @staticmethod
@@ -297,6 +286,8 @@ class ProcessLiveService:
         # Runtime scratch on tmpfs (runtime_files); only the current run is kept.
         self.history_store = HistoryStore(runtime_directory("history"))
         self.inspection_store = HistoryStore(runtime_directory("solves"))
+        # Called with the new generation when a run stops being current (Run again results).
+        self.generation_listeners = []
         if render_factory is None:
             from live_presentation import LiveRenderer
             render_factory = LiveRenderer
@@ -341,6 +332,14 @@ class ProcessLiveService:
         with self.condition:
             self.condition.wait_for(lambda: self.closed or self.cursor > cursor, timeout=timeout)
             return self.cursor, [event for seq, event in self.events if seq > cursor]
+
+    def _reset_stores(self):
+        """A new generation: the previous run stops being current (under the condition)."""
+        self.history_store.reset(self.generation)
+        self.inspection_store.reset(self.generation)
+        self.history_store.complete = False
+        for listener in self.generation_listeners:
+            listener(self.generation)
 
     def _history_metadata(self):
         return dict(self.history_store.metadata(), settings_version=self.version)
@@ -489,9 +488,7 @@ class ProcessLiveService:
                     self._generation_start = (dict(kind="anchor", anchor={key: deepcopy(tip[key]) for key in ("sim_time_s", "q", "qd")})
                                               if tip and all(key in tip for key in ("sim_time_s", "q", "qd")) else dict(kind="current"))
                 self.generation += 1
-                self.history_store.reset(self.generation)
-                self.inspection_store.reset(self.generation)
-                self.history_store.complete = False
+                self._reset_stores()
                 for key in ("segment", "plan", "state"):
                     self.latest.pop(key, None)
                 self.publish(self._history_metadata())
@@ -521,9 +518,7 @@ class ProcessLiveService:
                         identifier = packet["profile"]["id"]
                         if kind == "profile_activated":
                             self.generation = packet["generation"]
-                            self.history_store.reset(self.generation)
-                            self.inspection_store.reset(self.generation)
-                            self.history_store.complete = False
+                            self._reset_stores()
                             self._generation_start = dict(kind="current")
                             for key in ("segment", "plan", "state"):
                                 self.latest.pop(key, None)

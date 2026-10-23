@@ -15,7 +15,7 @@ def snapshot_models(session, folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     inputs = (("full", session.tiago.FULL_URDF, "full_urdf_sha256"),
-              ("reduced", session.tiago.ARM_URDF, "native_urdf_sha256"))
+              ("reduced", session.tiago.arm_urdf(), "native_urdf_sha256"))
     result = {}
     for name, source, identity_key in inputs:
         data = Path(source).read_bytes()
