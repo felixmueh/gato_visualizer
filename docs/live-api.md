@@ -20,6 +20,9 @@ commands and read retained records; they own no controller or CUDA state.
   The browser keeps an old prediction labelled as pending until a plan with
   that version or a newer version arrives. Non-settings commands return the
   most recently assigned version.
+- Without Live (`--replay-only`, or a setup error), every Live, solver-profile
+  and Run-again route answers 503 with `{"error": "<reason>"}`; unknown `/api/`
+  routes answer 404 with a JSON `error`.
 
 ## Settings object
 

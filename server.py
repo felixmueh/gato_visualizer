@@ -356,10 +356,26 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             if self.command != "HEAD":
                 self.wfile.write(payload)
 
+        def send_json_error(self, status, message):
+            # API clients always parse JSON, also for unknown or disabled routes.
+            self.send_payload(json.dumps(dict(error=message)).encode(),
+                              "application/json; charset=utf-8", status)
+
+        def live_unavailable(self, path):
+            """Live-backed routes without a Live service report why, as JSON."""
+            services = {"/api/live/": live, "/api/solver-profiles": solver_profiles,
+                        "/api/solve-inspections": inspections}
+            if any(path.startswith(prefix) and service is None for prefix, service in services.items()):
+                self.send_json_error(503, live_error or "Live is unavailable")
+                return True
+            return False
+
         def do_HEAD(self):
             self.do_GET()
 
         def do_POST(self):
+            if self.live_unavailable(urlsplit(self.path).path):
+                return
             if urlsplit(self.path).path == "/api/presentation/settings" and presentation is not None:
                 self.presentation_command()
                 return
@@ -378,8 +394,8 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             if urlsplit(self.path).path == "/api/replays/upload" and replays is not None:
                 self.upload_replay()
                 return
-            if urlsplit(self.path).path != "/api/live/command" or live is None:
-                self.send_error(404)
+            if urlsplit(self.path).path != "/api/live/command":
+                self.send_json_error(404, "Unknown API endpoint")
                 return
             # Only same-origin browser JSON may control the local GPU worker.
             origin = self.headers.get("Origin")
@@ -576,6 +592,8 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             if "\\" in path or "\x00" in path or ".." in path.split("/"):
                 self.send_error(404)
                 return
+            if self.live_unavailable(path):
+                return
             if path == "/api/presentation/settings" and presentation is not None:
                 self.send_payload(json.dumps(presentation.settings(), allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
@@ -636,9 +654,6 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             elif path == "/api/live/schema" and live is not None:
                 self.send_payload(json.dumps(live.schema, allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
-            elif path == "/api/live/schema" and live_error:
-                self.send_payload(json.dumps(dict(error=live_error)).encode(),
-                                  "application/json; charset=utf-8", 503)
             elif path == "/api/live/history" and live is not None:
                 from execution_bridge import HistoryGenerationError
                 try:
@@ -661,7 +676,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 self.send_payload(robot_xml, "application/xml; charset=utf-8")
             elif path in mesh_assets:
                 self.send_payload(mesh_assets[path].read_bytes(), "model/stl")
-            elif path.startswith(("/api/", "/assets/meshes/")):
+            elif path.startswith("/api/"):
+                self.send_json_error(404, "Unknown API endpoint")
+            elif path.startswith("/assets/meshes/"):
                 self.send_error(404)
             else:
                 candidate = (dist / path.lstrip("/")).resolve()
@@ -711,7 +728,9 @@ def main(argv=None):
     except (SourceError, OSError, RuntimeError) as exc:
         parser.exit(1, f"Source error: {exc}\n")
     live, live_error = None, None
-    if not args.replay_only:
+    if args.replay_only:
+        live_error = "Live is off: the server runs with --replay-only"
+    else:
         from live_mpc import LiveService
         try:
             live = LiveService(args.mpc_root, solver_profile=dict(id="simulator", name="Simulator checkout", **selection),

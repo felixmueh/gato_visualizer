@@ -5,7 +5,7 @@ import tempfile
 import threading
 import unittest
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -112,6 +112,33 @@ class CanonicalSourceTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+
+
+class ReplayOnlyApiTests(unittest.TestCase):
+    def test_live_routes_report_the_reason_as_json(self):
+        server = make_server(dict(trajectories=[]), b"<robot/>", {}, port=0,
+                             live_error="Live is off: the server runs with --replay-only")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            for method, path, status in [("GET", "/api/live/schema", 503), ("GET", "/api/live/history?generation=0", 503),
+                                         ("GET", "/api/live/events", 503), ("POST", "/api/live/command", 503),
+                                         ("GET", "/api/solver-profiles", 503), ("POST", "/api/solver-profiles/activate", 503),
+                                         ("POST", "/api/solve-inspections", 503), ("GET", "/api/unknown", 404),
+                                         ("POST", "/api/unknown", 404)]:
+                with self.subTest(method=method, path=path):
+                    request = Request(base + path, b"{}" if method == "POST" else None,
+                                      {"Content-Type": "application/json"}, method=method)
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(request)
+                    self.assertEqual(error.exception.code, status)
+                    body = json.load(error.exception)
+                    self.assertIn("replay-only" if status == 503 else "Unknown", body["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 if __name__ == "__main__":
