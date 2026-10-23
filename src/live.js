@@ -753,8 +753,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       const breach = before != null && history.breachCrossed(before, tick.time);
       if (breach) { clock.seek(breach.sim_time_s); pausePlayback(); message(breach.message, true); controlsEnabled(); }
       else if (tick.atEnd && !job.job_active && !fetching) {
-        // A calculation stopped by a breach waits for its breach record, never extends past it.
-        if (continueAtEnd()) { if (!job.breach) extendHistory(); }
+        // A calculation stopped by a breach never extends past it: playback stops at
+        // its tip once that is downloaded (also for a breach at the time it resumed from).
+        if (job.breach) { if (history.bounds[1] >= job.breach.sim_time_s - 1e-9) { pausePlayback(); message(job.message, true); controlsEnabled(); } }
+        else if (continueAtEnd()) extendHistory();
         else if (!extensionPending) { pausePlayback(); controlsEnabled(); }
       }
       renderDirty = true;

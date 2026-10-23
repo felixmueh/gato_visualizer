@@ -1249,3 +1249,31 @@ test('playback pauses at a recorded limit breach, and Play at a breach-ended tip
     assert.equal(live.history.selectedTime, .1); assert.equal(live.playing, true);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
+
+test('On Play stops at a breach announced at the very time it resumed from, without extending past it', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const records = Array.from({ length: 4 }, (_, index) => ({ type: 'state', generation: 1, settings_version: 1,
+    sim_time_s: index / 100, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [index / 100, 0, 1] }));
+  const breach = (time, text) => ({ type: 'breach', generation: 1, settings_version: 1, sim_time_s: time, message: text, breaches: [] });
+  records.push(breach(.03, 'velocity breach'));
+  h.setHistoryHandler(url => { const after = Number(new URL(url, 'http://local').searchParams.get('after'));
+    return { ok: true, json: async () => ({ generation: 1, records: records.slice(after), next_cursor: records.length, complete: false }) }; });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length, complete: false }); await flush();
+    source.emit({ type: 'status', state: 'paused', generation: 1, settings_version: 1, job_active: false, message: 'velocity breach', breach: { sim_time_s: .03 } }); await flush();
+    h.$('live-history-latest').emit('click');
+    h.$('live-play').emit('click'); await flush();
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
+    // The resumed calculation stops again at once: a torque breach at the same tick.
+    records.push(breach(.03, 'torque breach'));
+    source.emit({ type: 'status', state: 'paused', generation: 1, settings_version: 1, job_active: false, message: 'torque breach', breach: { sim_time_s: .03 } });
+    source.emit({ type: 'history', generation: 1, settings_version: 1, history_cursor: records.length, complete: false }); await flush();
+    live.frame(performance.now() + 100); live.frame(performance.now() + 200);
+    assert.equal(live.playing, false); assert.equal(h.$('live-message').textContent, 'torque breach');
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
