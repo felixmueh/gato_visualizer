@@ -8,15 +8,27 @@ from functools import cached_property
 import math
 
 
+# Exactly these types are returned unchanged; their sequences need no recursion.
+_IMMUTABLE_SCALARS = frozenset((float, int, str, bool, type(None)))
+_SEQUENCES = frozenset((list, tuple))
+
+
 def freeze(value: Any) -> Any:
     # Host-owned cached records are already recursively detached and immutable.
     if isinstance(value, MappingProxyType):
         return value
-    if isinstance(value, Mapping):
+    if type(value) is dict or isinstance(value, Mapping):
         return MappingProxyType({str(k): freeze(v) for k, v in value.items()})
     if hasattr(value, 'tolist'):
-        return freeze(value.tolist())
+        value = value.tolist()
     if isinstance(value, (list, tuple)):
+        # Long recordings hold millions of numbers in rows and tables of rows:
+        # freeze those without a Python call per number or per row.
+        kinds = set(map(type, value))
+        if kinds <= _IMMUTABLE_SCALARS:
+            return tuple(value)
+        if kinds <= _SEQUENCES and all(set(map(type, row)) <= _IMMUTABLE_SCALARS for row in value):
+            return tuple(map(tuple, value))
         return tuple(freeze(v) for v in value)
     return value
 

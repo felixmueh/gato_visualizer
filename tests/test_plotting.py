@@ -192,6 +192,33 @@ class StandardPlotNumericTests(unittest.TestCase):
         self.assertEqual(covered['physics'], 0.)
 
 
+class FreezeTests(unittest.TestCase):
+    def test_fast_paths_freeze_like_the_plain_recursion(self):
+        import numpy as np
+        from types import MappingProxyType
+        from gato_visualizer.plotting.views import freeze
+
+        def plain(value):
+            if isinstance(value, MappingProxyType):
+                return value
+            if isinstance(value, dict):
+                return MappingProxyType({str(k): plain(v) for k, v in value.items()})
+            if hasattr(value, "tolist"):
+                return plain(value.tolist())
+            if isinstance(value, (list, tuple)):
+                return tuple(plain(v) for v in value)
+            return value
+
+        value = dict(rows=[[1., 2], [3, None]], empty=[], nested=[[]], numpy=np.arange(6.).reshape(3, 2),
+                     scalars=[np.float64(1.5), True, "x"], mixed=[[1, [2]], (3,), dict(a=[1])],
+                     records=[dict(q=[.1, .2], t=np.float32(1))])
+        frozen = freeze(value)
+        self.assertEqual(frozen, plain(value))
+        for key in value:
+            self.assertEqual([type(v) for v in frozen[key]], [type(v) for v in plain(value)[key]], key)
+        self.assertIs(type(frozen["scalars"][0]), float)  # NumPy scalars become Python numbers
+
+
 class AuthorContractTests(unittest.TestCase):
     def test_decorators_preserve_callable_and_broad_read_only_access(self):
         def function(data, scale=1.):
