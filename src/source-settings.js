@@ -141,7 +141,7 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
       buildRunning = build?.state === 'running';
       if (build) {
         log.hidden = false; log.textContent = build.log || build.error || 'Preparing build…'; log.scrollTop = log.scrollHeight;
-        say(buildRunning ? `Building N=${build.N.join(', ')}. Live remains available.` : build.state === 'complete' ? 'Build complete. Apply to reload the available knot counts.' : `Build failed: ${build.error || `exit ${build.returncode}`}. See the retained build log.`, build.state === 'failed');
+        say(buildRunning ? `Building N=${build.N.join(', ')}. Live remains available.` : build.state === 'complete' ? build.live_refreshed ? 'Build complete. Live lists the new knot counts.' : 'Build complete. Apply to reload the available knot counts.' : `Build failed: ${build.error || `exit ${build.returncode}`}. See the retained build log.`, build.state === 'failed');
         log.title = build.log_path;
       }
       controls();

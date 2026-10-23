@@ -105,7 +105,9 @@ class SourceSettingsTests(unittest.TestCase):
             def probe(_):
                 entered.set(); release.wait(5)
                 return dict(compatible=True, available_N=[48])
-            service = SourceSettings(SELECTION, root / 'config.json', Mock(), probe=probe)
+            built = []
+            service = SourceSettings(SELECTION, root / 'config.json', Mock(), probe=probe,
+                                     on_built=lambda selection, result: built.append((selection, result)) or True)
             command = [sys.executable, '-c', 'print("compilation progress", flush=True)']
             with patch('source_settings.ROOT', root), patch('source_settings.selection_from_request', return_value=SELECTION), patch('source_runtime.build_command', return_value=(command, {})):
                 job = service.build(dict(selection=SELECTION, N=[48]))
@@ -122,6 +124,13 @@ class SourceSettingsTests(unittest.TestCase):
                 receipt = json.loads((Path(job['log_path']).parent / 'result.json').read_text())
                 self.assertEqual(receipt['result']['available_N'], [48])
                 self.assertEqual(receipt['state'], 'complete')
+                # Live lists the new modules without a restart (ProcessLiveService.refresh_compiled).
+                self.assertEqual(built, [(SELECTION, dict(compatible=True, available_N=[48]))])
+                self.assertIs(receipt['live_refreshed'], True)
+                service.on_built = Mock(side_effect=ValueError('worker gone'))
+                release.set(); service.build(dict(selection=SELECTION, N=[48])); service.build_thread.join(5)
+                self.assertEqual((service.job['live_refreshed'], service.job['live_refresh_error']), (False, 'worker gone'))
+                self.assertEqual(service.job['state'], 'complete')
             service.close()
 
     def test_restart_drops_only_source_overrides_and_preserves_server_flags(self):
@@ -150,7 +159,7 @@ class SourceSettingsTests(unittest.TestCase):
         events = []
         settings = SimpleNamespace(selection=dict(SELECTION, python='/new/env/bin/python'), close=lambda: events.append('sources-close'))
         service = SimpleNamespace(server_port=9001, server_close=lambda: events.append('server-close'), shutdown=Mock())
-        def source_factory(selection, path, request_restart):
+        def source_factory(selection, path, request_restart, **_):
             service.serve_forever = request_restart
             return settings
         def execute(python, argv, environment):

@@ -275,6 +275,24 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const commit = schema.source?.mpc_commit;
     $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · compiled N${schema.available_N_by_friction ? settings.config.friction ? ' (predictor friction)' : ' (loss-free predictor)' : ''}: ${available.join(', ') || 'none'}`;
   }
+  // A Build into the active solver's checkout adds modules without a backend
+  // restart: list them, and calculate a draft whose N just became available.
+  function acceptCompiledModules(item) {
+    if (!schema || !Array.isArray(item.available_N) || !item.available_N_by_friction) return;
+    schema.available_N = [...item.available_N]; schema.available_N_by_friction = structuredClone(item.available_N_by_friction);
+    const spec = schema.parameters?.find(parameter => parameter.path.replace(/^config\./, '') === 'N');
+    if (spec) spec.choices = schema.available_N;
+    const knot = inputs.find(entry => entry.parameter.path === 'N');
+    if (!knot) return;
+    const value = settings.config.N, wasUnavailable = profileNError;
+    knot.parameter.choices = schema.available_N;
+    const options = schema.available_N.map((n, i) => { const option = document.createElement('option'); option.value = String(i); option.textContent = String(n); return option; });
+    if (!schema.available_N.includes(value)) { const option = document.createElement('option'); option.value = '-1'; option.textContent = `${value} · unavailable`; option.disabled = true; options.push(option); }
+    knot.input.replaceChildren(...options); knot.input.value = String(schema.available_N.includes(value) ? schema.available_N.indexOf(value) : -1);
+    refreshFrictionAvailability();
+    if (wasUnavailable && !profileNError) knot.input.dispatchEvent(new Event('input', { bubbles: true }));
+    else controlsEnabled();
+  }
   const unavailableFrictionMessage = () => `N=${settings.config.N} is not compiled for this predictor. Choose a compiled N or build it in Settings › Backend (Build selected N, with Predictor friction modules when Predictor friction is on).`;
   function change() {
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
@@ -545,6 +563,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   function receiveItem(item) {
     if (item.type === 'solver_profile') { Promise.resolve(onSolverProfile(item)).catch(error => message(`Solver setup: ${error.message}`, true)); return; }
     if (profileSwitching) return;
+    if (item.type === 'compiled_modules') { acceptCompiledModules(item); return; }
     if (!needsInitialPreview && generation != null && item.generation != null && item.generation < generation) return;
     if (!needsInitialPreview && item.type === 'status' && expectedVersion != null && item.settings_version < expectedVersion) return;
     acceptTaskAnchors(item);

@@ -729,7 +729,8 @@ def main(argv=None):
     def request_restart():
         restart_requested.set()
         server.shutdown()
-    sources = SourceSettings(selection, visualizer_config.path, request_restart)
+    sources = SourceSettings(selection, visualizer_config.path, request_restart,
+                             on_built=live.refresh_compiled if live is not None else None)
     from plot_service import PlotService
     plots = PlotService(args.mpc_root, visualizer_config.path, scene, live=live, replays=library)
     from solver_profiles import SolverProfiles

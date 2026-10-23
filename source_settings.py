@@ -42,11 +42,16 @@ def selection_from_request(body):
 
 
 class SourceSettings:
-    """Probe in a fresh interpreter; compile explicitly without pausing Live."""
-    def __init__(self, selection, config_path, request_restart, *, probe=None, popen=None):
+    """Probe in a fresh interpreter; compile explicitly without pausing Live.
+
+    on_built(selection, probe) is called after a successful build and returns whether
+    Live lists the new modules without a restart (ProcessLiveService.refresh_compiled).
+    """
+    def __init__(self, selection, config_path, request_restart, *, probe=None, popen=None, on_built=None):
         self.selection = selection
         self.config_path = config_path
         self.request_restart = request_restart
+        self.on_built = on_built
         if probe is None:
             from source_runtime import probe_selection
             probe = probe_selection
@@ -155,6 +160,11 @@ class SourceSettings:
                 code = process.wait()
             result = self.probe(job["selection"])
             final.update(state="complete" if code == 0 else "failed", returncode=code, result=result)
+            if code == 0 and self.on_built is not None:
+                try:
+                    final["live_refreshed"] = bool(self.on_built(job["selection"], result))
+                except Exception as exc:  # the build stands; Apply still restarts Live
+                    final.update(live_refreshed=False, live_refresh_error=str(exc))
             with self.lock:
                 self.current = None
         except Exception as exc:

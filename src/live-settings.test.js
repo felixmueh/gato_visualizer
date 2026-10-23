@@ -1118,6 +1118,33 @@ test('predictor friction keeps unsupported N visible and blocks calculation unti
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
+test('a Build listed without a restart enables the draft N it compiled and offers new knot counts', async () => {
+  const h = harness(), field = frictionSchema(h, { N: 64, on: [32] });
+  h.schema.available_N = [32, 64];
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    field('friction').value = '1'; field('friction').emit('input');
+    assert.equal(h.$('live-play').disabled, true);
+    await new Promise(resolve => setTimeout(resolve, 380));
+    const before = h.commands.length;
+    source.emit({ type: 'compiled_modules', available_N: [16, 32, 64], available_N_by_friction: { off: [16, 32, 64], on: [32, 64] } });
+    assert.deepEqual(field('N').children.map(item => item.textContent), ['16 · unavailable', '32', '64']); // 16: loss-free only
+    assert.equal(field('N').value, '2'); assert.equal(h.$('live-play').disabled, false);
+    await new Promise(resolve => setTimeout(resolve, 380));
+    assert.equal(h.commands.length, before + 1);
+    assert.equal(h.commands.at(-1).config.N, 64); assert.deepEqual(h.commands.at(-1).config.friction, PREDICTOR_FRICTION);
+    source.emit(plan(2, 2));
+    field('friction').value = '0'; field('friction').emit('input');
+    assert.equal(field('N').children[0].textContent, '16');
+    field('N').value = '0'; field('N').emit('input');
+    assert.equal(live.settings.config.N, 16); assert.equal(h.$('live-play').disabled, false);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
 test('unavailable friction transition cancels active work and keeps Cancel available without losing its frozen edit anchor', async () => {
   const h = harness(), field = frictionSchema(h, { N: 64, prediction: false });
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));

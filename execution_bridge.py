@@ -329,6 +329,37 @@ class ProcessLiveService:
             self.publish(dict(type="status", state="paused", message="Switching solver profile",
                 generation=self.generation, settings_version=self.version, job_active=False))
 
+    def refresh_compiled(self, selection, probe):
+        """After a Build, list the new modules without a restart (Felix, 2026-10-23).
+
+        A Build into the active solver's own checkout, interpreter and cache only adds
+        modules, which the child finds with find_binary at its next configure. Updates
+        the available N here, in the coordinator, and in the browser (a compiled_modules
+        event). Returns False, changing nothing, for another selection, a changed source
+        identity or an incompatible probe: those still need Apply and its restart."""
+        from live_mpc import build_schema
+        keys = ("mpc_root", "python", "cache")
+        if not probe.get("compatible"):
+            return False
+        schema = build_schema(probe, selection["mpc_root"])
+        with self.condition:
+            active = self.active_profile
+            if (self.closed or not self._process.is_alive() or self.profile_switch["state"] == "switching" or
+                    any(str(active.get(key)) != str(selection.get(key)) for key in keys) or
+                    schema["source"] != self.schema.get("source")):
+                return False
+            available = dict(available_N=schema["available_N"], available_N_by_friction=schema["available_N_by_friction"])
+            try:
+                self.commands.put_nowait(dict(type="refresh_compiled", **deepcopy(available)))
+            except queue.Full:
+                return False
+            self.schema.update(deepcopy(available))
+            for spec in self.schema["parameters"]:
+                if spec["path"] == "N":
+                    spec["choices"] = list(available["available_N"])
+            self.publish(dict(type="compiled_modules", **deepcopy(available)))
+        return True
+
     def pause_for_inspection(self, identifier, timeout=15):
         """Pause at a committed chunk boundary, preserving controller/session state."""
         with self.condition:

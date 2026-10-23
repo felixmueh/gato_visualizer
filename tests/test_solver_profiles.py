@@ -63,6 +63,15 @@ class ProfileAdapter(FakeAdapter):
                     solver_profile=self.profile)
 
 
+class CompiledAdapter(ProfileAdapter):
+    """Refuses an N its profile schema does not list, as SimulatorAdapter.configure."""
+    def configure(self, config, task):
+        mode = "on" if config.get("friction") is not None else "off"
+        if config["N"] not in self.profile_schema["available_N_by_friction"][mode]:
+            raise ValueError(f"Not compiled: N={config['N']}")
+        super().configure(config, task)
+
+
 def wait_until(predicate, timeout=5):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -75,6 +84,37 @@ def wait_until(predicate, timeout=5):
 def unresponsive_coordinator(root, commands, results, *args):
     results.put(dict(kind="ready", schema=fake_schema(root)))
     time.sleep(600)
+
+
+class CompiledRefreshTests(unittest.TestCase):
+    def test_a_build_for_the_active_solver_lists_its_modules_without_a_restart(self):
+        live = ProcessLiveService(MPC_ROOT, adapter_factory=CompiledAdapter,
+            schema_factory=fake_schema, worker_target=fake_worker, render_factory=FakeRenderer)
+        try:
+            live.subscribe()
+            wait_until(lambda: "plan" in live.latest)
+            pid, cursor = live._process.pid, live.cursor
+            settings = dict(type="set_settings", config=dict(deepcopy(live.config), N=32), task=deepcopy(live.task))
+            with self.assertRaisesRegex(ValueError, "Not compiled: N=32"):
+                live.command(settings)
+            probe = live_probe()
+            probe["available_N_by_friction"] = dict(off=[16, 32], on=[])
+            other = dict(live.active_profile, cache="/elsewhere/cache")
+            self.assertFalse(live.refresh_compiled(other, probe))  # another cache: Apply restarts
+            self.assertFalse(live.refresh_compiled(live.active_profile, dict(compatible=False)))
+            self.assertEqual(live.schema["available_N"], [16])
+            self.assertTrue(live.refresh_compiled(live.active_profile, probe))
+            self.assertEqual(live.schema["available_N_by_friction"], dict(off=[16, 32], on=[]))
+            self.assertEqual(next(s for s in live.schema["parameters"] if s["path"] == "N")["choices"], [16, 32])
+            self.assertIn(dict(type="compiled_modules", available_N=[16, 32], available_N_by_friction=dict(off=[16, 32], on=[])),
+                          live.read_events(cursor, timeout=0)[1])
+            live.command(settings)  # the coordinator's adapter now lists N=32 too
+            wait_until(lambda: live.latest.get("status", {}).get("N") == 32 and
+                       live.latest["status"]["state"] not in ("error", "playing", "calculating"))
+            self.assertNotEqual(live.latest["status"]["state"], "error")
+            self.assertEqual(live._process.pid, pid)
+        finally:
+            live.close()
 
 
 class SwitchTests(unittest.TestCase):

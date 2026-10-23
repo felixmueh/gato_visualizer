@@ -194,6 +194,15 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             try:
                 if command is not None:
                     kind = command["type"]
+                    if kind == "refresh_compiled":
+                        # A Build added modules for the active solver: no revision,
+                        # job, lock or controller change (ProcessLiveService.refresh_compiled).
+                        available = {key: command[key] for key in ("available_N", "available_N_by_friction")}
+                        if adapter is None:  # the startup profile, selected with schema later
+                            schema.update(deepcopy(available))
+                        elif getattr(adapter, "profile_schema", None) is not None:
+                            adapter.profile_schema = dict(adapter.profile_schema, **deepcopy(available))
+                        continue
                     if kind == "set_report_hz":
                         completed.set_report_hz(command["report_hz"])
                         next_progress = time.monotonic() + completed.interval
