@@ -136,9 +136,10 @@ class ReportingCadenceTests(unittest.TestCase):
             live.renderer = FakeRenderer(None)
             live.history_store = HistoryStore(Path(folder)/'history')
             live.inspection_store = HistoryStore(Path(folder)/'inspection')
+            header = dict(type='segment', sim_time_s=0., context=dict(task=dict(kind='reach')))
             packets = [dict(kind='records', generation=0, token=0, report_end=last,
-                            records=[dict(type='state', sim_time_s=t, q=[t]*7)])
-                       for t,last in ((0.,False),(.001,True))]
+                            records=[*first, dict(type='state', sim_time_s=t, q=[t]*7)])
+                       for t,last,first in ((0.,False,[header]),(.001,True,[]))]
             packets.append(dict(kind='events', generation=0, token=0, progress=True,
                                 events=[dict(type='status', state='playing')]))
             cursors = []
@@ -153,10 +154,11 @@ class ReportingCadenceTests(unittest.TestCase):
             try:
                 live._receive()
                 self.assertEqual(cursors[:2], [0,0])
-                self.assertEqual([e['type'] for _,e in live.events], ['history','state','status'])
+                # The segment header is announced once, with the report that carried it.
+                self.assertEqual([e['type'] for _,e in live.events], ['history','segment','state','status'])
                 self.assertEqual(live.latest['state']['sim_time_s'], .001)
                 page = live.history(0)
-                self.assertEqual([r['sim_time_s'] for r in page['records']], [0.,.001])
+                self.assertEqual([r['type'] for r in page['records']], ['segment','state','state'])
             finally:
                 live.history_store.close()
                 live.inspection_store.close()
@@ -165,7 +167,7 @@ class ReportingCadenceTests(unittest.TestCase):
         schema = fake_schema(None)
         commands, messages, shutdown = queue.Queue(), [], threading.Event()
         revision = SimpleNamespace(value=0)
-        execution = dict(schema['defaults']['execution'], calculation='manual', duration_s=.2, record_every=1)
+        execution = dict(schema['defaults']['execution'], calculation='manual', duration_s=.2)
         commands.put(dict(type='precalculate', token=0, generation=3, settings_version=1,
                           config=deepcopy(schema['defaults']['config']),
                           task=deepcopy(schema['defaults']['task']), execution=execution))
@@ -204,7 +206,7 @@ class ReportingCadenceTests(unittest.TestCase):
         self.assertEqual(revision.value, 0)
         packets = [m for m in messages if m['kind']=='records']
         self.assertTrue(all((m['generation'],m['token']) == (3,0) for m in packets))
-        records = [r for m in packets for r in m['records']][1:]  # Exclude immediate initial state.
+        records = [r for m in packets for r in m['records']][2:]  # Exclude the immediate header and initial state.
         expected = [r for batch in batches for r in batch]
         self.assertEqual(len(records), len(expected))
         self.assertTrue(all(a is b for a,b in zip(records,expected)))
@@ -213,8 +215,8 @@ class ReportingCadenceTests(unittest.TestCase):
         self.assertEqual([p['stats']['controller_restarted'] for p in plans], [True]+[False]*19)
         self.assertTrue(all(p['settings_version']==1 for p in plans))
         # With fixed wall time, progress and report updates cannot flush history.
-        # Initial state, then only completion's bounded report packets.
-        self.assertEqual(len(packets), 3)
+        # Header and initial state, then only completion's report (239 records: one packet).
+        self.assertEqual(len(packets), 2)
         self.assertTrue(packets[-1]['complete'])
 
 

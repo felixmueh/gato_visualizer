@@ -189,13 +189,20 @@ class BoundaryTests(unittest.TestCase):
                 simulator.x = np.arange(14, dtype=float)/10
                 simulator.t = 2.
                 captured = simulator.solve_snapshot("play", 7)
+                header = simulator.segment_header(7, dict(control_hz=500.))
                 dynamic = remote.replies[-1][1]["plan"]
+                # The constant context is in the segment header, never in the child's reply or the plan.
                 for name in ("task_path_xyz", "task_anchors", "joint_limits", "problem_configuration",
                              "constraint_bounds_native", "model_identity", "solver_profile"):
                     self.assertNotIn(name, dynamic)
-                    self.assertIn(name, captured)
-                self.assertEqual(captured["solver_profile"]["profile"]["id"], "different-predictor")
-                self.assertFalse(captured["solver_profile"]["physical_model_differs"])
+                    self.assertNotIn(name, captured)
+                    self.assertIn(name, header["context"])
+                context = header["context"]
+                self.assertEqual(context["solver_profile"]["profile"]["id"], "different-predictor")
+                self.assertFalse(context["solver_profile"]["physical_model_differs"])
+                self.assertEqual(context["settings"], dict(config=config(), task=FIGURE8_DEFAULT_TASK,
+                                                           execution=dict(control_hz=500.)))
+                self.assertEqual(context["source"], simulator.model_identity["source"])
                 # Native Plan arrays cross unchanged; the plan's stats keep the plotters' keys.
                 np.testing.assert_array_equal(captured["_states"], np.tile(simulator.x, (4, 1)))
                 np.testing.assert_array_equal(captured["_torques"], np.arange(21.).reshape(3, 7))
@@ -209,27 +216,30 @@ class BoundaryTests(unittest.TestCase):
                 expected = render_plan(captured, simulator.kinematics)
                 self.assertEqual(expected["torque_nm"], np.arange(21.).reshape(3, 7).tolist())
                 from inspection_problem import captured_problem
-                problem = captured_problem(expected)
+                problem = captured_problem(dict(context, **expected))
                 self.assertEqual(problem["reference_native"], simulator.reference.tolist())
-                self.assertEqual(expected["task_anchors"], mutable(simulator.task_anchors))
-                self.assertEqual(expected["task_path_xyz"], simulator.task_path_xyz)
+                self.assertEqual(context["task_anchors"], mutable(simulator.task_anchors))
+                self.assertEqual(context["task_path_xyz"], simulator.task_path_xyz)
                 self.assertFalse(simulator.solve_snapshot("play", 8)["stats"]["controller_restarted"])
                 # Public records may be edited without changing future solves;
                 # retained snapshots survive later reconfiguration.
                 public = mutable(captured)
-                public["solver_profile"]["profile"]["id"] = "edited-record"
+                public["stats"]["sqp_iters"] = -1
+                context["solver_profile"]["profile"]["id"] = "edited-record"
                 simulator.reference[:] = 99
                 simulator.profile["id"] = "new-profile"
                 simulator.configure(config(solver=dict(config()["solver"], max_sqp_iters=9),
                                            plant=dict(PLANT_DEFAULTS, friction=True)), deepcopy(FIGURE8_DEFAULT_TASK))
                 self.assertEqual(render_plan(captured, simulator.kinematics), expected)
-                newer = simulator.solve_snapshot("play", 9)
+                newer = simulator.segment_header(9, {})["context"]
                 self.assertEqual(newer["problem_configuration"]["solver"]["max_sqp_iters"], 9)
                 self.assertEqual(newer["solver_profile"]["profile"]["id"], "new-profile")
                 self.assertTrue(newer["solver_profile"]["physical_model_differs"])
+                self.assertTrue(newer["settings"]["config"]["plant"]["friction"])
+                self.assertEqual(header["context"]["solver_profile"]["profile"]["id"], "edited-record")
                 self.assertIsNone(simulator.plant_friction.width_rad_s)  # the plant's hard sign
                 with self.assertRaises(TypeError):
-                    captured["solver_profile"]["profile"]["id"] = "mutated"
+                    captured["stats"]["sqp_iters"] = -2
                 with self.assertRaises(ValueError):
                     captured["_states"][0, 0] = 1
                 with self.assertRaisesRegex(ValueError, "Not compiled: N=4 with predictor friction"):

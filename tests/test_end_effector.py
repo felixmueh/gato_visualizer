@@ -84,11 +84,10 @@ class EndEffectorTests(unittest.TestCase):
         renderer = LiveRenderer(self.root)
         for frame in ("arm_right_tool_joint", "test_grasp_joint"):
             target = self.expected(frame)[0]
-            state = snapshot(dict(type="state", _x=np.r_[self.q[0], np.zeros(7)],
-                                  end_effector_frame=frame, target_xyz=target.tolist(), task_kind="reach",
-                                  _position_tol=.05, _speed_tol=1.))
-            rendered = renderer((None, state, []))[0]
+            state = snapshot(dict(type="state", _x=np.r_[self.q[0], np.zeros(7)], target_xyz=target.tolist()))
+            context = dict(end_effector_frame=frame, task=dict(kind="reach"), position_tol_m=.05, speed_l1_tol_rad_s=1.)
+            rendered = renderer((None, state, []), context)[0]
             np.testing.assert_allclose(rendered["ee_xyz"], target, atol=1e-10)
             self.assertLess(rendered["distance_m"], 1e-10)
             self.assertTrue(rendered["arrived"])
-            self.assertEqual(rendered["end_effector_frame"], frame)
+            self.assertEqual(renderer.kinematics.end_effector_frame, frame)

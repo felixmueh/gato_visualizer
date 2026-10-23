@@ -12,20 +12,17 @@ class StateDistanceTests(unittest.TestCase):
     def render(self, position, target, *, tolerance=.125, speed=.5, kind="reach", frozen=False):
         state = dict(type="state", sim_time_s=1.25, settings_version=3,
                      _x=np.r_[np.arange(7, dtype=float), speed, np.zeros(6)],
-                     target_xyz=list(target), task_kind=kind,
-                     _position_tol=tolerance, _speed_tol=.5,
-                     torque_nm=list(range(7)), torque_kind="applied",
-                     joint_limits={"source": "recorded", "effort_nm": [12.]*7},
-                     simulator_identity={"commit": "original"})
+                     target_xyz=list(target), torque_nm=list(range(7)))
+        # The arrival rule and task come from the segment header, not the state.
+        context = dict(task=dict(kind=kind), position_tol_m=tolerance, speed_l1_tol_rad_s=.5)
         captured = snapshot(state) if frozen else state
         kinematics = SimpleNamespace(ee_positions=lambda q: np.array([position], dtype=float))
-        rendered = render_state(captured, kinematics)
+        rendered = render_state(captured, kinematics, context)
         self.assertIn("_x", captured)
         self.assertEqual(rendered["q"], list(range(7)))
         self.assertEqual(rendered["qd"], [speed] + [0.]*6)
         self.assertEqual(rendered["torque_nm"], list(range(7)))
-        self.assertEqual(rendered["simulator_identity"], {"commit": "original"})
-        self.assertEqual(rendered["joint_limits"], state["joint_limits"])
+        self.assertNotIn("task_kind", rendered)
         self.assertEqual(rendered["sim_time_s"], 1.25)
         self.assertEqual(rendered["settings_version"], 3)
         self.assertEqual(rendered["target_xyz"], list(target))

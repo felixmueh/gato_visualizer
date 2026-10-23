@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock, recordingInterval, recordEveryLabel } from './live-execution.js';
+import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
 import { createLiveHistory } from './live-history.js';
 
 test('execution rates are independent of knot spacing and ordered physics ≥ control ≥ TO', () => {
@@ -126,12 +126,9 @@ test('pause and seek cancel buffer waits; finite recordings and zero buffer play
   assert(Math.abs(clock.tick(30010, [0, .9], { growing: true }).time - .22) < 1e-12);
 });
 
-test('commands default to 500 Hz and Record every is a whole number of physics steps', () => {
-  assert.deepEqual([DEFAULT_EXECUTION.simulation_hz, DEFAULT_EXECUTION.control_hz, DEFAULT_EXECUTION.to_hz, DEFAULT_EXECUTION.record_every], [1000, 500, 100, 2]);
-  assert.equal(validateExecution({ record_every: 1 }).record_every, 1);
-  for (const record_every of [0, 1.5, 1001, NaN, '2']) assert.throws(() => validateExecution({ record_every }));
-  assert.equal(recordingInterval(DEFAULT_EXECUTION), .002);
-  assert.deepEqual([1, 2, 3, 4, 11, 21, 22].map(recordEveryLabel), ['', 'every 2nd step', 'every 3rd step', 'every 4th step', 'every 11th step', 'every 21st step', 'every 22nd step']);
+test('commands default to 500 Hz; recording has no setting', () => {
+  assert.deepEqual([DEFAULT_EXECUTION.simulation_hz, DEFAULT_EXECUTION.control_hz, DEFAULT_EXECUTION.to_hz], [1000, 500, 100]);
+  assert.equal('record_every' in DEFAULT_EXECUTION, false);
 });
 
 test('interval descriptions count the commands clipped to the effort limit', () => {

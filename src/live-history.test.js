@@ -64,16 +64,6 @@ test('retention caps time, state count, and distinct prediction count with an ac
   }
 });
 
-test('history reports the recording step of its states and forgets it on clear', () => {
-  const history = createLiveHistory();
-  history.addState(state(0));
-  assert.equal(history.recordEvery, 1);
-  history.addState({ ...state(.002), record_every: 2 });
-  assert.equal(history.recordEvery, 2);
-  history.clear();
-  assert.equal(history.recordEvery, 1);
-});
-
 test('breach records are kept in order and found where playback crosses them', () => {
   const history = createLiveHistory();
   history.addState({ sim_time_s: 0, q: [], ee_xyz: [0, 0, 0] });

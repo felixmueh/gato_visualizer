@@ -88,8 +88,10 @@ function harness() {
   return { $, document, EventSource, fetch, commands, sources, created, edit, schema, setHistoryHandler(value) { historyHandler = value; }, setCommandHandler(value) { commandHandler = value; }, setVersion(value) { version = value; } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+// A segment header: the constant context of a generation's records, sent once.
+const segment = (kind, context = {}) => ({ type: 'segment', generation: 0, settings_version: 0, context: { task: { kind }, ...context } });
 const plan = (version, seq, task_kind = 'reach') => ({
-  type: 'plan', settings_version: version, seq, task_kind, origin: 'preview', sim_time_s: 0,
+  type: 'plan', generation: 0, settings_version: version, seq, origin: 'preview', sim_time_s: 0,
   N: task_kind === 'reach' ? 32 : 64, dt_s: .01, knot_time_s: [0, .01], q: [Array(7).fill(0), Array(7).fill(0)],
   ee_xyz: [[.5, 0, 1], [.6, 0, 1]], reference_xyz: [[.7, 0, 1], [.7, 0, 1]], stats: {},
 });
@@ -550,7 +552,8 @@ test('figure-eight transforms use static start anchor, preserve period and reach
     assert.equal(live.setTaskTransform({size_m: [.3, .2]}), null);
     h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
     h.$('live-preview').emit('click'); await flush();
-    source.emit({...plan(2, 2, 'figure8'), task_path_xyz: [[.4, -.3, 1.2], [.64, -.3, 1.2]], reference_xyz: [[.5, -.22, 1.2], [.51, -.21, 1.2]]});
+    source.emit(segment('figure8', { task_path_xyz: [[.4, -.3, 1.2], [.64, -.3, 1.2]] }));
+    source.emit({...plan(2, 2, 'figure8'), reference_xyz: [[.5, -.22, 1.2], [.51, -.21, 1.2]]});
     assert.deepEqual(live.targetInteraction.position_world, [.4, -.3, 1.2]);
     assert.equal(live.targetInteraction.available, true);
     live.setTargetWorld([.5, -.2, 1.3]);
@@ -585,7 +588,7 @@ test('desired figure-eight redraws before planner responses and stale prediction
     await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
     const anchors = { reach: [.7, -.2, .9], figure8: [.5, -.2, .9] };
-    source.emit({ ...plan(1, 1), task_anchors: anchors });
+    source.emit(segment('reach', { task_anchors: anchors })); source.emit(plan(1, 1));
     h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
     const commandCount = h.commands.length;
     live.frame(0);
@@ -601,18 +604,19 @@ test('desired figure-eight redraws before planner responses and stale prediction
     assert.deepEqual(references.at(-1).points[0], [.6, -.1, 1]);
     assert.equal(h.commands.length, commandCount); // Visible before the edit debounce or any POST.
     const current = references.at(-1);
-    source.emit({ type: 'state', settings_version: 1, sim_time_s: 4, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [9,9,9], target_xyz: [99,99,99], task_anchors: anchors });
+    source.emit({ type: 'state', generation: 0, settings_version: 1, sim_time_s: 4, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [9,9,9], target_xyz: [99,99,99] });
     live.frame(2.5);
+    assert.deepEqual(states.at(-1).segment.task_anchors, anchors); // The state's context comes from its segment header.
     assert(Math.abs(states.at(-1).referenceTarget[0] - .6) < 1e-12);
     assert(Math.abs(states.at(-1).referenceTarget[1] - .3) < 1e-12); // Rotated/scaled half-cycle target, not the stale state target.
     assert.deepEqual(live.targetInteraction.position_world, [.6, -.1, 1]); // Gizmo pivot stays fixed even as the target moves.
-    source.emit({ ...plan(1, 2), task_anchors: anchors }); live.frame(3);
+    source.emit(plan(1, 2)); live.frame(3);
     assert.equal(references.at(-1), current); // Delayed optimizer response cannot redraw geometry.
     assert.equal(predictions.at(-1), null);
     h.$('live-preview').emit('click'); await flush(); live.frame(4);
     assert.equal(live.pending, true);
     assert.equal(references.at(-1), current);
-    source.emit({ ...plan(1, 3), task_anchors: anchors }); live.frame(5);
+    source.emit(plan(1, 3)); live.frame(5);
     assert.equal(references.at(-1), current);
     assert.deepEqual(live.targetInteraction.position_world, [.6, -.1, 1]);
   } finally {
@@ -668,11 +672,6 @@ test('active-task defaults, pose group and execution reset route through normal 
     reset('task.pose').emit('click'); assert.deepEqual(live.settings.task.target_offset_m, [0, 0, 0]); assert.deepEqual(live.settings.task.orientation_xyzw, [0, 0, 0, 1]);
     h.$('live-duration').value = '20'; h.$('live-duration').emit('input'); assert.equal(reset('execution.duration_s').disabled, false);
     reset('execution.duration_s').emit('click'); assert.equal(live.settings.execution.duration_s, DEFAULT_EXECUTION.duration_s);
-    // Record every shows its effective spacing and resets to the default.
-    assert.equal(Number(h.$('live-record-every').value), 2); assert.equal(h.$('live-record-interval').textContent, 'steps · 2 ms');
-    h.$('live-record-every').value = '5'; h.$('live-record-every').emit('input');
-    assert.equal(live.settings.execution.record_every, 5); assert.equal(h.$('live-record-interval').textContent, 'steps · 5 ms');
-    reset('execution.record_every').emit('click'); assert.equal(live.settings.execution.record_every, DEFAULT_EXECUTION.record_every);
     reset('task.kind').emit('click'); assert.equal(live.settings.task.kind, 'reach'); assert.equal(reset('task.kind').disabled, true);
     h.$('replay-mode').emit('click'); await flush();
   } finally {

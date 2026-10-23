@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from live_mpc import (GPULocks, build_schema, figure8_reference, mpc_bounds_from_rows,
+from live_mpc import (GPULocks, POSITION_TOL_M, SPEED_L1_TOL_RAD_S, build_schema, figure8_reference, mpc_bounds_from_rows,
                       FIGURE8_DEFAULT_TASK, REACH_DEFAULT_TASK, validate_settings)
 from server import make_server
 from live_presentation import LatestPresentation, mutable, render_plan, render_state, snapshot
@@ -211,25 +211,30 @@ class AdapterTelemetryTests(unittest.TestCase):
         adapter.remote, adapter.profile = FakeRemote(), dict(id="simulator")
         adapter.configure_task(2, .01, deepcopy(REACH_DEFAULT_TASK))
         adapter.joint_limits = dict(source="Test configured bounds")
-        adapter._plan_context = snapshot(dict(joint_limits=adapter.joint_limits, task_anchors=adapter.task_anchors,
-                                              problem_configuration=dict(N=2, solver=dict(max_sqp_iters=3))))
+        adapter._segment_context = snapshot(dict(joint_limits=adapter.joint_limits, task_anchors=adapter.task_anchors,
+                                                 problem_configuration=dict(N=2, solver=dict(max_sqp_iters=3))))
+        adapter.settings = dict(config=dict(N=2), task=deepcopy(adapter.task))
         return adapter
+
+    CONTEXT = dict(task=dict(kind="reach"), position_tol_m=POSITION_TOL_M, speed_l1_tol_rad_s=SPEED_L1_TOL_RAD_S)
 
     def test_task_anchors_are_public_immutable_and_independent_of_task_edits(self):
         adapter = self.adapter()
         expected = mutable(adapter.task_anchors)
         np.testing.assert_allclose(expected["reach"], adapter.kinematics.target_to_world(
             adapter.tiago.fk(adapter.tiago.Q_REACH)))
-        initial_plan = adapter.solve_snapshot("preview", 1)
-        self.assertEqual(mutable(initial_plan["task_anchors"]), expected)
-        self.assertEqual(render_state(adapter.state_snapshot(), adapter.kinematics)["task_anchors"], expected)
+        # The anchors are segment context: in the header, not in plans or states.
+        header = adapter.segment_header(1, dict(control_hz=500.))
+        self.assertEqual(header["context"]["task_anchors"], expected)
+        self.assertEqual(header["context"]["settings"]["execution"], dict(control_hz=500.))
+        self.assertNotIn("task_anchors", adapter.solve_snapshot("preview", 1))
+        self.assertNotIn("task_anchors", adapter.state_snapshot())
         with self.assertRaises(TypeError):
-            initial_plan["task_anchors"]["reach"][0] = 99
+            adapter.task_anchors["reach"][0] = 99
         adapter.configure_task(2, .01, {**FIGURE8_DEFAULT_TASK, "target_offset_m": [.1, -.2, .3],
                                         "width_m": .4, "height_m": .3, "orientation_xyzw": [1., 0., 0., 0.]})
-        adapter.t = 3.
-        self.assertEqual(mutable(adapter.solve_snapshot("preview", 3)["task_anchors"]), expected)
-        self.assertEqual(mutable(initial_plan["task_anchors"]), expected)
+        self.assertEqual(mutable(adapter.task_anchors), expected)
+        self.assertEqual(header["context"]["task_anchors"], expected)
 
     def test_reset_restarts_plan_count_and_preview_does_not_claim_applied_torque(self):
         adapter = self.adapter()
@@ -247,7 +252,7 @@ class AdapterTelemetryTests(unittest.TestCase):
         self.assertEqual(len(plan["torque_nm"]), 1)
         self.assertEqual(plan["torque_end_time_s"], .01)
         self.assertEqual(plan["torque_kind"], "predicted")
-        state = render_state(adapter.state_snapshot(), adapter.kinematics)
+        state = render_state(adapter.state_snapshot(), adapter.kinematics, self.CONTEXT)
         self.assertGreater(state["distance_m"], .05)
         self.assertFalse(state["arrived"])
 
@@ -255,22 +260,22 @@ class AdapterTelemetryTests(unittest.TestCase):
         adapter = self.adapter()
         adapter.x[:] = np.arange(14)
         plan = adapter.solve_snapshot("play", 3)
-        state = adapter.state_snapshot(.9, 3)
+        state = adapter.state_snapshot(3)
         expected_plan = render_plan(plan, adapter.kinematics)
-        expected_state = render_state(state, adapter.kinematics)
+        expected_state = render_state(state, adapter.kinematics, self.CONTEXT)
         self.assertEqual(expected_plan["initial_state"]["q"], list(range(7)))
-        self.assertEqual(expected_plan["problem_configuration"]["solver"]["max_sqp_iters"], 3)
+        self.assertNotIn("problem_configuration", expected_plan)  # segment context
         self.assertEqual(expected_plan["diagnostics"]["initial_merit"], 12.)
         adapter.x[:] = 0
         adapter.reference[:] = 123
         adapter.joint_limits["source"] = "New settings"
         adapter.reset_state()
         self.assertEqual(render_plan(plan, adapter.kinematics), expected_plan)
-        self.assertEqual(render_state(state, adapter.kinematics), expected_state)
+        self.assertEqual(render_state(state, adapter.kinematics, self.CONTEXT), expected_state)
         with self.assertRaises(ValueError):
             plan["_states"][0, 0] = 0
         with self.assertRaises(TypeError):
-            plan["joint_limits"]["source"] = "Mutation"
+            plan["initial_state"]["q"] = "Mutation"
         json.dumps(expected_plan, allow_nan=False)
 
 

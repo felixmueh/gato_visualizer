@@ -43,6 +43,20 @@ def plan():
         model_identity=dict(full_urdf_sha256='original-model'), solver_profile={})
 
 
+CONTEXT_KEYS = ('problem_configuration', 'joint_limits', 'constraint_bounds_native', 'task', 'model_identity', 'solver_profile')
+
+
+def segment(p=None):
+    """A Live segment header: the constant context its recorded plans leave out."""
+    p = p or plan()
+    return dict(type='segment', sim_time_s=0., context={key: p[key] for key in CONTEXT_KEYS})
+
+
+def recorded(p):
+    """A plan as Live records it: without its segment's context."""
+    return {key: value for key, value in p.items() if key not in CONTEXT_KEYS}
+
+
 def trace(n=3, k=2):
     xu=np.zeros((k+1,1,21*n-7),dtype=np.float32)
     for i in range(k+1):
@@ -238,7 +252,7 @@ def contract():
 class JobTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.folder=Path(self.temp.name)
-        self.history=HistoryStore(self.folder/'history');self.history.append([dict(plan(),type='plan',id='7',seq=7)])
+        self.history=HistoryStore(self.folder/'history');self.history.append([segment(),dict(recorded(plan()),type='plan',id='7',seq=7)])
         self.profile=dict(id='active',mpc_root='/selected/mpc',python='/selected/python',cache='/selected/cache')
         self.live=SimpleNamespace(history_store=self.history, pauses=[],
                                   pause_for_inspection=lambda identifier,timeout:self.live.pauses.append(identifier))

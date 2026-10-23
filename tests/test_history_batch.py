@@ -35,6 +35,7 @@ class BatchHistoryTests(unittest.TestCase):
             store = HistoryStore(folder)
             counter = StreamCounter(store.stream)
             store.stream = counter
+            segment = dict(type='segment', sim_time_s=0., context=dict(joint_limits=dict(source='urdf'), task=dict(kind='reach')))
             records = []
             try:
                 for packet in range(3):
@@ -42,6 +43,8 @@ class BatchHistoryTests(unittest.TestCase):
                              for i in range(500)]
                     batch.insert(101, dict(type='plan', seq=packet+1, sim_time_s=packet*.5,
                                            description='retained μ trajectory', q=[[packet]*7]))
+                    if packet == 0:
+                        batch.insert(0, segment)
                     records.extend(batch)
                     store.append_encoded(HistoryStore.encode(batch))
                     self.assertEqual(counter.calls, dict(write=packet+1, tell=packet+1, flush=packet+1))
@@ -62,10 +65,11 @@ class BatchHistoryTests(unittest.TestCase):
                 descriptor = store.plot_source(0)
                 for record in records:
                     if record['type'] == 'plan':
-                        self.assertEqual(store.selected_plan(descriptor, record['seq']), record)
+                        # A plan is read with its segment's constant context.
+                        self.assertEqual(store.selected_plan(descriptor, record['seq']), dict(segment['context'], **record))
                 self.assertEqual(store.state_count, 1500)
                 self.assertEqual(store.metadata(), dict(type='history', generation=0,
-                    history_cursor=1503, history_end_s=1.499, complete=True))
+                    history_cursor=1504, history_end_s=1.499, complete=True))
                 old = store.path
                 store.reset(1)
                 self.assertEqual(old.read_bytes(), expected)
@@ -74,7 +78,8 @@ class BatchHistoryTests(unittest.TestCase):
                 fresh = dict(type='plan', seq=1, sim_time_s=0., q=[[99]*7])
                 store.append([fresh])
                 self.assertEqual(store.offsets, [0])
-                self.assertEqual(store.selected_plan(store.plot_source(1), 1), fresh)
+                with self.assertRaisesRegex(ValueError, 'no segment header'):
+                    store.selected_plan(store.plot_source(1), 1)  # a history without its header fails clearly
                 self.assertEqual(old.read_bytes(), expected)
             finally:
                 store.close()

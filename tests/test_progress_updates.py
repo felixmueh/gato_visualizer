@@ -14,7 +14,7 @@ from tests.test_execution import FakeAdapter, FakeLocks, fake_schema
 class ProgressUpdatesTests(unittest.TestCase):
     def test_fast_precalculation_retains_every_interval_with_bounded_progress(self):
         schema = fake_schema(None)
-        execution = dict(schema['defaults']['execution'], calculation='manual', duration_s=.2, record_every=1)
+        execution = dict(schema['defaults']['execution'], calculation='manual', duration_s=.2)
         commands, messages, shutdown = queue.Queue(), [], threading.Event()
         commands.put(dict(type='precalculate', token=0, generation=0, settings_version=1,
             config=deepcopy(schema['defaults']['config']), task=deepcopy(schema['defaults']['task']),
@@ -38,7 +38,8 @@ class ProgressUpdatesTests(unittest.TestCase):
         states = [record for record in records if record['type'] == 'state']
         self.assertEqual(len(intervals), 20)
         self.assertEqual(len(plans), 20)
-        self.assertEqual(len(states), 201)
+        self.assertEqual(len(states), 101)  # every 500 Hz command tick
+        self.assertEqual(sum(record['type'] == 'segment' for record in records), 1)
         self.assertAlmostEqual(states[-1]['sim_time_s'], .2)
         status = [event for message in messages for event in message.get('events', ())]
         self.assertLessEqual(len(status), 3)

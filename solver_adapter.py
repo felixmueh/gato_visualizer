@@ -10,7 +10,7 @@ import numpy as np
 
 from live_mpc import (POSITION_TOL_M, REACH_DEFAULT_TASK, SPEED_L1_TOL_RAD_S, figure8_reference,
                       import_tiago, mpc_params, source_identity)
-from live_presentation import snapshot
+from live_presentation import mutable, snapshot
 from solver_process import SolverProcess, model_contract, validate_contract
 
 class RemoteController:
@@ -53,7 +53,7 @@ class SimulatorAdapter:
         self.limit_handling = None
         self.joint_limits = self.mpc_bounds = None
         self.remote = self.profile = self.profile_identity = self.profile_schema = None
-        self._plan_context = None
+        self._segment_context = None
         self.controller = RemoteController(self)
         self.reset_state()
 
@@ -105,6 +105,7 @@ class SimulatorAdapter:
                                        friction=self.plant_friction and asdict(self.plant_friction),
                                        clip_effort=config["plant"]["clip_effort"])
         self.problem_configuration = deepcopy(predictor["configuration"])
+        self.settings = dict(config=deepcopy(config), task=deepcopy(task))
         self.configure_task(params["N"], params["dt_s"], task)
         self.joint_limits, self.mpc_bounds = predictor["joint_limits"], predictor["mpc_bounds"]
         self.profile_identity = dict(profile=deepcopy(self.profile), process_epoch=self.remote.epoch,
@@ -113,15 +114,16 @@ class SimulatorAdapter:
             physical_model_differs=self.simulator_identity["friction"] != predictor["prediction_friction"] or any(
                 predictor["model_identity"].get(key) != self.model_identity[key]
                 for key in ("full_urdf_sha256", "native_urdf_sha256")))
-        # Freeze once per configuration. Old plans keep their original context
-        # across settings/profile changes.
-        self._plan_context = snapshot(dict(
+        # Constant within a segment: recorded once in its header, never per record.
+        # Frozen once per configuration, so an emitted header keeps its context.
+        self._segment_context = snapshot(dict(
             problem_configuration=self.problem_configuration, model_identity=predictor["model_identity"],
             task=self.task, end_effector_frame=self.kinematics.end_effector_frame, task_anchors=self.task_anchors,
-            N=self.N, dt_s=self.dt, task_kind=self.task["kind"], task_path_xyz=self.task_path_xyz,
-            joint_limits=self.joint_limits, mpc_bounds=self.mpc_bounds,
+            task_path_xyz=self.task_path_xyz, joint_limits=self.joint_limits, mpc_bounds=self.mpc_bounds,
             constraint_bounds_native=predictor["constraint_bounds_native"],
-            simulator_identity=self.simulator_identity, solver_profile=self.profile_identity))
+            simulator_identity=self.simulator_identity, solver_profile=self.profile_identity,
+            position_tol_m=POSITION_TOL_M, speed_l1_tol_rad_s=SPEED_L1_TOL_RAD_S,
+            source=self.model_identity["source"]))
         self.controller.reset(self.x)
 
     def configure_task(self, n, dt, task):
@@ -164,32 +166,35 @@ class SimulatorAdapter:
             self.update_tracking_reference()
         return self.reference
 
+    def segment_header(self, settings_version, execution):
+        """The record that starts a segment: its constant context, which the state,
+        control, plan, breach and interval records of that generation leave out,
+        including the complete effective settings (config with its plant group,
+        task, execution) and the source identity."""
+        context = dict(mutable(self._segment_context),
+                       settings=dict(deepcopy(self.settings), execution=deepcopy(execution)))
+        return dict(type="segment", sim_time_s=float(self.t), settings_version=settings_version, context=context)
+
     def solve_snapshot(self, origin, settings_version):
         self.task_reference()
         response = self.remote.request("solve", state=self.x, time_s=self.t,
             reference=self.reference, origin=origin, settings_version=settings_version)
         self.sequence += 1
         # Target/anchors are simulator-owned; the child's model never moves them.
-        event = dict(self._plan_context, **response["plan"], seq=self.sequence, _reference=self.reference.copy(),
+        event = dict(response["plan"], seq=self.sequence, _reference=self.reference.copy(),
                      target_xyz=self.target_world_at(self.t).tolist())
         return snapshot(event)
 
-    def _state_fields(self, rtf=0, settings_version=0):
+    def _state_fields(self, settings_version=0):
         """Borrowed state fields, consumed immediately by one detachment API."""
-        return dict(type="state", sim_time_s=self.t, _x=self.x,
-                    end_effector_frame=self.kinematics.end_effector_frame, task_anchors=self.task_anchors,
-                    settings_version=settings_version,
+        return dict(type="state", sim_time_s=self.t, _x=self.x, settings_version=settings_version,
                     torque_nm=None if self.applied_torque is None else self.applied_torque.tolist(),
-                    torque_kind="applied", joint_limits=self.joint_limits, mpc_bounds=self.mpc_bounds,
-                    task_kind=self.task["kind"], target_xyz=self.target_world_at(self.t).tolist(),
-                    _position_tol=POSITION_TOL_M, _speed_tol=SPEED_L1_TOL_RAD_S, rtf=float(rtf),
-                    simulator_identity=self.simulator_identity,
-                    solver_profile=dict(id=self.profile["id"], process_epoch=self.remote.epoch))
+                    target_xyz=self.target_world_at(self.t).tolist())
 
-    def state_snapshot(self, rtf=0, settings_version=0):
-        return snapshot(self._state_fields(rtf, settings_version))
+    def state_snapshot(self, settings_version=0):
+        return snapshot(self._state_fields(settings_version))
 
-    def state_record(self, rtf=0, settings_version=0):
+    def state_record(self, settings_version=0):
         """Detach once into IPC-ready containers; never expose plant buffers."""
         def detach(value):
             if value is None or type(value) in (str, int, float, bool):
@@ -203,7 +208,7 @@ class SimulatorAdapter:
             if isinstance(value, (list, tuple)):
                 return [detach(item) for item in value]
             return value
-        return detach(self._state_fields(rtf, settings_version))
+        return detach(self._state_fields(settings_version))
 
     def close_solver(self):
         try:
@@ -212,4 +217,4 @@ class SimulatorAdapter:
         finally:
             self.remote = None
             self.profile = self.profile_identity = None
-            self._plan_context = None
+            self._segment_context = None

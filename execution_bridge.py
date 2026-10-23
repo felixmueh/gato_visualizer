@@ -11,13 +11,15 @@ import threading
 import time
 import traceback
 
-from execution_session import DEFAULT_EXECUTION, MAX_RECORD_EVERY, validate_anchor, validate_execution
+from execution_session import DEFAULT_EXECUTION, validate_anchor, validate_execution
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 from solver_lifecycle import run_with_parent
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
 SHUTDOWN_GRACE_SECONDS = 10
 MAX_HISTORY_PAGE_RECORDS = 2048
+NO_SEGMENT = ("Live history has no segment header; histories recorded before the "
+              "2026-10-23 format change cannot be loaded")
 
 class HistoryGenerationError(ValueError):
     pass
@@ -26,8 +28,9 @@ class HistoryGenerationError(ValueError):
 class HistoryStore:
     """Append-only JSONL; bounded pages and a compact byte-offset index.
 
-    Completed and superseded generations remain in the owning checkout's
-    ignored data directory. HTTP never waits for a GPU/native solver call.
+    One file per generation; its first record is the segment header holding the
+    constant context. Completed and superseded generations remain in the owning
+    checkout's ignored data directory. HTTP never waits for a GPU/native solver call.
     """
     def __init__(self, directory):
         self.directory = Path(directory)
@@ -44,6 +47,7 @@ class HistoryStore:
             self.generation = generation
             self.offsets = []
             self.plan_offsets = {}
+            self.segment = None
             self.state_count = 0
             self.end_time = 0.
             self.complete = True
@@ -59,7 +63,8 @@ class HistoryStore:
     def encode(records):
         return [(json.dumps(record, allow_nan=False, separators=(",", ":")).encode()+b"\n",
                  float(record.get("sim_time_s", record.get("end_time_s", 0))), record.get("type") == "state",
-                 HistoryStore.plan_identity(record) if record.get("type") == "plan" else None) for record in records]
+                 HistoryStore.plan_identity(record) if record.get("type") == "plan" else None,
+                 record if record.get("type") == "segment" else None) for record in records]
 
     def append(self, records):
         self.append_encoded(self.encode(records))
@@ -75,7 +80,8 @@ class HistoryStore:
         relative_offsets, plans = [], []
         offset = state_count = 0
         end_time = 0.
-        for index, (encoded, timestamp, is_state, plan_id) in enumerate(encoded_records):
+        segment = next((record[4] for record in encoded_records if record[4] is not None), None)
+        for index, (encoded, timestamp, is_state, plan_id, _) in enumerate(encoded_records):
             relative_offsets.append(offset)
             if plan_id is not None:
                 plans.append((plan_id, index, offset, len(encoded)))
@@ -92,6 +98,8 @@ class HistoryStore:
                 self.plan_offsets.setdefault(identifier, (cursor + index, start + offset, size))
             self.end_time = max(self.end_time, end_time)
             self.state_count += state_count
+            if self.segment is None:
+                self.segment = segment
 
     def metadata(self):
         with self.lock:
@@ -146,7 +154,8 @@ class HistoryStore:
                 encode(dict(history_end_s=page["history_end_s"]))[1:])
 
     def selected_plan(self, descriptor, identifier):
-        """Read one retained plan, never scan/decode unrelated physics states."""
+        """Read one retained plan with its segment's context, never scanning or
+        decoding unrelated physics states."""
         if type(identifier) not in (str, int) or not str(identifier):
             raise ValueError("Select a retained solve id")
         identifier = str(identifier)
@@ -165,7 +174,9 @@ class HistoryStore:
             if indexed is None or indexed[0] >= cursor or indexed[1] + indexed[2] > byte_end:
                 raise ValueError("Selected solve is not retained in this source")
             _, offset, size = indexed
-            path = self.path
+            path, segment = self.path, self.segment
+        if segment is None:
+            raise ValueError(NO_SEGMENT)
         # Keep disk I/O and JSON decoding out of the append/metadata lock. A
         # concurrently superseded file remains retained, like history pages.
         with path.open("rb") as reader:
@@ -176,7 +187,7 @@ class HistoryStore:
         plan = json.loads(encoded)
         if not isinstance(plan, dict) or plan.get("type") != "plan" or self.plan_identity(plan) != identifier:
             raise ValueError("Selected retained solve identity changed")
-        return plan
+        return dict(deepcopy(segment["context"]), **plan)
 
     def close(self):
         if self.stream:
@@ -210,6 +221,8 @@ class ProcessLiveService:
         self.condition = threading.Condition()
         self.events = deque(maxlen=256)
         self.latest = {}
+        self.segment = None  # the active generation's segment header
+        self._unannounced_segment = None
         self.cursor = self.version = self.next_version = self.subscribers = 0
         self.generation = 0
         self._generation_start = dict(kind="current")
@@ -239,7 +252,7 @@ class ProcessLiveService:
         self.task = deepcopy(self.schema["defaults"]["task"])
         self.execution = deepcopy(self.schema["defaults"].get("execution", DEFAULT_EXECUTION))
         self.schema["execution"] = dict(defaults=deepcopy(self.execution),
-            max_duration_s=120, max_states=MAX_STATES, max_record_every=MAX_RECORD_EVERY,
+            max_duration_s=120, max_states=MAX_STATES,
             rates_order=["simulation_hz", "control_hz", "to_hz"])
         self.history_store = HistoryStore(Path(__file__).resolve().parent / "_expr_data/live/history")
         self.inspection_store = HistoryStore(Path(__file__).resolve().parent / "_expr_data/live/solves")
@@ -263,7 +276,7 @@ class ProcessLiveService:
             for event in events:
                 self.cursor += 1
                 self.events.append((self.cursor, event))
-                if event["type"] in ("status", "plan", "state", "history"):
+                if event["type"] in ("status", "segment", "plan", "state", "history"):
                     self.latest[event["type"]] = event
             self.condition.notify_all()
 
@@ -274,7 +287,7 @@ class ProcessLiveService:
                 self._preview_requested = True
                 self.commands.put_nowait(dict(type="preview", token=self.revision.value,
                                                generation=self.generation, settings_version=self.version))
-            return self.cursor, [self.latest[k] for k in ("status", "plan", "state", "history") if k in self.latest]
+            return self.cursor, [self.latest[k] for k in ("status", "segment", "plan", "state", "history") if k in self.latest]
 
     def unsubscribe(self):
         with self.condition:
@@ -438,8 +451,8 @@ class ProcessLiveService:
                 self.history_store.reset(self.generation)
                 self.inspection_store.reset(self.generation)
                 self.history_store.complete = False
-                self.latest.pop("plan", None)
-                self.latest.pop("state", None)
+                for key in ("segment", "plan", "state"):
+                    self.latest.pop(key, None)
                 self.publish(self._history_metadata())
             request.update(token=self.revision.value, generation=self.generation, settings_version=self.version,
                            config=deepcopy(self.config), task=deepcopy(self.task), execution=deepcopy(self.execution),
@@ -471,8 +484,8 @@ class ProcessLiveService:
                             self.inspection_store.reset(self.generation)
                             self.history_store.complete = False
                             self._generation_start = dict(kind="current")
-                            self.latest.pop("state", None)
-                            self.latest.pop("plan", None)
+                            for key in ("segment", "plan", "state"):
+                                self.latest.pop(key, None)
                             self.active_profile_id = identifier
                             self.active_profile = deepcopy(packet["profile"])
                             self.profile_switch = dict(state="idle")
@@ -501,13 +514,15 @@ class ProcessLiveService:
                     continue
                 if kind == "records":
                     records = []
-                    latest_plan = latest_state = None
+                    latest_plan = latest_state = segment = None
                     for record in packet["records"]:
-                        if record["type"] == "plan":
-                            record = self.renderer((record, None, ()))[0]
+                        if record["type"] == "segment":
+                            segment = record
+                        elif record["type"] == "plan":
+                            record = self.renderer((record, None, ()), self._context(packet["generation"], segment))[0]
                             latest_plan = record
                         elif record["type"] == "state":
-                            record = self.renderer((None, record, ()))[0]
+                            record = self.renderer((None, record, ()), self._context(packet["generation"], segment))[0]
                             latest_state = record
                         record["generation"] = packet["generation"]
                         record.setdefault("settings_version", self.version)
@@ -519,6 +534,8 @@ class ProcessLiveService:
                             continue
                         self.history_store.append_encoded(encoded_records)
                         self.history_store.complete = packet.get("complete", False)
+                        if segment:
+                            self.segment = self.latest["segment"] = self._unannounced_segment = segment
                         # History is independent of the latest-value SSE display.
                         # Every record remains queryable even when SSE coalesces.
                         if latest_plan:
@@ -528,7 +545,8 @@ class ProcessLiveService:
                         # A report may span several bounded IPC messages. Commit
                         # every record, announce the newest tip only at its end.
                         if packet.get("report_end", True):
-                            events = [self._history_metadata()]
+                            events = [self._history_metadata(), *filter(None, [self._unannounced_segment])]
+                            self._unannounced_segment = None
                             events.extend(self.latest[key] for key in ("plan", "state") if key in self.latest)
                             self.publish_events(events)
                 elif kind == "events":
@@ -541,7 +559,7 @@ class ProcessLiveService:
                         inspection_records = []
                         for event in packet["events"]:
                             if event.get("type") == "plan" and "_states" in event:
-                                event = self.renderer((event, None, ()))[0]
+                                event = self.renderer((event, None, ()), self._context(self.generation))[0]
                                 event["generation"] = self.generation
                                 if event.get("origin") == "preview":
                                     inspection_records.append(event)
@@ -549,7 +567,9 @@ class ProcessLiveService:
                             if "complete" in event:
                                 self.history_store.complete = bool(event["complete"])
                         if inspection_records:
-                            self.inspection_store.append(inspection_records)
+                            # Previews read their context from the same segment header.
+                            self.inspection_store.append(([] if self.inspection_store.segment else [self.segment]) +
+                                                         inspection_records)
                         # Routine progress follows the report already announced
                         # above; avoid requesting the same history prefix twice.
                         self.publish_events(rendered_events if packet.get("progress") else
@@ -569,6 +589,13 @@ class ProcessLiveService:
                     self.command(dict(type="cancel"))
                 except (ValueError, queue.Full):
                     pass
+
+    def _context(self, generation, segment=None):
+        """The context of a plan or state of generation: its segment header's."""
+        header = segment or self.segment
+        if header is None or header["generation"] != generation:
+            raise ValueError(NO_SEGMENT)
+        return header["context"]
 
     def close(self):
         with self.condition:

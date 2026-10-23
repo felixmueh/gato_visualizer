@@ -46,15 +46,15 @@ def render_plan(captured, kinematics):
     return event
 
 
-def render_state(captured, kinematics):
+def render_state(captured, kinematics, context):
+    """FK and arrival of one state; context is its segment header's."""
     event = mutable(captured)
     x = event.pop("_x")
     ee = kinematics.ee_positions(x[None, :7])[0]
     # Three scalar coordinates need no BLAS call or temporary NumPy vector.
     distance = math.dist(ee, event["target_xyz"])
-    position_tol, speed_tol = event.pop("_position_tol"), event.pop("_speed_tol")
-    arrived = (event["task_kind"] == "reach" and distance <= position_tol and
-               np.abs(x[7:]).sum() <= speed_tol)
+    arrived = (context["task"]["kind"] == "reach" and distance <= context["position_tol_m"] and
+               np.abs(x[7:]).sum() <= context["speed_l1_tol_rad_s"])
     event.update(q=x[:7].tolist(), qd=x[7:].tolist(), ee_xyz=ee.tolist(),
                  distance_m=distance, arrived=bool(arrived))
     return event
@@ -131,11 +131,11 @@ class LiveRenderer:
         self.mpc_root = mpc_root
         self.kinematics = None
 
-    def __call__(self, frame):
+    def __call__(self, frame, context=None):
+        """Render one frame; context is the segment header's, needed for a plan or state."""
         plan, state, events = frame
         captured = plan if plan is not None else state
-        end_effector_frame = (captured.get("end_effector_frame", "arm_right_tool_joint")
-                              if captured is not None else None)
+        end_effector_frame = context["end_effector_frame"] if captured is not None else None
         if captured is not None and (self.kinematics is None or
                 self.kinematics.end_effector_frame != end_effector_frame):
             from server import RobotKinematics
@@ -145,6 +145,6 @@ class LiveRenderer:
         if plan is not None:
             result.append(render_plan(plan, self.kinematics))
         if state is not None:
-            result.append(render_state(state, self.kinematics))
+            result.append(render_state(state, self.kinematics, context))
         result.extend(mutable(event) for event in events)
         return result

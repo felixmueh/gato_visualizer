@@ -41,9 +41,9 @@ class CompletedRecordsTests(unittest.TestCase):
 
 
 class WorkerRecordBatchingTests(unittest.TestCase):
-    def run_worker(self, action=None, record_every=1):
+    def run_worker(self, action=None):
         schema = fake_schema(None)
-        execution = dict(schema['defaults']['execution'], calculation='on_play', duration_s=.2, record_every=record_every)
+        execution = dict(schema['defaults']['execution'], calculation='on_play', duration_s=.2)
         config, task = deepcopy(schema['defaults']['config']), deepcopy(schema['defaults']['task'])
         commands, messages, shutdown = queue.Queue(), [], threading.Event()
         revision = SimpleNamespace(value=0)
@@ -88,10 +88,11 @@ class WorkerRecordBatchingTests(unittest.TestCase):
         return messages, batches
 
     def assert_committed_batches(self, messages, batches):
-        # Initial state is immediate; all committed interval records follow in
-        # their original order, retaining the exact per-interval measurements.
+        # The segment header and initial state are immediate; all committed interval
+        # records follow in their original order, retaining the exact measurements.
         old_packets = [m for m in messages if m['kind'] == 'records' and m['generation'] == 0]
-        actual = [r for m in old_packets for r in m['records']][1:]
+        self.assertEqual([r['type'] for r in old_packets[0]['records']], ['segment', 'state'])
+        actual = [r for m in old_packets for r in m['records']][2:]
         expected = [r for batch in batches for r in batch]
         self.assertEqual(len(actual), len(expected))
         for before, after in zip(expected, actual):
@@ -99,24 +100,19 @@ class WorkerRecordBatchingTests(unittest.TestCase):
         self.assertTrue(all(len(m['records']) <= MAX_PACKET_RECORDS for m in old_packets))
         return old_packets
 
-    def test_fast_completion_batches_all_states_plans_and_deadline_flags(self):
+    def test_fast_completion_batches_all_records_at_the_control_events(self):
+        # 1000/500/100: every 500 Hz command and the state at its tick, every plan
+        # and interval, and one segment header.
         messages, batches = self.run_worker()
         packets = self.assert_committed_batches(messages, batches)
         self.assertEqual(len(batches), 20)
         self.assertLess(len(packets), 10)
         self.assertTrue(packets[-1]['complete'])
-        self.assertEqual(sum(r['type'] == 'state' for m in packets for r in m['records']), 201)
-        self.assertEqual(messages[-1]['events'][0]['message'], 'Precalculation complete')
-
-    def test_default_recording_thins_states_but_keeps_commands_plans_and_intervals(self):
-        # 1000/500/100 with every 2nd physics step: each 500 Hz command and the
-        # state it produced are recorded; plans and intervals are complete.
-        self.assertEqual(fake_schema(None)['defaults']['execution']['record_every'], 2)
-        messages, batches = self.run_worker(record_every=2)
-        self.assert_committed_batches(messages, batches)
-        records = [r for m in messages if m['kind'] == 'records' for r in m['records']]
+        records = [r for m in packets for r in m['records']]
         count = lambda kind: sum(r['type'] == kind for r in records)
-        self.assertEqual((count('state'), count('control'), count('plan'), count('interval')), (101, 100, 20, 20))
+        self.assertEqual((count('segment'), count('state'), count('control'), count('plan'), count('interval')),
+                         (1, 101, 100, 20, 20))
+        self.assertEqual(messages[-1]['events'][0]['message'], 'Precalculation complete')
 
     def test_commands_flush_old_records_before_status_or_new_generation(self):
         for action in ('pause', 'cancel', 'inspection_pause', 'switch_solver_profile', 'set_settings'):

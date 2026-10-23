@@ -61,15 +61,11 @@ class CompletedRecords:
 
 
 def estimated_states(execution, duration=None):
-    """Recorded states, safely overestimated (MultirateSession's recording rule)."""
+    """Recorded states, safely overestimated (MultirateSession's recording rule):
+    every command tick plus the end of every call (TO boundaries, the job end);
+    summing the tick counts overestimates when the grids coincide."""
     span = execution["duration_s"] if duration is None else duration
-    every = execution["record_every"]
-    if every == 1:
-        # Integration splits at physics, control and TO grids; summing tick
-        # counts overestimates endpoints even when grids coincide.
-        return 1+int(np.ceil(span*(execution["simulation_hz"]+execution["control_hz"]+execution["to_hz"])))
-    # The recording grid plus the end of every call: TO boundaries and the job end.
-    return 2+int(np.ceil(span*(execution["simulation_hz"]/every+execution["to_hz"])))
+    return 2+int(np.ceil(span*(execution["control_hz"]+execution["to_hz"])))
 
 
 def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory=None, schema_factory=None, solver_profile=None, report_hz=DEFAULT_PRESENTATION["report_hz"]):
@@ -170,8 +166,9 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
         history_complete = False
         initial_time = float(adapter.t)
         session = MultirateSession(adapter, execution, version)
+        # The segment's constant context, once, before its first state.
         emit(dict(kind="records", generation=generation, token=token,
-                  records=[session.initial_state()], complete=False), token)
+                  records=[adapter.segment_header(version, execution), session.initial_state()], complete=False), token)
         initialized_generation = generation
         state_count = 1
 
@@ -260,7 +257,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             adapter.sequence = 0
                             adapter.controller.reset(adapter.x)
                             staged_session = MultirateSession(adapter, execution, version)
-                            first_state = staged_session.initial_state()
+                            first_records = [adapter.segment_header(version, execution), staged_session.initial_state()]
                             generation = command["target_generation"]
                             initialized_generation = generation
                             generation_start = dict(kind="current")
@@ -270,7 +267,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             emit(dict(kind="profile_activated", token=token, generation=generation,
                                 profile=command["profile"], schema=adapter.profile_schema), token)
                             emit(dict(kind="records", generation=generation, token=token,
-                                records=[first_state], complete=False), token)
+                                records=first_records, complete=False), token)
                             status("paused", "Solver profile selected; simulator state retained", complete=False)
                         except Exception as exc:
                             if replaced_child and adapter is not None and hasattr(adapter, "close_solver"):

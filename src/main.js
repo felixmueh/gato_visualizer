@@ -272,9 +272,9 @@ function fitTaskPoints(options = {}) {
   return trajectoryFitPoints({
     replay: trajectory,
     live: live?.mode === 'live',
-    taskKind: displayedLiveReference?.kind || displayedLivePlan?.task_kind || live?.settings?.task?.kind || 'reach',
+    taskKind: displayedLiveReference?.kind || live?.segmentOf(displayedLivePlan)?.task.kind || live?.settings?.task?.kind || 'reach',
     plan: displayedLiveReference ? { ...displayedLivePlan, task_path_xyz: displayedLiveReference.points,
-      target_xyz: displayedLiveReference.target_xyz } : displayedLivePlan,
+      target_xyz: displayedLiveReference.target_xyz } : displayedLivePlan && { ...displayedLivePlan, task_path_xyz: live?.segmentOf(displayedLivePlan)?.task_path_xyz },
     state: displayedLiveReference?.draft ? { ...(live?.displayedState || live?.state), target_xyz: displayedLiveReference.target_xyz } : live?.displayedState || live?.state,
     taskStart: liveTaskStart,
     precomputedPath: live?.mode === 'live' ? live.precomputedPath : undefined,
@@ -723,7 +723,7 @@ function showLiveState(state, context = {}) {
   defaultData.joint_names.forEach((name, i) => {
     robot.setJointValue(name, state.q[i]);
   });
-  updateJointTelemetry(state.q, state.qd, state.torque_nm, state.joint_limits || defaultData.joint_limits, "applied", state.mpc_bounds || null);
+  updateJointTelemetry(state.q, state.qd, state.torque_nm, context.segment?.joint_limits || defaultData.joint_limits, "applied", context.segment?.mpc_bounds || null);
   const referenceTarget = context.referenceTarget || (!displayedLiveReference?.draft ? state.target_xyz : null);
   if (Array.isArray(referenceTarget) && referenceTarget.length === 3 && referenceTarget.every(Number.isFinite) && liveGroup.userData.target) liveGroup.userData.target.position.fromArray(referenceTarget);
   if (context.tracePoints) {

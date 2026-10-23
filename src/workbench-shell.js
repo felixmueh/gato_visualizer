@@ -12,7 +12,6 @@ export function workbenchShell(icon) {
           <label>Control Hz<input id="live-control-hz" type="number" min=".01" step="any" value="500" required></label>
           <label>TO Hz<input id="live-to-hz" type="number" min=".01" step="any" value="100" required></label>
         </div>
-        <div class="record-every-row"><label title="Records the state and command at every n-th physics step; plans and timing intervals stay complete. Simulation and solves are unchanged; 1 records every step.">Record every<span class="duration-input"><input id="live-record-every" type="number" min="1" max="1000" step="1" value="2" required aria-label="Record every n-th physics step"><span id="live-record-interval">steps · 2 ms</span></span></label></div>
         <div id="live-horizon-settings" class="compact-horizon"></div>
         <div id="live-settings"></div>
         <details class="task-position settings-group"><summary>Task position</summary>

@@ -7,7 +7,7 @@ MultirateSession from the same start, target and MpcParams (Live's defaults: TIA
 without the SQP wall-time limit, warm-up on), and compares the states at every command
 tick, the commands and the plans. The rates are the reach's defaults: commands every
 2 ms (500 Hz), a control update every knot (100 Hz), physics on a 1 ms grid. The
-session records every step (record_every=1), whatever Live's recording default is. run()
+session records the state at every command tick and every command, as in Live. run()
 warms up from the start state before its first tick; the session's configure reseeds
 the same way (mpc.warmup in the solver child). Both use tiago_mpc's Mpc and SimPlant;
 this checks the visualizer's scheduling, hold law, reseed and process boundary against
@@ -105,10 +105,8 @@ def main():
             parser.error("Live's default MpcParams differ from the reference's")
         adapter.configure(config, dict(kind="reach", target_offset_m=[0., 0., 0.]))
         np.testing.assert_allclose(adapter.target, task.target_m, rtol=0, atol=1e-12)
-        # record_every=1: the comparison needs every state and command, not Live's thinned recording.
         session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000.,
-                                                 control_hz=1 / COMMAND_PERIOD_S, to_hz=1 / params.dt_s,
-                                                 record_every=1))
+                                                 control_hz=1 / COMMAND_PERIOD_S, to_hz=1 / params.dt_s))
         records = [session.initial_state()]
         while adapter.t < duration - 1e-12:
             records.extend(session.advance_interval(duration))

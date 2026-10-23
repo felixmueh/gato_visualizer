@@ -32,6 +32,7 @@ class SourceReader:
         self.identity = None
         self.records = []
         self.buckets = {name: [] for name in ("states", "plans", "intervals", "controls")}
+        self.segment = None
         self.raw_cache = None
         self.cursor = self.offset = 0
         self.replay_cache = {}
@@ -75,7 +76,7 @@ class SourceReader:
             if identity != self.identity or descriptor["cursor"] < self.cursor:
                 self.identity, self.records, self.cursor, self.offset = identity, [], 0, 0
                 self.buckets = {name: [] for name in ("states", "plans", "intervals", "controls")}
-                self.raw_cache = None
+                self.segment = self.raw_cache = None
             with Path(descriptor["path"]).open("rb") as stream:
                 stream.seek(self.offset)
                 while self.cursor < descriptor["cursor"]:
@@ -83,6 +84,12 @@ class SourceReader:
                     if not line or stream.tell() > descriptor["byte_end"]:
                         raise ValueError("Committed Live history prefix is incomplete")
                     record = freeze(json.loads(line))
+                    if self.cursor == 0:
+                        # The first record holds the segment's constant context.
+                        if record.get("type") != "segment":
+                            from execution_bridge import NO_SEGMENT
+                            raise ValueError(NO_SEGMENT)
+                        self.segment = record["context"]
                     self.records.append(record)
                     bucket = {"state": "states", "plan": "plans", "interval": "intervals", "control": "controls"}.get(record.get("type"))
                     if bucket:
@@ -95,13 +102,12 @@ class SourceReader:
             # Nested records are immutable shared snapshots. Only cheap outer
             # cursor/preview metadata changes between repeated evaluations.
             raw = dict(self.raw_cache, source=descriptor)
-            if raw["plans"]:
-                raw["joint_limits"] = raw["plans"][0].get("joint_limits")
-                raw["mpc_bounds"] = raw["plans"][0].get("mpc_bounds")
+            if self.segment is not None:
+                raw.update(segment=self.segment, joint_limits=self.segment.get("joint_limits"),
+                           mpc_bounds=self.segment.get("mpc_bounds"))
             if raw["controls"]:
                 raw["torque_samples"] = raw["controls"]
-            # Physical (scene / URDF) limits. Plans carry the URDF limits plus
-            # mpc_bounds; Live histories before 2026-10-22 carry MPC bounds as joint_limits.
+            # Physical (scene / URDF) limits. The segment carries the URDF limits plus mpc_bounds.
             raw["scene_joint_limits"] = (self.default_scene or {}).get("joint_limits") or {}
             # Preview is retained separately from executed episode history.
             if descriptor.get("preview_source"):
@@ -263,7 +269,8 @@ def inspect_source(raw, selection=None, analysis=None):
         selected, association = raw["previews"][-1], "preview"
     info = dict(episode_available=bool(raw.get("states")), selected_solve=None, association=association)
     if selected is not None:
-        selected = dict(selected)
+        # A Live plan takes its constant context from its segment header.
+        selected = dict(raw.get("segment") or {}, **selected)
         selected["id"] = identity(selected)
         selected["iterations"] = solve_iterations(selected)
         from inspection_problem import run_again_capability

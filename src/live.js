@@ -6,7 +6,7 @@ import { DEFAULT_PRESENTATION, validatePresentation } from './presentation-setti
 // The API uses native joint values and full robot-root coordinates. No sign or
 // frame conversions belong in the browser.
 import { createLiveHistory } from './live-history.js';
-import { DEFAULT_EXECUTION, MAX_RECORD_EVERY, validateExecution, intervalSeverity, intervalDescription, createHistoryClock, recordingInterval, recordEveryLabel } from './live-execution.js';
+import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
 const HISTORY_PAGE_SIZE = 1024;
 
 export function cloneSettings(value) {
@@ -143,6 +143,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   let profileSwitching = false, profileUnavailable = false, profileNError = false, schemaReload = 0, suppressInitialPreview = false;
   let populationBindings = [];
   const latestServerEvents = new Map();
+  // Each history segment's constant context (task, limits, identities), sent once
+  // in its `segment` record; plans and states name their segment by generation.
+  const segments = new Map();
+  const segmentOf = item => segments.get(item?.generation)?.context;
   const taskDrafts = new Map();
   const resetIndicators = createSettingResets();
   let presentation = validatePresentation(presentationSettings);
@@ -160,6 +164,11 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (validPoints([item?.task_anchors?.reach])) defaultTargetWorld = [...item.task_anchors.reach];
     if (validPoints([item?.task_anchors?.figure8])) figure8BaseWorld = [...item.task_anchors.figure8];
   };
+  function acceptSegment(record) {
+    segments.set(record.generation, record);
+    while (segments.size > 4) segments.delete(segments.keys().next().value);
+    acceptTaskAnchors(record.context); renderDirty = true;
+  }
   const displayedAnchor = () => {
     const value = presentedState || history.at(clock.time)?.state || state;
     return value && Array.isArray(value.q) && Array.isArray(value.qd)
@@ -221,7 +230,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         return value;
       });
       const execution = { ...DEFAULT_EXECUTION, ...next.execution };
-      for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['record_every', 'live-record-every'], ['duration_s', 'live-duration']]) {
+      for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration']]) {
         if ($(id).value === '') throw new Error(`${key.replaceAll('_', ' ')} needs a value.`);
         execution[key] = Number($(id).value);
       }
@@ -294,12 +303,6 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     else controlsEnabled();
   }
   const unavailableFrictionMessage = () => `N=${settings.config.N} is not compiled for this predictor. Choose a compiled N or build it in Settings › Backend (Build selected N, with Predictor friction modules when Predictor friction is on).`;
-  // The effective value of Record every: the simulated spacing of recorded states.
-  function showRecordingInterval() {
-    const every = Number($('live-record-every').value), rate = Number($('live-simulation-hz').value);
-    const spacing = Number.isInteger(every) && every >= 1 && rate > 0 ? recordingInterval({ record_every: every, simulation_hz: rate }) : NaN;
-    $('live-record-interval').textContent = `${every === 1 ? 'step' : 'steps'} · ${Number.isFinite(spacing) ? `${Number((spacing * 1000).toPrecision(4))} ms` : '—'}`;
-  }
   function change() {
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
@@ -492,16 +495,13 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       bindReset(input, { kind: 'float', path: `target_offset_m.${i}`, label: `target ${['X', 'Y', 'Z'][i]}`, min: -1, max: 1 }, () => activeTaskDefaults().target_offset_m[i], { key: `task.target_offset_m.${i}` });
     });
     settings.execution = validateExecution({ ...DEFAULT_EXECUTION, ...(settings.execution || schema.defaults.execution || {}) });
-    for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['record_every', 'live-record-every'], ['duration_s', 'live-duration'], ['calculation', 'live-calculation']]) {
+    for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration'], ['calculation', 'live-calculation']]) {
       const input = $(id); input.value = settings.execution[key]; listen(input, 'input', change);
       const baseline = { ...DEFAULT_EXECUTION, ...defaultSettings.execution };
       if (key === 'calculation') resetIndicators.bind({ key: `execution.${key}`, name: 'calculation mode', input,
         getValue: () => input.value, getDefault: () => baseline[key], reset: value => resetInput(input, value) });
-      else if (key === 'record_every') bindReset(input, { kind: 'int', path: key, label: 'record every', min: 1, max: MAX_RECORD_EVERY }, () => baseline[key], { key: `execution.${key}` });
       else bindReset(input, { kind: 'float', path: key, label: key.replaceAll('_', ' '), min: Number.MIN_VALUE }, () => baseline[key], { key: `execution.${key}` });
     }
-    for (const id of ['live-simulation-hz', 'live-record-every']) listen($(id), 'input', showRecordingInterval);
-    showRecordingInterval();
     $('live-continue').checked = settings.execution.continue_at_end;
     listen($('live-continue'), 'change', () => { settings.execution.continue_at_end = $('live-continue').checked; });
     refreshFrictionAvailability();
@@ -539,8 +539,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         let appliedRecords = 0;
         for (const record of records) {
           if (record.generation !== generation || (expectedVersion != null && record.settings_version < expectedVersion)) continue;
+          if (record.type === 'segment') acceptSegment(record);
           history.addRecord(record); appliedRecords++;
-          acceptTaskAnchors(record);
           if (record.type === 'state') state = record;
           if (record.type === 'plan') acceptPlan(record, false);
         }
@@ -558,7 +558,6 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   function acceptPlan(item, presentation = true) {
     if (!validPoints(item.ee_xyz) || !validPoints(item.reference_xyz)) return false;
     plan = item;
-    acceptTaskAnchors(item);
     if (presentation && inspectingPreview && item.origin === 'preview') inspectionPlan = item;
     if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
     // Authoritative history can contain plans whose presentation SSE was
@@ -568,11 +567,12 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       pending = false;
       if (!dirty) frozenAnchor = undefined;
     }
-    if (!defaultTargetWorld && (item.task_kind || submittedSettings?.task.kind) === 'reach' && submittedSettings?.task.kind === 'reach') {
+    const context = segmentOf(item);
+    if (!defaultTargetWorld && (context?.task.kind || submittedSettings?.task.kind) === 'reach' && submittedSettings?.task.kind === 'reach') {
       defaultTargetWorld = item.reference_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
     }
-    if (!figure8BaseWorld && item.task_kind === 'figure8' && submittedSettings?.task.kind === 'figure8' && validPoints(item.task_path_xyz)) {
-      figure8BaseWorld = item.task_path_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
+    if (!figure8BaseWorld && context?.task.kind === 'figure8' && submittedSettings?.task.kind === 'figure8' && validPoints(context.task_path_xyz)) {
+      figure8BaseWorld = context.task_path_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
     }
     return true;
   }
@@ -587,7 +587,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (item.type === 'compiled_modules') { acceptCompiledModules(item); return; }
     if (!needsInitialPreview && generation != null && item.generation != null && item.generation < generation) return;
     if (!needsInitialPreview && item.type === 'status' && expectedVersion != null && item.settings_version < expectedVersion) return;
-    acceptTaskAnchors(item);
+    if (item.type === 'segment') { acceptSegment(item); return; }
     if (item.type === 'status') {
       status = item.state; job = item;
       if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
@@ -666,7 +666,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time) || history.intervals.at(-1);
     if (!timeline.matches?.(':hover')) timeline.title = interval ? intervalDescription(interval) : 'Recorded simulation time';
     timeline.setAttribute('aria-valuetext', `${number(time, 3)} seconds${interval ? ` · ${intervalDescription(interval)}` : ''}`);
-    $('live-history-window').textContent = `Recorded ${number(start, 2)}–${number(recordedEnd, 2)} s · ${history.length} states${history.recordEvery > 1 ? ` · ${recordEveryLabel(history.recordEvery)}` : ''} · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
+    $('live-history-window').textContent = `Recorded ${number(start, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
     $('live-history-note').textContent = clock.buffering ? `Buffering ${number(Math.max(0, recordedEnd - time) * 1000)} / ${number(presentation.buffer_ms)} ms of recorded simulation time. Pause or scrub to inspect history.` : clock.following ? `Following Live at 1× · recorded through ${number(recordedEnd, 2)} s. Calculation may limit progress. Pause or scrub to inspect the full recording.` : clock.playing ? 'History playback at 1×. At the recorded end, calculation may limit progress.' : 'Scrub or Play recorded history. Go latest only moves the view; Continue controls new motion at the end.';
     paintIntervals();
     // Paint only on recorded changes, then rescale its full-history coordinates
@@ -692,7 +692,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (referenceKey !== nextReferenceKey) {
       referenceKey = nextReferenceKey;
       desiredReference = draft ? taskReference(draft, base) : shownPlan ? {
-        kind: shownPlan.task_kind, points: shownPlan.task_path_xyz || shownPlan.reference_xyz,
+        kind: segmentOf(shownPlan)?.task.kind, points: segmentOf(shownPlan)?.task_path_xyz || shownPlan.reference_xyz,
         target_xyz: shownPlan.target_xyz || shownPlan.reference_xyz[0], draft: false,
       } : null;
     }
@@ -720,7 +720,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       if (shownState) {
         const tracePoints = selected ? displayPath.points : [shownState.ee_xyz];
         const traceCount = selected ? Math.min(tracePoints.length, Math.floor(selected.index / displayPath.stride) + 1 + (selected.index === history.length - 1 && selected.index % displayPath.stride ? 1 : 0)) : 1;
-        onState(shownState, { tracePoints, traceCount,
+        onState(shownState, { tracePoints, traceCount, segment: segmentOf(shownState),
           referenceTarget: desiredReference?.draft ? taskReferencePoint(draft, base, shownState.sim_time_s) : shownState.target_xyz,
           historical: clock.time != null && clock.time < history.bounds[1] - 1e-7, interpolated: Boolean(shownState.render_interpolated) }); presentedState = shownState;
       }
@@ -956,7 +956,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
     get metricHistory() { return history.metricSnapshot; },
     get history() { return { length: history.length, bounds: history.bounds, presentationBounds: clock.presentationBounds(history.bounds), following: clock.following, buffering: clock.buffering, playing: clock.playing, growing: growingHistory(), selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
-    get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || plan?.task_path_xyz?.length); },
+    get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || segmentOf(plan)?.task_path_xyz?.length); },
+    segmentOf,
     get precomputedPath() { return !dirty && !pending && historyComplete && !fetching && history.length > 1 && settings.execution.calculation !== 'on_play' ? history.pathPoints : undefined; },
     get settings() { return settings ? cloneSettings(settings) : null; }, get status() { return status; },
     get pending() { return profileSwitching || pending || (mode === 'live' && !connected()); }, get playing() { return clock.playing; },

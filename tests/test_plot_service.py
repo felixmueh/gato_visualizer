@@ -32,23 +32,31 @@ class SourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             store = HistoryStore(folder)
             reader = SourceReader()
-            store.append([dict(type="state", sim_time_s=7., q=[1.]*7)])
+            header = dict(type="segment", sim_time_s=7., context=dict(joint_limits=dict(source="URDF"), mpc_bounds=None))
+            store.append([header, dict(type="state", sim_time_s=7., q=[1.]*7)])
             descriptor = store.plot_source(0)
             store.append([dict(type="state", sim_time_s=8., q=[2.]*7)])
             with patch("plot_sources.json.loads", wraps=json.loads) as decode:
-                self.assertEqual(len(reader.read(descriptor)["states"]), 1)
-                self.assertEqual(decode.call_count, 1)
-                reader.read(descriptor)
-                self.assertEqual(decode.call_count, 1)
-                self.assertEqual(len(reader.read(store.plot_source(0))["states"]), 2)
+                raw = reader.read(descriptor)
+                self.assertEqual(len(raw["states"]), 1)
+                self.assertEqual(raw["joint_limits"], dict(source="URDF"))  # from the segment header
                 self.assertEqual(decode.call_count, 2)
+                reader.read(descriptor)
+                self.assertEqual(decode.call_count, 2)
+                self.assertEqual(len(reader.read(store.plot_source(0))["states"]), 2)
+                self.assertEqual(decode.call_count, 3)
             previous = store.path
             store.reset(1)
-            store.append([dict(type="state", sim_time_s=3., q=[9.]*7)])
+            store.append([dict(header, sim_time_s=3.), dict(type="state", sim_time_s=3., q=[9.]*7)])
             self.assertEqual(reader.read(store.plot_source(1))["states"][0]["q"][0], 9)
             self.assertTrue(previous.exists())
             with self.assertRaisesRegex(ValueError, "History changed"):
                 store.plot_source(0)
+            # A history without its segment header (before 2026-10-23) fails clearly.
+            store.reset(2)
+            store.append([dict(type="state", sim_time_s=0., q=[0.]*7)])
+            with self.assertRaisesRegex(ValueError, "no segment header"):
+                reader.read(store.plot_source(2))
             store.close()
 
     def test_replay_elapsed_clock_preserves_original_and_missing_telemetry(self):
@@ -258,11 +266,17 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.service.job(job["job_id"])["state"], "superseded")
         store.close()
 
-    def test_thinned_live_recording_labels_state_plots_only(self):
-        history, solves = HistoryStore(self.folder/"thinned"), HistoryStore(self.folder/"thinned-solves")
+    def test_live_plots_take_limits_and_solve_context_from_the_segment_header(self):
+        history, solves = HistoryStore(self.folder/"segment"), HistoryStore(self.folder/"segment-solves")
+        limits = dict(source="URDF", lower_position_rad=[-1.5]*7, upper_position_rad=[1.5]*7,
+                      velocity_rad_s=[2.]*7, effort_nm=[40.]*7)
         try:
-            history.append([dict(type="state", sim_time_s=t/500, q=[t/10]*7, record_every=2) for t in range(5)] +
-                           [dict(type="interval", start_time_s=0., end_time_s=.008, to_budget_s=.01, solve_wall_s=.001,
+            history.append([dict(type="segment", sim_time_s=0., context=dict(joint_limits=limits, mpc_bounds=None,
+                                 task=dict(kind="reach")))] +
+                           [dict(type="state", sim_time_s=t/500, q=[t/10]*7, plan_seq=1) for t in range(5)] +
+                           [dict(type="plan", seq=1, sim_time_s=0., origin="play", q=[[0.]*7, [.1]*7],
+                                 knot_time_s=[0., .01], stats={}),
+                            dict(type="interval", start_time_s=0., end_time_s=.008, to_budget_s=.01, solve_wall_s=.001,
                                  physics_wall_s=.001, total_wall_s=.002, severity="none")])
             self.service.live = SimpleNamespace(history_store=history, inspection_store=solves,
                 condition=threading.RLock(), latest={}, generation=0)
@@ -273,8 +287,14 @@ class WorkerTests(unittest.TestCase):
             result = self.wait_job(self.service.submit(body)["job_id"])
             self.assertEqual(result["state"], "complete", result)
             specs = {item["instance_id"]: item["spec"] for item in result["results"]}
-            self.assertEqual(specs["joint"]["recording"], dict(record_every=2))
-            self.assertNotIn("recording", specs["timing"])
+            self.assertIn(dict(axis="y", value=1.5, label="URDF upper", style="hard"), specs["joint"]["guides"])
+            self.assertNotIn("recording", specs["joint"])
+            body = dict(source=dict(kind="live", generation=0), context="solve", selection=dict(solve_seq=1),
+                        plots=[dict(instance_id="prediction", plot_id="solve.prediction_joint", inputs={})])
+            result = self.wait_job(self.service.submit(body)["job_id"])
+            self.assertEqual(result["state"], "complete", result)
+            self.assertIn(dict(axis="y", value=1.5, label="URDF upper", style="hard"),
+                          result["results"][0]["spec"]["guides"])
         finally:
             history.close(); solves.close()
 
@@ -298,10 +318,11 @@ class WorkerTests(unittest.TestCase):
     def test_pinned_preview_is_retained_separately_and_generation_scoped(self):
         history, solves = HistoryStore(self.folder/"episode"), HistoryStore(self.folder/"solves")
         try:
-            history.append([dict(type="state", sim_time_s=4., q=[0.]*7)])
+            header = dict(type="segment", sim_time_s=4., context=dict(task=dict(kind="reach")))
+            history.append([header, dict(type="state", sim_time_s=4., q=[0.]*7)])
             first = dict(type="plan", seq=1, sim_time_s=4., origin="preview", q=[[1.]*7, [2.]*7],
                          knot_time_s=[0., .1], stats={})
-            solves.append([first])
+            solves.append([header, first])
             self.service.live = SimpleNamespace(history_store=history, inspection_store=solves,
                 condition=threading.RLock(), latest={}, generation=0)
             body = dict(source=dict(kind="live", generation=0), context="solve",
@@ -312,7 +333,7 @@ class WorkerTests(unittest.TestCase):
             result = self.wait_job(self.service.submit(body)["job_id"])
             self.assertEqual(result["context"]["selected_solve"]["seq"], "preview:1")
             self.assertEqual(result["context"]["selected_solve"]["final_prediction"]["q"][0][0], 1)
-            self.assertEqual(history.metadata()["history_cursor"], 1)
+            self.assertEqual(history.metadata()["history_cursor"], 2)
             saved_path = solves.path
             history.reset(1); solves.reset(1)
             self.service.live.generation = 1

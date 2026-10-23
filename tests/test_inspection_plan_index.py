@@ -10,7 +10,7 @@ from unittest.mock import patch
 from execution_bridge import HistoryGenerationError, HistoryStore
 from inspection_problem import captured_problem
 from solve_inspections import InspectionService
-from tests.test_solve_inspections import plan
+from tests.test_solve_inspections import plan, recorded, segment
 
 
 class PlanIndexTests(unittest.TestCase):
@@ -39,8 +39,8 @@ class PlanIndexTests(unittest.TestCase):
             selection=dict(solve_id=identifier)), capability=True)
 
     def test_one_plan_decode_after_thousands_of_states_and_exact_old_selection(self):
-        first = dict(plan(), type='plan', id='7', seq=7)
-        self.history.append([first])
+        first = dict(recorded(plan()), type='plan', id='7', seq=7)
+        self.history.append([segment(), first])
         early = self.request('7')
         for packet in range(5):
             self.history.append([dict(type='state', sim_time_s=(packet*1000+i)*.001,
@@ -52,15 +52,15 @@ class PlanIndexTests(unittest.TestCase):
             for request in (early, self.request('7'), self.request('12')):
                 decode.reset_mock()
                 problem, identifier = self.service._problem(request)
-                self.assertEqual(problem, captured_problem(first))
+                self.assertEqual(problem, captured_problem(dict(plan(), **first)))
                 self.assertEqual(identifier, str(request['body']['selection']['solve_id']))
                 self.assertEqual(decode.call_count, 1)
         self.assertEqual(self.history.path.read_bytes(), before)
         self.assertEqual(self.history.state_count, 5000)
 
     def test_descriptor_prefix_generation_path_and_missing_identity_are_strict(self):
-        first = dict(plan(), type='plan', id='7', seq=7)
-        self.history.append([first])
+        first = dict(recorded(plan()), type='plan', id='7', seq=7)
+        self.history.append([segment(), first])
         descriptor = self.history.plot_source(0)
         self.history.append([dict(first, id='8', seq=8)])
         with self.assertRaisesRegex(ValueError, 'not retained'):
@@ -83,17 +83,18 @@ class PlanIndexTests(unittest.TestCase):
             self.history.selected_plan(self.history.plot_source(1), '7')
 
     def test_previews_use_separate_index_and_keep_explicit_id_across_later_plans(self):
-        executed = dict(plan(), type='plan', id='7', seq=7)
+        executed = dict(recorded(plan()), type='plan', id='7', seq=7)
         preview = dict(executed, origin='preview', initial_state=dict(q=[.8]*7, qd=[0]*7, time_s=3.))
-        self.history.append([executed])
-        self.previews.append([preview])
+        # Each store starts with the segment header (the bridge copies it to the previews).
+        self.history.append([segment(), executed])
+        self.previews.append([segment(), preview])
         request = self.request('preview:7')
         self.previews.append([dict(preview, id='8', seq=8)])
         with patch.object(self.service.reader, 'read', side_effect=AssertionError('Scanned preview stream')):
             problem, identifier = self.service._problem(request)
             self.assertEqual(identifier, 'preview:7')
-            self.assertEqual(problem, captured_problem(preview))
-            self.assertEqual(self.service._problem(self.request(7))[0], captured_problem(executed))
+            self.assertEqual(problem, captured_problem(dict(plan(), **preview)))
+            self.assertEqual(self.service._problem(self.request(7))[0], captured_problem(dict(plan(), **executed)))
             for identifier in ('preview:', 'preview:missing', 'preview:preview:7', '8'):
                 with self.subTest(identifier=identifier), self.assertRaisesRegex(ValueError, 'not retained'):
                     self.service._problem(self.request(identifier))
@@ -110,7 +111,7 @@ class PlanIndexTests(unittest.TestCase):
             self.service._problem(self.request('preview:7', generation=1))
 
     def test_live_trajectory_selector_never_falls_back_to_latest_plan(self):
-        self.history.append([dict(plan(), type='plan', id='7', seq=7)])
+        self.history.append([segment(), dict(recorded(plan()), type='plan', id='7', seq=7)])
         request = self.request('7')
         request['body']['selection'] = dict(trajectory_index=0)
         with self.assertRaisesRegex(ValueError, 'explicit retained solve id'):

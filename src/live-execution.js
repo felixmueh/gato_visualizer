@@ -1,6 +1,5 @@
-// Mirrors execution_session.DEFAULT_EXECUTION: commands at 500 Hz, every 2nd physics step recorded.
-export const DEFAULT_EXECUTION = { simulation_hz: 1000, control_hz: 500, to_hz: 100, record_every: 2, calculation: 'on_play', duration_s: 10, continue_at_end: false };
-export const MAX_RECORD_EVERY = 1000;
+// Mirrors execution_session.DEFAULT_EXECUTION: commands at 500 Hz.
+export const DEFAULT_EXECUTION = { simulation_hz: 1000, control_hz: 500, to_hz: 100, calculation: 'on_play', duration_s: 10, continue_at_end: false };
 
 export function validateExecution(value) {
   const next = { ...DEFAULT_EXECUTION, ...value };
@@ -8,7 +7,6 @@ export function validateExecution(value) {
     if (!Number.isFinite(next[key]) || next[key] <= 0) throw new Error(`${key.replaceAll('_', ' ')} must be positive.`);
   }
   if (next.simulation_hz < next.control_hz || next.control_hz < next.to_hz) throw new Error('Use Simulation Hz ≥ Control Hz ≥ TO Hz.');
-  if (!Number.isInteger(next.record_every) || next.record_every < 1 || next.record_every > MAX_RECORD_EVERY) throw new Error(`Record every needs an integer from 1 to ${MAX_RECORD_EVERY} steps.`);
   if (!['on_play', 'manual', 'automatic'].includes(next.calculation)) throw new Error('Choose a calculation mode.');
   next.continue_at_end = Boolean(next.continue_at_end);
   return next;
@@ -70,16 +68,4 @@ export function createHistoryClock({ bufferMs = 0 } = {}) {
     get following() { return following; },
     get buffering() { return buffering; },
   };
-}
-
-/** The recorded states' spacing: every n-th physics step, in simulated seconds. */
-export function recordingInterval(execution) {
-  return execution.record_every / execution.simulation_hz;
-}
-
-/** Short label of a thinned recording, or '' when every step is recorded. */
-export function recordEveryLabel(recordEvery) {
-  if (!(recordEvery > 1)) return '';
-  const ordinal = recordEvery % 10 === 1 && recordEvery % 100 !== 11 ? 'st' : recordEvery % 10 === 2 && recordEvery % 100 !== 12 ? 'nd' : recordEvery % 10 === 3 && recordEvery % 100 !== 13 ? 'rd' : 'th';
-  return `every ${recordEvery}${ordinal} step`;
 }
