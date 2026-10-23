@@ -32,22 +32,28 @@ export function intervalDescription(interval) {
 
 // One simulated-time clock for recorded and growing histories. Catching up to
 // new data never speeds up playback; a stalled tip holds until data arrives.
-export function createHistoryClock({ bufferMs = 0 } = {}) {
+export function createHistoryClock({ bufferMs = 0, rate = 1 } = {}) {
   let time = null, playing = false, following = false, buffering = false, previousMs = null;
-  let bufferSeconds = bufferMs / 1000;
+  let bufferSeconds = bufferMs / 1000, growingNow = false;
+  if (!Number.isFinite(rate) || rate <= 0) throw new Error('Playback rate must be positive.');
   return {
-    play(nowMs, { follow = false, growing = false } = {}) { playing = true; following = follow; buffering = growing && bufferSeconds > 0; previousMs = nowMs; },
+    play(nowMs, { follow = false, growing = false } = {}) { playing = true; following = follow; growingNow = growing; buffering = growing && bufferSeconds > 0; previousMs = nowMs; },
     pause() { playing = false; following = false; buffering = false; previousMs = null; },
     seek(value) { time = value; following = false; buffering = false; previousMs = null; },
     setBuffer(ms) {
       if (ms / 1000 === bufferSeconds) return;
       bufferSeconds = ms / 1000; buffering = playing && bufferSeconds > 0; previousMs = null;
     },
+    setRate(value) { if (!Number.isFinite(value) || value <= 0) throw new Error('Playback rate must be positive.'); rate = value; },
     follow() { following = playing; },
     // Following changes the visible timeline end, never the playback speed or
     // recorded data. Arriving batches are still played at 1×.
     presentationBounds([start, end]) { return [start, following && time != null ? Math.max(start, Math.min(end, time)) : end]; },
-    tick(nowMs, [start, end], { followAtEnd = false, growing = false } = {}) {
+    tick(nowMs, [start, sessionEnd], { followAtEnd = false, growing = false, followBounds } = {}) {
+      // Continue stops the whole session at the main track's growing tip.
+      // Stop uses the full session span, allowing other recordings to finish.
+      const end = followAtEnd && followBounds ? Math.min(sessionEnd, Math.max(start, followBounds[1])) : sessionEnd;
+      growingNow = growing;
       if (time == null) time = start;
       time = Math.max(start, Math.min(end, time));
       let delta = playing && previousMs != null ? Math.max(0, (nowMs - previousMs) / 1000) : 0;
@@ -58,14 +64,18 @@ export function createHistoryClock({ bufferMs = 0 } = {}) {
         if (!growing || end - time >= bufferSeconds - 1e-9 || bufferSeconds === 0) buffering = false;
         delta = 0;
       }
-      time = Math.min(end, time + delta);
+      const effectiveRate = following && growing ? 1 : rate;
+      time = Math.min(end, time + delta * effectiveRate);
       if (playing && growing && bufferSeconds > 0 && time >= end - 1e-8) buffering = true;
       if (playing && followAtEnd && time >= end - 1e-8) following = true;
-      return { time, atEnd: time >= end - 1e-8, limited: playing && delta > 0 && time >= end - 1e-8, buffering };
+      return { time, atEnd: time >= end - 1e-8, atSessionEnd: time >= sessionEnd - 1e-8, limited: playing && delta > 0 && time >= end - 1e-8, buffering, rate: following && growing ? 1 : rate };
     },
     get time() { return time; },
     get playing() { return playing; },
     get following() { return following; },
     get buffering() { return buffering; },
+    get rate() { return rate; },
+    get effectiveRate() { return following && growingNow ? 1 : rate; },
+    get rateForced() { return following && growingNow; },
   };
 }

@@ -136,3 +136,24 @@ test('interval descriptions count the commands clipped to the effort limit', () 
   assert.match(intervalDescription({ severity: 'none', clipped_commands: 1 }), /1 command clipped/);
   assert.doesNotMatch(intervalDescription({ severity: 'none', clipped_commands: 0 }), /clipped/);
 });
+
+test('session playback rate covers comparison bounds beyond the recorded Live end', () => {
+  const clock = createHistoryClock({ rate: 2 }); clock.seek(.5); clock.play(0);
+  assert.equal(clock.tick(500, [0, 3], { followBounds: [0, 1], followAtEnd: false }).time, 1.5);
+  clock.setRate(.5); assert.equal(clock.tick(1500, [0, 3], { followBounds: [0, 1] }).time, 2);
+  assert.equal(clock.tick(5000, [0, 3]).time, 3);
+  assert.equal(clock.rate, .5); assert.equal(clock.effectiveRate, .5);
+});
+
+test('Continue holds every track at the main tip and forces 1x only while following growing Live', () => {
+  const clock = createHistoryClock({ rate: 4 }); clock.seek(0); clock.play(0);
+  let tick = clock.tick(500, [0, 10], { followBounds: [0, 1], followAtEnd: true, growing: true });
+  assert.equal(tick.time, 1); assert.equal(tick.atEnd, true); assert.equal(tick.atSessionEnd, false);
+  assert.equal(clock.following, true); assert.equal(clock.effectiveRate, 1); assert.equal(clock.rateForced, true);
+  tick = clock.tick(750, [0, 10], { followBounds: [0, 2], followAtEnd: true, growing: true });
+  assert.equal(tick.time, 1.25);
+  clock.tick(1000, [0, 10], { followBounds: [0, 2], followAtEnd: true, growing: false });
+  assert.equal(clock.rateForced, false); assert.equal(clock.effectiveRate, 4);
+  clock.seek(.1); clock.play(1000, { growing: true });
+  assert.equal(clock.rateForced, false); // Historical playback may choose a speed.
+});
