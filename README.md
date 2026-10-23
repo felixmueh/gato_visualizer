@@ -377,10 +377,10 @@ The canonical full URDF supplies the torso-to-root transform for every tool
 path and reference. Models and existing recordings stay in `tiago_mpc` and are
 read-only; the viewer imports its MPC (`tiago_mpc.mpc`), plant (`SimPlant`)
 and model code unchanged. The Live history (current run only), preview captures,
-Run again results (only while their Live run or replay is current), solver logs
-and the server's `TMPDIR` (set by `scripts/start.sh`) are RAM-backed runtime files
-in `/dev/shm/tiago-mpc-visualizer-<uid>/` (Linux tmpfs; `TIAGO_VISUALIZER_RUNTIME_DIR`
-overrides it; startup prints it and warns when it is not RAM-backed); see
+Run again results (only while their Live run or replay is current) and solver logs
+are RAM-backed runtime files in `<system temp>/tiago-mpc-visualizer-<uid>/`
+(`/tmp` on this host, tmpfs; `TIAGO_VISUALIZER_RUNTIME_DIR` overrides it; startup
+prints it and warns when it is not RAM-backed); see
 [runtime files](docs/execution-api.md#runtime-files). Only what must persist is
 written to disk: uploads, the config file (only when a setting actually changes),
 build logs and validation artifacts under this checkout's ignored `_expr_data/`;
