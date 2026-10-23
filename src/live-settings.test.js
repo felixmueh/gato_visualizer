@@ -1093,23 +1093,29 @@ test('complete metadata cannot release a short buffer before remaining history p
 
 const PREDICTOR_FRICTION = { coulomb_nm: [2.1, 2.6, 2, 1.95, .8, 1.1, .3], viscous_nm_s_per_rad: [3.35, 4.15, 2.45, 2.25, .5, .3, .15], width_rad_s: .03 };
 
-// config.friction is MpcParams' predictor friction (null: loss-free); config.plant.friction the simulator's.
+// config.friction is MpcParams' predictor friction (null: loss-free); config.plant the simulated plant's
+// integrator, friction switch, Coulomb law and tanh width.
+const PLANT = { integrator: 'rk4', friction: false, coulomb_law: 'constraint', friction_width_rad_s: .03 };
 function frictionSchema(h, { N = 32, on = [32], prediction = false } = {}) {
   h.schema.defaults.config.N = N;
   h.schema.defaults.config.friction = prediction ? structuredClone(PREDICTOR_FRICTION) : null;
-  h.schema.defaults.config.plant = { friction: false };
+  h.schema.defaults.config.plant = { ...PLANT };
   h.schema.available_N_by_friction = { off: [16, 32, 64], on };
   h.schema.friction = { coefficients: { coulomb_nm: PREDICTOR_FRICTION.coulomb_nm, viscous_nm_s_per_rad: PREDICTOR_FRICTION.viscous_nm_s_per_rad },
-    simulation_law: 'hard-sign Coulomb + viscous (RK4)', prediction_law: 'tanh Coulomb (width 0.03 rad/s) + viscous' };
+    source: 'reduced right-arm URDF (tiago.urdf_friction)' };
   h.schema.parameters.push(
     { path: 'friction', label: 'Predictor friction', kind: 'choice', group: 'Friction',
-      choices: [{ value: null, label: 'Loss-free' }, { value: structuredClone(PREDICTOR_FRICTION), label: 'URDF Coulomb + viscous, tanh 0.03 rad/s' }] },
-    { path: 'plant.friction', label: 'Simulator friction', kind: 'bool', group: 'Friction' },
+      choices: [{ value: null, label: 'Loss-free' }, { value: structuredClone(PREDICTOR_FRICTION), label: 'URDF, tanh 0.03 rad/s' }] },
+    { path: 'plant.integrator', label: 'Plant integrator', kind: 'choice', group: 'Friction',
+      choices: [{ value: 'rk4', label: 'RK4' }, { value: 'euler', label: 'Semi-implicit Euler' }] },
+    { path: 'plant.friction', label: 'Plant friction', kind: 'bool', group: 'Friction', description: 'URDF coefficients' },
+    { path: 'plant.coulomb_law', label: 'Coulomb law', kind: 'choice', group: 'Friction', choices: ['tanh', 'sign', 'constraint'] },
+    { path: 'plant.friction_width_rad_s', label: 'tanh width (rad/s)', kind: 'float', group: 'Friction', min: 1e-4, max: 1 },
   );
   return path => h.created.filter(el => el.dataset.path === path).at(-1);
 }
 
-test('friction controls start loss-free and submit independent simulator and predictor friction from the frozen native anchor', async () => {
+test('friction controls start loss-free and submit independent plant and predictor friction from the frozen native anchor', async () => {
   const h = harness(), field = frictionSchema(h);
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
@@ -1117,31 +1123,47 @@ test('friction controls start loss-free and submit independent simulator and pre
     const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
     await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    assert.equal(field('plant.integrator').value, '0'); assert.equal(field('plant.coulomb_law').value, '2');
     assert.equal(field('plant.friction').checked, false);
+    // RK4 is loss-free: plant friction and its law are disabled, the tanh width hidden.
+    assert.equal(field('plant.friction').disabled, true); assert.match(field('plant.friction').title, /RK4 is loss-free/);
+    assert.equal(field('plant.coulomb_law').disabled, true);
+    const widthRow = () => field('plant.friction_width_rad_s').closest('label').parentElement;
+    assert.equal(widthRow().hidden, true);
     assert.equal(field('friction').value, '0');
-    assert.deepEqual(field('friction').children.map(item => item.textContent), ['Loss-free', 'URDF Coulomb + viscous, tanh 0.03 rad/s']);
-    assert(h.created.some(el => el.textContent?.includes('hard-sign Coulomb + viscous')));
+    assert.deepEqual(field('friction').children.map(item => item.textContent), ['Loss-free', 'URDF, tanh 0.03 rad/s']);
+    assert(!h.created.some(el => /hard-sign|RK4\)/.test(el.textContent || '')));
     assert(h.created.some(el => el.textContent === 'Coulomb (Nm), joints 1–7: 2.1, 2.6, 2, 1.95, 0.8, 1.1, 0.3'));
     assert(h.created.some(el => el.textContent === 'Viscous (Nm s/rad), joints 1–7: 3.35, 4.15, 2.45, 2.25, 0.5, 0.3, 0.15'));
     for (const time of [1, 1.2]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
       q: Array(7).fill(time), qd: Array(7).fill(-.2), ee_xyz: [time, 0, 1] });
     h.$('live-history').value = '1'; h.$('live-history').emit('input');
     const anchor = structuredClone(live.displayedState), presentation = live.presentationSettings;
+    field('plant.integrator').value = '1'; field('plant.integrator').emit('input');
+    assert.equal(field('plant.friction').disabled, false); assert.equal(field('plant.coulomb_law').disabled, true);
     field('plant.friction').checked = true; field('plant.friction').emit('input');
+    assert.equal(field('plant.coulomb_law').disabled, false);
     assert.equal(live.playing, false);
     source.emit({ type: 'state', settings_version: 1, sim_time_s: 1.3, q: Array(7).fill(3), qd: Array(7).fill(2), ee_xyz: [3, 0, 1] });
     await new Promise(resolve => setTimeout(resolve, 380));
     const simulatorOnly = h.commands.at(-1);
     assert.equal(simulatorOnly.type, 'set_settings');
-    assert.deepEqual(simulatorOnly.config.plant, { friction: true }); assert.equal(simulatorOnly.config.friction, null);
+    assert.deepEqual(simulatorOnly.config.plant, { ...PLANT, integrator: 'euler', friction: true }); assert.equal(simulatorOnly.config.friction, null);
     assert.deepEqual(simulatorOnly.anchor, { sim_time_s: 1, q: anchor.q, qd: anchor.qd });
     assert.equal(simulatorOnly.reset, undefined); assert.deepEqual(live.presentationSettings, presentation);
     source.emit(plan(2, 2));
+    field('plant.coulomb_law').value = '0'; field('plant.coulomb_law').emit('input');
+    assert.equal(widthRow().hidden, false); assert.equal(field('plant.friction_width_rad_s').disabled, false);
+    field('plant.friction_width_rad_s').value = '0.01'; field('plant.friction_width_rad_s').emit('input');
+    await new Promise(resolve => setTimeout(resolve, 380));
+    assert.deepEqual(h.commands.at(-1).config.plant, { integrator: 'euler', friction: true, coulomb_law: 'tanh', friction_width_rad_s: .01 });
+    source.emit(plan(3, 3));
     field('friction').value = '1'; field('friction').emit('input');
-    field('plant.friction').checked = false; field('plant.friction').emit('input');
+    field('plant.integrator').value = '0'; field('plant.integrator').emit('input');  // RK4 switches plant friction off
+    assert.equal(field('plant.friction').checked, false); assert.equal(field('plant.friction_width_rad_s').disabled, true);
     await new Promise(resolve => setTimeout(resolve, 380));
     assert.deepEqual(h.commands.at(-1).config.friction, PREDICTOR_FRICTION);
-    assert.deepEqual(h.commands.at(-1).config.plant, { friction: false });
+    assert.deepEqual(h.commands.at(-1).config.plant, { integrator: 'rk4', friction: false, coulomb_law: 'tanh', friction_width_rad_s: .01 });
     assert(h.commands.every(item => item.type === 'set_settings')); // No compile, source apply, or presentation request.
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });

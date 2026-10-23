@@ -37,16 +37,17 @@ class SettingsTests(unittest.TestCase):
                          dict(live_probe()["defaults"], max_sqp_time_s=None))
         self.assertIsNotNone(live_probe()["defaults"]["max_sqp_time_s"])
         self.assertIs(config["warmup"], True)
-        # Loss-free plant, effort clipped, stop on every limit breach (Felix, 2026-10-23)
-        # The start pose is the simulator source's Q_START (Felix, 2026-10-23).
-        self.assertEqual(config["plant"], dict(friction=False, clip_effort=True,
+        # Loss-free RK4 plant; friction on defaults to constraint Coulomb; effort clipped, stop on
+        # every limit breach; the start pose is the simulator source's Q_START (Felix, 2026-10-23).
+        self.assertEqual(config["plant"], dict(integrator="rk4", friction=False, coulomb_law="constraint",
+                                               friction_width_rad_s=.03, clip_effort=True,
                                                stop_on_breach=dict(position=True, velocity=True, torque=True),
                                                start_pose_rad=start_pose()["default"]))
         self.assertIsNone(config["friction"])  # loss-free predictor and plant by default
         specs = {s["path"]: s for s in self.schema["parameters"]}
         self.assertEqual(set(specs), {"N", "dt_s", "ee_frame", "warm_start", "reset_rho_each_step", "admm_linsys",
             "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "warmup", "max_sqp_time_s",
-            "plant.friction", "plant.clip_effort", "plant.stop_on_breach.position", "plant.stop_on_breach.velocity",
+            "plant.integrator", "plant.friction", "plant.coulomb_law", "plant.friction_width_rad_s", "plant.clip_effort", "plant.stop_on_breach.position", "plant.stop_on_breach.velocity",
             "plant.stop_on_breach.torque", "plant.start_pose_rad", *(f"solver.{key}" for key in config["solver"]), *(f"admm.{key}" for key in config["admm"])})
         self.assertEqual(specs["warm_start"]["choices"], ["shift", "hold"])
         self.assertEqual(specs["admm_linsys"]["choices"], ["pcg", "bdsv_factor", "auto"])
@@ -55,12 +56,17 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(specs["N"]["choices"], [16, 32])
         self.assertNotIn("disabled", specs["N"])
         self.assertEqual(specs["friction"]["choices"], [dict(value=None, label="Loss-free"), dict(
-            value=self.friction, label="URDF Coulomb + viscous, tanh 0.03 rad/s")])
+            value=self.friction, label="URDF, tanh 0.03 rad/s")])
         self.assertEqual(self.friction["width_rad_s"], .03)
         self.assertEqual({key: specs["max_sqp_time_s"][key] for key in ("kind", "nullable", "min", "max")},
                          dict(kind="float", nullable=True, min=1e-4, max=10))
         self.assertEqual(specs["warmup"]["kind"], "bool")
-        self.assertEqual(specs["plant.friction"]["group"], specs["friction"]["group"])
+        for path in ("plant.integrator", "plant.friction", "plant.coulomb_law", "plant.friction_width_rad_s"):
+            self.assertEqual(specs[path]["group"], specs["friction"]["group"])
+            self.assertTrue(specs[path]["description"])
+        self.assertEqual(specs["plant.integrator"]["choices"], [dict(value="rk4", label="RK4"),
+                                                                dict(value="euler", label="Semi-implicit Euler")])
+        self.assertEqual(specs["plant.coulomb_law"]["choices"], ["tanh", "sign", "constraint"])
         for path, label in (("plant.clip_effort", "Clip effort"), ("plant.stop_on_breach.position", "Joint limits"),
                             ("plant.stop_on_breach.velocity", "Velocity"), ("plant.stop_on_breach.torque", "Torque")):
             self.assertEqual((specs[path]["kind"], specs[path]["group"], specs[path]["label"]),
@@ -69,6 +75,20 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual({specs[f"plant.stop_on_breach.{key}"]["row"] for key in ("position", "velocity", "torque")},
                          {"Stop on breach"})
         validate_settings(dict(self.config, max_sqp_time_s=.05, warmup=False, friction=self.friction), self.task, self.schema)
+
+    def test_plant_friction_needs_euler_and_takes_any_coulomb_law(self):
+        def plant(**values):
+            return dict(self.config, plant=dict(self.config["plant"], **values))
+        for law in ("tanh", "sign", "constraint"):
+            validate_settings(plant(integrator="euler", friction=True, coulomb_law=law), self.task, self.schema)
+        validate_settings(plant(integrator="euler"), self.task, self.schema)  # loss-free Euler
+        validate_settings(plant(coulomb_law="tanh", friction_width_rad_s=.001), self.task, self.schema)  # unused
+        with self.assertRaisesRegex(ValueError, "Plant friction needs the semi-implicit Euler integrator"):
+            validate_settings(plant(friction=True), self.task, self.schema)
+        for values in (dict(integrator="implicit"), dict(coulomb_law="viscous"), dict(friction_width_rad_s=0),
+                       dict(friction_width_rad_s=None)):
+            with self.subTest(**values), self.assertRaises(ValueError):
+                validate_settings(plant(**values), self.task, self.schema)
 
     def test_the_start_pose_is_seven_positions_within_the_urdf_limits(self):
         spec = next(s for s in self.schema["parameters"] if s["path"] == "plant.start_pose_rad")

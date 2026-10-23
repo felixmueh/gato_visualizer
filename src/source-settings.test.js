@@ -175,22 +175,30 @@ test('path fields hold <checkout> templates; resolution is a tooltip, errors an 
   assert.equal(slow.defaults.cache, '/main/.cache/gato'); assert.equal(slow.defaults.python, '<checkout>/venv-host/bin/python');
 });
 
-test('source and profile refresh preserve the predictor friction choice, simulator friction and a null SQP time limit', () => {
+test('source and profile refresh preserve the predictor friction choice, the plant friction options and a null SQP time limit', () => {
   const friction = { coulomb_nm: [1, 1, 1, 1, 1, 1, 1], viscous_nm_s_per_rad: [2, 2, 2, 2, 2, 2, 2], width_rad_s: .03 };
+  const plant = { integrator: 'rk4', friction: false, coulomb_law: 'constraint', friction_width_rad_s: .03 };
   const schema = {
     available_N: [32], available_N_by_friction: { off: [32], on: [32] },
-    defaults: { config: { N: 32, friction: null, max_sqp_time_s: null, plant: { friction: false } }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
+    defaults: { config: { N: 32, friction: null, max_sqp_time_s: null, plant }, task: { kind: 'reach', target_offset_m: [0, 0, 0] } },
     parameters: [
       { path: 'N', kind: 'choice', choices: [32] },
       { path: 'friction', kind: 'choice', choices: [{ value: null, label: 'Loss-free' }, { value: friction, label: 'URDF' }] },
       { path: 'max_sqp_time_s', kind: 'float', min: 1e-4, max: 10, nullable: true },
+      { path: 'plant.integrator', kind: 'choice', choices: [{ value: 'rk4', label: 'RK4' }, { value: 'euler', label: 'Semi-implicit Euler' }] },
       { path: 'plant.friction', kind: 'bool' },
+      { path: 'plant.coulomb_law', kind: 'choice', choices: ['tanh', 'sign', 'constraint'] },
+      { path: 'plant.friction_width_rad_s', kind: 'float', min: 1e-4, max: 1 },
     ], tasks: [{ kind: 'reach', defaults: { target_offset_m: [0, 0, 0] } }],
   };
-  const saved = { config: { N: 32, friction: structuredClone(friction), max_sqp_time_s: .05, plant: { friction: true } }, task: { kind: 'reach' } };
+  const saved = { config: { N: 32, friction: structuredClone(friction), max_sqp_time_s: .05,
+    plant: { integrator: 'euler', friction: true, coulomb_law: 'tanh', friction_width_rad_s: .01 } }, task: { kind: 'reach' } };
   assert.deepEqual(restoreCompatibleSettings(schema, saved).config, saved.config);
   saved.config.friction.width_rad_s = .05; saved.config.max_sqp_time_s = null; saved.config.plant.friction = 'true';
-  assert.deepEqual(restoreCompatibleSettings(schema, saved).config, { N: 32, friction: null, max_sqp_time_s: null, plant: { friction: false } });
+  assert.deepEqual(restoreCompatibleSettings(schema, saved).config, { N: 32, friction: null, max_sqp_time_s: null,
+    plant: { ...plant, integrator: 'euler', coulomb_law: 'tanh', friction_width_rad_s: .01 } });
+  // Plant friction saved before the integrator setting (then RK4 with hard sign) restores off.
+  assert.deepEqual(restoreCompatibleSettings(schema, { config: { plant: { friction: true } } }).config.plant, plant);
 });
 
 test('a draft saved before tiago_mpc 31c405a keeps the new warm-up and SQP time-limit defaults', () => {

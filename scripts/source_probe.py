@@ -48,6 +48,9 @@ def load_source(selection):
     if not hasattr(mpc.Mpc, "warmup") or not hasattr(mpc.TIAGO, "max_sqp_time_s"):
         raise ValueError("tiago_mpc.mpc lacks Mpc.warmup or MpcParams.max_sqp_time_s; "
                          "the visualizer needs tiago_mpc 31c405a or later (steps 15 and 16)")
+    if not {"integrator", "coulomb_law"} <= set(inspect.signature(importlib.import_module("tiago_mpc.sim").SimPlant).parameters):
+        raise ValueError("tiago_mpc.sim.SimPlant lacks integrator or coulomb_law; the visualizer needs "
+                         "tiago_mpc's plant options (2026-10-23)")
     if not hasattr(tiago, "arm_urdf"):
         raise ValueError("tiago_mpc.tiago lacks arm_urdf; the visualizer needs tiago_mpc's derived arm (2026-10-23)")
     # An importable solver alone cannot make a checkout displayable. Check the same

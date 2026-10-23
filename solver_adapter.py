@@ -44,7 +44,7 @@ class SimulatorAdapter:
         self.simulator_identity = dict(deepcopy(self.model_identity), joint_names=list(tiago.RIGHT_ARM_JOINTS),
             lower_position_rad=limits.lower.tolist(), upper_position_rad=limits.upper.tolist(),
             velocity_rad_s=limits.velocity.tolist(), effort_nm=limits.effort.tolist(),
-            plant="tiago_mpc.sim.SimPlant", friction=None)
+            plant="tiago_mpc.sim.SimPlant", integrator="rk4", friction=None, coulomb_law=None)
         self.default_target = tiago.fk(tiago.Q_REACH, tiago.GRASP_FRAME)
         # Task geometry stays tied to Q_START, as tiago_mpc's Figure8.start_m: the
         # configurable start pose moves the arm, not the figure-eight anchor.
@@ -52,7 +52,7 @@ class SimulatorAdapter:
         self.task_anchors = snapshot(dict(reach=self.kinematics.target_to_world(self.default_target).tolist(),
                                           figure8=self.figure8_start_world.tolist()))
         self.task = deepcopy(REACH_DEFAULT_TASK)
-        self.plant_friction = None
+        self.plant_options = dict(integrator="rk4", friction=None, coulomb_law="constraint")  # SimPlant's
         self.limit_handling = None
         self.joint_limits = self.mpc_bounds = None
         self.remote = self.profile = self.profile_identity = self.profile_schema = None
@@ -104,16 +104,20 @@ class SimulatorAdapter:
         if params["ee_frame"] != self.kinematics.end_effector_frame:
             raise ValueError(f"The simulator tracks {self.kinematics.end_effector_frame}, not {params['ee_frame']}")
         predictor = self.remote.request("configure", timeout=120, params=params)
-        self.plant_friction = self.tiago.urdf_friction() if config["plant"]["friction"] else None
+        plant = config["plant"]
+        friction = (self.tiago.urdf_friction(plant["friction_width_rad_s"] if plant["coulomb_law"] == "tanh" else None)
+                    if plant["friction"] else None)
+        self.plant_options = dict(integrator=plant["integrator"], friction=friction, coulomb_law=plant["coulomb_law"])
         # The next Reset starts here; anchors and the current state are unaffected.
         self.start_pose = np.asarray(config["plant"]["start_pose_rad"], dtype=float)
         raw = self.tiago.limits()
         self.limit_handling = dict(limits=dict(lower=raw.lower, upper=raw.upper, velocity=raw.velocity, effort=raw.effort),
                                    clip_effort=config["plant"]["clip_effort"],
                                    stop_on_breach=dict(config["plant"]["stop_on_breach"]))
-        self.simulator_identity = dict(self.simulator_identity,
-                                       friction=self.plant_friction and asdict(self.plant_friction),
-                                       clip_effort=config["plant"]["clip_effort"])
+        self.simulator_identity = dict(self.simulator_identity, integrator=plant["integrator"],
+                                       friction=friction and asdict(friction),
+                                       coulomb_law=plant["coulomb_law"] if friction else None,
+                                       clip_effort=plant["clip_effort"])
         self.problem_configuration = deepcopy(predictor["configuration"])
         self.settings = dict(config=deepcopy(config), task=deepcopy(task))
         self.configure_task(params["N"], params["dt_s"], task)
@@ -164,7 +168,7 @@ class SimulatorAdapter:
         never moves backward, so every anchor, reset or rollback takes a new one."""
         from tiago_mpc.clock import Clock
         from tiago_mpc.sim import SimPlant
-        plant = SimPlant(self.x[:7], self.x[7:], substep=substep, friction=self.plant_friction,
+        plant = SimPlant(self.x[:7], self.x[7:], substep=substep, **self.plant_options,
                          clock=Clock.simulation(self.t))
         plant.start()
         return plant

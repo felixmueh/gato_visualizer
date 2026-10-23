@@ -68,6 +68,9 @@ export function restoreCompatibleSettings(schema, saved) {
       writePath(settings.config, path, value);
     } catch { /* A source can remove or narrow settings; retain its own default. */ }
   }
+  // Plant friction needs semi-implicit Euler: friction saved before the integrator setting restores off.
+  const plant = settings.config.plant;
+  if (plant?.friction && plant.integrator === 'rk4') plant.friction = false;
   const task = (schema.tasks || []).find(item => item.kind === saved.task?.kind);
   if (task) {
     settings.task = { ...cloneSettings(task.defaults || {}), kind: task.kind };
@@ -357,10 +360,27 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (wasUnavailable && !profileNError) knot.input.dispatchEvent(new Event('input', { bubbles: true }));
     else controlsEnabled();
   }
+  // Plant friction needs semi-implicit Euler (RK4 is loss-free); the Coulomb law applies
+  // only with plant friction, and the width only to the tanh law (Felix, 2026-10-23).
+  function syncPlantFriction() {
+    const field = path => inputs.find(item => item.parameter.path === path);
+    const integrator = field('plant.integrator'), friction = field('plant.friction'), law = field('plant.coulomb_law'), width = field('plant.friction_width_rad_s');
+    if (!integrator || !friction) return;
+    const rk4 = parseParameter(integrator.parameter, integrator.input) === 'rk4';
+    if (rk4) friction.input.checked = false;
+    friction.input.disabled = rk4;
+    friction.input.title = rk4 ? 'RK4 is loss-free: choose semi-implicit Euler for plant friction' : friction.parameter.description || '';
+    if (law) { law.input.disabled = !friction.input.checked; law.input.title = law.input.disabled ? 'Plant friction is off' : law.parameter.description || ''; }
+    if (width) {
+      const host = width.input.closest('label'); if (host?.parentElement) host.parentElement.hidden = !law || parseParameter(law.parameter, law.input) !== 'tanh';
+      width.input.disabled = !friction.input.checked;
+    }
+  }
   const unavailableFrictionMessage = () => `N=${settings.config.N} is not compiled for this predictor. Choose a compiled N or build it in Settings › Backend (Build selected N, with Predictor friction modules when Predictor friction is on).`;
   function change() {
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
+    syncPlantFriction();
     const next = readSettings();
     if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); refreshFrictionAvailability(); }
     calculationControls();
@@ -471,16 +491,12 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         const summary = document.createElement('summary'); summary.textContent = name;
         const fields = document.createElement('div'); fields.className = 'settings-fields'; details.append(summary);
         if (name === 'Friction') {
-          const note = document.createElement('p'); note.className = 'settings-note';
-          note.textContent = `Simulator: ${schema.friction?.simulation_law || 'hard-sign Coulomb + viscous (RK4)'}. Predictor: ${schema.friction?.prediction_law || 'tanh Coulomb + viscous'}, a compiled variant.`;
-          note.title = `Coefficients from the ${schema.friction?.source || 'reduced right-arm URDF'}. Changes start a new segment from the displayed state.`;
-          details.append(note);
           const coefficients = schema.friction?.coefficients;
           for (const [key, unit] of [['coulomb_nm', 'Coulomb (Nm)'], ['viscous_nm_s_per_rad', 'Viscous (Nm s/rad)']]) {
             if (!Array.isArray(coefficients?.[key])) continue;
             const values = document.createElement('p'); values.className = 'settings-note';
             values.textContent = `${unit}, joints 1–7: ${coefficients[key].join(', ')}`;
-            values.title = coefficients.provenance || ''; details.append(values);
+            values.title = `From the ${schema.friction.source || 'URDF'}; used by plant and predictor friction`; details.append(values);
           }
         }
         details.append(fields); $('live-settings').append(details); groups.set(name, fields);
@@ -561,6 +577,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     $('live-continue').checked = settings.execution.continue_at_end;
     listen($('live-continue'), 'change', () => { settings.execution.continue_at_end = $('live-continue').checked; });
     refreshFrictionAvailability();
+    syncPlantFriction();
     resetIndicators.update();
     controlsEnabled();
     $('live-mode').disabled = false; message(profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', profileNError);

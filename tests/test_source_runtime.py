@@ -262,7 +262,8 @@ class DisplaySourceTests(unittest.TestCase):
             tiago = SimpleNamespace(FULL_URDF=root/'full.urdf', arm_urdf=lambda: root/'reduced.urdf', GRASP_FRAME='grasp',
                                     urdf_friction=lambda width: SimpleNamespace(width_rad_s=width))
             mpc = SimpleNamespace(MpcParams=1, TIAGO=SimpleNamespace(max_sqp_time_s=.01),
-                                  Mpc=SimpleNamespace(warmup=3), find_binary=4, compile_binary=5)
+                                  Mpc=SimpleNamespace(warmup=3), find_binary=4, compile_binary=5,
+                                  SimPlant=lambda *, integrator=None, coulomb_law="constraint": None)  # also tiago_mpc.sim
             assets, kinematics = Mock(), Mock()
             with patch('live_mpc.import_tiago', return_value=tiago) as imported, \
                  patch.object(script.importlib, 'import_module', return_value=mpc), \
@@ -277,6 +278,9 @@ class DisplaySourceTests(unittest.TestCase):
                 self.assertEqual(os.environ['GATO_CACHE_DIR'], str(root/'cache'))
                 assets.side_effect = ValueError('canonical mesh is missing')
                 with self.assertRaisesRegex(ValueError, 'canonical mesh is missing'):
+                    script.load_source(selection)
+                mpc.SimPlant = lambda *, friction=None: None  # tiago_mpc before the plant options
+                with self.assertRaisesRegex(ValueError, 'lacks integrator or coulomb_law'):
                     script.load_source(selection)
                 del mpc.Mpc.warmup  # tiago_mpc before 31c405a
                 with self.assertRaisesRegex(ValueError, 'lacks Mpc.warmup'):

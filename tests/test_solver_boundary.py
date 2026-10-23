@@ -231,7 +231,8 @@ class BoundaryTests(unittest.TestCase):
                 simulator.reference[:] = 99
                 simulator.profile["id"] = "new-profile"
                 simulator.configure(config(solver=dict(config()["solver"], max_sqp_iters=9),
-                                           plant=dict(config()["plant"], friction=True)), deepcopy(FIGURE8_DEFAULT_TASK))
+                                           plant=dict(config()["plant"], integrator="euler", friction=True,
+                                                      coulomb_law="tanh")), deepcopy(FIGURE8_DEFAULT_TASK))
                 self.assertEqual(render_plan(captured, simulator.kinematics), expected)
                 newer = simulator.segment_header(9, {})["context"]
                 self.assertEqual(newer["problem_configuration"]["solver"]["max_sqp_iters"], 9)
@@ -239,7 +240,10 @@ class BoundaryTests(unittest.TestCase):
                 self.assertTrue(newer["solver_profile"]["physical_model_differs"])
                 self.assertTrue(newer["settings"]["config"]["plant"]["friction"])
                 self.assertEqual(header["context"]["solver_profile"]["profile"]["id"], "edited-record")
-                self.assertIsNone(simulator.plant_friction.width_rad_s)  # the plant's hard sign
+                plant = newer["simulator_identity"]
+                self.assertEqual((plant["integrator"], plant["coulomb_law"], plant["friction"]["width_rad_s"]),
+                                 ("euler", "tanh", .03))
+                self.assertEqual(simulator.new_plant(.001).settings["coulomb_law"], "tanh")
                 with self.assertRaises(TypeError):
                     captured["stats"]["sqp_iters"] = -2
                 with self.assertRaises(ValueError):
