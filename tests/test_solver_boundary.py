@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from live_mpc import FIGURE8_DEFAULT_TASK
+from live_mpc import FIGURE8_DEFAULT_TASK, PLANT_DEFAULTS
 from live_presentation import mutable, render_plan, snapshot
 from solver_adapter import SimulatorAdapter
 from solver_process import receive_message, send_lease, send_message, wire_value
@@ -126,7 +126,7 @@ class Remote:
 
 
 def config(**changes):
-    return {**live_probe()["defaults"], "N": 4, "plant": dict(friction=False), **changes}
+    return {**live_probe()["defaults"], "N": 4, "plant": deepcopy(PLANT_DEFAULTS), **changes}
 
 
 class BoundaryTests(unittest.TestCase):
@@ -221,7 +221,7 @@ class BoundaryTests(unittest.TestCase):
                 simulator.reference[:] = 99
                 simulator.profile["id"] = "new-profile"
                 simulator.configure(config(solver=dict(config()["solver"], max_sqp_iters=9),
-                                           plant=dict(friction=True)), deepcopy(FIGURE8_DEFAULT_TASK))
+                                           plant=dict(PLANT_DEFAULTS, friction=True)), deepcopy(FIGURE8_DEFAULT_TASK))
                 self.assertEqual(render_plan(captured, simulator.kinematics), expected)
                 newer = simulator.solve_snapshot("play", 9)
                 self.assertEqual(newer["problem_configuration"]["solver"]["max_sqp_iters"], 9)

@@ -66,6 +66,70 @@ def hold_last(torques, dt, offset_s):
     return torques[min(k, len(torques) - 1)], k >= len(torques)
 
 
+# Limit handling of the simulated plant (Felix, 2026-10-23). Defaults: clip on, stop on all.
+STOP_QUANTITIES = ("position", "velocity", "torque")
+UNITS = dict(position="rad", velocity="rad/s", torque="Nm")
+
+
+class LimitWatch:
+    """Effort clipping and limit-breach detection on simulated values, at full rate.
+
+    limits holds the raw URDF limits in native order (lower, upper, velocity,
+    effort). With clip on, each command is clipped to ± the effort limit before
+    it reaches the plant. A breach is judged on simulated values only: the
+    position and velocity at every physics endpoint, the applied (clipped)
+    torque at every command. A quantity of a joint breaches when it starts to
+    be beyond its limit and re-arms once it is back within it, so a value that
+    stays beyond stops once. A value already beyond at the session's start
+    (an anchor, a settings change) is armed only once back within.
+    """
+    def __init__(self, limits, clip_effort, stop_on_breach, x):
+        self.lower, self.upper, self.velocity, self.effort = (
+            np.asarray(limits[key], dtype=float) for key in ("lower", "upper", "velocity", "effort"))
+        self.clip, self.stop_on = bool(clip_effort), dict(stop_on_breach)
+        x = np.asarray(x, dtype=float)
+        self.armed = dict(position=~self._beyond_position(x[:7]), velocity=~(np.abs(x[7:]) > self.velocity),
+                          torque=np.ones(7, dtype=bool))
+
+    def _beyond_position(self, q):
+        return (q < self.lower) | (q > self.upper)
+
+    def command(self, planned):
+        """The torque applied to the plant, and whether clipping changed it."""
+        if not self.clip:
+            return planned, False
+        applied = np.clip(planned, -self.effort, self.effort)
+        return applied, bool(np.any(applied != planned))
+
+    def _check(self, quantity, beyond, values, limits):
+        started = beyond & self.armed[quantity]
+        self.armed[quantity] = ~beyond
+        if not self.stop_on[quantity]:
+            return []
+        return [dict(joint_index=int(i), quantity=quantity, value=float(values[i]), limit=float(limits[i]))
+                for i in np.flatnonzero(started)]
+
+    def torque(self, applied):
+        applied = np.asarray(applied, dtype=float)
+        return self._check("torque", np.abs(applied) > self.effort, applied, np.copysign(self.effort, applied))
+
+    def state(self, q, qd):
+        q, qd = np.asarray(q, dtype=float), np.asarray(qd, dtype=float)
+        bound = np.where(q < self.lower, self.lower, self.upper)
+        return (self._check("position", self._beyond_position(q), q, bound) +
+                self._check("velocity", np.abs(qd) > self.velocity, qd, np.copysign(self.velocity, qd)))
+
+
+def breach_message(t, breaches):
+    """One line naming the first breach: joint, quantity, value and limit."""
+    first = breaches[0]
+    unit, joint = UNITS[first["quantity"]], first["joint_index"]+1
+    kind = dict(position="joint limit", velocity="velocity limit", torque="effort limit")[first["quantity"]]
+    more = f" (+{len(breaches)-1} more)" if len(breaches) > 1 else ""
+    return (f"Limit breach at {t:.3f} s: joint {joint} {first['quantity']} {first['value']:.4g} {unit} "
+            f"beyond its {kind} {first['limit']:.4g} {unit}{more}")
+
+
 def interval_record(start, end, budget, solve_wall, physics_wall, total_wall, **extra):
     span = max(end-start, 1e-15)
     severity = "red" if solve_wall > budget else "yellow" if max(physics_wall, total_wall) > span else "none"
@@ -107,6 +171,11 @@ class MultirateSession:
         self.interval_start = self.origin
         self.pending_solve_wall = self.pending_physics_wall = self.pending_total_wall = 0.
         self.pending_solver_reported = 0.
+        self.pending_clipped = 0
+        # The session starts at the history tip, which is already recorded.
+        self.recorded_t = self.origin
+        handling = getattr(adapter, "limit_handling", None)
+        self.watch = None if handling is None else LimitWatch(**handling, x=adapter.x)
 
     def _tick_time(self, tick, rate):
         return self.origin+tick/self.execution[rate]
@@ -134,6 +203,7 @@ class MultirateSession:
         state["record_every"] = self.execution["record_every"]
         if self.plan is not None:
             state["plan_seq"] = self.plan["seq"]
+        self.recorded_t = float(self.adapter.t)
         return state
 
     def initial_state(self):
@@ -186,26 +256,36 @@ class MultirateSession:
         interval_end = self._tick_time(self.to_tick, "to_hz")
         if end_time is not None:
             interval_end = min(interval_end, end_time)
+        breaches = []
         while a.t < interval_end-1e-12:
             if cancelled():
                 return []
             if a.t >= self._tick_time(self.control_tick, "control_hz")-1e-12:
                 elapsed = max(0., a.t-self.plan_origin)
-                torque, self.horizon_exhausted = hold_last(self.controls, a.dt, elapsed)
+                planned, self.horizon_exhausted = hold_last(self.controls, a.dt, elapsed)
+                torque, clipped = self.watch.command(planned) if self.watch else (planned, False)
                 a.u = torque.copy()
+                self.pending_clipped += clipped
+                breaches = self.watch.torque(a.u) if self.watch else []
                 # State torque is the command held over the following interval.
                 # Endpoint states record the torque that produced that endpoint.
                 self.control_updates += 1
                 self.control_tick += 1
                 # A command is recorded where its state is: at the call's start
-                # (a recorded endpoint) or on the recording grid.
-                if a.t <= start+1e-12 or self._recorded(a.t):
+                # (a recorded endpoint) or on the recording grid; a breaching one always.
+                if a.t <= start+1e-12 or self._recorded(a.t) or breaches:
                     records.append(dict(type="control", sim_time_s=float(a.t), torque_nm=a.u.tolist(),
                                     plan_seq=self.plan["seq"], plan_elapsed_s=elapsed,
                                     horizon_exhausted=self.horizon_exhausted, plan_exhausted=self.horizon_exhausted,
                                     solver_profile=self.plan.get("solver_profile", {}).get("profile"),
                                     solver_process_epoch=self.plan.get("solver_profile", {}).get("process_epoch"),
-                                    record_every=self.execution["record_every"]))
+                                    record_every=self.execution["record_every"],
+                                    **(dict(planned_torque_nm=planned.tolist()) if clipped else {})))
+                if breaches:
+                    # Stop before integrating: the breaching command is held from here.
+                    if self.recorded_t != a.t:
+                        records.append(self._state())
+                    break
             while self._tick_time(self.sim_tick, "simulation_hz") <= a.t+1e-12:
                 self.sim_tick += 1
             until = min(interval_end, self._tick_time(self.sim_tick, "simulation_hz"),
@@ -222,11 +302,17 @@ class MultirateSession:
             a.t = until
             a.applied_torque = a.u.copy()
             self.steps += 1
+            breaches = self.watch.state(a.x[:7], a.x[7:]) if self.watch else []
             physics_wall += self.clock()-physics_start
-            if until >= interval_end-1e-12 or self._recorded(until):
+            if until >= interval_end-1e-12 or self._recorded(until) or breaches:
                 snapshot_started = self.clock()
                 records.append(self._state())
                 snapshot_wall += self.clock()-snapshot_started
+            if breaches:
+                break
+        if breaches:
+            records.append(dict(type="breach", sim_time_s=float(a.t), breaches=breaches,
+                                message=breach_message(float(a.t), breaches)))
         # Copying history/serialization/FK/IPC and pacing do not count as plant
         # execution cost. Measured overhead is scheduler + numerical execution.
         elapsed_wall = self.clock()-started
@@ -240,7 +326,8 @@ class MultirateSession:
         if solve_wall:
             self.pending_solver_reported += self.plan["stats"]["solve_time_ms"]/1000
         at_to_boundary = a.t >= self._tick_time(self.to_tick, "to_hz")-1e-12
-        if at_to_boundary or emit_partial:
+        # A breach ends the call where it happened, like a pause: its partial interval is final.
+        if at_to_boundary or emit_partial or breaches:
             interval = self.flush_interval()
             if interval is not None:
                 records.append(interval)
@@ -256,8 +343,9 @@ class MultirateSession:
                    solver_reported_s=self.pending_solver_reported,
                    partial=self.adapter.t < self._tick_time(self.to_tick, "to_hz")-1e-12,
                    horizon_exhausted=self.horizon_exhausted,
-                   plan_exhausted=self.horizon_exhausted)
+                   plan_exhausted=self.horizon_exhausted, clipped_commands=self.pending_clipped)
         self.interval_start = float(self.adapter.t)
         self.pending_solve_wall = self.pending_physics_wall = self.pending_total_wall = 0.
         self.pending_solver_reported = 0.
+        self.pending_clipped = 0
         return record

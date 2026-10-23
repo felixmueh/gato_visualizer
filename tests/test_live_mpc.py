@@ -37,12 +37,15 @@ class SettingsTests(unittest.TestCase):
                          dict(live_probe()["defaults"], max_sqp_time_s=None))
         self.assertIsNotNone(live_probe()["defaults"]["max_sqp_time_s"])
         self.assertIs(config["warmup"], True)
-        self.assertEqual(config["plant"], dict(friction=False))
+        # Loss-free plant, effort clipped, stop on every limit breach (Felix, 2026-10-23)
+        self.assertEqual(config["plant"], dict(friction=False, clip_effort=True,
+                                               stop_on_breach=dict(position=True, velocity=True, torque=True)))
         self.assertIsNone(config["friction"])  # loss-free predictor and plant by default
         specs = {s["path"]: s for s in self.schema["parameters"]}
         self.assertEqual(set(specs), {"N", "dt_s", "ee_frame", "warm_start", "reset_rho_each_step", "admm_linsys",
             "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "warmup", "max_sqp_time_s",
-            "plant.friction", *(f"solver.{key}" for key in config["solver"]), *(f"admm.{key}" for key in config["admm"])})
+            "plant.friction", "plant.clip_effort", "plant.stop_on_breach.position", "plant.stop_on_breach.velocity",
+            "plant.stop_on_breach.torque", *(f"solver.{key}" for key in config["solver"]), *(f"admm.{key}" for key in config["admm"])})
         self.assertEqual(specs["warm_start"]["choices"], ["shift", "hold"])
         self.assertEqual(specs["admm_linsys"]["choices"], ["pcg", "bdsv_factor", "auto"])
         for fixed in ("solver.exact_hessian", "solver.linsys", "ee_frame"):
@@ -56,6 +59,13 @@ class SettingsTests(unittest.TestCase):
                          dict(kind="float", nullable=True, min=1e-4, max=10))
         self.assertEqual(specs["warmup"]["kind"], "bool")
         self.assertEqual(specs["plant.friction"]["group"], specs["friction"]["group"])
+        for path, label in (("plant.clip_effort", "Clip effort"), ("plant.stop_on_breach.position", "Joint limits"),
+                            ("plant.stop_on_breach.velocity", "Velocity"), ("plant.stop_on_breach.torque", "Torque")):
+            self.assertEqual((specs[path]["kind"], specs[path]["group"], specs[path]["label"]),
+                             ("bool", "Limit handling", label))
+            self.assertTrue(specs[path]["description"])
+        self.assertEqual({specs[f"plant.stop_on_breach.{key}"]["row"] for key in ("position", "velocity", "torque")},
+                         {"Stop on breach"})
         validate_settings(dict(self.config, max_sqp_time_s=.05, warmup=False, friction=self.friction), self.task, self.schema)
 
     def test_a_new_text_parameter_is_shown_fixed_at_its_default(self):
@@ -73,6 +83,7 @@ class SettingsTests(unittest.TestCase):
                  ("solver.exact_hessian", True), ("solver.linsys", "qdldl"),
                  ("warm_start", "repeat"), ("admm.rho", float("inf")), ("velocity_fraction", 0),
                  ("ee_frame", "arm_right_tool_joint"), ("max_sqp_time_s", 0), ("warmup", 1), ("warmup", None), ("plant.friction", 1),
+                 ("plant.clip_effort", None), ("plant.stop_on_breach.torque", 0),
                  ("friction", dict(self.friction, width_rad_s=.05)), ("friction", True)]
         for path, value in cases:
             config = deepcopy(self.config)

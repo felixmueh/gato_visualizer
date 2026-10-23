@@ -50,6 +50,7 @@ class SimulatorAdapter:
                                           figure8=self.figure8_start_world.tolist()))
         self.task = deepcopy(REACH_DEFAULT_TASK)
         self.plant_friction = None
+        self.limit_handling = None
         self.joint_limits = self.mpc_bounds = None
         self.remote = self.profile = self.profile_identity = self.profile_schema = None
         self._plan_context = None
@@ -96,8 +97,13 @@ class SimulatorAdapter:
             raise ValueError(f"The simulator tracks {self.kinematics.end_effector_frame}, not {params['ee_frame']}")
         predictor = self.remote.request("configure", timeout=120, params=params)
         self.plant_friction = self.tiago.urdf_friction() if config["plant"]["friction"] else None
+        raw = self.tiago.limits()
+        self.limit_handling = dict(limits=dict(lower=raw.lower, upper=raw.upper, velocity=raw.velocity, effort=raw.effort),
+                                   clip_effort=config["plant"]["clip_effort"],
+                                   stop_on_breach=dict(config["plant"]["stop_on_breach"]))
         self.simulator_identity = dict(self.simulator_identity,
-                                       friction=self.plant_friction and asdict(self.plant_friction))
+                                       friction=self.plant_friction and asdict(self.plant_friction),
+                                       clip_effort=config["plant"]["clip_effort"])
         self.problem_configuration = deepcopy(predictor["configuration"])
         self.configure_task(params["N"], params["dt_s"], task)
         self.joint_limits, self.mpc_bounds = predictor["joint_limits"], predictor["mpc_bounds"]

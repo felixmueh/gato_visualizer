@@ -22,6 +22,11 @@ ROOT = Path(__file__).resolve().parent
 POSITION_TOL_M, SPEED_L1_TOL_RAD_S = .05, 1.
 # Predictor friction is a compiled variant; its tanh width is fixed (Felix, 2026-10-22).
 PREDICTOR_SMOOTHING_RAD_S = .03
+# The simulated plant: loss-free; commands clipped to the raw URDF effort limit; Live
+# stops where a simulated position, velocity or applied torque breaches its raw URDF
+# limit (Felix, 2026-10-23). Simulation settings only: tiago_mpc's robot path never clips.
+PLANT_DEFAULTS = dict(friction=False, clip_effort=True,
+                      stop_on_breach=dict(position=True, velocity=True, torque=True))
 
 
 def import_tiago(mpc_root):
@@ -59,7 +64,16 @@ def mpc_params(config):
 LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "q_cost": "Tool position cost",
           "qd_cost": "Joint speed cost", "u_cost": "Control cost", "N_cost": "Terminal position cost",
           "friction": "Predictor friction", "plant.friction": "Simulator friction",
-          "ee_frame": "End-effector frame", "warmup": "Warm-up solve", "max_sqp_time_s": "SQP time limit (s)"}
+          "ee_frame": "End-effector frame", "warmup": "Warm-up solve", "max_sqp_time_s": "SQP time limit (s)",
+          "plant.clip_effort": "Clip effort", "plant.stop_on_breach.position": "Joint limits",
+          "plant.stop_on_breach.velocity": "Velocity", "plant.stop_on_breach.torque": "Torque"}
+DESCRIPTIONS = {
+    "plant.clip_effort": "Clip each command to ± the URDF effort limit before it reaches the simulated plant "
+                         "(simulation only; the robot path never clips)",
+    "plant.stop_on_breach.position": "Pause where a simulated joint position leaves its URDF limits",
+    "plant.stop_on_breach.velocity": "Pause where a simulated joint speed exceeds its URDF velocity limit",
+    "plant.stop_on_breach.torque": "Pause where the torque applied to the simulated plant (after clipping) "
+                                   "exceeds its URDF effort limit"}
 RANGES = {"dt_s": (.001, .1), "solver.max_sqp_iters": (1, 100000), "solver.max_pcg_iters": (1, 1000000),
           "solver.pcg_tol": (1e-8, 1), "solver.solve_ratio": (.001, 1), "solver.mu": (1e-6, 1e5),
           "solver.rho": (1e-8, 1e4), "admm.iters": (1, 200), "admm.eps_rel": (1e-8, 1),
@@ -89,8 +103,13 @@ def parameter_specs(config, available_n, predictor_friction):
                 continue
             spec = dict(path=name, label=LABELS.get(name, LABELS.get(key, key.replace("_", " ").capitalize())),
                         group="Friction" if name in ("friction", "plant.friction") else "Costs" if key.endswith("cost") else (
+                            "Limit handling" if name.startswith(("plant.clip_effort", "plant.stop_on_breach.")) else
                             "ADMM" if name.startswith("admm.") else "Limits" if name in LIMIT_KEYS else "Solver"),
                         scale="linear")
+            if name in DESCRIPTIONS:
+                spec["description"] = DESCRIPTIONS[name]
+            if name.startswith("plant.stop_on_breach."):
+                spec["row"] = "Stop on breach"  # three checkboxes side by side
             if name in choices:
                 spec.update(kind="choice", choices=choices[name])
                 if len(choices[name]) == 1 and name != "N":
@@ -285,7 +304,7 @@ def build_schema(probe, mpc_root):
     from execution_session import DEFAULT_EXECUTION
     if not probe.get("compatible"):
         raise ValueError(probe.get("error") or "Selected source is incompatible")
-    defaults = dict(deepcopy(probe["defaults"]), **SIMULATION_CLOCK_DEFAULTS, plant=dict(friction=False))
+    defaults = dict(deepcopy(probe["defaults"]), **SIMULATION_CLOCK_DEFAULTS, plant=deepcopy(PLANT_DEFAULTS))
     by_mode = {mode: list(probe["available_N_by_friction"][mode]) for mode in ("off", "on")}
     available = sorted(set(by_mode["off"]) | set(by_mode["on"]))
     predictor = probe["friction"]

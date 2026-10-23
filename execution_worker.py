@@ -428,7 +428,17 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                 # partially published interval from moving the native tip back.
                 completed.append(batch, generation, token, complete=complete)
                 severity = next((r["severity"] for r in reversed(batch) if r["type"] == "interval"), "none")
-                if complete or capacity:
+                breach = next((r for r in batch if r["type"] == "breach"), None)
+                if breach is not None:
+                    # Stop on limit breach: the session ended at the breaching tick and
+                    # stays ready, so Play continues from there (Felix, 2026-10-23).
+                    history_complete = complete
+                    status("paused", breach["message"], complete=complete, severity=severity,
+                           breach=dict(sim_time_s=breach["sim_time_s"], breaches=breach["breaches"]),
+                           job_active_override=False)
+                    job = None
+                    locks.release()
+                elif complete or capacity:
                     history_complete = complete
                     status("paused", "History capacity reached; requested duration was not completed" if capacity and not complete else "Precalculation complete",
                            complete=complete, severity=severity, capacity_reached=capacity, job_active_override=False)

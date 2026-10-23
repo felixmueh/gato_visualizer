@@ -64,6 +64,12 @@ class FakePlant:
             self.q, self.qd = self.q+self.command*h, self.qd+self.command*h
 
 
+# Raw limits that never bind, and a tight 1.5 Nm effort limit (max_sqp_iters 6000).
+WIDE_LIMITS = dict(lower=np.full(7, -np.inf), upper=np.full(7, np.inf),
+                   velocity=np.full(7, np.inf), effort=np.full(7, np.inf))
+TIGHT_EFFORT = dict(WIDE_LIMITS, effort=np.full(7, 1.5))
+
+
 class FakeAdapter:
     def __init__(self, root=None):
         self.x = np.zeros(14)
@@ -84,6 +90,9 @@ class FakeAdapter:
         self.delay = .25 if config['solver']['max_sqp_iters'] == 9000 else 0
         self.fail = config['solver']['max_sqp_iters'] == 8000
         self.blow_up = config['solver']['max_sqp_iters'] == 7000
+        self.limit_handling = dict(limits=TIGHT_EFFORT if config['solver']['max_sqp_iters'] == 6000 else WIDE_LIMITS,
+                                   clip_effort=config['plant']['clip_effort'],
+                                   stop_on_breach=config['plant']['stop_on_breach'])
         self.task = task
         self.controller.reset(self.x)
     def reset_state(self):
@@ -285,6 +294,73 @@ class SchedulerTests(unittest.TestCase):
         session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=1000.,record_every=7))
         a.t=.0123
         self.assertEqual(round(session.chunk_end(.1)*1000)%7,0)
+    def limited(self, limits, clip_effort=False, **stop_on):
+        a=FakeAdapter()
+        a.limit_handling=dict(limits=dict(WIDE_LIMITS,**limits),clip_effort=clip_effort,
+                              stop_on_breach=dict(dict(position=True,velocity=True,torque=True),**stop_on))
+        return a
+    def run_until(self, session, end):
+        records=[]
+        while session.adapter.t < end-1e-12:
+            batch=session.advance_interval(end)
+            records.extend(batch)
+            if any(r['type']=='breach' for r in batch):
+                break
+        return records
+    def test_clip_effort_applies_the_clipped_torque_and_records_the_planned_one(self):
+        a=self.limited(dict(effort=np.full(7,1.5)),clip_effort=True)
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,record_every=1))
+        records=self.run_until(session,.1)
+        controls=[r for r in records if r['type']=='control']
+        self.assertEqual([r['torque_nm'] for r in controls],[[1.]*7,[1.5]*7,[1.5]*7])
+        self.assertNotIn('planned_torque_nm',controls[0])  # within the limit: unchanged, not marked
+        self.assertEqual([r['planned_torque_nm'] for r in controls[1:]],[[2.]*7,[2.]*7])
+        self.assertEqual([r for r in records if r['type']=='state'][-1]['torque_nm'],[1.5]*7)
+        self.assertEqual([r['clipped_commands'] for r in records if r['type']=='interval'],[2])
+        self.assertFalse(any(r['type']=='breach' for r in records))  # the clipped torque cannot breach
+        np.testing.assert_allclose(a.x[:7],np.full(7,.04+.06*1.5))
+    def test_torque_breach_stops_at_its_command_and_rearms_within_the_limit(self):
+        a=self.limited(dict(effort=np.full(7,1.5)))
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,record_every=5))
+        records=self.run_until(session,.5)
+        breach=records[-2]
+        self.assertEqual((breach['type'],round(breach['sim_time_s'],9)),('breach',.04))
+        self.assertEqual(breach['breaches'][0],dict(joint_index=0,quantity='torque',value=2.,limit=1.5))
+        self.assertEqual(len(breach['breaches']),7)
+        self.assertEqual(breach['message'],'Limit breach at 0.040 s: joint 1 torque 2 Nm beyond its effort limit 1.5 Nm (+6 more)')
+        # Stopped before integrating; the breaching command and its state are recorded off the grid.
+        self.assertAlmostEqual(a.t,.04)
+        self.assertEqual([(r['type'],round(r['sim_time_s'],9)) for r in records[-4:-2]],[('control',.04),('state',.04)])
+        self.assertTrue(records[-1]['partial'])
+        # Continuing holds the command; the torque stays beyond until the next plan's first
+        # knot (1 Nm) is commanded again: at 0.2 s, where a command meets a plan, so the
+        # next breach starts at 0.24 s.
+        records=self.run_until(session,.5)
+        self.assertEqual([round(r['sim_time_s'],9) for r in records if r['type']=='breach'],[.24])
+        self.assertAlmostEqual(a.t,.24)
+        stopped=self.limited(dict(effort=np.full(7,1.5)),torque=False)
+        session=MultirateSession(stopped,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.))
+        self.assertFalse(any(r['type']=='breach' for r in self.run_until(session,.3)))
+        self.assertAlmostEqual(stopped.t,.3)
+    def test_position_and_velocity_breach_at_full_rate_not_the_recording_grid(self):
+        a=self.limited(dict(velocity=np.full(7,.015)))
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,record_every=5))
+        records=self.run_until(session,.5)
+        self.assertEqual(records[-2]['type'],'breach')
+        self.assertAlmostEqual(records[-2]['sim_time_s'],.02)  # qd .02 > .015; recorded grid is every .05 s
+        self.assertEqual(records[-2]['breaches'][0]['quantity'],'velocity')
+        self.assertEqual(records[-3]['type'],'state')
+        self.assertAlmostEqual(records[-3]['sim_time_s'],.02)
+        a=self.limited(dict(upper=np.full(7,.025)))
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,record_every=5))
+        breach=self.run_until(session,.5)[-2]
+        self.assertAlmostEqual(breach['sim_time_s'],.03)  # q .01, .02, .03 at 1 Nm passes .025 at .03 s
+        self.assertEqual((breach['breaches'][0]['quantity'],breach['breaches'][0]['limit']),('position',.025))
+        self.assertIn('beyond its joint limit 0.025 rad',breach['message'])
+    def test_a_value_beyond_its_limit_at_the_start_does_not_stop(self):
+        a=self.limited(dict(upper=np.full(7,-.1)))
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.))
+        self.assertFalse(any(r['type']=='breach' for r in self.run_until(session,.3)))
     def test_record_every_validation(self):
         self.assertEqual(DEFAULT_EXECUTION['control_hz'],500.)
         self.assertEqual(validate_execution(dict(DEFAULT_EXECUTION,record_every=3.))['record_every'],3)
@@ -446,6 +522,43 @@ class SpawnTests(unittest.TestCase):
         self.assertEqual(self.service.generation,generation)
         times=[r['sim_time_s'] for r in self.records() if r['type']=='state']
         self.assertTrue(all(left<right for left,right in zip(times,times[1:])))
+
+    def test_breach_pauses_calculation_and_play_continues_until_a_new_breach(self):
+        request=self.settings(simulation_hz=100.,control_hz=25.,to_hz=10.)
+        request['execution']['calculation']='on_play'
+        request['config']['solver']['max_sqp_iters']=6000  # 1.5 Nm effort limit
+        request['config']['plant']['clip_effort']=False
+        self.service.command(request)
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
+        generation=self.service.generation
+        self.service.command(dict(type='play'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('breach') is not None)
+        status=self.service.latest['status']
+        self.assertEqual((status['state'],status['job_active']),('paused',False))
+        self.assertAlmostEqual(status['breach']['sim_time_s'],.04)
+        self.assertTrue(status['message'].startswith('Limit breach at 0.040 s: joint 1 torque 5 Nm beyond its effort limit 1.5 Nm'))
+        self.assertAlmostEqual(status['history_end_s'],.04)
+        self.assertEqual(self.service.generation,generation)
+        self.service.command(dict(type='play'))
+        self.wait(lambda:(self.service.latest.get('status',{}).get('breach') or {}).get('sim_time_s',0)>.05)
+        self.assertAlmostEqual(self.service.latest['status']['breach']['sim_time_s'],.24)
+        breaches=[r for r in self.records() if r['type']=='breach']
+        self.assertEqual([round(r['sim_time_s'],9) for r in breaches],[.04,.24])
+        plans=[r for r in self.records() if r['type']=='plan' and r['origin']=='play']
+        self.assertTrue(all(not plan['stats']['controller_restarted'] for plan in plans[1:]))
+        clipped=self.settings(simulation_hz=100.,control_hz=25.,to_hz=10.)
+        clipped['execution']['duration_s']=.3
+        clipped['config']['plant']['clip_effort']=True
+        clipped['config']['solver']['max_sqp_iters']=6000
+        self.service.command(clipped)
+        version=self.service.next_version
+        self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==version)
+        self.service.command(dict(type='precalculate'))
+        self.wait(lambda:self.service.latest.get('status',{}).get('message')=='Precalculation complete')
+        records=self.records()
+        self.assertFalse(any(r['type']=='breach' for r in records))
+        self.assertTrue(all(max(r['torque_nm'])<=1.5 for r in records if r['type']=='control'))
+        self.assertTrue(any('planned_torque_nm' in r for r in records if r['type']=='control'))
 
     def test_inspection_pause_preserves_private_controller_and_committed_history(self):
         request=self.settings(simulation_hz=100.,control_hz=25.,to_hz=10.)
