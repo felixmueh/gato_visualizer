@@ -3,17 +3,22 @@
 
 Runs experiments.reach.reach(SimPlant(substep=.001), Mpc(params), run_simulation) in
 this process, then the visualizer's SimulatorAdapter, solver child and
-MultirateSession at 1000/100/100 Hz from the same start, target and MpcParams (Live's
-defaults, TIAGO), and compares the states at every command tick, the commands and the
-plans. Both use tiago_mpc's Mpc and SimPlant; this checks the visualizer's scheduling,
-hold law and process boundary against run(). The default reach arrives within 0.1 s
-(6.3 cm start distance, 5 cm tolerance), so the reference reach gets a zero position
+MultirateSession from the same start, target and MpcParams (Live's defaults: TIAGO
+without the SQP wall-time limit, warm-up on), and compares the states at every command
+tick, the commands and the plans. The rates are the reach's defaults: commands every
+2 ms (500 Hz), a control update every knot (100 Hz), physics on a 1 ms grid. run()
+warms up from the start state before its first tick; the session's configure reseeds
+the same way (mpc.warmup in the solver child). Both use tiago_mpc's Mpc and SimPlant;
+this checks the visualizer's scheduling, hold law, reseed and process boundary against
+run(). The default reach arrives quickly, so the reference reach gets a zero position
 tolerance: it never arrives and runs for the whole duration (default 3 s). Timing is
-excluded. Run it with the selected checkout's interpreter while the GPU is free: it takes the experiment locks.
+excluded. Run it with the selected checkout's interpreter while the GPU is free: it
+takes the experiment locks.
 """
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import os
@@ -29,11 +34,13 @@ from live_mpc import GPULocks, build_schema, import_tiago
 from source_runtime import probe_selection, resolve_selection
 from visualizer_config import DEFAULT_MPC_ROOT
 
+COMMAND_PERIOD_S = .002  # the reach's default command period (experiments/common.py, run_experiment)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpc-root", type=Path, default=Path(os.environ.get("TIAGO_MPC_ROOT", DEFAULT_MPC_ROOT)))
-    parser.add_argument("--steps", type=int, default=300, help="command ticks of 10 ms")
+    parser.add_argument("--steps", type=int, default=300, help="knot intervals of 10 ms")
     parser.add_argument("--atol", type=float, default=1e-9)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--accumulated-ticks", action="store_true",
@@ -54,7 +61,9 @@ def main():
     from experiments.reach import Reach, reach
     from tiago_mpc.mpc import TIAGO, Mpc, MpcParams, find_binary
     from tiago_mpc.sim import SimPlant
-    params = TIAGO
+    params = replace(TIAGO, max_sqp_time_s=None)  # the simulation clock: no wall-time limit
+    if not params.warmup:
+        parser.error("The comparison covers the default warm-up")
     if params.dt_s != .01:
         parser.error("The comparison assumes the default 10 ms knot interval")
     binary = find_binary(params)
@@ -79,7 +88,8 @@ def main():
                     super().advance(k / 1000)
 
         plant = (SimPlant if args.accumulated_ticks else GridPlant)(substep=.001)
-        record = reach(plant, mpc, task=task, out=output / "reference", duration=duration)
+        record = reach(plant, mpc, task=task, out=output / "reference", duration=duration,
+                       command_period=COMMAND_PERIOD_S, update_period=params.dt_s)
         expected, expected_status = record.trajectory, record.summary["status"]
         del mpc, record
 
@@ -94,7 +104,8 @@ def main():
             parser.error("Live's default MpcParams differ from the reference's")
         adapter.configure(config, dict(kind="reach", target_offset_m=[0., 0., 0.]))
         np.testing.assert_allclose(adapter.target, task.target_m, rtol=0, atol=1e-12)
-        session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000., control_hz=100., to_hz=100.))
+        session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000.,
+                                                 control_hz=1 / COMMAND_PERIOD_S, to_hz=1 / params.dt_s))
         records = [session.initial_state()]
         while adapter.t < duration - 1e-12:
             records.extend(session.advance_interval(duration))
@@ -118,7 +129,8 @@ def main():
                         max_abs_difference_before_it=float(rows[:beyond[0]].max(initial=0.)) if len(beyond) else None)
         checks = {key: check(reference[key], actual[key]) for key in reference}
         passed = all(c["shape_equal"] and c["max_abs_difference"] <= args.atol for c in checks.values())
-        result = dict(passed=passed, atol=args.atol, steps=args.steps, accumulated_ticks=args.accumulated_ticks, reference_status=expected_status,
+        result = dict(passed=passed, atol=args.atol, steps=args.steps, accumulated_ticks=args.accumulated_ticks,
+                      command_period_s=COMMAND_PERIOD_S, update_period_s=params.dt_s, reference_status=expected_status,
                       reference_ticks=len(ticks), checks=checks, binary=str(binary),
                       params=json.loads(json.dumps(config)),
                       note="Diagnostic conformance only; no timing or convergence claim")
