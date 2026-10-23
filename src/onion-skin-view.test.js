@@ -1,0 +1,157 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { BoxGeometry, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene } from 'three';
+import { URDFJoint } from 'urdf-loader/src/URDFClasses.js';
+import { setupOnionSkin, ONION_COLOR, ONION_PREDICTION_COLOR, ONION_STORAGE_KEY } from './onion-skin-view.js';
+import { sampleAtOrBefore } from './onion-skin.js';
+import { plotDOM } from './plot-dom-test-helper.js';
+
+function fixture(t, { enabled = true, storageThrows = false } = {}) {
+  const { document, Element } = plotDOM(), elements = new Map(), writes = [];
+  const matches = Element.prototype.matches;
+  Element.prototype.matches = function (selector) {
+    return selector.split(',').some(part => matches.call(this, part.trim()));
+  };
+  const createElement = document.createElement;
+  document.createElement = tag => {
+    const element = createElement(tag);
+    element.style.setProperty = (key, value) => { element.style[key] = value; };
+    return element;
+  };
+  document.getElementById = id => elements.get(id);
+  for (const id of ['live-onion-skin', 'replay-onion-skin', 'onion-skin-tooltip', 'limit-tint-tooltip', 'viewport', 'live-onion-ticks', 'replay-onion-ticks']) {
+    const element = document.createElement(id.endsWith('skin') ? 'button' : 'div');
+    elements.set(id, element); document.body.append(element);
+  }
+  elements.get('limit-tint-tooltip').hidden = true;
+  const pending = [];
+  for (const [name, value] of Object.entries({
+    document,
+    localStorage: {
+      getItem(key) { if (storageThrows) throw new Error('Storage disabled'); return key === ONION_STORAGE_KEY ? String(enabled) : null; },
+      setItem(key, value) { if (storageThrows) throw new Error('Storage disabled'); writes.push([key, value]); },
+    },
+    requestAnimationFrame(callback) { pending.push(callback); return pending.length; },
+  })) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    t.after(() => descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete globalThis[name]);
+  }
+  const scene = new Scene(), robot = new Group(), joint = new URDFJoint();
+  joint.urdfName = 'arm_right_1_joint'; joint.jointType = 'revolute';
+  joint.axis.set(0, 0, 1); joint.limit.lower = -2; joint.limit.upper = 2; joint.setJointValue(0);
+  const mesh = new Mesh(new BoxGeometry(.2, .2, .2), new MeshBasicMaterial());
+  mesh.position.x = .5; joint.add(mesh); robot.add(joint);
+  robot.joints = { arm_right_1_joint: joint }; scene.add(robot);
+  const camera = new PerspectiveCamera(50, 3, .01, 100);
+  camera.position.set(.5, 0, 2); camera.lookAt(.5, 0, 0); camera.updateMatrixWorld(true);
+  const element = document.createElement('canvas'), seeks = [];
+  const view = setupOnionSkin({ robot, scene, camera, element, onSeek: time => seeks.push(time) });
+  return { document, elements, view, element, seeks, writes, scene, joint };
+}
+
+function source(overrides = {}) {
+  const times = overrides.times || [0, .7, 1.4, 2.1, 2.8, 3.5, 4];
+  let calls = 0;
+  const next = {
+    mode: 'replay', identity: {}, revision: 1, times,
+    bounds: [times[0] ?? 0, times.at(-1) ?? 0], trackBounds: [0, times.at(-1) ?? 0],
+    cursor: .1, jointNames: ['arm_right_1_joint'], color: ONION_COLOR,
+    states(keyframes) {
+      calls++;
+      return keyframes.map(time => {
+        const index = sampleAtOrBefore(times, time);
+        return index < 0 ? null : { time: times[index], q: [times[index] / 10] };
+      });
+    },
+    ...overrides,
+  };
+  return { next, calls: () => calls };
+}
+
+test('cursor-only updates reuse recorded samples and ticks while updating ghost opacity', t => {
+  const { view, elements, joint } = fixture(t), motion = source();
+  view.update(motion.next);
+  const before = view.snapshot, revision = view.timeline.keyframeRevision;
+  const tick = elements.get('replay-onion-ticks').children[1];
+  assert.equal(motion.calls(), 1);
+  assert.deepEqual(before.snappedTimes, [0, .7, 1.4, 2.8, 4]);
+  view.update({ ...motion.next, cursor: 2 });
+  assert.equal(motion.calls(), 1);
+  assert.equal(view.timeline.keyframeRevision, revision);
+  assert.equal(elements.get('replay-onion-ticks').children[1], tick);
+  assert.notDeepEqual(view.snapshot.opacities, before.opacities);
+  assert.equal(joint.jointValue[0], 0);
+  assert.match(elements.get('replay-onion-skin').title, /every 1 s/);
+  view.update({ ...motion.next, revision: 2 });
+  assert.equal(motion.calls(), 2);
+});
+
+test('Live reveal follows the cursor and a new empty generation clears ghosts and ticks', t => {
+  const { view, elements } = fixture(t), motion = source({ mode: 'live', identity: 'live:1', reveal: 1.5 });
+  view.update(motion.next);
+  assert.deepEqual(view.timeline.keyframes.map(item => item.time), [0, .7, 1.4]);
+  assert.equal(view.snapshot.ghostCount, 3);
+  assert.equal(elements.get('live-onion-ticks').children.length, 3);
+  assert.equal(elements.get('replay-onion-ticks').children.length, 0);
+  view.update({ ...motion.next, reveal: undefined });
+  assert.equal(motion.calls(), 1);
+  assert.equal(view.timeline.keyframes.length, 5);
+  const empty = source({ mode: 'live', identity: 'live:2', revision: 0, times: [], bounds: [0, 0], trackBounds: [0, 0] });
+  view.update(empty.next);
+  assert.equal(view.snapshot.ghostCount, 0);
+  assert.equal(view.snapshot.step, null);
+  assert.deepEqual(view.snapshot.snappedTimes, []);
+  assert.deepEqual(view.timeline.keyframes, []);
+  assert.equal(elements.get('live-onion-ticks').children.length, 0);
+});
+
+test('Replay ticks seek relative to a nonzero start and show absolute snapped sample times', async t => {
+  const { view, elements, seeks, scene } = fixture(t);
+  const motion = source({ times: [10, 10.4, 10.9, 11.2, 11.8, 12], bounds: [10, 12], trackBounds: [0, 2], offset: 10, cursor: 10.1, color: ONION_PREDICTION_COLOR });
+  view.update(motion.next);
+  const tick = elements.get('replay-onion-ticks').children[1];
+  assert.equal(tick.title, '10.400 s');
+  assert(Math.abs(parseFloat(tick.style.left) - 20) < 1e-10);
+  assert.equal(tick.style['--ghost-color'], '#34d8d4');
+  await tick.emit('pointerenter', { clientX: 100, clientY: 100 });
+  assert.equal(elements.get('onion-skin-tooltip').textContent, '10.400 s');
+  await tick.emit('click');
+  assert(Math.abs(seeks[0] - .4) < 1e-10);
+  assert.equal(view.timeline.keyframes[1].sampleTime, 10.4);
+  assert(Math.abs(view.timeline.keyframes[1].time - .4) < 1e-10);
+  assert.equal(scene.getObjectByName('ghost-arm').children[0].children[0].material.color.getHex(), ONION_PREDICTION_COLOR);
+});
+
+test('storage failures keep toggling functional and O ignores typing, modifiers and repeats', async t => {
+  const { view, document, elements } = fixture(t, { storageThrows: true });
+  view.update(source().next);
+  assert.equal(view.snapshot.enabled, false);
+  assert.equal(view.snapshot.ghostCount, 0);
+  await elements.get('live-onion-skin').emit('click');
+  assert.equal(view.snapshot.enabled, true);
+  const input = document.createElement('input');
+  await document.emit('keydown', { code: 'KeyO', target: input });
+  for (const flags of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { repeat: true }]) {
+    await document.emit('keydown', { code: 'KeyO', target: document.body, ...flags });
+  }
+  assert.equal(view.snapshot.enabled, true);
+  await document.emit('keydown', { code: 'KeyO', target: document.body });
+  assert.equal(view.snapshot.enabled, false);
+  assert.equal(elements.get('live-onion-skin').getAttribute('aria-pressed'), 'false');
+  assert.equal(elements.get('replay-onion-skin').getAttribute('aria-pressed'), 'false');
+});
+
+test('ghost clicks seek while an orbit drag does not seek even after returning to its start', async t => {
+  const { view, element, seeks } = fixture(t);
+  const motion = source({ times: [1], bounds: [1, 1], trackBounds: [0, 1], cursor: 0, states: () => [{ time: 1, q: [0] }] });
+  view.update(motion.next);
+  const pointer = { pointerId: 1, button: 0, clientX: 300, clientY: 100 };
+  await element.emit('pointerdown', pointer);
+  await element.emit('pointerup', pointer);
+  assert.deepEqual(seeks, [1]);
+  await element.emit('pointerdown', pointer);
+  await element.emit('pointermove', { ...pointer, clientX: 310, buttons: 1 });
+  await element.emit('pointerup', pointer);
+  assert.deepEqual(seeks, [1]);
+});
