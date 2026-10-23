@@ -167,6 +167,9 @@ def serve(channel, root):
                 raise ValueError("Solver is not configured")
             elif operation == "reset":
                 result = session.reset(payload["state"], payload["time_s"], payload["reference"])
+                if result["warmup"]:  # diagnostics log: one line per warm-up
+                    print(f"reseed at t={payload['time_s']:.3f} s: warm-up {1e3 * result['wall_s']:.1f} ms",
+                          file=sys.stderr, flush=True)
             elif operation == "solve":
                 result = dict(plan=session.solve(payload["state"], payload["time_s"], payload["reference"],
                                                  payload["origin"], payload["settings_version"]))
