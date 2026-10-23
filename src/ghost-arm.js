@@ -8,13 +8,15 @@ export const GHOST_COLOR = 0x9ca9b8;
 
 // Recorded poses only. Geometry belongs to the solid robot; every material and
 // transform below belongs to this pool. Keyframe selection belongs to its caller.
-export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', max = 24, method = 'plain' }) {
+export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', max = 24, method = 'plain', layer = 0 }) {
   const source = robot.joints?.[armRoot];
   if (!source) throw new Error(`Ghost arm root ${armRoot} is missing.`);
   if (!Number.isInteger(max) || max < 1 || max > 24) throw new Error('Ghost arm pool must contain 1–24 arms.');
   checkMethod(method);
+  checkLayer(layer);
   const container = new Group();
   container.name = 'ghost-arms';
+  container.layers.set(layer);
   scene.add(container);
   const base = new Matrix4(), inverseScene = new Matrix4(), box = new Box3();
   const cameraPosition = new Vector3();
@@ -23,6 +25,10 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
 
   function checkMethod(value) {
     if (!GHOST_METHODS.includes(value)) throw new Error(`Unknown ghost arm method: ${value}`);
+  }
+
+  function checkLayer(value) {
+    if (!Number.isInteger(value) || value < 0 || value > 31) throw new Error('Ghost arm layer must be an integer from 0 to 31.');
   }
 
   function cloneArm(material) {
@@ -70,6 +76,7 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
       depthGroup.add(depth.root);
       group.add(depthGroup);
     }
+    group.traverse((object) => object.layers.set(layer));
     container.add(group);
     const ghost = { group, color, material, depth, depthGroup, depthMaterial,
       sphere: new Sphere(), pose: null, q: null, names: null };
@@ -170,16 +177,23 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
     set(poses);
   }
 
+  function setLayer(next) {
+    checkLayer(next);
+    if (disposed) return;
+    layer = next;
+    container.traverse((object) => object.layers.set(layer));
+  }
+
   setBase();
   return {
-    set, setBase, update, pick, setMethod,
+    set, setBase, update, pick, setMethod, setLayer,
     dispose() { if (disposed) return; clearPool(); container.removeFromParent(); disposed = true; },
     get snapshot() {
       const active = pool.filter((ghost) => ghost.group.visible);
       const meshCount = active.reduce((sum, ghost) => sum + ghost.color.meshes.length, 0);
       const triangles = active.reduce((sum, ghost) => sum + ghost.color.meshes.reduce((total, mesh) =>
         total + (mesh.geometry.index?.count ?? mesh.geometry.attributes.position?.count ?? 0) / 3, 0), 0);
-      return { method, max, allocated: pool.length, count: active.length,
+      return { method, layer, max, allocated: pool.length, count: active.length,
         // Nominal geometry counts for spike setup, not renderer measurements.
         meshCount, nominalCalls: meshCount * (method === 'prepass' ? 2 : 1),
         nominalTriangles: triangles * (method === 'prepass' ? 2 : 1),

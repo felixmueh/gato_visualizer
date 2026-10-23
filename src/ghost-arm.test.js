@@ -4,7 +4,7 @@ import { BoxGeometry, Group, LineBasicMaterial, LineSegments, Mesh, MeshStandard
 import { URDFJoint, URDFMimicJoint } from 'urdf-loader/src/URDFClasses.js';
 import { createGhostArms } from './ghost-arm.js';
 
-function fixture(method = 'plain') {
+function fixture(method = 'plain', layer = 0) {
   const scene = new Scene(), robot = new Group(), torso = new Group();
   scene.add(robot); robot.add(torso); torso.position.z = 1;
   const joint = new URDFJoint();
@@ -19,7 +19,7 @@ function fixture(method = 'plain') {
   const outline = new LineSegments(mesh.geometry, new LineBasicMaterial());
   outline.name = 'limit-beyond-outline'; mesh.add(outline);
   robot.joints = { arm_right_1_joint: joint };
-  const ghosts = createGhostArms({ robot, scene, method });
+  const ghosts = createGhostArms({ robot, scene, method, layer });
   return { scene, robot, torso, joint, finger, mesh, ghosts };
 }
 
@@ -87,5 +87,22 @@ test('method changes preserve poses, pool stays bounded and prepass order is per
   const mesh = scene.getObjectByName('ghost-arm').children[0].children.find((item) => item.isMesh);
   assert.equal(mesh.material.isMeshBasicMaterial, true); assert.equal(mesh.material.depthWrite, true);
   assert.throws(() => ghosts.setMethod('unknown'));
+  ghosts.dispose();
+});
+
+test('layer selection reaches every ghost descendant across allocation and method changes', () => {
+  const { scene, robot, ghosts } = fixture('prepass', 1);
+  function assertLayers(layer) {
+    scene.getObjectByName('ghost-arms').traverse((object) => assert.equal(object.layers.mask, 1 << layer));
+    robot.traverse((object) => assert.equal(object.layers.mask, 1));
+    assert.equal(ghosts.snapshot.layer, layer);
+  }
+  ghosts.set([pose()]); assertLayers(1);
+  ghosts.setLayer(2); assertLayers(2);
+  ghosts.set([pose(), pose({ id: 'two' })]); assertLayers(2);
+  ghosts.setMethod('plain'); assertLayers(2);
+  ghosts.setLayer(0); assertLayers(0);
+  assert.throws(() => ghosts.setLayer(32));
+  assert.throws(() => ghosts.setLayer(-1));
   ghosts.dispose();
 });
