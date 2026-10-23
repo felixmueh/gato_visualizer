@@ -330,6 +330,18 @@ Elsewhere, in Replay or locked, the tab is read-only as before. Task geometry
 scene shows the arm at `Q_START`. "Start pose" is the one term; the former
 "starting pose" of the default scene is the same thing.
 
+## Browser checks — Felix, 2026-10-23
+
+Playwright (a pinned devDependency; Chromium only, in `~/.cache/ms-playwright`,
+installed with `npx playwright install chromium`) lets an agent check the real
+UI headlessly. Start your own server on your own port (`./scripts/start.sh --port
+<port> --config _expr_data/<name>.json`, GPU rules apply once Live solves), write
+the script under `_expr_data/` (ES module, `import { chromium } from 'playwright'`,
+`chromium.launch()`, `page.goto('http://127.0.0.1:<port>/')`), save screenshots
+there too, and stop the server afterwards. Never drive Felix's viewer on port
+8090; read-only screenshots of it only if he asks. Rebuild (`npm run build`)
+after frontend changes; the server serves `dist/`.
+
 ## What the display claims
 
 The display must not let a viewer mistake one kind of data for another: a
