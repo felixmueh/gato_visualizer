@@ -21,7 +21,7 @@ export function fitAuxiliaryCamera(camera, bounds, aspect, { padding = 1.18 } = 
 
 // Render the exact displayed scene through two independent cameras. There is
 // one robot hierarchy, one simulation/playback clock, and no duplicate solver.
-export function setupAuxiliaryViews({ scene, top, right, getBounds, visible = () => true }) {
+export function setupAuxiliaryViews({ scene, top, right, getBounds, visible = () => true, beforeRender = () => {} }) {
   let dirty = true, previousFrame = -Infinity, frames = 0;
   const views = [top, right].map((container, i) => {
     const name = i === 0 ? 'top' : 'right';
@@ -45,11 +45,12 @@ export function setupAuxiliaryViews({ scene, top, right, getBounds, visible = ()
         if (!width || !height) continue;
         if (width !== view.width || height !== view.height) { view.renderer.setSize(width, height); view.width = width; view.height = height; dirty = true; }
         if (dirty) fitAuxiliaryCamera(view.camera, bounds || getBounds(), width / height);
+        beforeRender(view.camera);
         view.renderer.render(scene, view.camera);
       }
       dirty = false; frames++;
     },
-    get snapshot() { return { frames, visible: visible(), views: views.map(view => ({ name: view.name, width: view.width, height: view.height, quaternion: view.camera.quaternion.toArray(), position: view.camera.position.toArray() })) }; },
+    get snapshot() { return { frames, visible: visible(), views: views.map(view => ({ name: view.name, width: view.width, height: view.height, calls: view.renderer.info.render.calls, triangles: view.renderer.info.render.triangles, quaternion: view.camera.quaternion.toArray(), position: view.camera.position.toArray() })) }; },
     dispose() { for (const view of views) { view.observer.disconnect(); view.renderer.dispose(); view.renderer.domElement.remove(); } },
   };
 }

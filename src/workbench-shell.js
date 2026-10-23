@@ -42,6 +42,7 @@ export function workbenchShell(icon) {
           <div class="camera-controls"><button id="source-settings-open" title="Settings" aria-label="Settings">${icon('settings')}</button><button id="camera-home" title="Fit robot" aria-label="Fit robot">${icon('robot')}</button><button id="camera-arm" title="Fit trajectory" aria-label="Fit trajectory">${icon('focus')}</button><button id="right-sidebar-toggle" aria-label="Hide inspection sidebar" aria-expanded="true" aria-controls="right-sidebar" title="Toggle inspection sidebar">${icon('panelRight')}</button></div>
         </div>
         <p id="live-message" class="live-message workbench-toast" role="status" aria-live="polite"></p>
+        <div id="onion-skin-tooltip" class="limit-tint-tooltip onion-skin-tooltip" role="tooltip" hidden></div>
         <div id="limit-tint-tooltip" class="limit-tint-tooltip" role="tooltip" hidden></div>
         <div class="load-overlay" id="load-overlay" role="status"><div class="spinner"></div><strong id="load-title">Opening workspace</strong><p id="load-detail">Loading robot description…</p></div>
         <div hidden><span id="scene-title">TIAGo Pro</span><div id="path-legend"></div></div>
@@ -50,13 +51,14 @@ export function workbenchShell(icon) {
       <section id="live-controls" class="playback transport-bar live-controls" aria-label="Live MPC playback" hidden>
         <button id="live-play" class="transport-button primary-action" disabled aria-label="Play live history" title="Play / pause">${icon('play')}</button>
         <button id="live-reset" class="transport-button" disabled aria-label="Reset state" title="Reset state">${icon('restart')}</button>
-        <div class="live-history-track transport-track"><div id="live-history-intervals" aria-hidden="true"></div><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Live history time"></div>
+        <div class="live-history-track transport-track"><div id="live-history-intervals" aria-hidden="true"></div><div id="live-onion-ticks" class="onion-ticks"></div><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Live history time"></div>
         <span id="live-history-position" class="transport-time">0 / 0 s</span>
         <label class="stop-option" title="Stop at the recorded end; uncheck to continue simulation"><input id="live-stop-at-end" type="checkbox" checked>Stop</label>
         <div class="transport-calculation"><label class="sr-only" for="live-calculation">Calculation mode</label><select id="live-calculation" aria-label="Calculation mode"><option value="on_play">On Play</option><option value="manual">Manual</option><option value="automatic">Automatic</option></select>
           <button id="live-precalculate" class="transport-button" disabled aria-label="Precalculate" title="Precalculate closed-loop motion">${icon('calculate')}</button>
           <label class="duration-input"><input id="live-duration" type="number" min=".01" step="any" value="10" aria-label="Calculation duration seconds"><span>s</span></label>
         </div>
+        <button id="live-onion-skin" class="transport-button onion-skin-toggle" aria-label="Onion skin" aria-pressed="false" title="Onion skin · off (O)">${icon('onion')}</button>
         <button id="live-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div hidden><input id="live-continue" type="checkbox"><button id="live-preview">Preview</button><button id="live-cancel">Cancel calculation</button><button id="live-history-latest">Go latest</button></div>
       </section>
@@ -64,11 +66,12 @@ export function workbenchShell(icon) {
         <div class="transport-replay-content" id="replay-timeline">
           <button id="play" class="transport-button play-button" disabled aria-label="Play trajectory" title="Play / pause">${icon('play')}</button>
           <button id="restart" class="transport-button" disabled title="Reset playback" aria-label="Reset playback">${icon('restart')}</button>
-          <div class="transport-track"><input type="range" id="timeline" min="0" max="1" step="any" value="0" disabled aria-label="Trajectory time"></div>
+          <div class="transport-track"><div id="replay-onion-ticks" class="onion-ticks"></div><input type="range" id="timeline" min="0" max="1" step="any" value="0" disabled aria-label="Trajectory time"></div>
           <div class="transport-time"><strong id="time-current">0.00</strong> / <span id="time-total">—</span> s</div>
           <label class="stop-option" title="Stop at the end; uncheck to loop this recording"><input id="replay-stop-at-end" type="checkbox" checked>Stop</label>
           <label class="replay-speed"><span class="sr-only">Playback speed</span><select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
         </div>
+        <button id="replay-onion-skin" class="transport-button onion-skin-toggle" aria-label="Onion skin" aria-pressed="false" title="Onion skin · off (O)">${icon('onion')}</button>
         <button id="replay-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div class="transport-metadata" hidden><span id="timeline-middle"></span><span id="timeline-end"></span><span class="keyboard-hint"></span></div>
       </section>

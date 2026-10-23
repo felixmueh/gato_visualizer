@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
+import { setupOnionSkin, ONION_COLOR } from './onion-skin-view.js';
+import { sampleAtOrBefore } from './onion-skin.js';
 import { setupLive } from "./live.js";
 import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
@@ -48,6 +50,7 @@ const icons = {
   panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
   calculate: '<path d="M13 2 5 13h6l-1 9 9-13h-6l1-7Z"/>',
   settings: '<path d="m10 3-.6 2.2-2 .9-2-.7-2 3.4 1.5 1.6v2.3L3.4 14l2 3.4 2-.7 2 .9.6 2.2h4l.6-2.2 2-.9 2 .7 2-3.4-1.5-1.6v-2.3L20.6 8l-2-3.4-2 .7-2-.9L14 3Z"/><circle cx="12" cy="11.4" r="3"/>',
+  onion: '<path d="M3 20a17 17 0 0 1 17-17M8 20A12 12 0 0 1 20 8M13 20a7 7 0 0 1 7-7"/>',
   chevron: '<path d="m8 5 7 7-7 7"/>',
 };
 const icon = (name) =>
@@ -113,6 +116,7 @@ let liveTaskStart;
 let lastCameraFit;
 let jointCells = [];
 let auxiliaryViews;
+let onionSkin, onionSpike;
 const workbench = setupWorkbench({ onLayout: () => auxiliaryViews?.invalidate() });
 setupSidebarResize({ shell: document.getElementById("workbench"), onLayout: () => auxiliaryViews?.invalidate() });
 const emptyTimingIntervals = [];
@@ -151,10 +155,10 @@ function liveReveal(time) {
 function updateExpandedTimeline() {
   if (live?.mode === 'live') {
     const history = live.history;
-    expandedTimeline.update({ mode: 'live', identity: history.generation, bounds: history.presentationBounds, time: history.selectedTime, intervals: history.intervals });
+    expandedTimeline.update({ mode: 'live', identity: history.generation, bounds: history.presentationBounds, time: history.selectedTime, intervals: history.intervals, ...onionSkin?.timeline });
   } else {
     const duration = trajectory ? trajectory.time_s.at(-1) - trajectory.time_s[0] : 0;
-    expandedTimeline.update({ mode: 'replay', identity: trajectory, bounds: [0, duration], time: elapsed, clockLabel: `${trajectory ? playbackClock(trajectory) : 'recorded'} time`.replace(/^./, letter => letter.toUpperCase()), intervals: emptyTimingIntervals });
+    expandedTimeline.update({ mode: 'replay', identity: trajectory, bounds: [0, duration], time: elapsed, clockLabel: `${trajectory ? playbackClock(trajectory) : 'recorded'} time`.replace(/^./, letter => letter.toUpperCase()), intervals: emptyTimingIntervals, ...onionSkin?.timeline });
   }
 }
 
@@ -459,6 +463,24 @@ function togglePlay() {
   updatePlaybackState();
 }
 
+function updateOnionSkin() {
+  if (!onionSkin) return;
+  const history = live?.mode === 'live' ? live.history : null;
+  if (history) {
+    onionSkin.update({ mode: 'live', identity: `live:${history.generation}`, revision: live.historyRevision,
+      times: history.length ? history.bounds : [], bounds: history.bounds, trackBounds: history.presentationBounds,
+      cursor: history.selectedTime ?? history.bounds[1], reveal: liveReveal(history.selectedTime),
+      states: times => live.historyStates(times), jointNames: defaultData.joint_names, color: ONION_COLOR });
+  } else {
+    const times = trajectory?.time_s || [], offset = times[0] || 0;
+    onionSkin.update({ mode: 'replay', identity: trajectory, revision: trajectory,
+      times, bounds: times.length ? [offset, times.at(-1)] : [0, 0],
+      trackBounds: [0, times.length ? times.at(-1) - offset : 0], offset, cursor: elapsed + offset,
+      states: keyframes => keyframes.map(time => { const index = sampleAtOrBefore(times, time); return index < 0 ? null : { time: times[index], q: trajectory.q[index] }; }),
+      jointNames: data.joint_names, color: trajectory?.kind === 'prediction' ? pathColor : ONION_COLOR });
+  }
+}
+
 function animate(timestamp) {
   const delta = lastFrame === undefined ? 0 : (timestamp - lastFrame) / 1000;
   lastFrame = timestamp;
@@ -478,8 +500,11 @@ function animate(timestamp) {
   viewCube.update(timestamp);
   targetGizmo?.update();
   if (liveGroup?.userData.target) liveGroup.userData.target.visible = displayedLiveReference?.kind === 'figure8' || !targetGizmo?.active;
+  updateOnionSkin();
+  onionSpike?.beforeRender(camera);
   renderer.render(scene, camera);
   workbench.update(); updateExpandedTimeline(); plotInspection.update(); auxiliaryViews?.render(timestamp);
+  onionSpike?.frame(timestamp);
 }
 
 $("play").addEventListener("click", togglePlay);
@@ -503,7 +528,7 @@ $("camera-arm").addEventListener("click", () => setCamera("trajectory"));
 document.addEventListener("keydown", (event) => {
   if (
     event.code !== "Space" ||
-    event.target.closest("input, select, button, textarea, a")
+    event.target.closest("input, select, button, textarea, a, [contenteditable=\"true\"]")
   )
     return;
   event.preventDefault();
@@ -547,7 +572,7 @@ async function start() {
     scene.add(robot);
     auxiliaryViews = setupAuxiliaryViews({ scene, top: $('auxiliary-top'), right: $('auxiliary-right'),
       getBounds: () => visibleSceneBounds(robot, live?.mode === 'live' ? liveGroup : pathGroup),
-      visible: () => workbench.auxiliaryVisible });
+      visible: () => workbench.auxiliaryVisible, beforeRender: viewCamera => { onionSkin?.sort(viewCamera); onionSpike?.beforeRender(viewCamera); } });
     robot.traverse((object) => {
       if (object.isMesh) {
         object.material = object.material.clone();
@@ -556,6 +581,10 @@ async function start() {
     });
     limitTint = createLimitTint({ robot, jointNames: data.joint_names, camera, element: renderer.domElement, tooltip: $("limit-tint-tooltip") });
     limitTint.setEnabled(limitTintEnabled); limitTint.setSettings(limitUse);
+    onionSkin = setupOnionSkin({ robot, scene, camera, element: renderer.domElement, onSeek: time => {
+      const input = $(live?.mode === 'live' ? 'live-history' : 'timeline');
+      input.value = time; input.dispatchEvent(new Event('input', { bubbles: true }));
+    } });
     jointCells = createJointTable($("joint-list"), data.joint_names);
     setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
     populateReplay(data, {name: 'Starting pose'});
@@ -572,7 +601,13 @@ async function start() {
     document.querySelector(".connection").classList.add("connected");
     $("load-overlay").hidden = true;
     // Expose a small read-only handle for browser smoke checks and local inspection.
+    if (new URLSearchParams(location.search).has('onion-spike')) {
+      const { setupOnionSpike } = await import('./onion-spike.js');
+      onionSpike = setupOnionSpike({ renderer, scene, camera, controls, robot, getTrajectory: () => playing || live?.mode === 'live' ? null : trajectory, getJointNames: () => data.joint_names, auxiliaryViews, setNormalVisible: value => onionSkin.setVisible(value) });
+    }
     window.__motionStudio = {
+      get onionSpike() { return onionSpike?.snapshot; },
+      get onionSkin() { return onionSkin?.snapshot; },
       get auxiliaryViews() { return auxiliaryViews?.snapshot; },
       get timeline() { return expandedTimeline.snapshot; },
       get plots() { return plotInspection.snapshot; },
@@ -766,6 +801,7 @@ function applyFixedJoints(recording) {
     if (!moving.has(name) && joint.jointType !== 'fixed' && !joint.mimicJoint) robot.setJointValue(name, 0);
   }
   for (const [name, value] of Object.entries(recording.fixed_joints || {})) robot.setJointValue(name, value);
+  onionSkin?.setBase();
 }
 
 function populateReplay(recording, item) {

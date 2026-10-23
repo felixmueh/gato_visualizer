@@ -254,7 +254,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       return;
     }
     const keyframe = keyframeAt(event, element);
-    if (keyframe) { tooltip.textContent = `${keyframe.time.toFixed(3)} s`; tooltip.hidden = false; return; }
+    if (keyframe) { tooltip.textContent = `${(keyframe.sampleTime ?? keyframe.time).toFixed(3)} s`; tooltip.hidden = false; return; }
     const time = timeAt(event), epsilon = Math.max(Number.EPSILON, (window[1] - window[0]) / Math.max(width, 1) / 2);
     const entries = visibleTimelineIntervals(index, [time - epsilon, time + epsilon]);
     const entry = entries.find(value => value.severity === 'red') || entries.find(value => value.severity === 'yellow') || entries[0];

@@ -954,6 +954,13 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     get presentationSettings() { return { ...presentation }; },
     get reference() { return desiredReference; },
     get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
+    // Onion skin reads recorded sample holds, never the interpolated display pose.
+    historyStates(times) { return times.map(time => {
+      const sample = history.at(time, { trace: false });
+      return sample ? { time: sample.state.sim_time_s, q: sample.state.q.slice() } : null;
+    }); },
+    get historyRevision() { return historyRevision; },
+    get generation() { return generation; },
     get metricHistory() { return history.metricSnapshot; },
     get history() { return { length: history.length, bounds: history.bounds, presentationBounds: clock.presentationBounds(history.bounds), following: clock.following, buffering: clock.buffering, playing: clock.playing, growing: growingHistory(), selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals }; },
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || segmentOf(plan)?.task_path_xyz?.length); },
