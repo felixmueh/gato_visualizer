@@ -182,6 +182,12 @@ class RobotKinematics:
         pin.forwardKinematics(self.model, self.data, self.neutral)
         pin.updateFramePlacements(self.model, self.data)
         self.world_from_torso = self.data.oMf[self.torso_frame].copy()
+        first_joint = next(j for j in ET.parse(urdf).getroot().findall("joint")
+                           if j.get("name") == JOINT_NAMES[0])
+        parent_frame = self.model.getFrameId(first_joint.find("parent").get("link"))
+        if parent_frame >= self.model.nframes:
+            raise SourceError("Canonical URDF is missing the right arm parent frame")
+        self.arm_base = self.data.oMf[parent_frame].homogeneous.copy()
 
     def ee_positions(self, arm_q):
         positions = []
@@ -248,20 +254,51 @@ def load_scene(mpc_root):
     return scene, robot_xml, assets
 
 
-def replay_scene(replay, path, mpc_root, base_scene):
-    """Convert a portable native replay into the existing browser scene shape."""
+def _replay_geometry(replay, mpc_root, base_scene):
     fixed = {name: value for name, value in base_scene["fixed_joints"].items() if name not in JOINT_NAMES}
     fixed.update(replay.metadata.get("fixed_joints", {}))
     end_effector_frame = replay.metadata.get("end_effector_frame", "arm_right_tool_joint")
     kinematics = RobotKinematics(Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf", fixed_joints=fixed,
                                  end_effector_frame=end_effector_frame)
+    return fixed, end_effector_frame, kinematics
+
+
+def _reference_world(reference, kinematics):
+    points = np.atleast_2d(reference.xyz)
+    if reference.frame == "torso_lift_link":
+        transform = kinematics.world_from_torso
+        return points @ transform.rotation.T + transform.translation
+    return points
+
+
+def replay_motion(replay, path, mpc_root, base_scene):
+    """A comparison track has recorded motion and no FK for saved predictions."""
+    fixed, frame, kinematics = _replay_geometry(replay, mpc_root, base_scene)
+    result = dict(label=replay.metadata.get("label", path.stem), time_basis=replay.metadata["time_basis"],
+                  end_effector_frame=frame, fixed_joints=fixed,
+                  joint_limits=(replay.joint_limits or canonical_joint_limits(
+                      Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf")),
+                  model_warning=deepcopy(replay.model_warning), time_s=replay.time_s.tolist(), q=replay.q.tolist(),
+                  ee_xyz=kinematics.ee_positions(replay.q).tolist(), reference_time_s=None, reference_xyz=None,
+                  arm_base=kinematics.arm_base.tolist(), plan_count=len(replay.predictions),
+                  provenance=deepcopy(replay.metadata.get("provenance", {})))
+    if replay.reference is not None:
+        points = _reference_world(replay.reference, kinematics)
+        times = replay.reference.time_s
+        if times is None:
+            times = replay.time_s[[0, -1]]
+            points = np.repeat(points, 2, axis=0)
+        result.update(reference_time_s=times.tolist(), reference_xyz=points.tolist())
+    json.dumps(result, allow_nan=False)
+    return result
+
+
+def replay_scene(replay, path, mpc_root, base_scene):
+    """Convert a portable native replay into the existing browser scene shape."""
+    fixed, end_effector_frame, kinematics = _replay_geometry(replay, mpc_root, base_scene)
 
     def world_points(reference):
-        points = np.atleast_2d(reference.xyz)
-        if reference.frame == "torso_lift_link":
-            transform = kinematics.world_from_torso
-            return points @ transform.rotation.T + transform.translation
-        return points
+        return _reference_world(reference, kinematics)
 
     def trajectory(identifier, label, kind, times, q, reference, origin=None, stats=None):
         metadata = dict(time_basis=replay.metadata["time_basis"], coordinates="native",
@@ -402,6 +439,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             if urlsplit(self.path).path == "/api/replays/upload" and replays is not None:
                 self.upload_replay()
                 return
+            if urlsplit(self.path).path == "/api/live/freeze" and replays is not None:
+                self.freeze_live()
+                return
             if urlsplit(self.path).path != "/api/live/command":
                 self.send_json_error(404, "Unknown API endpoint")
                 return
@@ -423,6 +463,39 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 result, status = dict(accepted=False, error=str(exc)), 400
             self.send_payload(json.dumps(result, allow_nan=False).encode(),
                               "application/json; charset=utf-8", status)
+
+        def freeze_live(self):
+            from datetime import datetime, timezone
+            from execution_bridge import HistoryGenerationError, LiveFreezeConflict
+            from live_freeze import export_freeze
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
+                self.send_json_error(403, "Freeze requires a same-origin request")
+                return
+            try:
+                if urlsplit(self.path).query:
+                    raise ValueError("Freeze does not accept query parameters")
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 65536 or self.headers.get_content_type() != "application/json":
+                    raise ValueError("Expected a JSON freeze command under 64 KiB")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict) or set(body) != {"generation"} or type(body["generation"]) is not int:
+                    raise ValueError("Freeze requires only an integer generation")
+                timestamp = datetime.now(timezone.utc)
+                label = "Freeze · " + timestamp.strftime("%H:%M:%S")
+                destination = replays.freeze_directory / (".freeze-" + timestamp.strftime("%Y%m%dT%H%M%S") +
+                                                           "-" + uuid.uuid4().hex[:12] + ".npz")
+                def writer(records, complete):
+                    return export_freeze(destination, records, mpc_root=live.mpc_root,
+                        model_urdf=replays.model_urdf, generation=body["generation"], complete=complete,
+                        fixed_joints=scene["fixed_joints"], world_frame=scene["world_frame"],
+                        label=label, frozen_at=timestamp.isoformat())
+                item = live.freeze(body["generation"], writer, replays.add_freeze)
+                result, status = dict(accepted=True, item=item), 200
+            except (ValueError, TypeError, KeyError, OSError, RuntimeError) as exc:
+                result = dict(accepted=False, error=str(exc))
+                status = 409 if isinstance(exc, (HistoryGenerationError, LiveFreezeConflict)) else 400
+            self.send_payload(json.dumps(result, allow_nan=False).encode(), "application/json; charset=utf-8", status)
 
         def presentation_command(self):
             origin = self.headers.get("Origin")
@@ -644,12 +717,12 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                     result, status = dict(error=str(exc)), 400
                 self.send_payload(json.dumps(result, allow_nan=False).encode(),
                                   "application/json; charset=utf-8", status)
-            elif path == "/api/replays/scene" and replays is not None:
+            elif path in ("/api/replays/scene", "/api/replays/motion") and replays is not None:
                 try:
-                    query = parse_qs(urlsplit(self.path).query)
+                    query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
                     if set(query) != {"id"} or len(query["id"]) != 1:
                         raise ValueError("Select one recording with its catalog id")
-                    selected = replays.scene(query["id"][0])
+                    selected = (replays.motion if path.endswith("/motion") else replays.scene)(query["id"][0])
                     self.send_payload(json.dumps(selected, allow_nan=False, separators=(",", ":")).encode(),
                                       "application/json; charset=utf-8", compress=True)
                 except (KeyError, ValueError, OSError) as exc:
@@ -800,6 +873,7 @@ def main(argv=None):
         plots.close()
         if live is not None:
             live.close()
+        library.close()
     if restart_requested.is_set():
         environment = os.environ.copy()
         # Apply explicitly replaces source launch overrides. Numerical workers

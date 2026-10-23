@@ -27,6 +27,10 @@ class HistoryGenerationError(ValueError):
     pass
 
 
+class LiveFreezeConflict(ValueError):
+    pass
+
+
 class HistoryStore:
     """Append-only JSONL; bounded pages and a compact byte-offset index.
 
@@ -136,6 +140,18 @@ class HistoryStore:
                 raise HistoryGenerationError(f"History changed; current generation={self.generation}")
             return dict(kind="live", generation=generation, path=str(self.path),
                         cursor=len(self.offsets), byte_end=self.stream.tell(),
+                        complete=self.complete)
+
+    def open_committed_prefix(self, generation):
+        """Open under the store lock; decoding/export runs outside it, like pages."""
+        with self.lock:
+            if generation != self.generation:
+                raise HistoryGenerationError(f"History changed; current generation={self.generation}")
+            if self.segment is None:
+                raise ValueError(NO_SEGMENT)
+            if self.state_count < 2:
+                raise ValueError("Freeze needs at least two recorded states")
+            return dict(reader=self.path.open("rb"), byte_end=self.stream.tell(), cursor=len(self.offsets),
                         complete=self.complete)
 
     def _page_encoded(self, generation, after, limit):
@@ -256,6 +272,8 @@ class ProcessLiveService:
         self.generation = 0
         self._generation_start = dict(kind="current")
         self.closed = False
+        self._freeze_epoch = 0
+        self._freeze_interrupted = False
         self.context = mp.get_context("spawn")
         self.commands = self.context.Queue(maxsize=64)
         self.results = self.context.Queue(maxsize=8)
@@ -318,7 +336,9 @@ class ProcessLiveService:
             if not self._preview_requested:
                 self._preview_requested = True
                 self.commands.put_nowait(dict(type="preview", token=self.revision.value,
-                                               generation=self.generation, settings_version=self.version))
+                                               generation=self.generation, settings_version=self.version,
+                                               bridge_command_epoch=self._freeze_epoch + 1))
+                self._freeze_epoch += 1
             return self.cursor, [self.latest[k] for k in ("status", "segment", "plan", "state", "history") if k in self.latest]
 
     def unsubscribe(self):
@@ -338,6 +358,7 @@ class ProcessLiveService:
         self.history_store.reset(self.generation)
         self.inspection_store.reset(self.generation)
         self.history_store.complete = False
+        self._freeze_interrupted = False
         for listener in self.generation_listeners:
             listener(self.generation)
 
@@ -349,6 +370,49 @@ class ProcessLiveService:
 
     def history_json(self, generation, after=0, limit=256):
         return self.history_store.page_json(generation, after, limit)
+
+    def _check_freeze(self, generation):
+        if generation != self.generation:
+            raise HistoryGenerationError(f"History changed; current generation={self.generation}")
+        status = self.latest.get("status", {})
+        if (self.closed or self.profile_switch["state"] == "switching" or status.get("job_active") or
+                status.get("state", "paused") not in ("idle", "paused", "error") or
+                status.get("generation", generation) != generation or
+                status.get("settings_version", self.version) != self.version or
+                status.get("bridge_command_epoch", 0) < self._freeze_epoch):
+            raise LiveFreezeConflict("A Live job or settings change is active; wait for it to finish before freezing")
+
+    def freeze(self, generation, writer, publish):
+        """Export a stable idle prefix, then publish only if it is still current.
+
+        `writer(records, complete)` returns an owned file. Neither JSON reading
+        nor compression blocks command handling or the history receiver.
+        """
+        from live_freeze import committed_records
+        if type(generation) is not int or generation < 0:
+            raise ValueError("Freeze requires one nonnegative integer generation")
+        with self.condition:
+            self._check_freeze(generation)
+            epoch = self._freeze_epoch
+            prefix = self.history_store.open_committed_prefix(generation)
+            # History's complete means the requested endpoint was reached, even
+            # when that endpoint is also a breaching tick. Freeze describes the
+            # current stop: breach/cancel remains incomplete until Play resumes.
+            prefix["complete"] = prefix["complete"] and not getattr(self, "_freeze_interrupted", False)
+        path = None
+        try:
+            with prefix["reader"] as reader:
+                records = committed_records(reader, byte_end=prefix["byte_end"], cursor=prefix["cursor"])
+                path = writer(records, prefix["complete"])
+            with self.condition:
+                self._check_freeze(generation)
+                if epoch != self._freeze_epoch or len(self.history_store.offsets) != prefix["cursor"]:
+                    raise LiveFreezeConflict("History changed while freezing; try again when Live is idle")
+                return publish(path)
+        except BaseException:
+            if path is not None:
+                Path(path).unlink(missing_ok=True)
+            raise
 
     def set_report_hz(self, report_hz):
         report_hz = validate_presentation(dict(DEFAULT_PRESENTATION, report_hz=report_hz))["report_hz"]
@@ -494,8 +558,13 @@ class ProcessLiveService:
                 self.publish(self._history_metadata())
             request.update(token=self.revision.value, generation=self.generation, settings_version=self.version,
                            config=deepcopy(self.config), task=deepcopy(self.task), execution=deepcopy(self.execution),
-                           generation_start=deepcopy(self._generation_start))
+                           generation_start=deepcopy(self._generation_start), bridge_command_epoch=self._freeze_epoch + 1)
             self.commands.put_nowait(request)
+            self._freeze_epoch += 1
+            if kind == "cancel":
+                self._freeze_interrupted = True
+            elif kind in ("play", "precalculate"):
+                self._freeze_interrupted = False
             return self.next_version
 
     def _receive(self):
@@ -602,6 +671,8 @@ class ProcessLiveService:
                             rendered_events.append(event)
                             if "complete" in event:
                                 self.history_store.complete = bool(event["complete"])
+                            if event.get("type") == "status" and event.get("breach"):
+                                self._freeze_interrupted = True
                         if inspection_records:
                             # Previews read their context from the same segment header.
                             self.inspection_store.append(([] if self.inspection_store.segment else [self.segment]) +

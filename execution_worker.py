@@ -76,6 +76,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
     adapter = session = None
     generation = version = 0
     token = 0
+    bridge_command_epoch = 0
     config = task = execution = None
     job = None
     need_config = True
@@ -117,6 +118,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
         job_active_override = extra.pop("job_active_override", job is not None)
         event = dict(type="status", state=state, message=message,
                      generation=generation, settings_version=version, N=config["N"], dt_s=config["dt_s"],
+                     bridge_command_epoch=bridge_command_epoch,
                      calculation=execution["calculation"], job_active=job_active_override,
                      history_end_s=float(adapter.t) if adapter else 0.,
                      requested_end_s=job["end"] if job else None,
@@ -216,6 +218,10 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         continue
                     completed.flush()
                     token = incoming_token
+                    # HTTP uses this acknowledgement to distinguish an idle
+                    # status from before a command already consumed from IPC.
+                    # No scheduling, recording or numerical work depends on it.
+                    bridge_command_epoch = command.get("bridge_command_epoch", bridge_command_epoch)
                     if kind == "shutdown":
                         break
                     generation = command.get("generation", generation)

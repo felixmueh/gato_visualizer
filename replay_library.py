@@ -2,16 +2,22 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
+from copy import deepcopy
 import json
 import os
 from pathlib import Path, PurePosixPath
 import threading
+import shutil
 import uuid
 
 from replay_format import MAX_COMPRESSED_BYTES, ReplayError, load_replay
+from runtime_files import ended_owner, owner_tag, runtime_directory
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_UPLOAD_DIRECTORY = ROOT / "_expr_data/uploads"
+MAX_FREEZES = 8
+MOTION_CACHE_SIZE = 4
 
 
 class UploadConflict(ReplayError):
@@ -37,18 +43,28 @@ def _signature(path):
 
 class ReplayLibrary:
     def __init__(self, *, ingest_directory, model_urdf, default_scene, scene_builder,
-                 upload_directory=DEFAULT_UPLOAD_DIRECTORY):
+                 upload_directory=DEFAULT_UPLOAD_DIRECTORY, motion_builder=None, freeze_directory=None):
         self.ingest_directory = Path(ingest_directory)
         self.upload_directory = Path(upload_directory)
         self.model_urdf = Path(model_urdf)
         self.default_scene = default_scene
         self.scene_builder = scene_builder
+        self.motion_builder = motion_builder
+        self.freeze_directory = (Path(freeze_directory) if freeze_directory is not None else
+                                 runtime_directory("freezes", owner_tag()))
+        self.freeze_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.freeze_directory.chmod(0o700)
+        for path in self.freeze_directory.parent.iterdir():
+            if (path != self.freeze_directory and path.name.startswith("p") and path.name[1:].isdigit()
+                    and path.is_dir() and not path.is_symlink() and ended_owner(path.name)):
+                shutil.rmtree(path)
         self.lock = threading.RLock()
         self.cache = {}
         self.paths = {}
         self.items = []
         self.revision = 0
         self.loaded = {}
+        self.motion_cache = OrderedDict()
         # The most recently loaded recording (id, revision) is the current replay;
         # listeners learn when it changes (Run again results of other replays go).
         self.current = None
@@ -74,7 +90,8 @@ class ReplayLibrary:
         items = [dict(id="default", name="Starting pose", path="", source="default",
                       status="ready", revision="default")]
         paths, retained = {}, {}
-        for source, root in (("ingest", self.ingest_directory), ("upload", self.upload_directory)):
+        for source, root in (("freeze", self.freeze_directory), ("ingest", self.ingest_directory),
+                             ("upload", self.upload_directory)):
             for path in self._files(root):
                 relative = path.relative_to(root).as_posix()
                 identifier = self.identifier(source, relative)
@@ -92,6 +109,8 @@ class ReplayLibrary:
                                 modified_time_s=signature[3]/1e9)
                     try:
                         replay = load_replay(path, model_urdf=self.model_urdf)
+                        if source == "freeze":
+                            item["name"] = replay.metadata.get("label", item["name"])
                         if replay.model_warning:
                             item["model_warning"] = dict(replay.model_warning)
                         if signature != _signature(path):
@@ -105,12 +124,16 @@ class ReplayLibrary:
         # exports are the most useful library entries. Preserve path identity
         # and stable ordering for equal timestamps across both roots.
         default = items.pop(0)
-        items.sort(key=lambda item: (-retained[item["id"]][0][3], item["name"], item["source"]))
+        items.sort(key=lambda item: (item["source"] != "freeze", -retained[item["id"]][0][3],
+                                     item["name"], item["source"]))
         items.append(default)
         if items != self.items:
             self.revision += 1
             self.items = items
         self.paths, self.cache = paths, retained
+        for key in list(self.motion_cache):
+            if key[0] not in retained or key[1] != retained[key[0]][1]["revision"]:
+                del self.motion_cache[key]
 
     def catalog(self):
         """Polling this endpoint watches both roots recursively, without a daemon."""
@@ -128,6 +151,67 @@ class ReplayLibrary:
             for listener in self.listeners:
                 listener(current)
         return scene
+
+    def motion(self, identifier):
+        """Recorded motion only. Loading a comparison never changes Replay focus."""
+        with self.lock:
+            self._scan()
+            path = self.paths.get(identifier)
+            if path is None:
+                raise KeyError("Recording was not found; refresh the replay library")
+            item = self.cache[identifier][1]
+            if item["status"] != "ready":
+                raise ReplayError(item["error"])
+            key = (identifier, item["revision"])
+            if key in self.motion_cache:
+                self.motion_cache.move_to_end(key)
+                return deepcopy(self.motion_cache[key])
+            if self.motion_builder is None:
+                from server import replay_motion
+                builder = lambda replay, path: replay_motion(replay, path, self.model_urdf.parents[2], self.default_scene)
+            else:
+                builder = self.motion_builder
+            before = _signature(path)
+            replay = load_replay(path, model_urdf=self.model_urdf)
+            motion = builder(replay, path)
+            if before != _signature(path):
+                raise ReplayError("Recording changed while loading; select it again after the write completes")
+            motion.update(id=identifier, revision=item["revision"])
+            self.motion_cache[key] = deepcopy(motion)
+            while len(self.motion_cache) > MOTION_CACHE_SIZE:
+                self.motion_cache.popitem(last=False)
+            return motion
+
+    def add_freeze(self, path):
+        """Publish a validated export and prune only this server's oldest freezes."""
+        path = Path(path)
+        if path.parent != self.freeze_directory or path.is_symlink() or path.suffix != ".npz":
+            raise ReplayError("Freeze must be a file in this server's runtime directory")
+        load_replay(path, model_urdf=self.model_urdf)
+        with self.lock:
+            staged = path.name.startswith(".")
+            published = path.with_name(path.name[1:]) if staged else path
+            if staged:
+                # The exporter writes a hidden complete file. Only acceptance
+                # publishes it; a catalog poll cannot expose a rejected freeze.
+                os.link(path, published, follow_symlinks=False)
+                path.unlink()
+            try:
+                files = sorted(self._files(self.freeze_directory), key=lambda p: (_signature(p)[3], p.name))
+                for old in files[:-MAX_FREEZES]:
+                    old.unlink(missing_ok=True)
+                self._scan()
+                identifier = self.identifier("freeze", published.name)
+                return dict(next(item for item in self.items if item["id"] == identifier))
+            except BaseException:
+                if staged:
+                    published.unlink(missing_ok=True)
+                raise
+
+    def close(self):
+        with self.lock:
+            shutil.rmtree(self.freeze_directory, ignore_errors=True)
+            self.motion_cache.clear()
 
     def _scene(self, identifier):
         if identifier == "default":
