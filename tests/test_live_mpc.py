@@ -65,7 +65,7 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(specs[path]["group"], specs["friction"]["group"])
             self.assertTrue(specs[path]["description"])
         self.assertEqual(specs["plant.integrator"]["choices"], [dict(value="rk4", label="RK4"),
-                                                                dict(value="euler", label="Semi-implicit Euler")])
+                                                                dict(value="euler", label="Euler")])
         self.assertEqual(specs["plant.coulomb_law"]["choices"], ["tanh", "sign", "constraint"])
         for path, label in (("plant.clip_effort", "Clip effort"), ("plant.stop_on_breach.position", "Joint limits"),
                             ("plant.stop_on_breach.velocity", "Velocity"), ("plant.stop_on_breach.torque", "Torque")):

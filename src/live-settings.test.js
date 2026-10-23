@@ -1107,7 +1107,7 @@ function frictionSchema(h, { N = 32, on = [32], prediction = false } = {}) {
     { path: 'friction', label: 'Predictor friction', kind: 'choice', group: 'Friction',
       choices: [{ value: null, label: 'Loss-free' }, { value: structuredClone(PREDICTOR_FRICTION), label: 'URDF, tanh 0.03 rad/s' }] },
     { path: 'plant.integrator', label: 'Plant integrator', kind: 'choice', group: 'Friction',
-      choices: [{ value: 'rk4', label: 'RK4' }, { value: 'euler', label: 'Semi-implicit Euler' }] },
+      choices: [{ value: 'rk4', label: 'RK4' }, { value: 'euler', label: 'Euler' }] },
     { path: 'plant.friction', label: 'Plant friction', kind: 'bool', group: 'Friction', description: 'URDF coefficients' },
     { path: 'plant.coulomb_law', label: 'Coulomb law', kind: 'choice', group: 'Friction', choices: ['tanh', 'sign', 'constraint'] },
     { path: 'plant.friction_width_rad_s', label: 'tanh width (rad/s)', kind: 'float', group: 'Friction', min: 1e-4, max: 1 },

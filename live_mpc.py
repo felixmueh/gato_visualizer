@@ -125,7 +125,7 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
                "admm_linsys": ["pcg", "bdsv_factor", "auto"],
                "friction": [dict(value=None, label="Loss-free"),
                             dict(value=deepcopy(predictor_friction), label=friction_label)],
-               "plant.integrator": [dict(value="rk4", label="RK4"), dict(value="euler", label="Semi-implicit Euler")],
+               "plant.integrator": [dict(value="rk4", label="RK4"), dict(value="euler", label="Euler")],
                "plant.coulomb_law": ["tanh", "sign", "constraint"]}
     specs = []
     def visit(value, path=""):

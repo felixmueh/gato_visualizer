@@ -185,7 +185,7 @@ test('source and profile refresh preserve the predictor friction choice, the pla
       { path: 'N', kind: 'choice', choices: [32] },
       { path: 'friction', kind: 'choice', choices: [{ value: null, label: 'Loss-free' }, { value: friction, label: 'URDF' }] },
       { path: 'max_sqp_time_s', kind: 'float', min: 1e-4, max: 10, nullable: true },
-      { path: 'plant.integrator', kind: 'choice', choices: [{ value: 'rk4', label: 'RK4' }, { value: 'euler', label: 'Semi-implicit Euler' }] },
+      { path: 'plant.integrator', kind: 'choice', choices: [{ value: 'rk4', label: 'RK4' }, { value: 'euler', label: 'Euler' }] },
       { path: 'plant.friction', kind: 'bool' },
       { path: 'plant.coulomb_law', kind: 'choice', choices: ['tanh', 'sign', 'constraint'] },
       { path: 'plant.friction_width_rad_s', kind: 'float', min: 1e-4, max: 1 },
