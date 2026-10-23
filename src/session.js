@@ -127,7 +127,7 @@ export function createSession() {
     },
     resetOffset(id) { const track = getTrack(id); return track ? session.setOffset(id, defaultOffset(track, main)) : false; },
     setVisible(id, value) { const track = getTrack(id); if (!track) return false; track.visible = Boolean(value); notify(); return true; },
-    setDisplay(id, value) { const track = getTrack(id); if (!track || !['arm', 'dot'].includes(value)) return false; track.display = value; notify(); return true; },
+    setDisplay(id, value) { const track = getTrack(id); if (!track || !(track.kind === 'live' ? ['arm', 'hidden'] : ['arm', 'dot']).includes(value)) return false; track.display = value; notify(); return true; },
     setCursor(value) { if (value != null && !Number.isFinite(value)) throw new Error('Session time must be finite.'); if (cursor !== value) { cursor = value; notify(); } },
     setRate(value) { if (!Number.isFinite(value) || value <= 0) throw new Error('Playback rate must be positive.'); if (rate !== value) { rate = value; notify(); } },
     setAggregate(value) { aggregate = { start: value?.start ?? null, end: value?.end ?? null }; notify(); },

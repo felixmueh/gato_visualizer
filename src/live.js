@@ -987,7 +987,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     notice.replaceChildren('Live MPC needs setup · ', link); notice.title = reason;
   }
   const initialSchemaRequest = schemaReload;
-  fetch('/api/live/schema').then(async response => { const result = await response.json(); if (initialSchemaRequest !== schemaReload) return; if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings);
+  const ready = fetch('/api/live/schema').then(async response => { const result = await response.json(); if (initialSchemaRequest !== schemaReload) return; if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings);
     try {
       const retained = sessionStorage.getItem('source-restart-live-settings');
       sessionStorage.removeItem('source-restart-live-settings');
@@ -995,6 +995,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     } catch {}
     liveReady = true; populate(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = false; $('live-mode').title = error.message; showSetupNotice(error.message); });
   return {
+    ready,
+    async enterLive() { await ready; await switchMode('live'); },
     setSession(value) {
       unsubscribeSession?.(); session = value; clock.setRate(session.rate);
       unsubscribeSession = session.subscribe(() => {

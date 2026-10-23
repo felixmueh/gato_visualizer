@@ -51,18 +51,33 @@ test('nonuniform recorded states snap at or before a keyframe, retaining the sam
   assert.equal(sampleAtOrBefore([], 1), -1); assert.equal(sampleAtOrBefore([2], 5), 0);
 });
 
-test('stronger adjustable opacity fades symmetrically and hides the coinciding arm', () => {
-  const range = [0, 10], cursor = 5;
-  assert.equal(DEFAULT_GHOST_SETTINGS.opacity, .55);
-  assert.equal(onionOpacity(cursor, cursor, range), 0);
+test('opacity interpolates aggregate start to end independently of cursor, with optional anti-overlap hiding', () => {
+  const range = [2, 8], endpoints = { opacityStart: .8, opacityEnd: .2 };
+  assert.equal(DEFAULT_GHOST_SETTINGS.opacityStart, .55); assert.equal(DEFAULT_GHOST_SETTINGS.opacityEnd, .25);
+  assert.equal(onionOpacity(2, -10, range, endpoints), .8);
+  assert(Math.abs(onionOpacity(8, 20, range, endpoints) - .2) < 1e-12);
+  assert.equal(onionOpacity(5, 1, range, endpoints), .5); assert.equal(onionOpacity(5, 9, range, endpoints), .5);
+  assert.equal(onionOpacity(-1, 10, range, endpoints), .8); assert(Math.abs(onionOpacity(12, 1, range, endpoints) - .2) < 1e-12);
+  assert.equal(onionOpacity(5, 5, range, endpoints), 0);
   assert.equal(onionOpacity(ONION_CURSOR_HIDE_S, 0, range), 0);
-  const near = onionOpacity(5.01, cursor, range), middle = onionOpacity(6, cursor, range), far = onionOpacity(9, cursor, range);
-  assert(near > middle && middle > far); assert(near < ONION_MAX_OPACITY && far > ONION_MIN_OPACITY);
-  assert.equal(onionOpacity(1, cursor, range), far);
-  assert(Math.abs(onionOpacity(0, 10, range) - ONION_MIN_OPACITY) < 1e-12);
-  assert.equal(onionOpacity(6, cursor, range, .275), middle / 2);
-  assert.equal(onionOpacity(6, cursor, range, 0), 0);
-  for (const value of [{ opacity: 2 }, { interval_s: 0 }, { maxCount: 65 }, { maxCount: 1.5 }]) assert.throws(() => validateGhostSettings(value));
+  assert.equal(onionOpacity(5, 5, range, { ...endpoints, hideCursor: false }), .5);
+  assert.equal(onionOpacity(5, 10, [5, 5], endpoints), .8);
+  const reverse = { opacityStart: .2, opacityEnd: .8 };
+  assert.equal(onionOpacity(2, 10, range, reverse), .2); assert.equal(onionOpacity(5, 10, range, reverse), .5); assert.equal(onionOpacity(8, 10, range, reverse), .8);
+  for (const value of [{ opacityStart: 2 }, { opacityEnd: -1 }, { spacingEnabled: 1 }, { interval_s: 0 }, { maxCount: 65 }, { maxCount: 1.5 }]) assert.throws(() => validateGhostSettings(value));
+});
+
+test('disabled fixed spacing distributes a budget over the full aggregate endpoints before support intersection', () => {
+  const options = { spacingEnabled: false, range: [2, 8], maxCount: 4, interval_s: .01 };
+  assert.deepEqual(onionKeyframes([0, 10], options), { step: null, times: [2, 4, 6, 8] });
+  assert.deepEqual(onionKeyframes([3, 7], options), { step: null, times: [4, 6] });
+  assert.deepEqual(onionKeyframes([3, 7], { ...options, maxCount: 2 }).times, []); // Never stretch short support to fake endpoints.
+  assert.deepEqual(onionKeyframes([0, 10], { ...options, maxCount: 1 }).times, [2]);
+  assert.deepEqual(onionKeyframes([0, 10], { ...options, range: [5, 5] }).times, [5]);
+  assert.deepEqual(onionKeyframes([0, 1], options).times, []);
+  const sources = [{ times: [2, 8], range: [2, 8] }, { times: [100, 106], range: [100, 106] }, { times: [200, 210], range: [2, 8] }];
+  assert.deepEqual(onionBudgets(sources, 6, options), [3, 3, 0]);
+  for (const [source, budget] of sources.map((source, i) => [source, [3, 3, 0][i]])) if (budget) assert.equal(onionKeyframes(source.times, { ...options, range: source.range, maxCount: budget }).times.length, 3);
 });
 
 test('Live reveal hides future ghosts while growing, and completed history shows all', () => {

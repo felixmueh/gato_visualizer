@@ -27,23 +27,23 @@ export function setupTransportPopovers(doc = document) {
 }
 
 export const GHOST_SETTINGS_KEY = 'motion-studio-ghost-settings';
-export const DEFAULT_GHOST_SETTINGS = Object.freeze({ interval_s: GHOST_DEFAULTS.interval_s, maxCount: GHOST_DEFAULTS.maxCount });
+export const DEFAULT_GHOST_SETTINGS = Object.freeze({ spacingEnabled: GHOST_DEFAULTS.spacingEnabled, interval_s: GHOST_DEFAULTS.interval_s, maxCount: GHOST_DEFAULTS.maxCount });
 
 export function validateGhostSettings(value) {
-  const { interval_s, maxCount } = validateRenderSettings(value);
-  return { interval_s, maxCount };
+  const { spacingEnabled, interval_s, maxCount } = validateRenderSettings(value);
+  return { spacingEnabled, interval_s, maxCount };
 }
 
 export function setupGhostControls({ onChange, doc = document, storage }) {
   if (storage === undefined) { try { storage = globalThis.localStorage; } catch {} }
   let settings = { ...DEFAULT_GHOST_SETTINGS };
   try { settings = validateGhostSettings({ ...settings, ...JSON.parse(storage.getItem(GHOST_SETTINGS_KEY)) }); } catch {}
-  const fields = ['live', 'replay'].flatMap(mode => ['interval_s', 'maxCount'].map(name => ({
+  const fields = ['live', 'replay'].flatMap(mode => ['spacingEnabled', 'interval_s', 'maxCount'].map(name => ({
     name, input: doc.getElementById(`${mode}-ghost-${name}`),
   })));
-  function populate() { for (const { name, input } of fields) { input.value = settings[name]; input.removeAttribute('aria-invalid'); input.title = input.dataset.tip; } }
+  function populate() { for (const { name, input } of fields) { if (name === 'spacingEnabled') input.checked = settings[name]; else input.value = settings[name]; if (name === 'interval_s') input.disabled = !settings.spacingEnabled; input.removeAttribute('aria-invalid'); input.title = input.dataset.tip; } }
   function commit({ name, input }) {
-    const value = input.value.trim() === '' ? NaN : Number(input.value);
+    const value = name === 'spacingEnabled' ? input.checked : input.value.trim() === '' ? NaN : Number(input.value);
     try {
       const next = validateGhostSettings({ ...settings, [name]: value });
       input.removeAttribute('aria-invalid'); input.title = input.dataset.tip;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateSpan, moveAggregateBound, aggregateLabel, aggregateBounded, timelineTypingTarget, timelineBounds, clampTimelineWindow, zoomTimeline, timelineTicks, indexTimelineIntervals, visibleTimelineIntervals, setupExpandedTimeline } from './expanded-timeline.js';
+import { aggregateSpan, moveAggregateBound, aggregateLabel, aggregateBounded, timelineTypingTarget, timelineBounds, clampTimelineWindow, zoomTimeline, timelineTicks, indexTimelineIntervals, visibleTimelineIntervals, setupExpandedTimeline, trackPreviewGeometry } from './expanded-timeline.js';
 import { plotDOM } from './plot-dom-test-helper.js';
 
 test('timeline windows clamp pan, empty recordings and fine zoom to retained time', () => {
@@ -142,7 +142,7 @@ function sessionTimelineFixture(callbacks = {}) {
   };
   const observer = globalThis.ResizeObserver; globalThis.ResizeObserver = class { observe() {} };
   let timeline;
-  try { timeline = setupExpandedTimeline({ document: doc, onSeek() {}, ...callbacks }); }
+  try { timeline = setupExpandedTimeline({ document: doc, onSeek() {}, dialogFactory: ({ content, onClose }) => ({ isOpen: false, open() { this.isOpen = true; }, close() { this.isOpen = false; onClose(); } }), requestMotion: async () => ({ time_s: [0, 1], ee_xyz: [[0, 0, 0], [1, 0, 0]], time_basis: 'simulation' }), ...callbacks }); }
   finally { globalThis.ResizeObserver = observer; }
   return { timeline, nodes, draws, doc };
 }
@@ -176,10 +176,9 @@ test('session lanes group freezes first, keep timing on Live and cache across cu
   const paints = timeline.snapshot.paints, lanePaints = timeline.snapshot.lanePaints;
   update(5); assert.equal(timeline.snapshot.paints, paints); assert.equal(timeline.snapshot.lanePaints, lanePaints);
   assert.equal(rows[1].querySelector('.timeline-lane-cursor').style.left, '50%');
-  const choices = nodes.get('timeline-track-menu').children;
-  assert.equal(choices[0].textContent, 'Temporary'); assert.equal(choices[1].textContent, 'Freeze B');
-  await choices[1].emit('click'); assert.deepEqual(added, ['freeze']);
-  assert.equal(nodes.get('timeline-track-menu').hidden, true);
+  const menu = nodes.get('timeline-track-menu'), groups = menu.querySelector('.track-catalog-list').children;
+  assert.equal(groups[0].querySelector('h3').textContent, 'Temporary'); assert.equal(groups[0].querySelector('strong').textContent, 'Freeze B');
+  await groups[0].querySelector('.track-catalog-add').emit('click'); assert.deepEqual(added, ['freeze']);
   await rows[1].querySelector('.timeline-lane-rail').emit('pointermove', { clientX: 300 });
   assert.equal(nodes.get('timeline-inspection-tooltip').textContent, 'B · 4.000 s');
 });
@@ -274,4 +273,78 @@ test('scrubbing and aggregate selection operate on each lane while offset draggi
   assert.deepEqual(timeline.snapshot.aggregate, { start: 3, end: 7 });
   await clip.emit('pointerdown', pointer(120)); await rail.emit('pointermove', pointer(150, { altKey: true })); await clip.emit('pointerup', pointer(150));
   assert.deepEqual(changes.at(-1), ['b', { offset_s: 1.5 }]); assert.deepEqual(timeline.snapshot.aggregate, { start: 3, end: 7 });
+});
+
+test('Add track catalog searches groups and lazily previews recorded motion with cached requests', async () => {
+  const requests = [], uploads = [], added = [], pending = new Map();
+  const { timeline, nodes, doc } = sessionTimelineFixture({ onAddTrack: id => added.push(id), onUploadTracks: kind => uploads.push(kind),
+    requestMotion: id => { requests.push(id); return new Promise(resolve => pending.set(id, resolve)); } });
+  const catalog = [
+    { id: 'library', name: 'Reaching trial', path: 'study/reach', status: 'ready', source: 'ingest', revision: 'one' },
+    { id: 'freeze', name: 'Freeze 12:34:56', status: 'ready', source: 'freeze', revision: 'one' },
+    { id: 'upload', name: 'Uploaded figure eight', status: 'ready', source: 'upload', revision: 'one' },
+    { id: 'bad', name: 'Rejected input', status: 'error', source: 'upload' },
+  ];
+  timeline.update({ mode: 'live', identity: 'session', bounds: [0, 10], time: 0, tracks: laneTracks(), catalog });
+  assert.deepEqual(requests, []); await nodes.get('timeline-add-track').emit('click');
+  const menu = nodes.get('timeline-track-menu'), search = menu.querySelector('.track-catalog-search'), list = menu.querySelector('.track-catalog-list');
+  assert.equal(menu.hidden, false); assert.equal(doc.activeElement, search); assert.equal(nodes.get('timeline-add-track').getAttribute('aria-expanded'), 'true');
+  assert.deepEqual(list.children.map(group => group.querySelector('h3').textContent), ['Temporary', 'Library', 'Uploads']);
+  assert.deepEqual(requests, ['freeze']);
+  const freezeRow = list.children[0].querySelector('.track-catalog-item');
+  const hover = freezeRow.emit('pointerenter'); assert.deepEqual(requests, ['freeze']); // One request while first preview is pending.
+  pending.get('freeze')({ time_s: [2, 3, 4], ee_xyz: [[0, 0, 0], [1, 0, .2], [1, 1, .5]], time_basis: 'simulation', end_effector_frame: 'grasp' });
+  await hover; await new Promise(resolve => setImmediate(resolve));
+  assert.match(freezeRow.querySelector('.track-catalog-detail').textContent, /2 s · 3 states · simulation/);
+  assert.match(freezeRow.querySelector('path').getAttribute('d'), /^M/);
+  assert.match(freezeRow.querySelector('.track-catalog-preview').title, /Recorded.*grasp/);
+  await freezeRow.emit('focusin'); assert.deepEqual(requests, ['freeze']);
+  await freezeRow.querySelector('.track-catalog-add').emit('click'); assert.deepEqual(added, ['freeze']); assert.equal(menu.hidden, false);
+  search.value = 'study/reach'; await search.emit('input'); await Promise.resolve();
+  assert.equal(list.children.length, 1); assert.equal(list.children[0].querySelector('h3').textContent, 'Library'); assert.deepEqual(requests, ['freeze', 'library']);
+  search.value = 'does not exist'; await search.emit('input'); assert.equal(list.querySelector('.track-catalog-empty').textContent, 'No matching tracks.');
+  const uploadButtons = menu.querySelectorAll('.track-catalog-upload'); await uploadButtons[0].emit('click'); await uploadButtons[1].emit('click'); assert.deepEqual(uploads, ['files', 'folder']);
+  await doc.emit('keydown', { key: 'Escape' }); assert.equal(menu.hidden, true); assert.equal(nodes.get('timeline-add-track').getAttribute('aria-expanded'), 'false');
+});
+
+test('track preview bounds stay finite for stationary and large paths, retaining both endpoints', () => {
+  const stationary = trackPreviewGeometry([[2, 3, 4], [2, 3, 4]]);
+  assert.deepEqual(stationary.start, [160, 45]); assert.deepEqual(stationary.end, [160, 45]);
+  const points = Array.from({ length: 10000 }, (_, i) => [i / 100, Math.sin(i / 100), i / 200]);
+  const preview = trackPreviewGeometry(points); assert(preview.path.split(' ').length <= 384); assert.notDeepEqual(preview.start, preview.end);
+  assert(!/NaN|Infinity/.test(preview.path)); assert.deepEqual(trackPreviewGeometry([]), { path: '', start: null, end: null });
+  assert.throws(() => trackPreviewGeometry([[NaN, 0, 0]]), /invalid/);
+});
+
+test('main Arm toggles visibility while comparison Arm keeps the independent dot choice', async () => {
+  const tracks = laneTracks(), changes = [], { timeline, nodes } = sessionTimelineFixture({ onTrackChange: (id, patch) => changes.push([id, patch]) });
+  const update = () => timeline.update({ mode: 'live', identity: 'session', bounds: [0, 10], time: 0, tracks });
+  update(); await nodes.get('live-timeline-expand').emit('click');
+  const rows = nodes.get('timeline-lanes').children, main = rows[0].querySelector('.timeline-lane-display'), comparison = rows[1].querySelector('.timeline-lane-display');
+  assert.equal(main.disabled, false); assert.equal(main.textContent, 'Arm'); assert.equal(main.getAttribute('aria-pressed'), 'true'); assert.equal(main.title, 'Hide Live arm');
+  await main.emit('click'); assert.deepEqual(changes.at(-1), ['live', { display: 'hidden' }]);
+  tracks[0].display = 'hidden'; update(); assert.equal(main.textContent, 'Arm'); assert.equal(main.getAttribute('aria-pressed'), 'false'); assert.equal(main.title, 'Show Live arm');
+  await main.emit('click'); assert.deepEqual(changes.at(-1), ['live', { display: 'arm' }]);
+  await comparison.emit('click'); assert.deepEqual(changes.at(-1), ['b', { display: 'dot' }]);
+});
+
+test('track previews serialize requests, keep only the latest waiting card and ignore stale catalog responses', async () => {
+  const requests = [], pending = new Map(), { timeline, nodes } = sessionTimelineFixture({ requestMotion: id => {
+    requests.push(id); return new Promise(resolve => pending.set(id, resolve));
+  } });
+  const catalog = ['Alpha', 'Beta', 'Gamma'].map((name, i) => ({ id: String(i), name, source: 'ingest', status: 'ready', revision: 'one' }));
+  timeline.update({ mode: 'live', identity: 'session', bounds: [0, 10], time: 0, tracks: laneTracks(), catalog });
+  await nodes.get('timeline-add-track').emit('click');
+  const menu = nodes.get('timeline-track-menu'), search = menu.querySelector('.track-catalog-search'), rows = menu.querySelectorAll('.track-catalog-item');
+  const beta = rows[1].emit('focusin'), gamma = rows[2].emit('focusin');
+  await beta; assert.deepEqual(requests, ['0']);
+  assert.equal(rows[1].querySelector('.track-catalog-preview').getAttribute('aria-busy'), 'false');
+  search.value = 'Gamma'; await search.emit('input'); await gamma;
+  const current = menu.querySelector('.track-catalog-item'), motion = { time_s: [0, 2], ee_xyz: [[0, 0, 0], [1, 0, 1]], time_basis: 'simulation' };
+  pending.get('0')(motion); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['0', '2']);
+  assert.equal(rows[0].querySelector('.track-catalog-detail').textContent, undefined); // Detached result is not painted.
+  assert.equal(current.querySelector('svg'), undefined);
+  pending.get('2')(motion); await new Promise(resolve => setImmediate(resolve));
+  assert(current.querySelector('svg')); assert.match(current.querySelector('.track-catalog-detail').textContent, /2 s/);
 });

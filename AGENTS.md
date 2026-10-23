@@ -260,19 +260,27 @@ Settings and the target gizmo always edit Live; a pinned Solve keeps its source.
 Live history playback may run at 0.25–4×, with 1× forced while following a
 growing Live tip. Stop plays to the session end; Continue retains Live's tip
 extension/waiting. The aggregate window and zoom belong to session time and
-survive generation changes. Replay mode remains separate and hides tracks.
+survive generation changes. The UI has one Live workspace without Replay/Live
+tabs. The searchable Add track dialog previews recorded paths and owns imports;
+existing `?replay=` links add a track without changing focus or the main run.
 Freeze exports through the selected `tiago_mpc`'s `save_replay`, rewinds the
 cursor to the run start, and retains up to eight files in the server-owned
-RAM runtime directory. Track loading never switches the current Replay.
+RAM runtime directory. Track loading never switches the legacy current Replay.
 Do not add focus switching, Keep, comparison plots, session persistence or
 historical branch browsing in this phase. Replay names are editable, initially
 A/B/C. The compact ruler sits above Live and aggregate barriers/shading span
 all rows. Hover settings above Precalculate edit duration; those above Ghost
-arms edit spacing and a strict total maximum. Ghosts cycle off/Live/all tracks;
-keyframes follow the aggregate range from its left edge at the exact spacing,
-truncating the prefix at the maximum. Zoom never changes ghost selection.
-UI settings set their opacity (55% default). Recorded On Play playback respects
+arms edit optional fixed spacing and a strict total maximum. Ghosts cycle
+off/Live/all tracks; fixed-spacing keyframes follow the aggregate range from
+its left edge, truncating the prefix at the maximum. With spacing disabled,
+each source's allocated count spans the whole aggregate range, including
+endpoints, restricted to recorded support. Zoom never changes ghost selection.
+UI settings set start/end opacity (55%/25% defaults), interpolated by aggregate
+time independently of the cursor. Recorded On Play playback respects
 Stop; starting an empty On Play run still calculates continuously until paused.
+Live's Arm button hides/restores the solid right arm without hiding ghosts,
+changing the session clock or requesting numerical work. Other tracks keep
+their Arm/Dot display toggle.
 See [presentation](docs/presentation.md#session-and-tracks).
 
 ## Model and coordinates

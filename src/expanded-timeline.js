@@ -1,5 +1,6 @@
 import { intervalDescription, intervalSeverity } from './live-execution.js';
 import { snapOffset } from './session.js';
+import { createFloatingDialog } from './floating-dialog.js';
 
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 export function timelineTypingTarget(target) {
@@ -79,6 +80,23 @@ export function visibleTimelineIntervals(index, [start, end]) {
   return result;
 }
 
+// Compact isometric projection of actual recorded EE positions. The preview
+// owns display coordinates only, and keeps both endpoints when subsampling.
+export function trackPreviewGeometry(points = [], maxPoints = 384) {
+  if (!points.length) return { path: '', start: null, end: null };
+  const count = Math.min(points.length, maxPoints), projected = [];
+  for (let i = 0; i < count; i++) {
+    const point = points[count === 1 ? 0 : Math.round(i * (points.length - 1) / (count - 1))];
+    if (!Array.isArray(point) || point.length !== 3 || !point.every(Number.isFinite)) throw new Error('Recorded path contains invalid positions.');
+    projected.push([(point[0] - point[1]) * .866025403784, .5 * (point[0] + point[1]) - point[2]]);
+  }
+  const xs = projected.map(point => point[0]), ys = projected.map(point => point[1]);
+  const left = Math.min(...xs), right = Math.max(...xs), top = Math.min(...ys), bottom = Math.max(...ys);
+  const scale = Math.min(292 / (right - left || 1), 66 / (bottom - top || 1));
+  const fitted = projected.map(([x, y]) => [160 + (x - (left + right) / 2) * scale, 45 + (y - (top + bottom) / 2) * scale]);
+  return { path: fitted.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`).join(' '), start: fitted[0], end: fitted.at(-1) };
+}
+
 // Gestures are discoverable on hover (surface and the footer's ?), not as permanent text.
 const GESTURE_HINT = 'Scroll to zoom; Alt-drag, middle-drag or horizontal scroll to pan; drag to scrub. Shift-drag selects an aggregate window; drag its edge handles to adjust, onto the data end for unbounded; Esc clears it. Arrow keys seek, Shift+arrows seek 1 ms, +/− zoom, 0 fits.';
 const KEYFRAME_TICK_TOP = 23, KEYFRAME_TICK_BOTTOM = 34, KEYFRAME_HIT_RADIUS = 4;
@@ -86,7 +104,7 @@ const KEYFRAME_TICK_TOP = 23, KEYFRAME_TICK_BOTTOM = 34, KEYFRAME_HIT_RADIUS = 4
 export function expandedTimelineShell() {
   return `<section id="expanded-timeline" class="expanded-timeline" aria-label="Timeline inspection" hidden>
     <div id="timeline-strip-resize" class="timeline-strip-resize" role="separator" aria-orientation="horizontal" aria-label="Resize timeline plots" hidden></div>
-    <div class="timeline-inspection-heading"><span id="timeline-clock-label">Recorded time</span><span id="timeline-timing-note">No timing data</span><div class="timeline-track-picker" id="timeline-track-picker" hidden><button id="timeline-add-track" aria-haspopup="menu" aria-expanded="false" aria-controls="timeline-track-menu">+ Add track</button><div id="timeline-track-menu" class="timeline-track-menu" role="menu" hidden></div></div><div class="timeline-zoom-controls"><button id="timeline-window-clear" class="timeline-window-clear" aria-label="Clear aggregate window" title="Clear aggregate window (Esc)" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg></button><button id="timeline-zoom-out" aria-label="Zoom timeline out" title="Zoom out (−)">−</button><button id="timeline-zoom-in" aria-label="Zoom timeline in" title="Zoom in (+)">+</button><button id="timeline-fit" title="Fit entire recording (0)">Fit</button></div></div>
+    <div class="timeline-inspection-heading"><span id="timeline-clock-label">Recorded time</span><span id="timeline-timing-note">No timing data</span><div class="timeline-track-picker" id="timeline-track-picker" hidden><button id="timeline-add-track" aria-haspopup="dialog" aria-expanded="false" aria-controls="track-catalog">+ Add track</button><div id="timeline-track-menu" class="track-catalog" hidden></div></div><div class="timeline-zoom-controls"><button id="timeline-window-clear" class="timeline-window-clear" aria-label="Clear aggregate window" title="Clear aggregate window (Esc)" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.1 7a6.6 6.6 0 1 1-.5 5M4 3.5V7h3.5"/></svg></button><button id="timeline-zoom-out" aria-label="Zoom timeline out" title="Zoom out (−)">−</button><button id="timeline-zoom-in" aria-label="Zoom timeline in" title="Zoom in (+)">+</button><button id="timeline-fit" title="Fit entire recording (0)">Fit</button></div></div>
     <p id="timeline-track-message" class="timeline-track-message" role="status" hidden></p>
     <div id="timeline-linked-graphs"></div>
     <div id="timeline-surface-stack" class="timeline-surface-stack">
@@ -99,7 +117,7 @@ export function expandedTimelineShell() {
   </section>`;
 }
 
-export function setupExpandedTimeline({ document: doc = document, onSeek, onLayout = () => {}, onAggregate = () => {}, onAddTrack = () => {}, onTrackChange = () => {}, onTrackReset = () => {}, onTrackRemove = () => {}, onFreeze = () => {} }) {
+export function setupExpandedTimeline({ document: doc = document, onSeek, onLayout = () => {}, onAggregate = () => {}, onAddTrack = () => {}, onTrackChange = () => {}, onTrackReset = () => {}, onTrackRemove = () => {}, onFreeze = () => {}, onUploadTracks, requestMotion = async id => { const response = await fetch(`/api/replays/motion?id=${encodeURIComponent(id)}`); const motion = await response.json(); if (!response.ok) throw new Error(motion.error || `HTTP ${response.status}`); return motion; }, dialogFactory = createFloatingDialog }) {
   const $ = id => doc.getElementById(id), panel = $('expanded-timeline'), surface = $('timeline-inspector');
   const canvas = $('timeline-bands'), playhead = $('timeline-playhead'), tooltip = $('timeline-inspection-tooltip');
   const toggles = ['live-timeline-expand', 'replay-timeline-expand'].map($);
@@ -114,24 +132,103 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   const colorText = color => typeof color === 'number' ? `#${color.toString(16).padStart(6, '0')}` : color || '#ffffff';
   const offsetText = offset => `${offset >= 0 ? '+' : ''}${offset.toFixed(3)}`;
   const diffText = diff => typeof diff === 'string' ? diff : diff.text || diff.label || `${diff.path}: ${JSON.stringify(diff.other)}`;
-  function closeMenu() { menu.hidden = true; addTrack.setAttribute('aria-expanded', 'false'); }
-  addTrack.addEventListener('click', () => { menu.hidden = !menu.hidden; addTrack.setAttribute('aria-expanded', String(!menu.hidden)); });
-  doc.addEventListener('pointerdown', event => { if (!event.target.closest?.('.timeline-track-picker')) closeMenu(); });
-  doc.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenu(); });
-  function paintCatalog() {
-    const items = catalog.filter(item => item.status === 'ready' && item.source !== 'default');
-    const key = JSON.stringify(items.map(item => [item.id, item.name, item.label, item.source]));
-    if (key === catalogKey) return;
-    catalogKey = key; menu.replaceChildren(); addTrack.disabled = !items.length;
-    for (const [title, entries] of [['Temporary', items.filter(item => item.source === 'freeze')], ['Library', items.filter(item => item.source !== 'freeze')]]) {
-      if (!entries.length) continue;
-      const heading = doc.createElement('div'); heading.className = 'timeline-track-menu-heading'; heading.textContent = title; menu.append(heading);
-      for (const item of entries) {
-        const button = doc.createElement('button'); button.type = 'button'; button.setAttribute('role', 'menuitem');
-        button.textContent = item.label || item.name; button.title = item.path || item.name || '';
-        button.addEventListener('click', () => { closeMenu(); onAddTrack(item.id); }); menu.append(button);
+  const element = (tag, className, text) => { const node = doc.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
+  const search = element('input', 'track-catalog-search'); search.type = 'search'; search.placeholder = 'Search tracks'; search.setAttribute('aria-label', 'Search track catalog');
+  const toolbar = element('div', 'track-catalog-toolbar'), list = element('div', 'track-catalog-list');
+  toolbar.append(search);
+  if (onUploadTracks) for (const [kind, label] of [['files', 'Upload .npz'], ['folder', 'Upload folder']]) {
+    const upload = element('button', 'track-catalog-upload', label); upload.type = 'button'; upload.addEventListener('click', () => onUploadTracks(kind)); toolbar.append(upload);
+  }
+  menu.replaceChildren(toolbar, list);
+  let catalogDialog;
+  const previewCache = new Map();
+  let activePreview, queuedPreview, previewTimer, catalogVersion = 0;
+  const previewKey = item => JSON.stringify([item.id, item.revision || '', item.modified_ns || '', item.size || '']);
+  function closedCatalog() { menu.hidden = true; clearTimeout(previewTimer); queuedPreview?.resolve(null); queuedPreview = null; addTrack.setAttribute('aria-expanded', 'false'); }
+  function closeMenu() { catalogDialog?.close(); closedCatalog(); }
+  function openMenu() {
+    if (!catalogDialog) catalogDialog = dialogFactory({ id: 'track-catalog', title: 'Add track', content: menu, onClose: closedCatalog });
+    search.value = ''; menu.hidden = false; catalogDialog.open(); addTrack.setAttribute('aria-expanded', 'true'); renderCatalog(); search.focus();
+  }
+  addTrack.addEventListener('click', () => { if (catalogDialog?.isOpen) closeMenu(); else openMenu(); });
+  doc.addEventListener('keydown', event => { if (event.key === 'Escape' && catalogDialog?.isOpen) closeMenu(); });
+  search.addEventListener('input', renderCatalog);
+  function paintPreview(node, preview) {
+    const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 320 90'); svg.setAttribute('aria-hidden', 'true');
+    if (preview.geometry.path) {
+      const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', preview.geometry.path); svg.append(path);
+      for (const [point, role] of [[preview.geometry.start, 'start'], [preview.geometry.end, 'end']]) {
+        const dot = doc.createElementNS('http://www.w3.org/2000/svg', 'circle'); dot.setAttribute('cx', point[0]); dot.setAttribute('cy', point[1]); dot.setAttribute('r', '2.5'); dot.setAttribute('class', `track-preview-${role}`); svg.append(dot);
       }
     }
+    node.replaceChildren(svg); node.setAttribute('aria-busy', 'false'); node.setAttribute('aria-label', `Recorded tool path · ${preview.summary}`); node.title = preview.title;
+  }
+  // At most one motion read and one latest waiting request. Store only the
+  // small SVG summary, never a recording's large q/time/EE arrays.
+  function requestPreview(item) {
+    const key = previewKey(item), cached = previewCache.get(key);
+    if (cached) return Promise.resolve(cached);
+    if (activePreview?.key === key) return activePreview.promise;
+    if (queuedPreview?.key === key) return queuedPreview.promise;
+    const job = { key, item };
+    job.promise = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
+    if (activePreview) { queuedPreview?.resolve(null); queuedPreview = job; }
+    else startPreview(job);
+    return job.promise;
+  }
+  function startPreview(job) {
+    activePreview = job;
+    Promise.resolve().then(() => requestMotion(job.item.id, job.item)).then(motion => {
+      const times = motion.time_s || [], duration = times.length ? times.at(-1) - times[0] : 0;
+      const summary = `${Number(duration.toPrecision(4))} s · ${times.length} states · ${motion.time_basis || 'recorded'}`;
+      const preview = { geometry: trackPreviewGeometry(motion.ee_xyz), summary, title: `Recorded end-effector path${motion.end_effector_frame ? ` · ${motion.end_effector_frame}` : ''}` };
+      previewCache.set(job.key, preview); while (previewCache.size > 8) previewCache.delete(previewCache.keys().next().value);
+      job.resolve(preview);
+    }).catch(error => job.reject(error)).finally(() => {
+      activePreview = null;
+      const next = queuedPreview; queuedPreview = null; if (next) startPreview(next);
+    });
+  }
+  async function loadPreview(item, node, detail) {
+    if (menu.hidden) return;
+    const version = catalogVersion, alive = () => !menu.hidden && catalogVersion === version;
+    node.setAttribute('aria-busy', 'true');
+    try {
+      const preview = await requestPreview(item);
+      if (alive()) { if (preview) { paintPreview(node, preview); detail.textContent = preview.summary; } else node.setAttribute('aria-busy', 'false'); }
+    } catch (error) {
+      if (alive()) { node.replaceChildren(element('span', 'track-catalog-preview-error', 'Preview unavailable')); node.title = error.message; node.setAttribute('aria-busy', 'false'); }
+    }
+  }
+  function renderCatalog() {
+    catalogVersion++; clearTimeout(previewTimer); queuedPreview?.resolve(null); queuedPreview = null; list.replaceChildren();
+    const query = search.value.trim().toLowerCase(), items = catalog.filter(item => item.status === 'ready' && item.source !== 'default')
+      .filter(item => `${item.name || ''} ${item.label || ''} ${item.path || ''} ${item.source || ''}`.toLowerCase().includes(query));
+    let firstPreview;
+    for (const [title, entries] of [['Temporary', items.filter(item => item.source === 'freeze')], ['Library', items.filter(item => !['freeze', 'upload'].includes(item.source))], ['Uploads', items.filter(item => item.source === 'upload')]]) {
+      if (!entries.length) continue;
+      const group = element('section', 'track-catalog-group'), heading = element('h3', 'track-catalog-group-heading', title); group.append(heading);
+      for (const item of entries) {
+        const row = element('section', 'track-catalog-item'), header = element('header'), name = element('strong', '', item.label || item.name), add = element('button', 'track-catalog-add', 'Add');
+        row.dataset.id = item.id; name.title = item.path || item.name || ''; add.type = 'button'; add.setAttribute('aria-label', `Add ${item.label || item.name}`);
+        add.addEventListener('click', () => { onAddTrack(item.id); }); header.append(name, add);
+        const preview = element('div', 'track-catalog-preview'), detail = element('p', 'track-catalog-detail'); preview.setAttribute('role', 'img'); preview.setAttribute('aria-label', 'Recorded tool path preview'); preview.title = 'Preview recorded tool path';
+        const cached = previewCache.get(previewKey(item)); if (cached) { paintPreview(preview, cached); detail.textContent = cached.summary; }
+        row.append(header, preview, detail);
+        row.addEventListener('pointerenter', () => { clearTimeout(previewTimer); previewTimer = setTimeout(() => loadPreview(item, preview, detail), 120); });
+        row.addEventListener('pointerleave', () => clearTimeout(previewTimer));
+        row.addEventListener('focusin', () => { clearTimeout(previewTimer); return loadPreview(item, preview, detail); });
+        group.append(row); firstPreview ||= () => loadPreview(item, preview, detail);
+      }
+      list.append(group);
+    }
+    if (!items.length) list.append(element('p', 'track-catalog-empty', query ? 'No matching tracks.' : 'No recordings yet.'));
+    if (catalogDialog?.isOpen) firstPreview?.();
+  }
+  function paintCatalog() {
+    const key = JSON.stringify(catalog.map(item => [item.id, item.name, item.label, item.source, item.status, item.revision]));
+    if (key === catalogKey) return;
+    catalogKey = key; addTrack.disabled = false; renderCatalog();
   }
   function buildLane(track) {
     const row = doc.createElement('div'); row.className = 'timeline-lane'; row.dataset.trackId = track.id;
@@ -174,7 +271,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     offset.addEventListener('change', applyOffset);
     offset.addEventListener('keydown', event => { if (event.key === 'Enter') { applyOffset(); offset.blur?.(); } else if (event.key === 'Escape') { offset.value = offsetText(node.track.offset_s || 0); offset.blur?.(); event.stopPropagation(); } });
     eye.addEventListener('click', () => onTrackChange(track.id, { visible: node.track.visible === false }));
-    display.addEventListener('click', () => onTrackChange(track.id, { display: node.track.display === 'dot' ? 'arm' : 'dot' }));
+    display.addEventListener('click', () => onTrackChange(track.id, { display: node.track.kind === 'live' ? node.track.display === 'hidden' ? 'arm' : 'hidden' : node.track.display === 'dot' ? 'arm' : 'dot' }));
     remove.addEventListener('click', () => onTrackRemove(track.id));
     clip.addEventListener('dblclick', event => { event.preventDefault(); if (node.track.kind !== 'live') onTrackReset(track.id); });
     clip.addEventListener('keydown', event => {
@@ -241,8 +338,9 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       node.offset.disabled = main; node.offset.title = main ? 'Live offset is fixed at 0 s' : 'Offset in session time; double-click the lane to reset';
       node.eye.textContent = track.visible === false ? '○' : '●'; node.eye.title = track.visible === false ? 'Show track' : 'Hide track';
       node.eye.setAttribute('aria-label', `${track.visible === false ? 'Show' : 'Hide'} track ${name}`); node.eye.setAttribute('aria-pressed', String(track.visible !== false)); node.eye.disabled = main;
-      node.display.textContent = track.display === 'dot' ? 'Dot' : 'Arm'; node.display.title = main ? 'Focused solid robot' : 'Toggle ghost arm / end-effector dot'; node.display.disabled = main;
-      node.display.setAttribute('aria-label', `Track ${name} display: ${track.display === 'dot' ? 'dot' : 'arm'}`);
+      node.display.textContent = !main && track.display === 'dot' ? 'Dot' : 'Arm'; node.display.title = main ? track.display === 'hidden' ? 'Show Live arm' : 'Hide Live arm' : 'Toggle ghost arm / end-effector dot'; node.display.disabled = false;
+      if (main) node.display.setAttribute('aria-pressed', String(track.display !== 'hidden'));
+      node.display.setAttribute('aria-label', main ? node.display.title : `Track ${name} display: ${track.display === 'dot' ? 'dot' : 'arm'}`);
       node.remove.hidden = main; node.remove.title = 'Remove track'; node.remove.setAttribute('aria-label', `Remove track ${name}`);
       node.freeze.hidden = !main; node.freeze.disabled = !freezeAvailable;
       const left = x(track.span[0] + offset), right = x(track.span[1] + offset);

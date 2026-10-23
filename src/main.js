@@ -6,6 +6,7 @@ import { sampleAtOrBefore } from './onion-skin.js';
 import { setupLive } from "./live.js";
 import { createSession, outsideSpan, trackTime } from "./session.js";
 import { createTrackScene } from "./track-scene.js";
+import { createArmVisibility } from './arm-visibility.js';
 import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
 import { createLimitTint } from "./limit-tint.js";
@@ -85,7 +86,7 @@ let scene;
 let robotBounds;
 let ready = false;
 let live;
-let session, trackScene;
+let session, trackScene, armVisibility;
 // Focus stays on the main track in this deliverable; all presentation reads use it.
 const focusedTrack = () => live?.mode === "live" ? session?.focused : null;
 let solverProfiles;
@@ -97,7 +98,8 @@ document.addEventListener('open-settings', event => { sourceSettings.dialog.sele
 let limitTint, limitTintEnabled = true, limitUse = { ...DEFAULT_LIMIT_USE }, lastJointTelemetry;
 const presentationSettings = setupPresentationSettings({ container: sourceSettings.panels.ui, onChange: settings => {
   live?.setPresentationSettings(settings); limitTintEnabled = settings.limit_tint; limitTint?.setEnabled(limitTintEnabled);
-  onionSkin?.setSettings({ opacity: settings.ghost_opacity_percent / 100 });
+  onionSkin?.setSettings({ opacityStart: settings.ghost_start_opacity_percent / 100,
+    opacityEnd: settings.ghost_end_opacity_percent / 100 });
   auxiliaryViews?.invalidate();
   const next = pickLimitUse(settings);
   if (JSON.stringify(next) === JSON.stringify(limitUse)) return;
@@ -136,6 +138,7 @@ const expandedTimeline = setupExpandedTimeline({
   onLayout: () => auxiliaryViews?.invalidate(),
   onAggregate: aggregate => { if (live?.mode === 'live') session?.setAggregate(aggregate); },
   onAddTrack: id => addSessionTrack(id).catch(showTrackError),
+  onUploadTracks: kind => $(kind === 'folder' ? 'upload-folder' : 'upload-files').click(),
   onFreeze: () => $('live-freeze').click(),
   onTrackChange: (id, patch) => {
     if ('displayName' in patch) session.setName(id, patch.displayName);
@@ -512,6 +515,7 @@ function updateOnionSkin() {
       times: history.length ? history.bounds : [], bounds: history.bounds, trackBounds: history.presentationBounds,
       range: aggregateSpan(session?.aggregate, session?.span || history.bounds),
       cursor: history.selectedTime ?? history.bounds[1], reveal: liveReveal(history.selectedTime),
+      hideCursor: focusedTrack()?.display !== 'hidden',
       states: times => live.historyStates(times), jointNames: defaultData.joint_names, color: ONION_COLOR,
       comparisons: trackScene?.onionSources || [] });
   } else {
@@ -633,8 +637,11 @@ async function start() {
       const input = $(live?.mode === 'live' ? 'live-history' : 'timeline');
       input.value = time; input.dispatchEvent(new Event('input', { bubbles: true }));
     } });
-    onionSkin.setSettings({ ...ghostControls.settings, opacity: presentationSettings.settings.ghost_opacity_percent / 100 });
+    onionSkin.setSettings({ ...ghostControls.settings,
+      opacityStart: presentationSettings.settings.ghost_start_opacity_percent / 100,
+      opacityEnd: presentationSettings.settings.ghost_end_opacity_percent / 100 });
     trackScene = createTrackScene({ robot, scene, jointNames: defaultData.joint_names });
+    armVisibility = createArmVisibility(robot);
     jointCells = createJointTable($("joint-list"), data.joint_names);
     setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
     populateReplay(data, {name: 'Starting pose'});
@@ -651,7 +658,9 @@ async function start() {
     live.setSession(session);
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
       moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });
-    replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Starting pose' });
+    replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Starting pose',
+      onLinkedItem: item => addSessionTrack(item.id, item) });
+    await live.enterLive();
     $("connection-label").textContent = "Local source";
     document.querySelector(".connection").classList.add("connected");
     $("load-overlay").hidden = true;
@@ -728,6 +737,7 @@ function changeMode(mode) {
   if (liveGroup) liveGroup.visible = mode === 'live';
   if (trackScene) trackScene.group.visible = mode === 'live';
   if (mode !== 'live') setMainDimmed(false);
+  if (mode !== 'live') armVisibility?.setVisible(true);
   $('path-legend').innerHTML = mode === 'live'
     ? '<span><i class="legend-line"></i>Prediction</span><span><i class="legend-reference"></i>Reference / target</span><span><i class="legend-executed"></i>Simulated motion</span>'
     : replayLegend();
@@ -999,7 +1009,9 @@ function setMainDimmed(dimmed) {
 function updateSessionScene() {
   if (!session || !trackScene) return;
   const main = focusedTrack();
+  armVisibility?.setVisible(!main || main.display !== 'hidden');
+  if (main?.display === 'hidden') $('limit-tint-tooltip').hidden = true;
   trackScene.update({ tracks: session.tracks, time: session.cursor, mainReference: main?.reference,
-    visible: Boolean(main), opacity: presentationSettings.settings.ghost_opacity_percent / 100 });
+    visible: Boolean(main), opacity: presentationSettings.settings.ghost_start_opacity_percent / 100 });
   setMainDimmed(Boolean(main && !main.empty && outsideSpan(main, session.cursor)));
 }

@@ -128,10 +128,10 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
     sources.forEach((item, sourceIndex) => {
       const key = item.id || `comparison-${sourceIndex}`, budget = budgets[sourceIndex];
       activeIds.add(key);
-      const settingsKey = JSON.stringify([settings.interval_s, budget, item.range, item.seekOffset || 0]);
+      const settingsKey = JSON.stringify([settings.spacingEnabled, settings.spacingEnabled ? settings.interval_s : null, budget, item.range, item.seekOffset || 0]);
       let cached = cache.get(key);
       if (!cached || cached.identity !== item.identity || cached.revision !== item.revision || cached.settingsKey !== settingsKey) {
-        const selection = budget ? onionKeyframes(item.times, { range: item.range, interval_s: settings.interval_s, maxCount: budget }) : { step: null, times: [] };
+        const selection = budget ? onionKeyframes(item.times, { range: item.range, spacingEnabled: settings.spacingEnabled, interval_s: settings.interval_s, maxCount: budget }) : { step: null, times: [] };
         const samples = selection.times.length ? item.states(selection.times) : [];
         const seen = new Set();
         const recorded = samples.flatMap((sample, index) => {
@@ -143,15 +143,15 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
       }
       if (sourceIndex === 0) primarySelection = cached.selection;
       for (const pose of cached.recorded) poses.push({ ...pose, sourceId: key, jointNames: item.jointNames, base: item.base,
-        color: item.color ?? ONION_COLOR, cursor: item.cursor, bounds: item.bounds, reveal: item.reveal,
+        color: item.color ?? ONION_COLOR, cursor: item.cursor, bounds: item.bounds, range: item.range, hideCursor: item.hideCursor, reveal: item.reveal,
         seekTime: pose.time + (item.seekOffset || 0), label: sourceIndex ? item.label : undefined });
     });
     for (const key of cache.keys()) if (!activeIds.has(key)) cache.delete(key);
     const visible = poses.filter(pose => pose.reveal == null || pose.time <= pose.reveal);
-    const displayed = enabled() && normalVisible ? visible.map(pose => ({ ...pose, opacity: onionOpacity(pose.time, pose.cursor, pose.bounds, settings.opacity) })) : [];
+    const displayed = enabled() && normalVisible ? visible.map(pose => ({ ...pose, opacity: onionOpacity(pose.time, pose.cursor, pose.range, { ...settings, hideCursor: pose.hideCursor }) })) : [];
     ghosts.set(displayed); ghosts.update(camera); repaintTicks(visible);
     const count = displayed.filter(pose => pose.opacity > 0).length, mode = effectiveMode();
-    const title = `Ghost arms · ${mode === 'off' ? 'off' : mode === 'all' ? 'all tracks' : next.mode === 'live' ? 'Live only' : 'on'} · ${count}/${settings.maxCount}${primarySelection.step ? ` · every ${Number(primarySelection.step.toPrecision(6))} s` : ''} (O)`;
+    const title = `Ghost arms · ${mode === 'off' ? 'off' : mode === 'all' ? 'all tracks' : next.mode === 'live' ? 'Live only' : 'on'} · ${count}/${settings.maxCount}${settings.spacingEnabled && primarySelection.step ? ` · every ${Number(primarySelection.step.toPrecision(6))} s` : settings.spacingEnabled ? '' : ' · evenly distributed'} (O)`;
     buttons.forEach(button => {
       button.setAttribute('aria-pressed', String(enabled())); button.setAttribute('data-ghost-mode', mode); button.title = title;
     });
@@ -164,7 +164,7 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
     get timeline() { return { keyframes: timelineKeyframes, keyframeRevision }; },
     get snapshot() { return { enabled: enabled(), mode: effectiveMode(), settings: { ...settings }, step: primarySelection.step,
       keyframeTimes: primarySelection.times.slice(), snappedTimes: poses.map(pose => pose.time),
-      opacities: enabled() && source ? poses.map(pose => pose.reveal != null && pose.time > pose.reveal ? 0 : onionOpacity(pose.time, pose.cursor, pose.bounds, settings.opacity)) : [],
+      opacities: enabled() && source ? poses.map(pose => pose.reveal != null && pose.time > pose.reveal ? 0 : onionOpacity(pose.time, pose.cursor, pose.range, { ...settings, hideCursor: pose.hideCursor })) : [],
       poses: poses.map(pose => ({ id: pose.id, sourceId: pose.sourceId, time: pose.time, sessionTime: pose.seekTime, color: pose.color })),
       ghostCount: ghosts.snapshot.count, renderer: ghosts.snapshot }; },
   };

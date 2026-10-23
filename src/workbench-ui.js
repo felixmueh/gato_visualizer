@@ -8,6 +8,15 @@ export function bindStopPreference(stop, continueInput) {
   continueInput.addEventListener('change', update); update();
   return update;
 }
+
+// Legacy modules still bind these mounts while their data sources move onto
+// session tracks. They never become a second selectable workspace or transport.
+export function showSessionWorkspace(doc = document) {
+  for (const id of ['live-panel', 'live-controls']) { const element = doc.getElementById(id); if (element) element.hidden = false; }
+  for (const id of ['replay-section', 'replay-controls', 'replay-mode', 'live-mode']) { const element = doc.getElementById(id); if (element) element.hidden = true; }
+  doc.body.classList.toggle('live-mode', true);
+}
+
 export function setupWorkbench({ document: doc = document, onLayout = () => {} } = {}) {
   const $ = id => doc.getElementById(id), shell = $('workbench');
   setupTransportPopovers(doc);
@@ -44,6 +53,7 @@ export function setupWorkbench({ document: doc = document, onLayout = () => {} }
   // The metrics module fills this mount with recorded series.
   const updateStop = bindStopPreference($('live-stop-at-end'), $('live-continue'));
   const update = () => {
+    showSessionWorkspace(doc);
     updateStop();
     const play = $('live-play'), playing = /pause/i.test(play.textContent);
     play.dataset.playing = String(playing);

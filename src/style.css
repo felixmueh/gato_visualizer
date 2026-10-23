@@ -1325,6 +1325,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .transport-popover-panel label { display: grid; grid-template-columns: 1fr 65px; align-items: center; gap: 10px; margin: 0; color: #b8cada; font-size: 10px; white-space: nowrap; }
 .studio-workbench .transport-popover-panel label + label { margin-top: 9px; }
 .studio-workbench .transport-popover-panel input { min-width: 0; width: 65px; padding: 5px; border: 1px solid #3b4e63; border-radius: 3px; background: #1b2939; color: #d9e5ef; font: 10px 'IBM Plex Mono', monospace; }
+.studio-workbench .transport-popover-panel input[type='checkbox'] { width: 15px; height: 15px; padding: 0; margin: 0; justify-self: end; accent-color: #68d9ce; }
+.studio-workbench .transport-popover-panel input:disabled { opacity: .45; }
 .studio-workbench .transport-popover-panel input[aria-invalid='true'] { border-color: #ed716c; }
 .studio-workbench .transport-calculation select, .studio-workbench .replay-speed select { max-width: 100px; padding: 6px 4px; border: 1px solid #3b4e63; border-radius: 4px; background: #1b2939; color: #d9e5ef; font: 9px 'IBM Plex Mono', monospace; }
 .studio-workbench .duration-input { display: flex; align-items: center; padding-right: 7px; border: 1px solid #3b4e63; border-radius: 4px; background: #1b2939; color: #a9bdcc; font-size: 10px; }

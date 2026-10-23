@@ -4,6 +4,7 @@ function ghostControl(mode, icon) {
   return `<div class="transport-popover" data-transport-popover>
     <button id="${mode}-onion-skin" class="transport-button onion-skin-toggle" data-popover-trigger aria-controls="${mode}-ghost-settings" aria-expanded="false" aria-label="Onion skin" aria-pressed="false" title="Onion skin · off (O)">${icon('onion')}</button>
     <div id="${mode}-ghost-settings" class="transport-popover-panel" data-popover-panel role="group" aria-label="Ghost arm settings" hidden>
+      <label>Fixed spacing<input id="${mode}-ghost-spacingEnabled" type="checkbox" checked aria-label="Fixed ghost spacing" data-tip="Off: distribute the maximum arms across the full aggregate range; keep only recorded positions."></label>
       <label>Spacing (s)<input id="${mode}-ghost-interval_s" type="number" min=".01" max="3600" step=".1" value=".5" aria-label="Ghost arm spacing seconds" data-tip="Time between keyframes from the aggregate range's start. Stops at the range end or maximum arm count." title="Time between keyframes from the aggregate range's start. Stops at the range end or maximum arm count."></label>
       <label>Maximum arms<input id="${mode}-ghost-maxCount" type="number" min="1" max="64" step="1" value="16" aria-label="Maximum ghost arms" data-tip="Maximum temporal ghost arms across the displayed tracks." title="Maximum temporal ghost arms across the displayed tracks."></label>
     </div>
@@ -13,9 +14,9 @@ function ghostControl(mode, icon) {
 export function workbenchShell(icon) {
   return `<div class="workspace workbench" id="workbench">
     <aside class="sidebar left-sidebar" id="left-sidebar" aria-label="Task and settings">
-      <div class="mode-tabs" role="group" aria-label="Workspace mode"><button id="replay-mode" class="active" aria-pressed="true">Replay</button><button id="live-mode" disabled aria-pressed="false">Live MPC</button></div>
+      <div hidden inert aria-hidden="true"><button id="replay-mode" tabindex="-1" aria-pressed="false"></button><button id="live-mode" disabled tabindex="-1" aria-pressed="true"></button></div>
       <p id="live-availability" class="availability" role="status"></p>
-      <section id="live-panel" hidden>
+      <section id="live-panel">
         <label class="field-label" for="live-task">TASK</label><div class="select-wrap"><select id="live-task" aria-label="Live task"><option value="reach">Reaching</option></select></div>
         <div class="execution-rate-row" aria-label="Execution rates in hertz">
           <label>Simulation Hz<input id="live-simulation-hz" type="number" min=".01" step="any" value="1000" required></label>
@@ -31,19 +32,21 @@ export function workbenchShell(icon) {
           <p id="target-move-note" class="settings-note"></p><p id="live-task-note" class="settings-note"></p>
         </details>
       </section>
-      <section id="replay-section">
+      <div hidden inert aria-hidden="true">
+        <button id="upload-files">Upload .npz</button><button id="upload-folder">Upload folder</button>
+        <input id="recording-files" class="sr-only" type="file" accept=".npz" multiple tabindex="-1" aria-label="Choose recordings to upload">
+        <input id="recording-folder" class="sr-only" type="file" webkitdirectory directory multiple tabindex="-1" aria-label="Choose folder to upload">
+      </div>
+      <p id="library-message" class="library-message" role="status" aria-live="polite" hidden></p>
+      <details id="library-errors" class="library-errors" hidden><summary id="library-errors-summary"></summary><ul id="library-errors-list"></ul></details>
+      <div hidden inert aria-hidden="true"><section id="replay-section" hidden>
         <label class="field-label" for="recording-select">RECORDING</label>
         <div class="select-wrap"><select id="recording-select" aria-label="Recording library"><option value="default">Starting pose</option></select></div>
         <div class="recording-path-row"><p id="recording-path" class="recording-path"></p><span id="recording-model-warning" class="recording-model-warning" role="img" hidden>⚠</span><button id="recording-link" class="recording-link" title="Copy a direct link to this recording" aria-label="Copy a direct link to this recording" hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5l3-3M7 4.5l1.2-1.2a2.5 2.5 0 013.5 3.5L10.5 8M9 11.5l-1.2 1.2a2.5 2.5 0 01-3.5-3.5L5.5 8"/></svg></button></div><p id="recording-update" class="recording-update" role="status"></p>
         <button id="recording-reload" class="secondary-action recording-reload" hidden>Reload recording</button>
-        <div class="upload-actions"><button id="upload-files" class="secondary-action">Upload .npz</button><button id="upload-folder" class="secondary-action">Upload folder</button></div>
-        <input id="recording-files" class="sr-only" type="file" accept=".npz" multiple tabindex="-1" aria-label="Choose recordings to upload">
-        <input id="recording-folder" class="sr-only" type="file" webkitdirectory directory multiple tabindex="-1" aria-label="Choose folder to upload">
-        <p id="library-message" class="library-message" role="status" aria-live="polite"></p>
-        <details id="library-errors" class="library-errors" hidden><summary id="library-errors-summary"></summary><ul id="library-errors-list"></ul></details>
         <label class="field-label trajectory-label" for="trajectory-select">TRAJECTORY</label>
         <div class="select-wrap"><select id="trajectory-select" disabled><option>Loading trajectories…</option></select></div>
-      </section>
+      </section></div>
     </aside>
     <main class="main">
       <section class="viewport" id="viewport" aria-label="Interactive 3D robot workspace">
@@ -58,10 +61,10 @@ export function workbenchShell(icon) {
         <div hidden><span id="scene-title">TIAGo Pro</span><div id="path-legend"></div></div>
       </section>
       ${expandedTimelineShell()}
-      <section id="live-controls" class="playback transport-bar live-controls" aria-label="Live MPC playback" hidden>
-        <button id="live-play" class="transport-button primary-action" disabled aria-label="Play live history" title="Play / pause">${icon('play')}</button>
+      <section id="live-controls" class="playback transport-bar live-controls" aria-label="Session playback">
+        <button id="live-play" class="transport-button primary-action" disabled aria-label="Play session" title="Play / pause">${icon('play')}</button>
         <button id="live-reset" class="transport-button" disabled aria-label="Reset state" title="Reset state">${icon('restart')}</button>
-        <div class="live-history-track transport-track"><div id="live-history-intervals" aria-hidden="true"></div><div id="live-onion-ticks" class="onion-ticks"></div><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Live history time"></div>
+        <div class="live-history-track transport-track"><div id="live-history-intervals" aria-hidden="true"></div><div id="live-onion-ticks" class="onion-ticks"></div><input id="live-history" type="range" min="0" max="0" step="any" value="0" disabled aria-label="Session time"></div>
         <span id="live-history-position" class="transport-time">0 / 0 s</span>
         <label class="replay-speed live-speed"><span class="sr-only">Session playback speed</span><select id="live-speed" aria-label="Session playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
         <label class="stop-option" title="Stop at the recorded end; uncheck to continue simulation"><input id="live-stop-at-end" type="checkbox" checked>Stop</label>
@@ -78,7 +81,7 @@ export function workbenchShell(icon) {
         <button id="live-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div hidden><input id="live-continue" type="checkbox"><button id="live-preview">Preview</button><button id="live-cancel">Cancel calculation</button><button id="live-history-latest">Go latest</button></div>
       </section>
-      <section class="playback transport-bar" id="replay-controls" aria-label="Recorded trajectory playback">
+      <div hidden inert aria-hidden="true"><section class="playback transport-bar" id="replay-controls" aria-label="Recorded trajectory playback" hidden>
         <div class="transport-replay-content" id="replay-timeline">
           <button id="play" class="transport-button play-button" disabled aria-label="Play trajectory" title="Play / pause">${icon('play')}</button>
           <button id="restart" class="transport-button" disabled title="Reset playback" aria-label="Reset playback">${icon('restart')}</button>
@@ -90,7 +93,7 @@ export function workbenchShell(icon) {
         ${ghostControl('replay', icon)}
         <button id="replay-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div class="transport-metadata" hidden><span id="timeline-middle"></span><span id="timeline-end"></span><span class="keyboard-hint"></span></div>
-      </section>
+      </section></div>
     </main>
     <aside class="sidebar right-sidebar" id="right-sidebar" aria-label="Views, episode, solve and joints">
       <div class="inspection-tabs" role="tablist" aria-label="Inspection panels">${['Views','Episode','Solve','Joints'].map((name, i) => `<button id="inspection-tab-${name.toLowerCase()}" role="tab" aria-selected="${i === 0}" aria-controls="inspection-${name.toLowerCase()}" tabindex="${i === 0 ? 0 : -1}">${name}</button>`).join('')}</div>
@@ -105,7 +108,7 @@ export function workbenchShell(icon) {
           <div class="stats-grid"><div><span class="stat-label">Duration</span><strong id="duration-stat">—</strong></div><div><span class="stat-label">Samples</span><strong id="samples-stat">—</strong></div><div><span class="stat-label">Tool path</span><strong id="distance-stat">—</strong></div><div><span class="stat-label">End / target</span><strong id="error-stat">—</strong></div></div>
         </div>
         </div>
-        <details class="source-section"><summary>Source</summary><span id="mode-label">TRAJECTORY REPLAY</span><div class="connection"><i></i><span id="connection-label">Connecting</span></div><div class="source-name">tiago_mpc <span id="source-commit"></span></div><p id="source-run"></p><p id="live-source" class="settings-note source-live"></p></details>
+        <details class="source-section"><summary>Source</summary><span id="mode-label">SESSION · SIMULATION</span><div class="connection"><i></i><span id="connection-label">Connecting</span></div><div class="source-name">tiago_mpc <span id="source-commit"></span></div><p id="source-run"></p><p id="live-source" class="settings-note source-live"></p></details>
       </section>
       <section id="inspection-solve" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-solve" hidden><div id="solve-plots"></div></section>
       <section id="inspection-joints" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-joints" hidden><div class="section-heading"><h2 title="Right arm, native joint values">Right arm</h2><div class="joint-view-toggle" role="group" aria-label="Joints presentation"><button id="joint-view-gauges" type="button" title="Limit gauges">Gauges</button><button id="joint-view-numbers" type="button" title="Exact values">Numbers</button></div></div><div class="joint-list" id="joint-list" data-view="gauges"></div></section>

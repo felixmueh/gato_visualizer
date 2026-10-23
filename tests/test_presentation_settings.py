@@ -30,7 +30,7 @@ class PresentationConfigTests(unittest.TestCase):
             self.assertEqual(load_visualizer_config(path).presentation, DEFAULT_PRESENTATION)
             service = PresentationSettings(path)
             updated = dict(DEFAULT_PRESENTATION, report_hz=10, buffer_ms=1000, interpolate=True, limit_tint=False,
-                           ghost_opacity_percent=70,
+                           ghost_start_opacity_percent=70, ghost_end_opacity_percent=10,
                            limit_near_percent=80, limit_at_position_rad=0, limit_at_velocity_rad_s=.05,
                            limit_at_torque_percent=1.5)
             self.assertEqual(service.update(updated), updated)
@@ -42,8 +42,10 @@ class PresentationConfigTests(unittest.TestCase):
         for changes in (dict(report_hz=True), dict(report_hz=0), dict(report_hz=121),
                         dict(report_hz=float('nan')), dict(buffer_ms=-1), dict(buffer_ms=10001),
                         dict(buffer_ms=float('inf')), dict(interpolate=1), dict(limit_tint=1),
-                        dict(ghost_opacity_percent=-1), dict(ghost_opacity_percent=101),
-                        dict(ghost_opacity_percent=True), dict(ghost_opacity_percent=float('nan')),
+                        dict(ghost_start_opacity_percent=-1), dict(ghost_start_opacity_percent=101),
+                        dict(ghost_start_opacity_percent=True), dict(ghost_start_opacity_percent=float('nan')),
+                        dict(ghost_end_opacity_percent=-1), dict(ghost_end_opacity_percent=101),
+                        dict(ghost_end_opacity_percent=False), dict(ghost_end_opacity_percent='25'),
                         dict(limit_near_percent=0), dict(limit_near_percent=101), dict(limit_near_percent=True),
                         dict(limit_at_position_rad=-.001), dict(limit_at_position_rad=.2),
                         dict(limit_at_velocity_rad_s=float('nan')), dict(limit_at_torque_percent=11)):
@@ -60,10 +62,49 @@ class PresentationConfigTests(unittest.TestCase):
             path.write_text(json.dumps(dict(presentation=older)))
             self.assertEqual(load_visualizer_config(path).presentation, dict(DEFAULT_PRESENTATION, **older))
             self.assertEqual(DEFAULT_PRESENTATION['limit_near_percent'], 90)
-            self.assertEqual(DEFAULT_PRESENTATION['ghost_opacity_percent'], 55)
+            self.assertEqual(DEFAULT_PRESENTATION['ghost_start_opacity_percent'], 55)
+            self.assertEqual(DEFAULT_PRESENTATION['ghost_end_opacity_percent'], 25)
             self.assertEqual(DEFAULT_PRESENTATION['limit_at_position_rad'], .003)
             self.assertEqual(DEFAULT_PRESENTATION['limit_at_velocity_rad_s'], .01)
             self.assertEqual(DEFAULT_PRESENTATION['limit_at_torque_percent'], .2)
+
+    def test_legacy_scalar_ghost_opacity_migrates_on_load_without_writing_and_saves_new_endpoints(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'visualizer.json'
+            legacy = dict(source=dict(mpc_root='/source'), presentation=dict(ghost_opacity_percent=70))
+            path.write_text(json.dumps(legacy))
+            before = path.read_bytes(), path.stat().st_mtime_ns
+            value = load_visualizer_config(path).presentation
+            self.assertEqual(value['ghost_start_opacity_percent'], 70)
+            self.assertAlmostEqual(value['ghost_end_opacity_percent'], 70 * (25 / 55))
+            self.assertNotIn('ghost_opacity_percent', value)
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
+            service = PresentationSettings(path)
+            self.assertEqual(service.settings(), value)
+            changed = dict(value, ghost_end_opacity_percent=12)
+            service.update(changed)
+            self.assertEqual(json.loads(path.read_text()), dict(legacy, presentation=changed))
+            self.assertEqual(load_visualizer_config(path).presentation, changed)
+            for endpoint in ('ghost_start_opacity_percent', 'ghost_end_opacity_percent'):
+                incomplete = dict(DEFAULT_PRESENTATION)
+                incomplete.pop(endpoint)
+                with self.assertRaises(ValueError):
+                    validate_presentation(incomplete)
+            with self.assertRaises(ValueError):
+                validate_presentation(dict(DEFAULT_PRESENTATION, ghost_opacity_percent=70))
+
+    def test_explicit_ghost_endpoints_override_legacy_scalar_and_missing_endpoints_derive_from_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'visualizer.json'
+            for new, start, end in ((dict(ghost_start_opacity_percent=80, ghost_end_opacity_percent=10), 80, 10),
+                                    (dict(ghost_start_opacity_percent=80), 80, 70 * (25 / 55)),
+                                    (dict(ghost_end_opacity_percent=10), 70, 10)):
+                with self.subTest(new=new):
+                    path.write_text(json.dumps(dict(presentation=dict(ghost_opacity_percent=70, **new))))
+                    value = load_visualizer_config(path).presentation
+                    self.assertEqual(value['ghost_start_opacity_percent'], start)
+                    self.assertAlmostEqual(value['ghost_end_opacity_percent'], end)
+                    self.assertNotIn('ghost_opacity_percent', value)
 
     def test_api_persists_without_live_and_rejects_invalid_or_foreign_origin(self):
         with tempfile.TemporaryDirectory() as folder:

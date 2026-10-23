@@ -69,7 +69,7 @@ function source(overrides = {}) {
   return { next, calls: () => calls };
 }
 
-test('cursor-only updates reuse recorded samples and ticks while updating ghost opacity', t => {
+test('cursor-only updates reuse recorded samples, ticks and aggregate-relative ghost opacity', t => {
   const { view, elements, joint } = fixture(t), motion = source();
   view.update(motion.next);
   const before = view.snapshot, revision = view.timeline.keyframeRevision;
@@ -82,7 +82,7 @@ test('cursor-only updates reuse recorded samples and ticks while updating ghost 
   assert.equal(motion.calls(), 1);
   assert.equal(view.timeline.keyframeRevision, revision);
   assert.equal(elements.get('replay-onion-ticks').children[1], tick);
-  assert.notDeepEqual(view.snapshot.opacities, before.opacities);
+  assert.deepEqual(view.snapshot.opacities, before.opacities);
   assert.equal(joint.jointValue[0], 0);
   assert.match(elements.get('replay-onion-skin').title, /every 0.5 s/);
   view.update({ ...motion.next, revision: 2 });
@@ -181,10 +181,10 @@ test('Live cycles off, primary and colored all-track ghosts under one strict max
 
 test('spacing and maximum update the prefix, opacity preserves samples, and a one-arm cap retains its first sample', t => {
   const { view } = fixture(t), motion = source(); view.update(motion.next);
-  view.setSettings({ opacity: .8 }); assert.equal(motion.calls(), 1);
+  view.setSettings({ opacityStart: .8, opacityEnd: .4 }); assert.equal(motion.calls(), 1);
   assert.equal(view.settings.interval_s, .5); assert.equal(view.settings.maxCount, 16);
   const before = view.snapshot.opacities;
-  view.setSettings({ opacity: .4 }); assert.equal(motion.calls(), 1);
+  view.setSettings({ opacityStart: .4, opacityEnd: .2 }); assert.equal(motion.calls(), 1);
   assert.deepEqual(view.snapshot.opacities, before.map(opacity => opacity / 2));
   view.setSettings({ interval_s: 1, maxCount: 3 }); assert.equal(motion.calls(), 2);
   assert(view.snapshot.snappedTimes.length <= 3);
@@ -239,7 +239,7 @@ test('aggregate range anchors a fixed-spacing prefix; cursor, zoom and opacity p
   assert.deepEqual(view.snapshot.keyframeTimes, [2, 3, 4, 5]); assert.deepEqual(view.snapshot.snappedTimes, [2, 3, 4, 5]);
   assert.equal(motion.calls(), 1);
   view.update({ ...motion.next, cursor: 3.1, trackBounds: [3, 5] });
-  view.setSettings({ opacity: .8 }); assert.equal(motion.calls(), 1);
+  view.setSettings({ opacityStart: .8, opacityEnd: .4 }); assert.equal(motion.calls(), 1);
   view.update({ ...motion.next, range: [4, 8] }); assert.equal(motion.calls(), 2);
   assert.deepEqual(view.snapshot.keyframeTimes, [4, 5, 6, 7]);
   view.update({ ...motion.next, range: [4, 20], revision: 2, times: Array.from({ length: 21 }, (_, index) => index) });
@@ -270,4 +270,36 @@ test('all-track budgets exclude disjoint recordings and stay within one maximum 
   assert.equal(view.snapshot.poses.length, 4); assert(view.snapshot.ghostCount <= 4);
   assert.deepEqual(view.snapshot.poses.filter(pose => pose.sourceId === 'primary').map(pose => pose.time), [2, 3]);
   assert.deepEqual(view.snapshot.poses.filter(pose => pose.sourceId !== 'primary').map(pose => pose.time), [100, 101]);
+});
+
+test('disabled spacing covers aggregate endpoints and cursor movement does not change aligned fade', t => {
+  const { view } = fixture(t), motion = source({ mode: 'live', times: Array.from({ length: 11 }, (_, i) => i), range: [2, 8], cursor: 20 });
+  view.setSettings({ spacingEnabled: false, maxCount: 4, interval_s: .1, opacityStart: .8, opacityEnd: .2 }); view.update(motion.next);
+  assert.deepEqual(view.snapshot.keyframeTimes, [2, 4, 6, 8]); assert.equal(motion.calls(), 1);
+  const opacity = view.snapshot.opacities;
+  for (const [actual, expected] of opacity.map((actual, i) => [actual, [.8, .6, .4, .2][i]])) assert(Math.abs(actual - expected) < 1e-12);
+  view.update({ ...motion.next, cursor: -20 }); assert.deepEqual(view.snapshot.opacities, opacity); assert.equal(motion.calls(), 1);
+  view.setSettings({ interval_s: 10 }); assert.equal(motion.calls(), 1); // Disabled seconds stay retained but do not resample.
+  view.update({ ...motion.next, cursor: 2 }); assert.equal(view.snapshot.opacities[0], 0);
+  view.update({ ...motion.next, cursor: 2, hideCursor: false }); assert.equal(view.snapshot.opacities[0], .8); assert.equal(motion.calls(), 1);
+  view.setSettings({ spacingEnabled: true }); assert.equal(motion.calls(), 2); assert.deepEqual(view.snapshot.keyframeTimes, [2]);
+});
+
+test('all-track even distributions keep aggregate-aligned endpoints and fade through offsets and partial support', t => {
+  const { view } = fixture(t), primary = source({ mode: 'live', identity: 'live', times: Array.from({ length: 11 }, (_, i) => i), range: [2, 8], cursor: 20 });
+  const comparison = source({ id: 'track-a', identity: 'saved', times: Array.from({ length: 11 }, (_, i) => 100 + i), bounds: [100, 110], seekOffset: -98, cursor: 120, label: 'A' });
+  const next = { ...primary.next, comparisons: [comparison.next] };
+  view.setSettings({ spacingEnabled: false, maxCount: 6, opacityStart: .8, opacityEnd: .2 }); view.setMode('all'); view.update(next);
+  const poses = view.snapshot.poses;
+  assert.deepEqual(poses.filter(pose => pose.sourceId === 'primary').map(pose => pose.sessionTime), [2, 5, 8]);
+  assert.deepEqual(poses.filter(pose => pose.sourceId === 'track-a').map(pose => pose.sessionTime), [2, 5, 8]);
+  assert.deepEqual(view.snapshot.opacities.slice(0, 3), view.snapshot.opacities.slice(3)); assert(view.snapshot.ghostCount <= 6);
+  comparison.next.times = [101, 102, 103, 104, 105]; comparison.next.bounds = [101, 105]; comparison.next.revision = 2;
+  view.update(next);
+  assert.deepEqual(view.snapshot.poses.filter(pose => pose.sourceId === 'track-a').map(pose => pose.time), [103]);
+  assert.deepEqual(view.snapshot.poses.filter(pose => pose.sourceId === 'track-a').map(pose => pose.sessionTime), [5]);
+  assert(view.snapshot.ghostCount <= 6); // No stretching this short source to its own endpoints.
+  comparison.next.seekOffset = 0; view.update(next);
+  assert.equal(view.snapshot.poses.some(pose => pose.sourceId === 'track-a'), false);
+  assert.equal(view.snapshot.poses.length, 6); // Disjoint sources consume no budget.
 });

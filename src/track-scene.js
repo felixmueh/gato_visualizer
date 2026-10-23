@@ -4,7 +4,7 @@ import { createPathLine } from './path-lines.js';
 import { sampleTrajectory } from './playback.js';
 import { TRACK_OPACITY as PREVIOUS_TRACK_OPACITY, TRACK_OUTSIDE_OPACITY as PREVIOUS_OUTSIDE_OPACITY } from './session.js';
 import { DEFAULT_GHOST_SETTINGS, sampleAtOrBefore } from './onion-skin.js';
-export const TRACK_OPACITY = DEFAULT_GHOST_SETTINGS.opacity;
+export const TRACK_OPACITY = DEFAULT_GHOST_SETTINGS.opacityStart;
 export const TRACK_OUTSIDE_OPACITY = TRACK_OPACITY * (PREVIOUS_OUTSIDE_OPACITY / PREVIOUS_TRACK_OPACITY);
 
 export const TRACK_PATH_OPACITY = .65;

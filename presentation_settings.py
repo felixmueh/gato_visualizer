@@ -8,8 +8,26 @@ from gato_visualizer.plotting.limit_use import LIMIT_DEFAULTS, validate_limit_se
 # Limit-use states (near/at/beyond) share their thresholds with plots; see
 # gato_visualizer/plotting/limit_use.py for definitions and ranges.
 DEFAULT_PRESENTATION = dict(report_hz=20, buffer_ms=200, interpolate=False, limit_tint=True,
-                            ghost_opacity_percent=55,
+                            ghost_start_opacity_percent=55, ghost_end_opacity_percent=25,
                             **LIMIT_DEFAULTS)
+
+
+def migrate_presentation(value):
+    """Normalize saved scalar ghost opacity without writing the config on load."""
+    if not isinstance(value, dict):
+        raise ValueError('presentation must be an object')
+    result = dict(value)
+    if 'ghost_opacity_percent' not in result:
+        return result
+    legacy = result.pop('ghost_opacity_percent')
+    endpoints = ('ghost_start_opacity_percent', 'ghost_end_opacity_percent')
+    if any(name not in result for name in endpoints):
+        if (isinstance(legacy, bool) or not isinstance(legacy, (int, float))
+                or not math.isfinite(legacy) or not 0 <= legacy <= 100):
+            raise ValueError('ghost_opacity_percent must be finite within [0, 100]')
+        result.setdefault(endpoints[0], legacy)
+        result.setdefault(endpoints[1], legacy * (25 / 55))
+    return result
 
 
 def validate_presentation(value):
@@ -17,7 +35,8 @@ def validate_presentation(value):
         raise ValueError('presentation requires ' + ', '.join(DEFAULT_PRESENTATION))
     result = dict(value)
     for name, minimum, maximum in (('report_hz', 1, 120), ('buffer_ms', 0, 10000),
-                                    ('ghost_opacity_percent', 0, 100)):
+                                    ('ghost_start_opacity_percent', 0, 100),
+                                    ('ghost_end_opacity_percent', 0, 100)):
         number = value[name]
         if (isinstance(number, bool) or not isinstance(number, (int, float))
                 or not math.isfinite(number) or not minimum <= number <= maximum):

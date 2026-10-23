@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bindStopPreference } from './workbench-ui.js';
+import { bindStopPreference, setupWorkbench } from './workbench-ui.js';
+import { plotDOM } from './plot-dom-test-helper.js';
 import { fitAuxiliaryCamera } from './auxiliary-views.js';
 import { Box3, OrthographicCamera, Vector3 } from 'three';
 
@@ -27,4 +28,25 @@ test('auxiliary Top keeps robot forward X right and both views frame the same wo
       assert(Math.abs(projected.x) <= 1 / 1.18 + 1e-9); assert(Math.abs(projected.y) <= 1 / 1.18 + 1e-9);
     }
   }
+});
+
+test('the workbench keeps a single workspace visible without changing inspector selection or calculation availability', () => {
+  const { document } = plotDOM(), elements = new Map();
+  document.getElementById = id => {
+    if (!elements.has(id)) { const element = document.createElement('div'); elements.set(id, element); document.body.append(element); }
+    return elements.get(id);
+  };
+  document.querySelectorAll = selector => document.body.querySelectorAll(selector);
+  const $ = document.getElementById;
+  $('live-panel').hidden = $('live-controls').hidden = true;
+  $('replay-section').hidden = $('replay-controls').hidden = false;
+  $('live-play').disabled = true;
+  const workbench = setupWorkbench({ document });
+  assert.equal($('live-panel').hidden, false); assert.equal($('live-controls').hidden, false);
+  assert.equal($('replay-section').hidden, true); assert.equal($('replay-controls').hidden, true);
+  assert.equal($('live-mode').hidden, true); assert.equal($('replay-mode').hidden, true);
+  assert(document.body.className.split(' ').includes('live-mode'));
+  workbench.selectTab('joints'); $('replay-controls').hidden = false; workbench.update();
+  assert.equal($('replay-controls').hidden, true); assert.equal(workbench.activeTab, 'joints');
+  assert.equal($('inspection-joints').hidden, false); assert.equal($('live-play').disabled, true);
 });

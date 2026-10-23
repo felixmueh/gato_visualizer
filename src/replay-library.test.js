@@ -1,6 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { itemRevision, modelWarningText, uploadPath, validateReference, referencePosition, playbackClock } from './replay-library.js';
+import { itemRevision, modelWarningText, uploadPath, validateReference, referencePosition, playbackClock, setupReplayLibrary } from './replay-library.js';
+import { plotDOM } from './plot-dom-test-helper.js';
+
+function libraryHarness(t, items = []) {
+  const { document } = plotDOM(), elements = new Map(), requests = [], replacements = [];
+  document.getElementById = id => {
+    if (!elements.has(id)) elements.set(id, document.createElement('div'));
+    return elements.get(id);
+  };
+  const location = { href: 'http://localhost:8090/?replay=study/run' };
+  let library;
+  const globals = { document, location, history: { state: null, replaceState(_state, _title, href) { replacements.push(href); location.href = href; } },
+    setTimeout: () => 1, clearTimeout() {},
+    fetch: async url => {
+      requests.push(url);
+      if (url === '/api/replays') return { ok: true, json: async () => ({ items }) };
+      if (url.startsWith('/api/replays/scene?')) return { ok: true, json: async () => ({ source: {}, trajectories: [] }) };
+      throw new Error(`Unexpected request: ${url}`);
+    } };
+  const descriptors = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  t.after(() => {
+    library?.dispose();
+    for (const [key, descriptor] of descriptors) descriptor ? Object.defineProperty(globalThis, key, descriptor) : delete globalThis[key];
+  });
+  return { elements, requests, replacements, location, create(options) { return library = setupReplayLibrary(options); } };
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test('folder uploads preserve relative names and reject unrelated files', () => {
   assert.equal(uploadPath({name:'case.npz',webkitRelativePath:'random100/day1/case.npz'}),'random100/day1/case.npz');
@@ -67,4 +94,34 @@ test('model warning tooltip names both full-URDF hashes', () => {
   assert.match(text, /different robot-model file/);
   assert.match(text, /Recorded: f451/);
   assert.match(text, /Displayed: d3be/);
+});
+
+test('session deep links add catalog tracks without loading a scene, selecting a legacy replay or rewriting the URL', async t => {
+  const item = { id: 'run', name: 'study/run', source: 'ingest', status: 'ready', revision: '1' };
+  const h = libraryHarness(t, [item]), added = [], scenes = [];
+  const library = h.create({ onScene: (...args) => scenes.push(args), onLinkedItem: async item => added.push(item) });
+  await flush(); await flush();
+  assert.deepEqual(added, [item]); assert.deepEqual(scenes, []); assert.deepEqual(h.requests, ['/api/replays']);
+  assert.equal(library.selectedId, 'default'); assert.equal(h.location.href, 'http://localhost:8090/?replay=study/run');
+  assert.equal(h.elements.get('recording-link').hidden, true); assert.equal(h.elements.get('library-message').hidden, true);
+  library.setLive(true); library.setLive(false); await library.refresh();
+  assert.equal(added.length, 1); assert.deepEqual(h.replacements, []);
+});
+
+test('a pending session deep link is added once its catalog recording becomes available', async t => {
+  const items = [], h = libraryHarness(t, items), added = [];
+  const library = h.create({ onLinkedItem: async item => added.push(item) });
+  await flush(); assert.equal(added.length, 0); assert.equal(h.elements.get('library-message').hidden, false);
+  items.push({ id: 'run', name: 'study/run', source: 'ingest', status: 'ready', revision: '1' });
+  await library.refresh(); assert.equal(added.length, 1); assert.equal(h.elements.get('library-message').hidden, true);
+  assert(h.requests.every(url => url === '/api/replays')); assert.deepEqual(h.replacements, []);
+});
+
+test('legacy ReplayLibrary entrypoints still open a linked scene when no session callback is supplied', async t => {
+  const item = { id: 'run', name: 'study/run', source: 'ingest', status: 'ready', revision: '1' }, h = libraryHarness(t, [item]), scenes = [];
+  const library = h.create({ onScene: async (scene, item) => scenes.push([scene, item]) });
+  await flush(); await flush();
+  assert.equal(scenes.length, 1); assert.equal(library.selectedId, 'run');
+  assert.deepEqual(h.requests, ['/api/replays', '/api/replays/scene?id=run']);
+  library.setLive(true); assert.equal(h.location.href, 'http://localhost:8090/');
 });

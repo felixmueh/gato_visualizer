@@ -91,7 +91,7 @@ export function playbackClock(trajectory) {
   return basis === 'wall' ? 'wall' : basis === 'simulation' ? 'simulation' : 'recorded';
 }
 
-export function setupReplayLibrary({ onScene, initialId = 'default', initialName = 'Starting pose' }) {
+export function setupReplayLibrary({ onScene, onLinkedItem, initialId = 'default', initialName = 'Starting pose' }) {
   const $ = (id) => document.getElementById(id);
   let selectedId = initialId;
   let selectedItem = { id: initialId, name: initialName, path: '', status: 'ready' };
@@ -108,6 +108,7 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
   let attemptedLink = '';
   let liveMode = false;
   const syncUrl = () => {
+    if (onLinkedItem) { $('recording-link').hidden = true; return; }
     if (pendingLink) return;
     const key = liveMode ? null : replayLinkKey(selectedItem);
     const next = replayLinkUrl(location.href, key);
@@ -140,6 +141,7 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
   };
   const notify = (message, error = false) => {
     $('library-message').textContent = message;
+    $('library-message').hidden = !message;
     $('library-message').classList.toggle('error', error);
   };
   const updateSelection = () => {
@@ -229,6 +231,18 @@ export function setupReplayLibrary({ onScene, initialId = 'default', initialName
       notify(`Linked recording ${key} is not in the library. The link opens it once it appears.`, true);
     } else if (item.status !== 'ready') {
       notify(`Could not open linked recording ${key}: ${item.error || 'invalid recording'}`, true);
+    } else if (onLinkedItem) {
+      // Session entrypoints consume the light motion payload themselves. Do not
+      // switch ReplayLibrary.current through /scene or rewrite the shared link.
+      loading = true;
+      try {
+        await onLinkedItem(item);
+        if (pendingLink === key && !disposed) pendingLink = null;
+        notify('');
+      } catch (error) {
+        attemptedLink = '';
+        notify(`Could not add linked recording ${key}: ${error.message}`, true);
+      } finally { loading = false; render(); }
     } else {
       if (await choose(item.id)) { if (pendingLink === key) pendingLink = null; }
       else attemptedLink = '';

@@ -9,7 +9,7 @@ inspect its predicted tool path, then play the simulated closed-loop motion.
 Use a prepared sibling `../tiago_mpc` checkout with canonical models, fetched
 LFS meshes and GATO dependencies (select another checkout with `--mpc-root`,
 `TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the starting pose,
-ready for Live or for replays from the library or uploads.
+in one Live workspace, ready to calculate or add recordings as tracks.
 The launcher uses `../tiago_mpc/venv-host` on the desktop. `TIAGO_PYTHON` can
 select another prepared interpreter; inside the existing container the launcher
 falls back to the checkout's `.venv`. It does not install Python packages there.
@@ -32,11 +32,9 @@ Omit `--host 0.0.0.0` to listen only on the desktop itself. No cloud service,
 laptop Python environment, or internet connection is needed after setup.
 
 **Direct replay links:** `http://192.168.178.82:8090/?replay=reaching/study/run_017`
-opens Replay with that library path (shown in the library without `.npz`;
-uploads use an `uploads/` prefix) selected and loaded. Selecting a recording
-keeps the address bar on its link, so the current URL is always shareable;
-**Copy link** beside the path copies it. The starting pose and Live carry
-no parameter. A missing or unreadable path shows the library's usual message
+adds that library recording as a track in the Live workspace (the path omits
+`.npz`; uploads use an `uploads/` prefix). The linked URL remains shareable.
+A missing or unreadable path shows the library's usual message
 and error list, and the link opens the recording once it appears (for example
 when its export finishes). Links match library entries only, never file paths.
 
@@ -45,7 +43,7 @@ frontend, and serves the application, robot assets and API from one process.
 Numerical solving respects the experiment locks and reports GPU busy while
 another experiment owns them. Explicit compilation is CPU work: it keeps Live
 running, takes no GPU experiment lock, and uses half the available CPU cores
-while respecting CPU affinity/quota. Replay and camera controls remain available.
+while respecting CPU affinity/quota. Recorded playback and camera controls remain available.
 
 Use another MPC checkout or interpreter with:
 
@@ -113,14 +111,16 @@ paths resolve relative to the config file. Select another file with
 `./scripts/start.sh --config /path/to/visualizer.json`. Startup prints the
 resolved ingest directory. This is `impl/_expr_data/ingest` on the host and
 `/workspace/_expr_data/ingest` in the container. This config does not change the MPC settings.
-The Replay library discovers portable `.npz` files recursively there and accepts
-file/folder uploads from the laptop into `_expr_data/uploads`. Select a recording
-to load it; file changes update the library without replacing current playback.
+The recording library discovers portable `.npz` files recursively there and accepts
+file/folder uploads from the laptop into `_expr_data/uploads`. Use **Add track**
+to search recordings, preview their recorded tool paths and add them to the session.
+File changes update the library without replacing loaded tracks.
 The producer-side exporter is `tiago_mpc/experiments/replay.py` (`export_replay`, `save_replay`);
 see the [format and export cookbook](docs/replay-format.md).
 
 ## Workspace
 
+The application opens directly into one Live workspace, with no mode tabs.
 The viewport fills the window above a single compact playback bar. Use its top
 left and top right buttons to hide or restore either sidebar. The right sidebar
 has **Views** (synchronized Top and Right cameras), **Episode** (recorded motion
@@ -136,8 +136,8 @@ overlays and keep their fixed width.
 
 The playback bar contains Play/Pause, Reset, the timeline and **Stop**. Checked
 Stop ends recorded playback at the session end. With Live calculation,
-unchecking it continues simulation from the tip; in Replay, unchecking it loops
-the recording. On Play runs continuously until paused. Live also
+unchecking it continues simulation from the tip. On Play runs continuously
+from an empty run until paused. The transport also
 provides the calculation mode, a precalculation icon with its duration in a
 hover/focus panel above it,
 **Freeze for comparison**, and a playback speed (forced to 1× while following
@@ -150,22 +150,26 @@ start. A subsequent settings edit starts from that displayed starting state.
 Library tracks align their first sample with Live's start. Each lane shows its
 colour, editable name (A, B, C by default) and offset; drag its span to move it in session time
 (Alt disables snapping), or double-click to restore the default placement.
-Eye, Arm/Dot and × control visibility, representation and removal. Coloured
+Live's **Arm** button hides or restores the solid right arm while leaving its
+ghost images available. Other rows use Eye, Arm/Dot and × for track visibility,
+representation and removal. Coloured
 recorded ghosts/dots and paths play with Live, holding dimmed endpoint poses
 outside their spans. Lane badges describe frame/time/model mismatches;
 tooltips retain source provenance. The collapsed chevron counts comparison tracks.
-Freezes appear under Temporary in Add track and in the Replay library. Eight
+Freezes appear under Temporary in Add track. Eight
 are retained per server run; removing a track does not delete its freeze.
 Page reload retains the freeze catalog but clears the browser's tracks;
-server shutdown deletes its freezes. Replay mode hides and retains the Live
-session. See [session defaults](docs/presentation.md#session-and-tracks).
+server shutdown deletes its freezes. See [session defaults](docs/presentation.md#session-and-tracks).
 The ruler sits above Live; aggregate start/end barriers and shading extend
 across all track rows. Live's row repeats the Freeze action. Hover the ghost
 button to set spacing and the maximum number of arms; click it to cycle off,
-Live only, or all tracks. **Settings → UI** sets ghost opacity (default 55%).
-Ghost keyframes start at the aggregate range's left edge at the chosen spacing
-and stop at the maximum count or range end. Clearing the range uses the whole
-recording; zoom leaves the ghosts unchanged. The boxed × in each replay row
+Live only, or all tracks. **Settings → UI** sets start and end ghost opacity
+(defaults 55% and 25%). The fade follows the aggregate range from beginning to
+end and stays fixed while scrubbing. With **Fixed spacing** on, keyframes start
+at the range's left edge and stop at the maximum count or range end. Turn it
+off to distribute the maximum evenly over the range, including its endpoints.
+Clearing the range uses the whole session; zoom leaves the ghosts unchanged.
+The boxed × in each replay row
 sits directly below Live's Freeze button.
 Task position inputs remain available below the controller settings; direct
 viewport manipulation avoids scrolling to them during normal use.
@@ -208,8 +212,7 @@ bound. Dragging a bound onto its data edge (or double-clicking it) leaves that
 side unbounded; an unbounded end keeps following new Live data. The reset arrow,
 Esc on the timeline, or × on the Episode header's window chip clears it to the
 entire episode. The window is independent of zoom and the playback cursor and
-persists across Live generation changes, like zoom. Replay resets both when
-the recording changes. Sidebar episode-time
+persists across Live generation changes, like zoom. Sidebar episode-time
 plots fit the window; docked plots retain the timeline zoom window and cursor. Drag in a plot to scrub; Y scales hold headroom and expand smoothly as
 new values arrive. The Solve inspector follows the recorded
 plan association. **Pin solve** retains its identity and SQP selection with a
@@ -259,12 +262,11 @@ track marks breaches; interval tooltips count clipped commands. These are
 simulation settings: `tiago_mpc`'s robot path never clips. See
 [limit handling](docs/execution-api.md#limit-handling).
 
-Select Live, adjust the target offset and settings, and inspect the prediction.
+Adjust the target offset and settings, and inspect the prediction.
 The prediction computes one optimized horizon from the displayed state. It
 does not advance the simulated plant. **Reset state** returns to the comfortable
 starting pose, clears recorded motion, and restarts the episode's plan count.
-Live settings stay intact when switching to Replay and back; replay metadata
-never replaces the Live configuration. The first Live connection after loading
+Adding recording tracks never replaces the Live configuration. The first connection after loading
 the application starts a fresh episode at the comfortable pose and time zero.
 
 The **Calculation** menu selects how full closed-loop motion is generated:
@@ -360,13 +362,14 @@ This MVP is a simulation diagnostic. It does not command a physical robot,
 check collisions, or provide experiment/timing evidence. Plotting exposes only
 diagnostics actually retained by the selected solver or recording.
 
-## Replay
+## Saved tracks
 
-Select recorded MPC motion or a saved optimizer prediction, then play, pause,
-scrub, restart or change speed. Recorded motion uses sample timestamps and
-interpolation. A saved prediction animates its knot states; it is distinct from
-executed simulated motion. Native recorded joints are displayed directly;
-saved GPU predictions use their recorded coordinate signs, including joint 6.
+**Add track** opens a searchable catalog with a small preview of the selected
+recording's end-effector path. Upload files or a folder from that dialog. Added
+tracks play, pause and scrub with the session clock. They use recorded sample
+timestamps and interpolation. A saved prediction displays its knot states;
+it remains distinct from executed simulated motion. Native recorded joints
+are displayed directly; saved GPU predictions use their recorded coordinate signs, including joint 6.
 The full robot supplies context, with the left arm in a bent resting display
 pose (`[0.39, -1.73, 0.38, -2.35, 0, -1.21, -0.04]` native radians) and the torso
 at zero by default. Portable recordings can supply their own fixed context.
@@ -377,7 +380,7 @@ Top places the robot's forward direction toward screen right. Cube corners
 select the eight equal-angle diagonal views.
 
 **Fit robot** frames the full robot in its current pose. **Fit trajectory**
-frames the selected Replay motion and reference. In Live, it frames a completed precalculated closed-loop path when available;
+frames a completed precalculated closed-loop path when available;
 otherwise it uses the full tracking reference, or the task start and reaching target. Both
 commands retain the viewing direction and adjust the center and distance with
 margin for the viewport's current shape. Trajectory fitting uses a 40% margin

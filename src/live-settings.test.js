@@ -1422,6 +1422,23 @@ test('disconnected Live replays its recorded main span locally and ignores a sta
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
+for (const available of [true, false]) test(`enterLive awaits initial schema readiness and enters one session with solver ${available ? 'available' : 'unavailable'}`, async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  let releaseSchema;
+  if (!available) h.schema.available_N = [];
+  Object.assign(globalThis, { document: h.document, EventSource: h.EventSource,
+    fetch: (url, options) => url.endsWith('/schema') ? new Promise(resolve => { releaseSchema = resolve; }) : h.fetch(url, options) });
+  try {
+    const modes = [], live = setupLive({ onMode: mode => modes.push(mode), onPlan() {}, onState() {}, onReset() {} }); live.setSession(createSession());
+    const entry = live.enterLive(); assert(live.ready instanceof Promise);
+    assert.equal(live.mode, 'replay'); assert.equal(h.sources.length, 0);
+    releaseSchema({ ok: true, json: async () => structuredClone(h.schema) }); await live.ready; await entry;
+    assert.equal(live.mode, 'live'); assert.equal(h.sources.length, available ? 1 : 0);
+    await live.enterLive(); assert.deepEqual(modes, ['live']); assert.equal(h.sources.length, available ? 1 : 0);
+    assert.equal(h.$('live-panel').hidden, false); assert.equal(h.$('replay-controls').hidden, true);
+  } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
 test('Freeze posts the current generation, adds a replay track and rewinds before an Automatic edit', async () => {
   const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });

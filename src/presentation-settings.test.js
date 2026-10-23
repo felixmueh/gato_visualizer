@@ -47,20 +47,46 @@ test('limit-state fields apply at once, validate their range and save', async t 
   assert.equal(h.posts.at(-1).limit_near_percent, 80); assert.equal(h.posts.at(-1).limit_at_torque_percent, 0.2);
 });
 
-test('ghost opacity defaults stronger and applies and persists without changing numerical settings', async t => {
+test('ghost opacity endpoints apply and persist independently without changing numerical settings', async t => {
   const h = await harness(t);
-  assert.equal(h.field('ghost_opacity_percent').value, '55');
-  const field = h.field('ghost_opacity_percent');
-  field.value = '70'; field.listeners.change();
-  assert.equal(h.changes.at(-1).ghost_opacity_percent, 70);
+  assert.equal(h.field('ghost_start_opacity_percent').value, '55');
+  assert.equal(h.field('ghost_end_opacity_percent').value, '25');
+  assert.match(h.section.innerHTML, /Ghost start opacity \(%\)/); assert.match(h.section.innerHTML, /Ghost end opacity \(%\)/);
+  assert.match(h.field('ghost_start_opacity_percent').title, /beginning of the aggregate range/);
+  assert.match(h.field('ghost_end_opacity_percent').title, /end of the aggregate range/);
+  const start = h.field('ghost_start_opacity_percent'), end = h.field('ghost_end_opacity_percent');
+  start.value = '70'; start.listeners.change(); end.value = '10'; end.listeners.change();
+  assert.equal(h.changes.at(-1).ghost_start_opacity_percent, 70); assert.equal(h.changes.at(-1).ghost_end_opacity_percent, 10);
   assert.equal(h.changes.at(-1).report_hz, 10);
   h.tick(400); await settle();
-  assert.equal(h.store.ghost_opacity_percent, 70);
-  for (const value of ['-1', '101', '', 'NaN']) {
+  assert.equal(h.store.ghost_start_opacity_percent, 70); assert.equal(h.store.ghost_end_opacity_percent, 10);
+  assert.equal('ghost_opacity_percent' in h.posts.at(-1), false);
+  for (const field of [start, end]) for (const value of ['-1', '101', '', 'NaN', 'Infinity']) {
     field.value = value; field.listeners.change();
     assert.equal(field.dataset.invalid, 'true');
-    assert.equal(h.ui.settings.ghost_opacity_percent, 70);
+    assert.equal(h.ui.settings.ghost_start_opacity_percent, 70); assert.equal(h.ui.settings.ghost_end_opacity_percent, 10);
   }
+});
+
+test('legacy scalar opacity migrates to start/end while explicit endpoint preferences take precedence', () => {
+  const legacy = { ghost_opacity_percent: 70 }, migrated = validatePresentation(legacy);
+  assert.equal(migrated.ghost_start_opacity_percent, 70); assert.equal(migrated.ghost_end_opacity_percent, 70 * (25 / 55));
+  assert.equal('ghost_opacity_percent' in migrated, false); assert.deepEqual(legacy, { ghost_opacity_percent: 70 });
+  const explicit = validatePresentation({ ...legacy, ghost_start_opacity_percent: 80, ghost_end_opacity_percent: 10 });
+  assert.equal(explicit.ghost_start_opacity_percent, 80); assert.equal(explicit.ghost_end_opacity_percent, 10);
+  assert.equal(validatePresentation({ ...legacy, ghost_start_opacity_percent: 80 }).ghost_end_opacity_percent, migrated.ghost_end_opacity_percent);
+  assert.equal(validatePresentation({ ...legacy, ghost_end_opacity_percent: 10 }).ghost_start_opacity_percent, 70);
+  for (const name of ['ghost_start_opacity_percent', 'ghost_end_opacity_percent']) for (const value of [-1, 101, NaN, Infinity, false, '25', null]) {
+    assert.throws(() => validatePresentation({ [name]: value }));
+  }
+  assert.throws(() => validatePresentation({ extra: 1 }), /Unknown/);
+});
+
+test('a legacy endpoint response loads as two fields and the next save posts only new endpoint keys', async t => {
+  const h = await harness(t, { store: { ghost_opacity_percent: 70 } });
+  assert.equal(h.ui.settings.ghost_start_opacity_percent, 70); assert.equal(h.ui.settings.ghost_end_opacity_percent, 70 * (25 / 55));
+  h.field('ghost_end_opacity_percent').value = '12'; h.field('ghost_end_opacity_percent').listeners.change(); h.tick(400); await settle();
+  assert.equal(h.posts.at(-1).ghost_end_opacity_percent, 12); assert.equal('ghost_opacity_percent' in h.posts.at(-1), false);
 });
 
 test('presentation loads from its own endpoint and has no Save button', async t => {

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from source_runtime import has_token
-from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
+from presentation_settings import DEFAULT_PRESENTATION, migrate_presentation, validate_presentation
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "visualizer.json"
@@ -89,7 +89,7 @@ def load_visualizer_config(path=DEFAULT_CONFIG):
                 profile[key] = str(location if location.is_absolute() else selected.parent / location)
     return VisualizerConfig(path=selected, ingest_directory=directory.resolve(), source=source,
                             plotters_directory=plotters, solver_profiles=tuple(profiles),
-                            presentation=validate_presentation({**DEFAULT_PRESENTATION, **settings.get("presentation", {})}))
+                            presentation=validate_presentation({**DEFAULT_PRESENTATION, **migrate_presentation(settings.get("presentation", {}))}))
 
 
 def save_source_selection(path, source):

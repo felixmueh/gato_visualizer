@@ -48,6 +48,7 @@ one GPU computation runs at a time. Live's private controller remains idle.
 | RAM freeze export and motion-only payload | [live_freeze.py](../live_freeze.py), [replay_library.py](../replay_library.py), [server.py](../server.py) | [Freeze contents](replay-format.md#live-freezes) |
 | Recorded onion keyframes, ghost arm pool and interaction | [src/onion-skin.js](../src/onion-skin.js), [src/ghost-arm.js](../src/ghost-arm.js), [src/onion-skin-view.js](../src/onion-skin-view.js) | [Onion skin](presentation.md#onion-skin) |
 | Browser scene and interaction wiring | [src/main.js](../src/main.js), [src/workbench-ui.js](../src/workbench-ui.js), [src/transport-popover.js](../src/transport-popover.js) | [README workspace](../README.md#workspace), [presentation](presentation.md) |
+| Solid arm visibility without hiding ghost clones | [src/arm-visibility.js](../src/arm-visibility.js) | [Session and tracks](presentation.md#session-and-tracks) |
 | Browser Live history, playback, settings | [src/live.js](../src/live.js), [src/live-history.js](../src/live-history.js), [src/live-execution.js](../src/live-execution.js), [src/presentation-settings.js](../src/presentation-settings.js) | [Execution](execution-api.md), [presentation](presentation.md) |
 | Episode/Solve selection and shared plot rendering | [src/plot-inspection.js](../src/plot-inspection.js), [src/plot-state.js](../src/plot-state.js), [src/solve-run.js](../src/solve-run.js), [src/plot-renderer.js](../src/plot-renderer.js) | [Inspection](inspection.md), [plotting](plotting.md) |
 
@@ -58,6 +59,12 @@ presentation helpers; the current motion clock is `createHistoryClock` in
 `src/live-execution.js`, driven by fetched history over the browser session span,
 with the main track owning Live tip decisions. Do not infer production
 ownership or playback timing from an old helper alone.
+
+The visible application has a single Live session. Startup awaits
+`live.ready` before `enterLive()` so both available and offline sources enter
+the same workspace. Library links use `onLinkedItem` to add an immutable
+track. Hidden legacy Replay DOM/adapters remain for compatibility with the
+existing inspection and recording code; they expose no second UI transport.
 
 ## Invariants to preserve
 
