@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BoxGeometry, Group, LineBasicMaterial, LineSegments, Mesh, MeshStandardMaterial, Raycaster, Scene, Vector3 } from 'three';
+import { BoxGeometry, Group, LineBasicMaterial, LineSegments, Mesh, MeshStandardMaterial, Matrix4, Raycaster, Scene, Vector3 } from 'three';
 import { URDFJoint, URDFMimicJoint } from 'urdf-loader/src/URDFClasses.js';
 import { createGhostArms } from './ghost-arm.js';
 
@@ -105,4 +105,32 @@ test('layer selection reaches every ghost descendant across allocation and metho
   assert.throws(() => ghosts.setLayer(32));
   assert.throws(() => ghosts.setLayer(-1));
   ghosts.dispose();
+});
+
+
+test('uncapped track pool preserves per-pose world bases through fixed-joint changes and method changes', () => {
+  const { scene, robot, torso, ghosts: onion } = fixture();
+  const ghosts = createGhostArms({ robot, scene, max: Infinity, method: 'prepass' });
+  const explicitBase = new Matrix4().makeTranslation(2, 0, 3);
+  const poses = Array.from({ length: 30 }, (_, i) => pose({ id: i, q: [0], base: i === 0 ? explicitBase : undefined }));
+  ghosts.set(poses);
+  assert.equal(ghosts.snapshot.count, 30);
+  const groups = scene.getObjectsByProperty('name', 'ghost-arms')[1].children;
+  assert.deepEqual(groups[0].matrix.elements, explicitBase.elements);
+  explicitBase.makeTranslation(9, 0, 3); // Input matrices are not retained by reference.
+  torso.position.x = 4; ghosts.setBase();
+  assert.equal(groups[0].matrix.elements[12], 2);
+  assert.equal(groups[1].matrix.elements[12], 4);
+  ghosts.set([pose({ id: 0, q: [0], base: new Matrix4().makeTranslation(3, 0, 3) })]);
+  const ray = new Raycaster(new Vector3(3.5, 0, 4), new Vector3(0, 0, -1));
+  assert.deepEqual(ghosts.pick(ray), { id: 0, time: 1 });
+  ghosts.setMethod('flat');
+  assert.deepEqual(ghosts.pick(ray), { id: 0, time: 1 });
+  ghosts.setMethod('prepass');
+  ghosts.set(poses);
+  const camera = new Group(); camera.position.set(3, 3, 3); ghosts.update(camera);
+  const orders = scene.getObjectsByProperty('name', 'ghost-arms')[1].children.map(group => group.renderOrder);
+  assert.equal(new Set(orders).size, 30);
+  assert(orders.every(Number.isFinite));
+  ghosts.dispose(); onion.dispose();
 });
