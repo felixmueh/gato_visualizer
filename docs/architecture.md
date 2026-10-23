@@ -78,7 +78,10 @@ frame derived from the URDF. The simulator friction switch (`plant.friction`)
 gives `SimPlant` the URDF friction (hard-sign Coulomb plus viscous) or none;
 predictor/profile changes do not change the plant. Predictor friction
 (`friction` in `MpcParams`) selects a compiled variant with a fixed tanh width.
-Both default to loss-free. See [friction](friction.md).
+Both default to loss-free. See [friction](friction.md). The session clips
+commands to the raw effort limit and stops on simulated limit breaches at full
+rate, as `plant.clip_effort` and `plant.stop_on_breach` select
+([limit handling](execution-api.md#limit-handling)).
 
 A generation identifies active history, a settings version identifies the
 accepted settings, and cancellation revision rejects obsolete work. Changing

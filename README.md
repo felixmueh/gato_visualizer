@@ -219,6 +219,16 @@ URDF joint coefficients. Both default to off (loss-free). Predictor friction is 
 compiled variant with a fixed tanh width of 0.03 rad/s. See
 [friction modes and compiled variants](docs/friction.md).
 
+**Limit handling** (Felix, 2026-10-23): **Clip effort** (on by default) clips
+each command to ± the URDF effort limit before it reaches the simulated plant;
+**Stop on breach** (Joint limits, Velocity, Torque, all on) pauses calculation
+and playback where a simulated position, velocity or applied torque first
+leaves its URDF limit, with a message naming joint, value and limit; Play
+continues, and a value that stays beyond does not pause again. The history
+track marks breaches; interval tooltips count clipped commands. These are
+simulation settings: `tiago_mpc`'s robot path never clips. See
+[limit handling](docs/execution-api.md#limit-handling).
+
 Select Live, adjust the target offset and settings, and inspect the prediction.
 The prediction computes one optimized horizon from the displayed state. It
 does not advance the simulated plant. **Reset state** returns to the comfortable

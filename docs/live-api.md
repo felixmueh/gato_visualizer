@@ -37,11 +37,16 @@ visualizer's simulated-plant group:
   `max_sqp_time_s` (wall time for a solve's SQP iterations within
   `solver.max_sqp_iters`; `null`: no time limit) and `warmup` (a boolean:
   GATO's warm-up solve at every reseed, below).
-- `plant`: `{"friction": false}`, the simulator friction switch.
+- `plant`: the simulation group: `friction` (the simulator friction switch,
+  false), `clip_effort` (true: commands clipped to ± the raw URDF effort limit
+  before the plant) and `stop_on_breach: {"position": true, "velocity": true,
+  "torque": true}` (Live pauses where a simulated value breaches its raw URDF
+  limit). See [limit handling](execution-api.md#limit-handling); Felix,
+  2026-10-23.
 
 The defaults are `tiago_mpc`'s `TIAGO` parameters, reported by the selected
-interpreter's source probe, with `max_sqp_time_s: null`, plus
-`plant.friction: false`. `TIAGO`'s 10 ms limit is for the wall clock; Live and
+interpreter's source probe, with `max_sqp_time_s: null`, plus the `plant`
+group above. `TIAGO`'s 10 ms limit is for the wall clock; Live and
 precalculation run on the simulation clock, so the visualizer's default has no
 time limit, and the user can still set one (Felix, 2026-10-23). The solver child
 rebuilds `MpcParams.from_dict` from everything except `plant`; no
@@ -113,7 +118,9 @@ knot counts 8, 16, 24, 32, 48, 64, 96 and 128; `available_N` is their union.
 `kind` is `float`, `int`, `bool` or `choice` (with `choices`, each a plain value
 or `{value, label}`); `scale` is `log` or `linear`; numeric entries may be
 `nullable` (`max_sqp_time_s`, whatever its default). Every leaf of `config` has a parameter entry, so every
-default is shown. Fixed fields have `disabled: true` and a single allowed
+default is shown. An entry may carry a `description` (its tooltip) and a
+`row`: entries sharing a row are shown side by side (the three **Stop on
+breach** checkboxes of the **Limit handling** group). Fixed fields have `disabled: true` and a single allowed
 choice: `solver.linsys` is null, `solver.exact_hessian` is false, and
 `ee_frame` is the grasp frame the simulator tracks. `friction` is one choice
 between loss-free and the URDF friction with the fixed tanh width. All numeric
@@ -162,7 +169,8 @@ required for Replay, camera movement or scrubbing retained history.
 
 ```json
 {"type": "status", "state": "idle|playing|paused|gpu_busy|error",
- "message": "...", "settings_version": 3, "N": 32, "dt_s": 0.01}
+ "message": "...", "settings_version": 3, "N": 32, "dt_s": 0.01,
+ "breach": {"sim_time_s": 0.03, "breaches": [...]}}
 
 {"type": "plan", "seq": 12, "origin": "preview|play", "settings_version": 3,
  "sim_time_s": 0.12, "N": 32, "dt_s": 0.01,
@@ -184,6 +192,9 @@ required for Replay, camera movement or scrubbing retained history.
 
 {"type": "error", "message": "...", "detail": "..."}
 ```
+
+`breach` appears on the `paused` status of a calculation that stopped on a
+limit breach ([limit handling](execution-api.md#limit-handling)).
 
 `compiled_modules` follows a successful Build into the active solver's
 checkout, interpreter and cache: the backend has updated the schema's available
@@ -209,7 +220,8 @@ Joint telemetry is native throughout: each plan also includes `qd_rad_s[N,7]`,
 `torque_kind: "predicted"`, and an exclusive `torque_end_time_s` at the terminal
 knot. The terminal knot has no actuator control. Each state includes
 `torque_nm[7]` for the last control actually applied to the simulated plant,
-`torque_kind: "applied"`, or null before any plant step. Solving a preview
+`torque_kind: "applied"`, or null before any plant step; with Clip effort on
+it is the clipped command ([limit handling](execution-api.md#limit-handling)). Solving a preview
 never changes the last applied control. These are actuator torques; they are
 not reconstructed from positions or passive resisting torques.
 

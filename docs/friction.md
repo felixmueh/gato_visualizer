@@ -35,6 +35,20 @@ enable Simulator friction only; with both on, the Coulomb laws still differ
 the difference stays visible in metadata. Run again rebuilds the captured
 `MpcParams`, including its predictor friction, not the current UI values.
 
+Predictor friction with the loss-free plant plans torques far beyond the effort
+limit within a few solves. Since `tiago_mpc` 436b419 `Mpc` returns such plans
+instead of refusing them, and Live's [limit handling](execution-api.md#limit-handling)
+decides (Felix, 2026-10-23). Checked on the GPU at the defaults (N 32, 2 s
+Manual reach, 2026-10-23; scripts and results in `_expr_data/limits-check/` of
+the `live/limit-handling` worktree): loss-free completes with
+no clipped command and no breach (at most 15 Nm); predictor friction pauses at
+0.019 s on a velocity breach (joints 5, 6, 7 above 2.5 rad/s) before any command
+is clipped; with the velocity stop off, clipping limits 4 commands (planned up
+to 372 Nm) and the arm leaves joint 7's position limit at 0.038 s; with Clip
+effort off and only the torque stop on, Live pauses at 0.030 s on joint 7's
+371.7 Nm (and joint 5's −28 Nm), continues to a new breach at 0.040 s (joints 6,
+1–4) and then fails with a nonfinite simulated state.
+
 Hard-sign Coulomb friction with viscous damping is unstable in the explicit RK4
 plant at the default 1 ms step (see the diagnosis below); retaining such
 failures is preferable to silently changing the plant law. These controls give

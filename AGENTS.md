@@ -237,6 +237,30 @@ is no stick/slip plant. Predictor friction is a compiled variant whose tanh
 width is fixed at 0.03 rad/s and not settable, since each width is its own
 compiled plant.
 
+**Limit handling in Live — Felix, 2026-10-23.** `tiago_mpc` 436b419 moved the
+raw-effort check out of `Mpc.result()` into its own `run` loop, so the solver
+child now receives plans whose torques exceed the raw URDF effort limit; the
+visualizer's own loop decides what to do with them. Two orthogonal simulation
+settings in `config.plant` (the **Limit handling** group), never part of
+`tiago_mpc`'s robot path, which never clips:
+
+- **Clip effort** (`clip_effort`, default on): each command is clipped to ± the
+  raw URDF effort limit (`tiago.limits().effort`) before it reaches `SimPlant`.
+  A clipped command records its `planned_torque_nm`; each interval counts its
+  `clipped_commands`.
+- **Stop on breach** (`stop_on_breach.position` / `.velocity` / `.torque`, all
+  on): judged only on simulated values, at full rate (every physics endpoint
+  for position and velocity against the raw URDF limits, every command for the
+  torque actually applied after clipping, so with clipping on the torque box
+  cannot trigger). Planned knots that are never applied never breach. Live
+  pauses calculation and playback at the breaching tick with a message naming
+  joint, quantity, value and limit; Play continues. A quantity of a joint
+  breaches when it starts to be beyond its limit and re-arms once back within
+  it, so a value that stays beyond pauses once; a value already beyond when a
+  segment starts is armed only once back within.
+
+See [limit handling](docs/execution-api.md#limit-handling).
+
 ## What the display claims
 
 The display must not let a viewer mistake one kind of data for another: a

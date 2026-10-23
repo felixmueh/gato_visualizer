@@ -215,6 +215,55 @@ episode plots that read states or commands, a structured `recording` field of
 the plot spec (like `display_reduction`). The Live history has no export; a
 replay export from `tiago_mpc` is not affected.
 
+## Limit handling
+
+Felix, 2026-10-23. Since `tiago_mpc` 436b419, `Mpc.result()` returns plans
+whose torques exceed the raw URDF effort limit (the check moved into
+`tiago_mpc`'s own `run` loop, which the visualizer does not use). Two
+orthogonal simulation settings in `config.plant` handle them in Live
+([settings](live-api.md#settings-object)):
+
+- **Clip effort** (`clip_effort`, default true): at every command tick the
+  selected knot torque is clipped to ± `tiago.limits().effort` before
+  `SimPlant.apply`. The state and control records carry the applied (clipped)
+  torque; a control record whose command clipping changed adds
+  `planned_torque_nm`, the knot torque before clipping. Every interval record
+  carries `clipped_commands`, the number of clipped commands in it, counted at
+  full rate (also those `record_every` does not record). Plans keep their
+  planned torques.
+- **Stop on breach** (`stop_on_breach: {position, velocity, torque}`, all
+  true): `MultirateSession` checks simulated values at full rate, never the
+  thinned recording: position and velocity at every physics endpoint against
+  the raw URDF position and velocity limits, the applied torque (after
+  clipping) at every command against the effort limit. Planned knots are never
+  checked. A breach ends the session's call at that tick: a torque breach right
+  after its command, before integrating; a position or velocity breach at the
+  physics endpoint. The tick's state and command are recorded even off the
+  recording grid, followed by a breach record and the partial interval:
+
+  ```json
+  {"type": "breach", "sim_time_s": 0.03,
+   "breaches": [{"joint_index": 6, "quantity": "torque", "value": 371.7, "limit": 26.0}],
+   "message": "Limit breach at 0.030 s: joint 7 torque 371.7 Nm beyond its effort limit 26 Nm (+1 more)"}
+  ```
+
+  `joint_index` is 0-based (the message counts joints from 1); `limit` is the
+  bound crossed, signed. Breaches at one tick are ordered by relative excess
+  (to the limit for velocity and torque, to the joint's range for position),
+  and the message names the largest. The coordinator ends the job and reports
+  `status` `paused` with that message and `breach: {sim_time_s, breaches}`;
+  the session stays ready, so `play` continues from the breaching tick (in
+  Manual/Automatic mode it calculates `duration_s` from there). The browser
+  stops playback where it crosses a breach record, marks breaches on the
+  history track, and Play at a breach-ended tip continues in every mode.
+
+  Re-arming rule: a quantity of a joint breaches when it starts to be beyond
+  its limit and re-arms once it is back within, so a value that stays beyond
+  pauses once, not on every following tick. A value already beyond when a
+  session starts (an anchor or settings change from a state beyond a limit) is
+  armed only once back within. With clipping on, the applied torque cannot
+  exceed the effort limit, so the torque box matters once clipping is off.
+
 ## Simulation clock and plan execution
 
 Simulation time advances according to the requested rates, irrespective of
@@ -230,7 +279,8 @@ boundary. At a coincident boundary, solve first, select control next, then
 integrate. A bounded precalculation lands exactly on its requested duration
 endpoint; continuous On Play has no duration endpoint.
 
-Plans arrive native from `tiago_mpc`'s `Plan` (N−1 knot torques). At every
+Plans arrive native from `tiago_mpc`'s `Plan` (N−1 knot torques), possibly
+beyond the effort limit ([limit handling](#limit-handling)). At every
 control tick, choose the nonterminal torque for elapsed plan time using
 zero-order hold and the independent prediction knot spacing (`hold_last`, the
 law of `tiago_mpc`'s `sample_knot` except past the horizon). Hold that selected torque until the

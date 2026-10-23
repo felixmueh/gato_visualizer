@@ -44,6 +44,8 @@
 | **Simulator source** | The selected checkout providing the fixed plant (`tiago_mpc`'s `SimPlant`), robot assets, initial state and task geometry. | Solver profile |
 | **Solver profile** | A named checkout/interpreter/cache selection providing a compatible predictor and optimizer. | Simulator source, warm-state checkpoint |
 | **Compiled module** | The GATO module `tiago_mpc` compiles for one `MpcParams` variant (knot count N, predictor friction). `find_binary` finds it; only an explicit Build compiles it. | Prebuilt binary, compatible binary |
+| **Clip effort** | The simulation setting that clips each command to ± the raw URDF effort limit before it reaches the simulated plant; the robot path never clips. | Torque saturation of the MPC, effort bound (the MPC's `effort_fraction` row) |
+| **Limit breach** | A simulated position, velocity or applied (clipped) torque that starts to be beyond its raw URDF limit, checked at every physics step or command; with **Stop on breach** Live pauses there. Planned knots never breach. | Limit use near/at (presentation states), MPC bound violation |
 | **Native coordinates** | The canonical robot joint coordinates used by plant states, portable replays and public Live predictions. | GPU coordinates |
 
 ## Relationships
