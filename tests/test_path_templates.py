@@ -39,7 +39,7 @@ class PathTemplateConfigTests(unittest.TestCase):
             validated = validate_profile(dict(id="p", name="P", mpc_root=str(root), python="<checkout>/tools/bin/python"))
             self.assertEqual(validated["python"], str(root / "tools/bin/python"))
             self.assertEqual(validated["templates"]["python"], "<checkout>/tools/bin/python")
-            self.assertEqual(validated["templates"]["cache"], "<checkout>/.cache/host-gato")
+            self.assertEqual(validated["templates"]["cache"], "<checkout>/.cache/gato")
             with self.assertRaisesRegex(ValueError, "Unknown token <venv>"):
                 validate_profile(dict(id="p", name="P", mpc_root=str(root), python="<venv>/bin/python"))
 

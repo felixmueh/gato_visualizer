@@ -67,9 +67,9 @@ class SourceSettingsTests(unittest.TestCase):
             (root / 'tools/bin').mkdir(parents=True); (root / 'tools/bin/python').symlink_to(sys.executable)
             path = Path(folder) / 'viewer.json'; path.write_text('{}')
             service = SourceSettings(SELECTION, path, Mock(), probe=lambda _: dict(compatible=True))
-            selection = selection_from_request(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/host-gato'))
+            selection = selection_from_request(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/gato'))
             self.assertEqual(selection['python'], str(root.resolve() / 'tools/bin/python'))
-            service.apply(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/host-gato'))
+            service.apply(dict(mpc_root=str(root), python='<checkout>/tools/bin/python', cache='<checkout>/.cache/gato'))
             stored = json.loads(path.read_text())['source']
             # The default cache template is not stored (it follows the checkout); the override is, verbatim.
             self.assertEqual(stored, dict(mpc_root=str(root.resolve()), python='<checkout>/tools/bin/python'))

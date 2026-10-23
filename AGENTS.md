@@ -399,8 +399,9 @@ not modify upstream sources or packages.
 
 **Build through tiago_mpc — Felix, 2026-10-22** (supersedes the visualizer's
 own identity validation and module discovery, and the rebuild backups): the
-default cache follows `tiago_mpc`'s convention, `<checkout>/.cache/host-gato`
-for host interpreters and `<checkout>/.cache/gato` for the container's `.venv`.
+default cache follows `tiago_mpc`'s convention, `<checkout>/.cache/gato` for
+every interpreter (Felix, 2026-10-23: one shared cache for host and container;
+GATO keys modules by toolchain and Python ABI, so both sides' builds coexist).
 The source probe asks `find_binary` for each offered N, with and without
 predictor friction; `tiago_mpc` and GATO own the cache keys. Build selected N
 calls `compile_binary` per N in a CPU-only subprocess of the selected

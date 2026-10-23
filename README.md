@@ -15,9 +15,8 @@ select another prepared interpreter; inside the existing container the launcher
 falls back to the checkout's `.venv`. It does not install Python packages there.
 
 The viewer uses the GATO modules that `tiago_mpc` compiled into the selected
-checkout's cache: `.cache/host-gato` for the host interpreter, `.cache/gato` for
-the container's `.venv` (tiago_mpc's convention). `tiago_mpc` compiles only on
-request; prepare the horizon modules during setup (`--prebuild` builds the
+checkout's cache, `.cache/gato`, for every interpreter, host and container alike
+(tiago_mpc's convention). `tiago_mpc` compiles only on request; prepare the horizon modules during setup (`--prebuild` builds the
 loss-free N = 16, 32, 64, 128) or with the gear button (**Settings › Backend**):
 
 ```bash
@@ -70,8 +69,7 @@ saved template such as `<checkout>/.venv/bin/python` stays valid when the checko
 changes (`~` is expanded too; absolute paths without the token keep working;
 any other `<…>` token is an error). The defaults are
 `<checkout>/venv-host/bin/python` when that interpreter exists, else
-`<checkout>/.venv/bin/python`, and `<checkout>/.cache/host-gato`, or
-`<checkout>/.cache/gato` when the interpreter is the container's `.venv`. The resolved
+`<checkout>/.venv/bin/python`, and `<checkout>/.cache/gato` for either. The resolved
 absolute path is the field's tooltip; a template that cannot be resolved is marked
 invalid, with the reason as tooltip. An edited template is a highlighted override
 with a reset arrow that restores the default. A value equal to the default is sent

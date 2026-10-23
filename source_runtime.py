@@ -18,6 +18,8 @@ PROBE_SCRIPT = ROOT / "scripts/source_probe.py"
 
 CHECKOUT_TOKEN = "<checkout>"
 _TOKEN = re.compile(r"<[^<>]*>")
+# tiago_mpc's convention (Felix, 2026-10-23): one cache for every interpreter, host and container.
+DEFAULT_CACHE_TEMPLATE = f"{CHECKOUT_TOKEN}/.cache/gato"
 # The knot counts the probe looks up with find_binary and Build accepts.
 KNOT_COUNTS = (8, 16, 24, 32, 48, 64, 96, 128)
 
@@ -30,12 +32,6 @@ def default_interpreter_template(root):
     host = Path(root) / "venv-host/bin/python"
     usable = host.is_file() and os.access(host, os.X_OK)
     return f"{CHECKOUT_TOKEN}/{'venv-host' if usable else '.venv'}/bin/python"
-
-
-def default_cache_template(python_template, root):
-    """tiago_mpc's convention: `.cache/gato` for the container's `.venv`, else the host's `.cache/host-gato`."""
-    container = expand_template(python_template, root) == Path(root) / ".venv/bin/python"
-    return f"{CHECKOUT_TOKEN}/.cache/{'gato' if container else 'host-gato'}"
 
 
 def expand_template(value, root):
@@ -65,7 +61,7 @@ def checkout_defaults(mpc_root):
     """Default interpreter/cache templates of a checkout and their resolution; never raises for missing paths."""
     root = Path(mpc_root).expanduser().resolve()
     python = default_interpreter_template(root)
-    cache = default_cache_template(python, root)
+    cache = DEFAULT_CACHE_TEMPLATE
     return dict(mpc_root=str(root), python=python, cache=cache,
                 resolved=dict(python=str(expand_template(python, root)), cache=str(expand_template(cache, root))))
 
@@ -75,10 +71,6 @@ def resolve_templates(mpc_root, python=None, cache=None):
     root = Path(mpc_root).expanduser().resolve()
     defaults = checkout_defaults(root)
     python = (python or "").strip() or defaults["python"]
-    try:
-        defaults["cache"] = default_cache_template(python, root)
-    except ValueError:
-        pass
     result = {}
     for key, value, check in (("python", python, _check_interpreter), ("cache", cache, _check_cache)):
         try:
@@ -95,7 +87,7 @@ def stored_selection(selection):
     root = selection["mpc_root"]
     templates = selection.get("templates", {})
     python = checkout_defaults(root)["python"]
-    defaults = dict(python=python, cache=default_cache_template(templates.get("python") or python, root))
+    defaults = dict(python=python, cache=DEFAULT_CACHE_TEMPLATE)
     return dict(mpc_root=root, **{key: value for key, value in templates.items() if value and value != defaults[key]})
 
 
@@ -106,7 +98,7 @@ def resolve_selection(mpc_root, python=None, cache=None):
         raise ValueError(f"Source checkout is not a directory: {root}")
     defaults = checkout_defaults(root)
     python = str(python) if python else defaults["python"]
-    templates = dict(python=python, cache=str(cache) if cache else default_cache_template(python, root))
+    templates = dict(python=python, cache=str(cache) if cache else DEFAULT_CACHE_TEMPLATE)
     # Keep the virtualenv executable path: resolving the symlink loses its environment.
     interpreter = expand_template(templates["python"], root)
     _check_interpreter(interpreter)

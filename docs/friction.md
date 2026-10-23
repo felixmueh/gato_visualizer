@@ -68,7 +68,7 @@ default). The command-line equivalent:
 
 ```sh
 /path/to/selected/python scripts/source_probe.py build \
-  --mpc-root /path/to/tiago_mpc --cache /path/to/tiago_mpc/.cache/host-gato \
+  --mpc-root /path/to/tiago_mpc --cache /path/to/tiago_mpc/.cache/gato \
   --prediction-friction --N 32
 ```
 

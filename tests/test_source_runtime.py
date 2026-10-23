@@ -28,8 +28,8 @@ class SourceSelectionTests(unittest.TestCase):
             checkout(root)
             selected = runtime.resolve_selection(root)
             self.assertEqual(selected["python"], str(root / "venv-host/bin/python"))
-            self.assertEqual(selected["cache"], str(root / ".cache/host-gato"))
-            # tiago_mpc's convention: the container's .venv uses .cache/gato.
+            self.assertEqual(selected["cache"], str(root / ".cache/gato"))
+            # tiago_mpc's convention: the container's .venv uses the same cache.
             self.assertEqual(runtime.resolve_selection(root, python="<checkout>/.venv/bin/python")["cache"],
                              str(root / ".cache/gato"))
             (root / "venv-host/bin/python").unlink()
@@ -73,7 +73,7 @@ class SourceSelectionTests(unittest.TestCase):
             root = Path(directory).resolve()
             checkout(root)
             self.assertEqual(runtime.checkout_defaults(root)["python"], "<checkout>/venv-host/bin/python")
-            self.assertEqual(runtime.checkout_defaults(root)["cache"], "<checkout>/.cache/host-gato")
+            self.assertEqual(runtime.checkout_defaults(root)["cache"], "<checkout>/.cache/gato")
             container = runtime.resolve_selection(root, python="<checkout>/.venv/bin/python")
             self.assertEqual(runtime.stored_selection(container), dict(mpc_root=str(root), python="<checkout>/.venv/bin/python"))
             self.assertEqual(runtime.resolve_templates(root, "<checkout>/.venv/bin/python")["cache"]["path"], str(root / ".cache/gato"))
