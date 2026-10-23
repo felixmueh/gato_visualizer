@@ -107,9 +107,9 @@ function refreshLock(rows) {
 
 // While the start pose is edited: the planning box is the URDF range shrunk by the
 // MPC's joint margin; a start pose outside it is allowed and flagged.
-export const OUTSIDE_PLANNING = 'Start pose outside the MPC planning box (URDF limits less the joint margin): '
-  + 'the run starts there anyway; the first plans violate their position bound until the arm is back inside. '
-  + 'Stop on breach only checks the URDF limits.';
+export const OUTSIDE_PLANNING = 'Outside the MPC planning box (URDF limits less the joint margin): '
+  + 'the run starts here anyway; its first plans report a position-row violation while they move the joint back inside. '
+  + 'Stop on breach checks only the URDF limits.';
 const startEditing = rows => Boolean(rows.startPose?.editable && !rows.locked);
 const roundRad = value => Math.round(value * 1e4) / 1e4;
 const withJoint = (q, index, value) => q.map((item, i) => i === index ? value : item);

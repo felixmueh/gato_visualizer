@@ -232,11 +232,25 @@ simulation settings: `tiago_mpc`'s robot path never clips. See
 
 Select Live, adjust the target offset and settings, and inspect the prediction.
 The prediction computes one optimized horizon from the displayed state. It
-does not advance the simulated plant. **Reset state** returns to the comfortable
-start pose, clears recorded motion, and restarts the episode's plan count.
+does not advance the simulated plant. **Reset state** returns to the start
+pose, clears recorded motion, and restarts the episode's plan count.
 Live settings stay intact when switching to Replay and back; replay metadata
 never replaces the Live configuration. The first Live connection after loading
-the application starts a fresh episode at the comfortable pose and time zero.
+the application starts a fresh episode at the start pose and time zero.
+
+**Start pose** (Felix, 2026-10-23): the seven joint positions the simulated arm
+starts from at t = 0, velocities zero; the default is `tiago_mpc`'s `Q_START`
+(the comfortable pose). It is a Live setting (`config.plant.start_pose_rad`),
+edited in the **Joints** tab: unlock it with the lock left of
+Gauges/Numbers, then, with the cursor at t = 0 (after Reset, or scrubbed to the
+start), drag a position gauge or type a position in the Numbers view. The arm
+follows the drag at once; releasing (or Enter) sets the start pose and starts a
+new run at t = 0 from it, as Reset does. Values are clamped to the URDF position
+limits. A joint outside the MPC planning box (URDF limits less the joint margin)
+is shown amber: the run still starts there, and its first plans report a
+position-row violation while they move the joint back inside. The task does not
+move with the start pose: the reach target and the figure-eight start stay
+where they are defined.
 
 The **Calculation** menu selects how full closed-loop motion is generated:
 
@@ -360,6 +374,13 @@ ticks at the URDF bounds and shaded near bands, and velocity and torque bars of
 |value| up to a 100 % tick, overflowing past it when beyond. Bars use one colour
 per quantity while inside, amber when near, red at the limit and red outlined
 beyond (the states of [Presentation settings](docs/presentation.md#joint-limit-states)).
+The lock left of the switch keeps the tab read-only (locked, the default,
+remembered per viewer). Unlocked, in Live at t = 0, the position column is
+headed START and edits the start pose (above): drag a gauge, or type a
+position and press Enter; circular arrows reset one joint or all to the
+default. Away from t = 0, in Replay or locked, the tab shows the state at the
+cursor as before; a dot on the lock marks a modified start pose, listed in its
+tooltip. Velocity and torque are never editable.
 A **Gauges / Numbers** switch in the tab header swaps the bars for a compact
 table of the same cells: position (rad), velocity (rad/s) and torque (N m) as
 signed numbers in the same state colours. Both views read the same telemetry

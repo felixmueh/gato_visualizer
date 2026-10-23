@@ -42,11 +42,17 @@ visualizer's simulated-plant group:
   before the plant) and `stop_on_breach: {"position": true, "velocity": true,
   "torque": true}` (Live pauses where a simulated value breaches its raw URDF
   limit). See [limit handling](execution-api.md#limit-handling); Felix,
-  2026-10-23.
+  2026-10-23. `start_pose_rad`: the start pose, seven native joint positions
+  the simulated arm starts from at t = 0 (velocities zero) and Reset returns
+  to; the default is the simulator source's `tiago.Q_START`, and each value must
+  lie within the raw URDF position limits. Changing it starts a new run at t = 0
+  ([commands](execution-api.md#settings-and-commands)). A start pose outside the
+  MPC planning box (the URDF range less `joint_margin_rad`) is accepted; the
+  browser flags it. Task geometry stays tied to `Q_START` (Felix, 2026-10-23).
 
 The defaults are `tiago_mpc`'s `TIAGO` parameters, reported by the selected
 interpreter's source probe, with `max_sqp_time_s: null`, plus the `plant`
-group above. `TIAGO`'s 10 ms limit is for the wall clock; Live and
+group above (its start pose from the simulator's checkout, `live_mpc.start_pose_spec`). `TIAGO`'s 10 ms limit is for the wall clock; Live and
 precalculation run on the simulation clock, so the visualizer's default has no
 time limit, and the user can still set one (Felix, 2026-10-23). The solver child
 rebuilds `MpcParams.from_dict` from everything except `plant`; no
@@ -116,8 +122,10 @@ receiving its first solved plan.
 `available_N_by_friction.off` / `.on` list the N whose loss-free or
 predictor-friction module `tiago_mpc`'s `find_binary` finds, among the offered
 knot counts 8, 16, 24, 32, 48, 64, 96 and 128; `available_N` is their union.
-`kind` is `float`, `int`, `bool` or `choice` (with `choices`, each a plain value
-or `{value, label}`); `scale` is `log` or `linear`; numeric entries may be
+`kind` is `float`, `int`, `bool`, `choice` (with `choices`, each a plain value
+or `{value, label}`) or `joints` (`plant.start_pose_rad`: one value per joint,
+with per-joint `lower` and `upper` bounds, the raw URDF position limits; the
+browser edits it in the Joints tab, not the settings panel); `scale` is `log` or `linear`; numeric entries may be
 `nullable` (`max_sqp_time_s`, whatever its default). Every leaf of `config` has a parameter entry, so every
 default is shown. An entry may carry a `description` (its tooltip) and a
 `row`: entries sharing a row are shown side by side (the three **Stop on

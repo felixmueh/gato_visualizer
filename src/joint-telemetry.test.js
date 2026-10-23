@@ -201,7 +201,7 @@ test('reset arrows return one joint or all to the default, and a pose outside th
   updateJointTable(rows, {q: [1.95, .3], limits: LIMITS, startPose: pose({value: [1.95, .3]})});
   assert.deepEqual([rows[0].reset.hidden, rows[1].reset.hidden, rows.resetAll.hidden], [false, false, false]);
   assert.equal(rows[0].row.dataset.planning, 'outside'); assert.equal(rows[1].row.dataset.planning, '');
-  assert.match(rows[0].label.title, new RegExp(OUTSIDE_PLANNING.slice(0, 40)));
+  assert(rows[0].label.title.endsWith(OUTSIDE_PLANNING));
   assert.match(rows[0][0].gauge.dataset.tip, /Planning box −1\.900 … \+1\.900 rad · default \+0\.500 rad/);
   assert.match(button.title, /Start pose modified: J1 \+1\.950 rad \(default \+0\.500\), J2 \+0\.300 rad/);
   rows[1].reset.dispatch('click', {preventDefault() {}, stopPropagation() {}});
