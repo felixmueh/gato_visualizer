@@ -27,6 +27,9 @@
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
+| **Onion skin** | Showing several poses of the displayed motion at once. | Onion skins when naming the feature |
+| **Keyframe** | A time at which a ghost arm is drawn. | Frame (a coordinate frame here) |
+| **Ghost arm** | A translucent right arm at a recorded state other than the solid robot’s displayed state. | Preview (a Live preview solve) |
 | **Simulation time** | The task/plant clock recorded with robot states, independent of time spent computing them. | Solver time, wall time |
 | **Simulation frequency** | The nominal RK4 integration rate, with steps split at control or replanning boundaries. | Display rate |
 | **Control frequency** | The rate at which the current prediction supplies a held actuator command. | MPC frequency, replanning frequency |

@@ -41,3 +41,38 @@ Live history HTTP pages accept `limit` from 1 to 2048 records; the API default r
 Episode-time plots grow with the playback cursor rather than with fetched data. While Live playback runs at the growing edge (following the tip, buffering, or with history still arriving), each plot reveals its data only up to the playback cursor. Every frame, the browser moves each plot's x-window with one SVG transform and ends its clip at the cursor. Docked plots follow the timeline window; a sidebar plot whose aggregate window has an open end follows the cursor rather than the end of the last fetched data. Paused, scrubbed and Replay views show all available data.
 
 This is presentation only. Plot data still come from Python jobs at the existing cadence: at most 5 Hz, with 80 ms job polling and full SVG rebuilds at most every 200 ms. The reveal never draws beyond the fetched samples and never interpolates new ones. When the data arrive within the playback buffer (`buffer_ms`), the plots are in step with the 3D view. When the data age exceeds it, as with long histories at the 200 ms default, a plot's line ends a little behind the cursor and keeps growing smoothly as data arrive, instead of jumping in 200 ms steps. A higher plot refresh rate for true real-time plots is deferred.
+
+## Onion skin
+
+The nested-arcs button beside each transport bar’s expand chevron, or **O**
+while not typing, toggles onion skin. It starts off and remembers the toggle
+in browser `localStorage` under `motion-studio-onion-skin`; unavailable storage
+never prevents use. The button’s tooltip shows the current count and spacing.
+No backend presentation setting changes.
+
+Ghost arms show the recorded right arm and gripper only. Initial keyframes
+use the smallest absolute 1, 2, 5 × 10ᵏ second spacing with at most eight grid
+points, plus the final recorded state; a grid point within a quarter step of
+that final state is dropped. Live holds its spacing until growth exceeds
+sixteen grid points, then advances to the next sufficient nice step. Each
+keyframe snaps to the sample at or before it; duplicate snapped samples draw
+once. Grey denotes recorded motion, cyan a saved prediction trajectory.
+Ghosts never interpolate, even when the solid robot’s playback does.
+
+Opacity rises linearly from 0.12 to 0.4 toward the episode cursor; ghosts
+within 5 ms are hidden. Compact and expanded timelines mark the same snapped
+samples. Hover a ghost or tick for its recorded time; click to seek. Orbit
+drags of 4 px or more do not seek. Replay ticks use the transport’s relative
+clock for positioning and show the original recorded timestamp on hover.
+Live reveals only samples up to the cursor during growing playback, just like
+plots; paused history shows all retained states. A new generation clears the
+keyframes. Ghost transforms rebase when the recording’s fixed joints change.
+
+The pool is limited to 24 arms and shares the solid robot’s geometry while
+owning its materials. The optional `?onion-spike` dialog measures 8/16/24 arms
+with plain transparency and a depth pre-pass, with Views hidden/visible for
+5 seconds each while orbiting. It provides a JSON report and four screenshot
+downloads. Its result is stored under `motion-studio-onion-spike-result`;
+a completed passing decision selects pre-pass or the flat fallback and whether
+the auxiliary cameras draw ghosts after reload. Until qualified in that browser,
+the renderer uses the flat fallback and shows ghosts in both auxiliary views.
