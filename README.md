@@ -163,6 +163,10 @@ The ruler sits above Live; aggregate start/end barriers and shading extend
 across all track rows. Live's row repeats the Freeze action. Hover the ghost
 button to set spacing and the maximum number of arms; click it to cycle off,
 Live only, or all tracks. **Settings → UI** sets ghost opacity (default 55%).
+Ghost keyframes start at the aggregate range's left edge at the chosen spacing
+and stop at the maximum count or range end. Clearing the range uses the whole
+recording; zoom leaves the ghosts unchanged. The boxed × in each replay row
+sits directly below Live's Freeze button.
 Task position inputs remain available below the controller settings; direct
 viewport manipulation avoids scrolling to them during normal use.
 

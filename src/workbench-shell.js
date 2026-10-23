@@ -4,7 +4,7 @@ function ghostControl(mode, icon) {
   return `<div class="transport-popover" data-transport-popover>
     <button id="${mode}-onion-skin" class="transport-button onion-skin-toggle" data-popover-trigger aria-controls="${mode}-ghost-settings" aria-expanded="false" aria-label="Onion skin" aria-pressed="false" title="Onion skin · off (O)">${icon('onion')}</button>
     <div id="${mode}-ghost-settings" class="transport-popover-panel" data-popover-panel role="group" aria-label="Ghost arm settings" hidden>
-      <label>Spacing (s)<input id="${mode}-ghost-interval_s" type="number" min=".01" max="3600" step=".1" value=".5" aria-label="Ghost arm spacing seconds" data-tip="Requested keyframe spacing. Spacing widens to cover the recording within the maximum; the final endpoint is retained." title="Requested keyframe spacing. Spacing widens to cover the recording within the maximum; the final endpoint is retained."></label>
+      <label>Spacing (s)<input id="${mode}-ghost-interval_s" type="number" min=".01" max="3600" step=".1" value=".5" aria-label="Ghost arm spacing seconds" data-tip="Time between keyframes from the aggregate range's start. Stops at the range end or maximum arm count." title="Time between keyframes from the aggregate range's start. Stops at the range end or maximum arm count."></label>
       <label>Maximum arms<input id="${mode}-ghost-maxCount" type="number" min="1" max="64" step="1" value="16" aria-label="Maximum ghost arms" data-tip="Maximum temporal ghost arms across the displayed tracks." title="Maximum temporal ghost arms across the displayed tracks."></label>
     </div>
   </div>`;

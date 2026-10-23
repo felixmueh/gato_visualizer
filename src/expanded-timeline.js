@@ -150,11 +150,12 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     const remove = doc.createElement('button'); remove.type = 'button'; remove.className = 'timeline-lane-remove'; remove.textContent = '×';
     const freeze = doc.createElement('button'); freeze.type = 'button'; freeze.className = 'timeline-lane-freeze'; freeze.title = 'Freeze for comparison'; freeze.setAttribute('aria-label', 'Freeze for comparison');
     freeze.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="12" height="12" rx="2"/><path d="M8 20h10a2 2 0 0 0 2-2V8M10 7v6M7 10h6"/></svg>';
+    const action = doc.createElement('div'); action.className = 'timeline-lane-action'; action.append(freeze, remove);
     const rail = doc.createElement('div'); rail.className = 'timeline-lane-rail';
     const clip = doc.createElement('div'); clip.className = 'timeline-lane-clip'; clip.tabIndex = track.kind === 'live' ? -1 : 0;
     const bands = doc.createElement('canvas'); bands.className = 'timeline-lane-bands'; bands.setAttribute('aria-hidden', 'true');
     const cursor = doc.createElement('div'); cursor.className = 'timeline-lane-cursor'; cursor.setAttribute('aria-hidden', 'true');
-    clip.append(bands); rail.append(clip, cursor); information.append(label, badges, differences); header.append(chip, information, remove, offset, unit, eye, display, freeze); row.append(header, rail);
+    clip.append(bands); rail.append(clip, cursor); information.append(label, badges, differences); header.append(chip, information, offset, unit, eye, display, action); row.append(header, rail);
     const node = { row, chip, label, badges, differences, offset, eye, display, remove, freeze, rail, clip, bands, cursor, track, bandsKey: '' };
     function applyOffset() {
       const value = Number(offset.value.replace(/s\s*$/, '').trim());

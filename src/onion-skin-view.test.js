@@ -171,7 +171,7 @@ test('Live cycles off, primary and colored all-track ghosts under one strict max
   assert(view.snapshot.ghostCount <= 4); assert(view.snapshot.poses.length <= 4);
   const comparisonPoses = view.snapshot.poses.filter(pose => pose.sourceId === 'track-b');
   assert(comparisonPoses.length > 0); assert(comparisonPoses.every(pose => pose.color === 0xb48cff));
-  assert.equal(comparisonPoses.at(-1).sessionTime, 3);
+  assert.equal(comparisonPoses.at(-1).sessionTime, 1);
   assert.equal(elements.get('live-onion-skin').getAttribute('data-ghost-mode'), 'all');
   await elements.get('live-onion-skin').emit('click'); assert.equal(view.mode, 'off'); assert.equal(view.snapshot.ghostCount, 0);
   view.update({ ...primary.next, mode: 'replay', comparisons: [comparison.next] });
@@ -179,7 +179,7 @@ test('Live cycles off, primary and colored all-track ghosts under one strict max
   await elements.get('replay-onion-skin').emit('click'); assert.equal(view.mode, 'off');
 });
 
-test('spacing and maximum update selection, opacity preserves samples, and a one-arm cap retains only the endpoint', t => {
+test('spacing and maximum update the prefix, opacity preserves samples, and a one-arm cap retains its first sample', t => {
   const { view } = fixture(t), motion = source(); view.update(motion.next);
   view.setSettings({ opacity: .8 }); assert.equal(motion.calls(), 1);
   assert.equal(view.settings.interval_s, .5); assert.equal(view.settings.maxCount, 16);
@@ -188,7 +188,7 @@ test('spacing and maximum update selection, opacity preserves samples, and a one
   assert.deepEqual(view.snapshot.opacities, before.map(opacity => opacity / 2));
   view.setSettings({ interval_s: 1, maxCount: 3 }); assert.equal(motion.calls(), 2);
   assert(view.snapshot.snappedTimes.length <= 3);
-  view.setSettings({ maxCount: 1 }); assert.deepEqual(view.snapshot.snappedTimes, [4]);
+  view.setSettings({ maxCount: 1 }); assert.deepEqual(view.snapshot.snappedTimes, [0]);
   assert.throws(() => view.setSettings({ maxCount: 65 }), /1 to 64/);
   assert.equal(view.settings.maxCount, 1);
 });
@@ -212,7 +212,7 @@ test('comparison ghosts hold native samples and seek session time through ticks 
 test('the temporal pool supports the selectable 64-arm budget and immediately enforces a reduced cap', t => {
   const { view } = fixture(t), times = Array.from({ length: 101 }, (_, index) => index / 10);
   const motion = source({ times, cursor: .025 });
-  view.setSettings({ interval_s: .01, maxCount: 64 }); view.update(motion.next);
+  view.setSettings({ interval_s: .1, maxCount: 64 }); view.update(motion.next);
   assert(view.snapshot.ghostCount > 24); assert(view.snapshot.ghostCount <= 64);
   view.setSettings({ maxCount: 2 }); assert(view.snapshot.ghostCount <= 2);
 });
@@ -230,4 +230,44 @@ test('comparison renaming refreshes tick titles and hover labels without resampl
   assert.notEqual(tick, oldTick); assert.match(tick.title, /^Renamed reach ·/); assert.equal(comparison.calls(), calls);
   await tick.emit('pointerenter', { clientX: 100, clientY: 100 });
   assert.match(elements.get('onion-skin-tooltip').textContent, /^Renamed reach ·/);
+});
+
+test('aggregate range anchors a fixed-spacing prefix; cursor, zoom and opacity preserve sampled states', t => {
+  const { view } = fixture(t), motion = source({ mode: 'live', identity: 'live:1', times: Array.from({ length: 11 }, (_, index) => index),
+    range: [2, 8], trackBounds: [0, 10], cursor: 2.1 });
+  view.setSettings({ interval_s: 1, maxCount: 4 }); view.update(motion.next);
+  assert.deepEqual(view.snapshot.keyframeTimes, [2, 3, 4, 5]); assert.deepEqual(view.snapshot.snappedTimes, [2, 3, 4, 5]);
+  assert.equal(motion.calls(), 1);
+  view.update({ ...motion.next, cursor: 3.1, trackBounds: [3, 5] });
+  view.setSettings({ opacity: .8 }); assert.equal(motion.calls(), 1);
+  view.update({ ...motion.next, range: [4, 8] }); assert.equal(motion.calls(), 2);
+  assert.deepEqual(view.snapshot.keyframeTimes, [4, 5, 6, 7]);
+  view.update({ ...motion.next, range: [4, 20], revision: 2, times: Array.from({ length: 21 }, (_, index) => index) });
+  assert.deepEqual(view.snapshot.keyframeTimes, [4, 5, 6, 7]); // Growth preserves the capped prefix.
+});
+
+test('session aggregate ranges convert to each native clock and offset changes invalidate selection', t => {
+  const { view } = fixture(t), primary = source({ mode: 'live', identity: 'live', times: [], range: [2, 8], trackBounds: [0, 12] });
+  const comparison = source({ id: 'track-a', identity: 'saved', times: Array.from({ length: 11 }, (_, index) => 100 + index),
+    bounds: [100, 110], cursor: 99, seekOffset: -98, color: 0xb48cff, label: 'A' });
+  const next = { ...primary.next, comparisons: [comparison.next] };
+  view.setMode('all'); view.setSettings({ interval_s: 1, maxCount: 4 }); view.update(next);
+  assert.deepEqual(view.snapshot.poses.map(pose => pose.time), [100, 101, 102, 103]);
+  assert.deepEqual(view.timeline.keyframes.map(pose => pose.time), [2, 3, 4, 5]); assert.equal(comparison.calls(), 1);
+  comparison.next.seekOffset = -99; view.update(next);
+  assert.deepEqual(view.snapshot.poses.map(pose => pose.time), [101, 102, 103, 104]);
+  assert.deepEqual(view.timeline.keyframes.map(pose => pose.time), [2, 3, 4, 5]); assert.equal(comparison.calls(), 2);
+});
+
+test('all-track budgets exclude disjoint recordings and stay within one maximum when they move into range', t => {
+  const { view } = fixture(t), primary = source({ mode: 'live', identity: 'live', times: Array.from({ length: 11 }, (_, index) => index),
+    range: [2, 8], trackBounds: [0, 10], cursor: 1 });
+  const comparison = source({ id: 'track-a', identity: 'saved', times: [100, 101], bounds: [100, 101], cursor: 99, seekOffset: 0, label: 'A' });
+  const next = { ...primary.next, comparisons: [comparison.next] };
+  view.setMode('all'); view.setSettings({ interval_s: 1, maxCount: 4 }); view.update(next);
+  assert.deepEqual(view.snapshot.poses.map(pose => pose.time), [2, 3, 4, 5]); assert.equal(comparison.calls(), 0);
+  comparison.next.seekOffset = -98; view.update(next);
+  assert.equal(view.snapshot.poses.length, 4); assert(view.snapshot.ghostCount <= 4);
+  assert.deepEqual(view.snapshot.poses.filter(pose => pose.sourceId === 'primary').map(pose => pose.time), [2, 3]);
+  assert.deepEqual(view.snapshot.poses.filter(pose => pose.sourceId !== 'primary').map(pose => pose.time), [100, 101]);
 });

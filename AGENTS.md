@@ -269,6 +269,8 @@ historical branch browsing in this phase. Replay names are editable, initially
 A/B/C. The compact ruler sits above Live and aggregate barriers/shading span
 all rows. Hover settings above Precalculate edit duration; those above Ghost
 arms edit spacing and a strict total maximum. Ghosts cycle off/Live/all tracks;
+keyframes follow the aggregate range from its left edge at the exact spacing,
+truncating the prefix at the maximum. Zoom never changes ghost selection.
 UI settings set their opacity (55% default). Recorded On Play playback respects
 Stop; starting an empty On Play run still calculates continuously until paused.
 See [presentation](docs/presentation.md#session-and-tracks).

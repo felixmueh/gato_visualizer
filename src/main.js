@@ -15,7 +15,7 @@ import { setupSolverProfiles } from "./solver-profiles.js";
 import "./solver-profiles.css";
 import "./floating-dialog.css";
 import { workbenchShell } from "./workbench-shell.js";
-import { setupExpandedTimeline } from "./expanded-timeline.js";
+import { setupExpandedTimeline, aggregateSpan } from "./expanded-timeline.js";
 import { setupPlotInspection } from "./plot-inspection.js";
 import { setupWorkbench } from "./workbench-ui.js";
 import { setupGhostControls } from './transport-popover.js';
@@ -510,14 +510,16 @@ function updateOnionSkin() {
   if (history) {
     onionSkin.update({ mode: 'live', identity: `live:${history.generation}`, revision: live.historyRevision,
       times: history.length ? history.bounds : [], bounds: history.bounds, trackBounds: history.presentationBounds,
+      range: aggregateSpan(session?.aggregate, session?.span || history.bounds),
       cursor: history.selectedTime ?? history.bounds[1], reveal: liveReveal(history.selectedTime),
       states: times => live.historyStates(times), jointNames: defaultData.joint_names, color: ONION_COLOR,
       comparisons: trackScene?.onionSources || [] });
   } else {
     const times = trajectory?.time_s || [], offset = times[0] || 0;
+    const bounds = [0, times.length ? times.at(-1) - offset : 0];
     onionSkin.update({ mode: 'replay', identity: trajectory, revision: trajectory,
       times, bounds: times.length ? [offset, times.at(-1)] : [0, 0],
-      trackBounds: [0, times.length ? times.at(-1) - offset : 0], offset, cursor: elapsed + offset,
+      trackBounds: bounds, range: aggregateSpan(expandedTimeline.snapshot.aggregate, bounds), offset, cursor: elapsed + offset,
       states: keyframes => keyframes.map(time => { const index = sampleAtOrBefore(times, time); return index < 0 ? null : { time: times[index], q: trajectory.q[index] }; }),
       jointNames: data.joint_names, color: trajectory?.kind === 'prediction' ? pathColor : ONION_COLOR });
   }

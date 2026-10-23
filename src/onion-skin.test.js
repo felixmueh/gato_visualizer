@@ -2,43 +2,47 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { onionKeyframes, onionBudgets, sampleAtOrBefore, onionOpacity, visibleOnionKeyframes, validateGhostSettings, DEFAULT_GHOST_SETTINGS, ONION_MIN_OPACITY, ONION_MAX_OPACITY, ONION_CURSOR_HIDE_S } from './onion-skin.js';
 
-test('seconds spacing covers absolute grids and widens only as needed for a strict endpoint-inclusive maximum', () => {
-  assert.deepEqual(onionKeyframes([0, 3.6]), { step: .5, times: [0, .5, 1, 1.5, 2, 2.5, 3, 3.6] });
-  assert.deepEqual(onionKeyframes([0, 4], { interval_s: 1 }), { step: 1, times: [0, 1, 2, 3, 4] });
-  assert.deepEqual(onionKeyframes([0, 4], { interval_s: .5, maxCount: 4 }), { step: 1.5, times: [0, 1.5, 3, 4] });
-  assert.deepEqual(onionKeyframes([0, 4], { maxCount: 1 }), { step: .5, times: [4] });
+test('fixed seconds spacing takes a capped prefix from the selected range without widening or a forced endpoint', () => {
+  assert.deepEqual(onionKeyframes([0, 10], { range: [2, 8], interval_s: 1, maxCount: 4 }), { step: 1, times: [2, 3, 4, 5] });
+  assert.deepEqual(onionKeyframes([0, 3.6]), { step: .5, times: [0, .5, 1, 1.5, 2, 2.5, 3, 3.5] });
+  assert.deepEqual(onionKeyframes([0, 4], { interval_s: .5, maxCount: 4 }), { step: .5, times: [0, .5, 1, 1.5] });
+  assert.deepEqual(onionKeyframes([0, 4], { maxCount: 1 }), { step: .5, times: [0] });
   for (const maxCount of [1, 2, 8, 16, 64]) for (const end of [.014, 3.625, 7.9, 100, 10000]) {
     const selected = onionKeyframes([0, end], { maxCount, interval_s: .01 });
-    assert(selected.times.length <= maxCount); assert.equal(selected.times.at(-1), end);
-    assert(selected.step >= .01);
+    assert(selected.times.length <= maxCount); assert.equal(selected.times[0], 0); assert.equal(selected.step, .01);
   }
 });
 
-test('offset and negative ranges keep absolute multiples and replace near-final grid points', () => {
-  assert.deepEqual(onionKeyframes([1.1, 4.8]).times, [1.5, 2, 2.5, 3, 3.5, 4, 4.5, 4.8]);
-  assert.deepEqual(onionKeyframes([-2.3, 1.2]).times, [-2, -1.5, -1, -.5, 0, .5, 1, 1.2]);
-  assert.deepEqual(onionKeyframes([0, 3.625]).times, [0, .5, 1, 1.5, 2, 2.5, 3, 3.5, 3.625]);
-  assert.equal(onionKeyframes([0, 3.5]).times.filter(time => time === 3.5).length, 1);
+test('the range left edge anchors the grid even when the source starts later or uses a negative native clock', () => {
+  assert.deepEqual(onionKeyframes([1.1, 4.8], { interval_s: 1 }).times, [1.1, 2.1, 3.1, 4.1]);
+  assert.deepEqual(onionKeyframes([1.1, 4.8], { range: [0, 5], interval_s: 1 }).times, [2, 3, 4]);
+  assert.deepEqual(onionKeyframes([-2.3, 1.2], { range: [-3, 1], interval_s: 1 }).times, [-2, -1, 0, 1]);
+  assert.deepEqual(onionKeyframes([100.2, 102], { range: [100.1, 102], interval_s: .1, maxCount: 2 }).times, [100.2, 100.3]);
 });
 
-test('Live growth retains its spacing when it fits and never exceeds the chosen maximum', () => {
-  const initial = onionKeyframes([0, 3.6]);
-  assert.equal(onionKeyframes([0, 6.9], { previousStep: initial.step }).step, .5);
-  const grown = onionKeyframes([0, 7.9], { previousStep: initial.step });
-  assert.equal(grown.step, 1); assert(grown.times.length <= 16);
-  assert.equal(onionKeyframes([0, 3], { previousStep: grown.step }).step, 1);
-});
-
-test('empty, single-sample and zero-length motions preserve recorded endpoints', () => {
+test('narrow, zero-length, disjoint and open ranges keep only in-range grid candidates', () => {
+  assert.deepEqual(onionKeyframes([0, 5], { range: [2.1, 2.2], interval_s: 1 }).times, [2.1]);
+  assert.deepEqual(onionKeyframes([0, 5], { range: [2, 2] }).times, [2]);
+  assert.deepEqual(onionKeyframes([2.1, 2.2], { range: [0, 5], interval_s: 1 }).times, []);
+  assert.deepEqual(onionKeyframes([0, 5], { range: [6, 8] }).times, []);
+  assert.deepEqual(onionKeyframes([0, 5], { range: [3, 2] }).times, []);
+  assert.deepEqual(onionKeyframes([2, 4], { range: [null, null], interval_s: 1 }).times, [2, 3, 4]);
   assert.deepEqual(onionKeyframes([]), { step: null, times: [] });
   assert.deepEqual(onionKeyframes([1.234]), { step: .5, times: [1.234] });
   assert.deepEqual(onionKeyframes([2, 2]), { step: .5, times: [2] });
 });
 
-test('one maximum is divided across nonempty sources rather than multiplied by track count', () => {
-  const sources = [{ times: [] }, { times: [0, 1] }, { times: [2] }, { times: [0, 3] }];
-  assert.deepEqual(onionBudgets(sources, 5), [0, 2, 2, 1]);
+test('Live growth retains the old fixed-spacing prefix without redistributing ghosts across the longer duration', () => {
+  const options = { range: [0, 100], interval_s: 1, maxCount: 4 };
+  assert.deepEqual(onionKeyframes([0, 3.6], options).times, [0, 1, 2, 3]);
+  assert.deepEqual(onionKeyframes([0, 100], options).times, [0, 1, 2, 3]);
+});
+
+test('one global maximum excludes sources without any in-range grid candidate', () => {
+  const sources = [{ times: [] }, { times: [0, 1] }, { times: [2], range: [0, 1] }, { times: [0, 3] }];
+  assert.deepEqual(onionBudgets(sources, 5), [0, 3, 0, 2]);
   assert.deepEqual(onionBudgets(sources, 1), [0, 1, 0, 0]);
+  assert.deepEqual(onionBudgets([{ times: [2.1, 2.2], range: [0, 5] }, { times: [0, 5] }], 4, { interval_s: 1 }), [0, 4]);
 });
 
 test('nonuniform recorded states snap at or before a keyframe, retaining the sample timestamp', () => {

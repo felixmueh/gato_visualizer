@@ -49,15 +49,20 @@ The nested-arcs button beside each transport bar’s expand chevron, or **O**
 while not typing, cycles onion skin: off, Live only, and (with comparison
 tracks) all tracks in their colours. Replay has off/on. It starts off and
 remembers the choice in browser storage. The button’s tooltip shows its mode,
-current count and effective spacing.
+current count and spacing.
 
 Hover or focus the button to open its settings above the transport: **Spacing
 (s)** defaults to 0.5 seconds and **Maximum arms** to 16 (integer 1–64). The
 maximum counts temporal ghost arms across all displayed tracks; each track's
-ordinary current arm/dot remains independent. When the whole recording would
-exceed the maximum, use an integer multiple
-of the requested spacing. The retained final endpoint can be closer to its
-preceding keyframe than that grid spacing. The two transports share these
+ordinary current arm/dot remains independent. Keyframes start at the aggregate
+range's left edge and advance by exactly the requested spacing, stopping at
+the maximum or the range's end. The cap retains the prefix; spacing never
+widens and the final endpoint is included only if it falls on the grid. With
+no aggregate bounds, use the whole session or Replay recording. For range
+2–8 s, spacing 1 s and maximum 4, the keyframes are 2, 3, 4, 5 s. All-track
+mode translates this same session grid through each track's offset and skips
+times outside that track's recording. Changing the aggregate window updates
+the ghosts; timeline zoom leaves them unchanged. The two transports share these
 browser preferences. Arrow Up enters a panel from its button; Escape closes
 it. The same hover interaction above Precalculate edits its duration.
 
@@ -109,8 +114,9 @@ freezes first under Temporary. Replays align their start with the main track's
 start (session zero when it is empty); freezes start at offset zero. Lanes show
 an effective offset, including zero, plus eye, Arm/Dot and removal controls.
 Replay names are editable and start at A, B, C; source names stay in tooltips.
-The remove button sits before the offset; Live has a second Freeze button
-beside its arm display control. A compact ruler sits directly above the Live
+The compact name field leaves more room for the time axis. The boxed remove
+button sits in the rightmost action column, directly below Live's second
+Freeze button beside its arm display control. A compact ruler sits directly above the Live
 row. Aggregate barriers and outside shading span every track rail.
 Dragging shifts a track without modifying recorded data; snapping within 6 px
 uses zero, the cursor and track endpoints. Alt-drag disables snapping;

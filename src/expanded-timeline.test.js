@@ -228,7 +228,7 @@ test('different Replay object identities reset independently while Live session 
   assert.deepEqual(timeline.snapshot.visible, [100, 110]);
 });
 
-test('compact Live rows show editable names, source tooltips and aligned remove/freeze action slots', async () => {
+test('compact Live rows show editable names, source tooltips and one aligned remove/freeze action slot', async () => {
   const changes = [], freezes = [], tracks = laneTracks();
   tracks[1].displayName = 'A'; tracks[1].defaultName = 'A'; tracks[1].label = 'Source filename';
   tracks[1].badges.push({ label: 'Incomplete', title: 'Incomplete run' });
@@ -242,9 +242,12 @@ test('compact Live rows show editable names, source tooltips and aligned remove/
   name.value = 'slow run'; await name.emit('change'); assert.deepEqual(changes.at(-1), ['b', { displayName: 'slow run' }]);
   assert.equal(replay.querySelectorAll('.timeline-lane-badge').some(node => node.textContent === 'Incomplete'), false);
   const header = replay.querySelector('.timeline-lane-header');
-  assert(header.children.indexOf(replay.querySelector('.timeline-lane-remove')) < header.children.indexOf(replay.querySelector('.timeline-lane-offset')));
-  const mainHeader = main.querySelector('.timeline-lane-header');
-  assert(mainHeader.children.indexOf(main.querySelector('.timeline-lane-freeze')) > mainHeader.children.indexOf(main.querySelector('.timeline-lane-display')));
+  assert.deepEqual(header.children.map(node => node.className), ['timeline-lane-chip', 'timeline-lane-information', 'timeline-lane-offset', 'timeline-lane-offset-unit', 'timeline-lane-visibility', 'timeline-lane-display', 'timeline-lane-action']);
+  const mainHeader = main.querySelector('.timeline-lane-header'), action = replay.querySelector('.timeline-lane-action'), mainAction = main.querySelector('.timeline-lane-action');
+  assert.equal(header.children.at(-1), action); assert.equal(mainHeader.children.at(-1), mainAction);
+  assert.equal(replay.querySelector('.timeline-lane-remove').parentElement, action); assert.equal(replay.querySelector('.timeline-lane-freeze').parentElement, action);
+  assert.equal(main.querySelector('.timeline-lane-remove').parentElement, mainAction); assert.equal(main.querySelector('.timeline-lane-freeze').parentElement, mainAction);
+  assert.equal(replay.querySelector('.timeline-lane-remove').textContent, '×');
   assert.equal(main.querySelector('.timeline-lane-remove').hidden, true); assert.equal(replay.querySelector('.timeline-lane-freeze').hidden, true);
   await main.querySelector('.timeline-lane-freeze').emit('click'); assert.equal(freezes.length, 1);
   update(false); await main.querySelector('.timeline-lane-freeze').emit('click'); assert.equal(freezes.length, 1);

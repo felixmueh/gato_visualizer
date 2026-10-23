@@ -11,39 +11,31 @@ export function validateGhostSettings(value = {}) {
   return settings;
 }
 
-function gridBounds(start, end, step) {
-  const first = start / step, last = end / step;
-  const tolerance = Number.EPSILON * Math.max(1, Math.abs(first), Math.abs(last)) * 4;
-  return [Math.ceil(first - tolerance), Math.floor(last + tolerance)];
-}
-
-/** Absolute grids cover the full recording. Widen the requested spacing by
- * integer multiples to respect the strict cap, including the final endpoint. */
-export function onionKeyframes(times, { maxCount = DEFAULT_GHOST_SETTINGS.maxCount, interval_s = DEFAULT_GHOST_SETTINGS.interval_s, previousStep } = {}) {
+/** Fixed-spacing prefix anchored at the selected range's left edge. Intersect
+ * the grid with recorded time; a cap never widens it or adds an endpoint. */
+export function onionKeyframes(times, { range, maxCount = DEFAULT_GHOST_SETTINGS.maxCount, interval_s = DEFAULT_GHOST_SETTINGS.interval_s } = {}) {
   if (!times?.length) return { step: null, times: [] };
-  const start = times[0], end = times[times.length - 1];
+  const recordedStart = times[0], recordedEnd = times[times.length - 1];
+  const start = Number.isFinite(range?.[0]) ? range[0] : recordedStart;
+  const end = Number.isFinite(range?.[1]) ? range[1] : recordedEnd;
   maxCount = Number.isInteger(maxCount) ? Math.max(1, Math.min(64, maxCount)) : DEFAULT_GHOST_SETTINGS.maxCount;
   interval_s = Number.isFinite(interval_s) && interval_s > 0 ? interval_s : DEFAULT_GHOST_SETTINGS.interval_s;
-  let step = interval_s;
-  if (maxCount === 1 || !(end > start)) return { step, times: [end] };
-  step *= Math.max(1, Math.ceil((end - start) / ((maxCount - 1) * interval_s)));
-  if (Number.isFinite(previousStep) && previousStep >= step) step = previousStep;
-  for (;;) {
-    const [first, last] = gridBounds(start, end, step), keyframes = [];
-    for (let i = first; i <= last; i++) {
-      const time = Math.max(start, Math.min(end, Number((i * step).toPrecision(15))));
-      if (end - time >= step / 4) keyframes.push(time);
-    }
-    keyframes.push(end);
-    if (keyframes.length <= maxCount) return { step, times: keyframes };
-    step += interval_s;
+  const lower = Math.max(start, recordedStart), upper = Math.min(end, recordedEnd), keyframes = [];
+  if (lower > upper) return { step: interval_s, times: [] };
+  const firstGrid = (lower - start) / interval_s, lastGrid = (upper - start) / interval_s;
+  const tolerance = Number.EPSILON * Math.max(1, Math.abs(firstGrid), Math.abs(lastGrid), Math.abs(start) / interval_s, Math.abs(upper) / interval_s) * 4;
+  const first = Math.max(0, Math.ceil(firstGrid - tolerance)), last = Math.floor(lastGrid + tolerance);
+  for (let count = 0; count < maxCount && first + count <= last; count++) {
+    const time = Number((start + (first + count) * interval_s).toPrecision(15));
+    keyframes.push(Math.max(lower, Math.min(upper, time)));
   }
+  return { step: interval_s, times: keyframes };
 }
 
 /** Divide one strict temporal-ghost budget across nonempty recorded sources. */
-export function onionBudgets(sources, maxCount) {
+export function onionBudgets(sources, maxCount, { interval_s = DEFAULT_GHOST_SETTINGS.interval_s } = {}) {
   const budgets = sources.map(() => 0);
-  const eligible = sources.map((source, index) => source.times?.length ? index : -1).filter(index => index >= 0);
+  const eligible = sources.map((source, index) => onionKeyframes(source.times, { range: source.range, interval_s, maxCount: 1 }).times.length ? index : -1).filter(index => index >= 0);
   for (let count = 0; count < maxCount && eligible.length; count++) budgets[eligible[count % eligible.length]]++;
   return budgets;
 }

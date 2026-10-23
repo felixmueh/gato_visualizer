@@ -118,18 +118,20 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
   }
   function update(next) {
     source = next;
-    const sources = [{ ...next, id: 'primary', seekOffset: -(next.offset || 0) }];
-    if (effectiveMode() === 'all') sources.push(...(next.comparisons || []).filter(item => item.visible !== false));
-    const budgets = onionBudgets(sources, settings.maxCount), activeIds = new Set();
+    const inputs = [{ ...next, id: 'primary', seekOffset: -(next.offset || 0) }];
+    if (effectiveMode() === 'all') inputs.push(...(next.comparisons || []).filter(item => item.visible !== false));
+    const range = next.range || next.trackBounds;
+    const sources = inputs.map(item => ({ ...item,
+      range: range?.map(time => Number.isFinite(time) ? time - (item.seekOffset || 0) : time) }));
+    const budgets = onionBudgets(sources, settings.maxCount, settings), activeIds = new Set();
     poses = [];
     sources.forEach((item, sourceIndex) => {
       const key = item.id || `comparison-${sourceIndex}`, budget = budgets[sourceIndex];
       activeIds.add(key);
-      const settingsKey = `${settings.interval_s}:${budget}`;
+      const settingsKey = JSON.stringify([settings.interval_s, budget, item.range, item.seekOffset || 0]);
       let cached = cache.get(key);
       if (!cached || cached.identity !== item.identity || cached.revision !== item.revision || cached.settingsKey !== settingsKey) {
-        const selection = budget ? onionKeyframes(item.times, { interval_s: settings.interval_s, maxCount: budget,
-          previousStep: cached?.identity === item.identity && cached.settingsKey === settingsKey && next.mode === 'live' ? cached.selection.step : undefined }) : { step: null, times: [] };
+        const selection = budget ? onionKeyframes(item.times, { range: item.range, interval_s: settings.interval_s, maxCount: budget }) : { step: null, times: [] };
         const samples = selection.times.length ? item.states(selection.times) : [];
         const seen = new Set();
         const recorded = samples.flatMap((sample, index) => {
