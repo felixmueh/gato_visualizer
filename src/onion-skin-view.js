@@ -71,6 +71,7 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
   });
   element.addEventListener('pointerup', event => {
     const press = down; down = null;
+    if (event.jointEditHandled) return;
     if (press?.id === event.pointerId && !press.dragged && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 4 && press.picked) {
       const picked = hit(event);
       if (picked?.id === press.picked.id) seek(picked);
@@ -158,6 +159,7 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
   }
   buttons.forEach(button => button.setAttribute('aria-pressed', String(enabled())));
   return {
+    pick: raycaster => enabled() && normalVisible && source ? ghosts.pick(raycaster) : null,
     update, setMode, cycle: toggle, get mode() { return effectiveMode(); }, get settings() { return { ...settings }; },
     setSettings(value) { settings = validateGhostSettings({ ...settings, ...value }); if (source) update(source); },
     setVisible(value) { normalVisible = value; if (source) update(source); }, sort: viewCamera => ghosts.update(viewCamera), setBase: () => ghosts.setBase(),

@@ -181,3 +181,46 @@ the server's RAM-backed runtime directory, survive page reloads, and are pruned
 to eight oldest-first; server shutdown deletes them. The browser's track list,
 offsets and display choices are not persisted or written to config. Focus
 switching, Keep, comparison plots and a past-run browser are later phases.
+
+## Viewport start-pose editing
+
+Viewport editing needs no lock. The Joints tab's remembered lock, initially
+locked, protects only its gauges and number fields; changing it does not cancel
+a viewport selection or drag. Editing remains available only in Live, paused
+at the run start, with the solid Live arm visible and its source connected.
+The solid arm then shows
+the start pose rather than a separate recorded pose; the white recorded Live
+marker is hidden. Dragging previews the same seven native positions as the
+Joints tab and hides the outdated prediction. Release applies the setting once;
+Escape cancels the draft. Empty clicks deselect. Ordinary drags still orbit.
+
+Click an arm link for its joint ring: rotation about that joint's local axis,
+clamped to raw URDF limits. Joint 6 keeps its native negative axis. Click the
+gripper or wireframe grasp sphere for world-axis translation. Task, ring and
+grasp selections exclude each other. A gizmo consumes its pointer interaction;
+otherwise the nearest solid/ghost surface decides between selection and seeking.
+Recorded comparison arms are never editable. Top/Right views show the same
+handles; interaction remains in the main viewport.
+
+The grasp sphere and dashed tether use text white (`0xe7edf5`); the sphere is
+2 cm in radius, distinct from the recorded marker and gold task anchor. Both
+controls have size 0.6. A gap of at least 2 mm shows the tether to the achieved
+point. Releasing snaps to that point, the nearest reachable point found from
+the warm start, without claiming a global optimum. Amber outlines flag joints
+outside the MPC planning box independently of the optional raw-limit tint.
+
+Position-only damped least squares runs once per animation frame, up to 16
+iterations, with 0.04 m damping, a 0.05 m task-error clamp, 0.05 rad maximum
+joint step, 0.1 null-space posture gain and 0.1 mm convergence tolerance. The
+previous solution seeds each frame; posture stays near the drag-start pose.
+Deterministic backtracking and a task-only fallback prevent the damped posture
+term from increasing the distance or blocking final convergence. Each joint
+uses planning bounds when it began inside them, raw bounds otherwise. There is
+no gripper orientation or collision constraint.
+
+Browser FK uses the full display URDF and the simulator's schema grasp origin.
+A recorded-state comparison checks the world grasp position within 0.1 mm and
+the frame identity. Missing/inconsistent data disables grasp translation and
+shows an IK badge with the reason in its tooltip; joint rings remain usable.
+`window.__motionStudio.jointEdit` exposes the guard distance, draft, selection,
+achieved/requested point, gap and projected handles for browser checks.

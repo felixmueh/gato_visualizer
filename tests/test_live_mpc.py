@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import numpy as np
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -27,6 +28,31 @@ class SettingsTests(unittest.TestCase):
         self.schema = build_schema(probe, MPC_ROOT, start_pose())
         self.config = deepcopy(self.schema["defaults"]["config"])
         self.task = deepcopy(REACH_DEFAULT_TASK)
+
+    def test_schema_serves_the_simulator_grasp_origin(self):
+        from live_mpc import end_effector_spec, import_tiago
+        tiago = import_tiago(MPC_ROOT)
+        grasp = self.schema["end_effector"]
+        self.assertEqual(grasp, end_effector_spec(tiago))
+        self.assertEqual(set(grasp), {"frame", "parent_link", "xyz", "rpy"})
+        self.assertEqual(grasp["frame"], tiago.GRASP_FRAME)
+        self.assertEqual(grasp["parent_link"], "arm_right_tool_link")
+        self.assertEqual(grasp["rpy"], [0., 0., 0.])
+        self.assertEqual(len(grasp["xyz"]), 3)
+        self.assertTrue(np.isfinite(grasp["xyz"]).all())
+        self.assertGreater(grasp["xyz"][2], 0.)
+
+    def test_separate_solver_schema_keeps_simulator_grasp_metadata(self):
+        grasp = deepcopy(self.schema["end_effector"])
+        probe, pose = live_probe(), start_pose()
+        # A solver profile may name another checkout. Its probe does not decide
+        # where the display/simulator's grasp handle belongs.
+        with patch("live_mpc.import_tiago", side_effect=AssertionError("must retain simulator metadata")), \
+                patch("live_mpc.source_identity", return_value={"mpc_root": "/other/solver"}):
+            schema = build_schema(probe, "/other/solver", pose, end_effector=grasp)
+        self.assertEqual(schema["end_effector"], grasp)
+        schema["end_effector"]["xyz"][2] += 1.
+        self.assertNotEqual(schema["end_effector"]["xyz"], grasp["xyz"])
 
     def test_schema_is_mpc_params_plus_the_simulated_plant(self):
         config, task = validate_settings(self.config, self.task, self.schema)

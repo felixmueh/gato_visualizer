@@ -47,3 +47,20 @@ test("tooltip lines list non-inside quantities worst first", () => {
   const use = jointLimitUse({ q: [.95], qd: [0], torque: [40.5], limits: one }, 0);
   assert.deepEqual(tintedQuantities(use).map((item) => `${item.quantity}:${item.state}`), ["torque:beyond", "position:near"]);
 });
+
+test('start poses outside the planning box keep an amber outline independently of raw-limit tint', () => {
+  const { robot, mesh } = robotWithLink();
+  const tint = createLimitTint({ robot, jointNames: ['j1'] });
+  const planning = { lower: [-.9], upper: [.9] };
+  tint.setEnabled(false);
+  tint.update({ q: [.95], limits: one, planning });
+  const outline = mesh.children.find(child => child.name === 'planning-box-outline');
+  assert.equal(outline.visible, true);
+  assert.equal(tint.links[0].planningOutside, true);
+  assert.equal(mesh.material.color.getHex(), 0x336699);
+  tint.update({ q: [.8], limits: one, planning });
+  assert.equal(outline.visible, false);
+  tint.update({ q: [.95], limits: one });
+  assert.equal(outline.visible, false);
+  assert.equal(tint.links[0].planningOutside, false);
+});

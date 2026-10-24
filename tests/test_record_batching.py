@@ -1,6 +1,5 @@
 """Completed-record reporting is bounded without changing numerical intervals."""
 from copy import deepcopy
-from pathlib import Path
 import queue
 import threading
 from types import SimpleNamespace
@@ -9,7 +8,7 @@ from unittest.mock import patch
 
 from execution_session import MultirateSession
 from execution_worker import CompletedRecords, MAX_PACKET_RECORDS, RECORD_INTERVAL_S, worker_main
-from tests.test_execution import FakeLocks, fake_schema
+from tests.test_execution import FakeLocks, fake_schema, MPC_ROOT
 from tests.test_solver_profiles import ProfileAdapter
 
 
@@ -83,7 +82,7 @@ class WorkerRecordBatchingTests(unittest.TestCase):
         with patch('live_mpc.GPULocks', FakeLocks), \
              patch('execution_worker.MultirateSession', Session), \
              patch('execution_worker.time.monotonic', return_value=100.):
-            worker_main(Path('.'), commands, Results(), revision, shutdown,
+            worker_main(MPC_ROOT, commands, Results(), revision, shutdown,
                         adapter_factory=ProfileAdapter, schema_factory=lambda root: schema)
         return messages, batches
 

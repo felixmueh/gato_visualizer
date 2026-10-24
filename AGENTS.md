@@ -368,6 +368,20 @@ to `Q_START`. The initial scene shows the arm at `Q_START`. "Start pose" is the 
 
 ## Browser checks — Felix, 2026-10-23
 
+**Viewport start-pose editing — Felix, 2026-10-24.** Viewport editing does not
+require a lock; the Joints tab's lock protects only its gauges and number fields.
+Changing that lock must not clear viewport selection or cancel a viewport drag.
+Keep the existing Live, paused, t = 0 eligibility. Click an arm link for its single native-axis joint
+ring, or the gripper/grasp handle for position-only browser IK. Both edit
+`plant.start_pose_rad`, preview locally and commit once on release, starting a
+new run at zero. Escape cancels a drag. Rings clamp to raw URDF limits; IK uses
+the planning box per joint when the drag began inside it, otherwise raw limits.
+Flag planning-box excursions in amber. An unreachable request gets a tether
+and snaps to the achieved grasp point on release. No orientation targets,
+collision checks or editing during playback/Replay. Keep the CPU FK/Jacobian
+fixture and runtime recorded-grasp guard; metadata comes from the simulator
+source even when a separate solver profile is selected.
+
 Playwright (a pinned devDependency; Chromium only, in `~/.cache/ms-playwright`,
 installed with `npx playwright install chromium`) lets an agent check the real
 UI headlessly. Start your own server on your own port (`./scripts/start.sh --port

@@ -27,7 +27,7 @@ export function taskGizmoShortcut(event, kind) {
   return null;
 }
 
-export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, moveTarget, transformTarget, button, note }) {
+export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, moveTarget, transformTarget, button, note, onSelect = () => {} }) {
   const canvas = renderer.domElement;
   const anchor = new Group();
   const marker = new Mesh(new SphereGeometry(.022, 20, 14), new MeshBasicMaterial({
@@ -49,6 +49,7 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
   let orbitWasEnabled = true;
   let pointerId, dragSize;
   let toolMode = 'translate';
+  let pickGuard = () => false;
 
   const cancelDrag = () => {
     const capturedPointer = pointerId;
@@ -58,7 +59,7 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
   };
   const select = (next) => {
     selected = Boolean(next && active);
-    if (selected) transform.attach(anchor);
+    if (selected) { onSelect(); transform.attach(anchor); }
     else { cancelDrag(); transform.detach(); }
     if (button) button.textContent = selected ? 'Hide task handles' : 'Edit task in 3D';
     marker.material.wireframe = !selected;
@@ -80,7 +81,7 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     }
   });
   const pickTarget = (event) => {
-    if (!active || event.button !== 0) return;
+    if (!active || event.button !== 0 || pickGuard(event)) return;
     pointerId = event.pointerId;
     const bounds = canvas.getBoundingClientRect();
     pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1, -(event.clientY - bounds.top) / bounds.height * 2 + 1);
@@ -141,6 +142,9 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
   update();
   return {
     update,
+    deselect: () => select(false),
+    setPickGuard(fn) { pickGuard = fn || (() => false); },
+    get interactionActive() { return selected && Boolean(transform.dragging || transform.axis); },
     get active() { return active; },
     get snapshot() {
       const handles = {};

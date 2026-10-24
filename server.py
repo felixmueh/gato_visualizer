@@ -24,6 +24,7 @@ import numpy as np
 import pinocchio as pin
 
 from visualizer_config import DEFAULT_CONFIG, load_visualizer_config
+from robot_frames import fixed_frame_spec
 
 ROOT = Path(__file__).resolve().parent
 JOINT_NAMES = [f"arm_right_{i}_joint" for i in range(1, 8)]
@@ -166,16 +167,12 @@ class RobotKinematics:
             if reduced_urdf is None:
                 from live_mpc import import_tiago
                 reduced_urdf = import_tiago(Path(urdf).parents[2]).arm_urdf()
-            joint = next((j for j in ET.parse(reduced_urdf).getroot().findall("joint")
-                          if j.get("name") == end_effector_frame), None)
-            if joint is None or joint.get("type") != "fixed":
-                raise SourceError(f"Missing fixed end-effector frame: {end_effector_frame}")
-            self.ee_frame = self.model.getFrameId(joint.find("parent").get("link"))
-            origin = joint.find("origin")
-            attributes = {} if origin is None else origin.attrib
-            xyz = finite_array([float(x) for x in attributes.get("xyz", "0 0 0").split()], "TCP xyz", (3,))
-            rpy = finite_array([float(x) for x in attributes.get("rpy", "0 0 0").split()], "TCP rpy", (3,))
-            self.ee_offset = pin.SE3(pin.rpy.rpyToMatrix(rpy), xyz)
+            try:
+                frame = fixed_frame_spec(reduced_urdf, end_effector_frame)
+            except ValueError as error:
+                raise SourceError(str(error)) from error
+            self.ee_frame = self.model.getFrameId(frame["parent_link"])
+            self.ee_offset = pin.SE3(pin.rpy.rpyToMatrix(np.asarray(frame["rpy"])), np.asarray(frame["xyz"]))
         self.torso_frame = self.model.getFrameId("torso_lift_link")
         if max(self.ee_frame, self.torso_frame) >= self.model.nframes:
             raise SourceError("Canonical URDF is missing end-effector or torso frame")

@@ -288,6 +288,26 @@ position-row violation while they move the joint back inside. The task does not
 move with the start pose: the reach target and the figure-eight start stay
 where they are defined.
 
+You can also edit the start pose directly in the **3D viewport**, independently
+of the Joints tab's lock. While paused at the run start, click an arm link to
+show its joint's rotation ring, then drag
+the ring. Click the gripper or the small wireframe sphere between its fingers
+to translate the grasp point; position-only inverse kinematics moves the arm.
+Release to set the start pose once. **Escape** during a drag restores the pose
+without applying it; otherwise Escape or an empty click hides the handles.
+Drag empty space to orbit as usual. Selecting the gold task anchor deselects
+the arm handles, and vice versa.
+
+An unreachable grasp request shows a dashed tether to the nearest reachable
+point found; releasing snaps the handle there. Joint rings use the raw URDF
+limits. IK keeps joints inside the MPC planning box when they started inside;
+joints already outside may use their raw limits. Amber link outlines flag a
+start pose outside the planning box. This edits a kinematic pose and performs
+no collision check. Grasp translation has no orientation control. A small
+**IK** badge appears if the displayed model cannot match the recorded grasp
+frame; its tooltip explains why translation is unavailable. Joint rings remain
+usable. Playback and recorded comparison arms are read-only.
+
 The **Calculation** menu selects how full closed-loop motion is generated:
 
 - **On Play:** Play from an empty run continuously calculates new motion until

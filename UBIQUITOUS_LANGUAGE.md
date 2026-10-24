@@ -110,3 +110,16 @@ For the current version, the continuation replaces the active episode history in
 - “MPC frequency” is ambiguous: specify **TO frequency** for replanning or **Control frequency** for actuator updates.
 - The thesis vocabulary names these differently: the visualizer's **TO frequency** is the thesis's control rate (the rate of control updates), and its **Control frequency** is the command rate at which the execution controller sends held torque commands. The field names `to_hz` and `control_hz` keep the visualizer's terms.
 - “Buffer ms” means received **Simulation time** ahead of the cursor; **Report frequency** uses wall time and neither changes recorded samples.
+
+## Viewport start-pose editing
+
+| Term | Meaning |
+| --- | --- |
+| Start-pose lock | The Joints tab's lock for editing sidebar gauges and numbers. Viewport editing is independent of it. |
+| Joint ring | The rotation handle at an arm joint's origin, about its native axis; edits one start-pose angle. |
+| Grasp point | The position of `GRASP_FRAME` (`arm_right_grasp_joint`), between fingertip pads. A geometric convention, not a calibrated TCP or the tool flange. |
+| Grasp handle | The translate-only handle that requests a grasp position and drives browser inverse kinematics. Distinct from the gold task anchor. |
+| Achieved grasp point | The grasp position of the kinematic pose actually shown. |
+| Tether | The dashed line between an unreachable handle request and its achieved grasp point. |
+| Raw limits | The URDF joint limits; joint rings and committed start poses respect them. |
+| Planning box | The raw joint ranges reduced by the MPC joint margin. Excursions are flagged, not rejected. |

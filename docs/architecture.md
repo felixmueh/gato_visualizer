@@ -49,6 +49,7 @@ one GPU computation runs at a time. Live's private controller remains idle.
 | Recorded onion keyframes, ghost arm pool and interaction | [src/onion-skin.js](../src/onion-skin.js), [src/ghost-arm.js](../src/ghost-arm.js), [src/onion-skin-view.js](../src/onion-skin-view.js) | [Onion skin](presentation.md#onion-skin) |
 | Browser scene and interaction wiring | [src/main.js](../src/main.js), [src/workbench-ui.js](../src/workbench-ui.js), [src/transport-popover.js](../src/transport-popover.js) | [README workspace](../README.md#workspace), [presentation](presentation.md) |
 | Solid arm visibility without hiding ghost clones | [src/arm-visibility.js](../src/arm-visibility.js) | [Session and tracks](presentation.md#session-and-tracks) |
+| Viewport start-pose joint rings and grasp translation | [src/joint-editor.js](../src/joint-editor.js), [src/arm-kinematics.js](../src/arm-kinematics.js), [robot_frames.py](../robot_frames.py) | [Viewport start-pose editing](presentation.md#viewport-start-pose-editing), [Live grasp metadata](live-api.md) |
 | Browser Live history, playback, settings | [src/live.js](../src/live.js), [src/live-history.js](../src/live-history.js), [src/live-execution.js](../src/live-execution.js), [src/presentation-settings.js](../src/presentation-settings.js) | [Execution](execution-api.md), [presentation](presentation.md) |
 | Episode/Solve selection and shared plot rendering | [src/plot-inspection.js](../src/plot-inspection.js), [src/plot-state.js](../src/plot-state.js), [src/solve-run.js](../src/solve-run.js), [src/plot-renderer.js](../src/plot-renderer.js) | [Inspection](inspection.md), [plotting](plotting.md) |
 
@@ -67,6 +68,17 @@ track. Hidden legacy Replay DOM/adapters remain for compatibility with the
 existing inspection and recording code; they expose no second UI transport.
 
 ## Invariants to preserve
+
+The viewport editor uses the existing start-pose eligibility and draft/commit
+callbacks. The Joints tab's lock protects only its own gauges and number fields.
+The viewport owns the solid arm while paused and editable at the Live run
+start, independently of that lock. Ring or IK drags update a local draft; release submits one
+start-pose change through the existing settings/version path. Recorded states
+remain unchanged. Browser FK follows the full display model's native axes and
+the simulator schema's fixed grasp origin. The fixture generator
+`scripts/grasp_fk_fixture.py` and `tests/fixtures/grasp_fk.json` compare that FK
+and its position Jacobian against the selected `tiago_mpc`/Pinocchio on 80 poses.
+Run it with the selected interpreter to regenerate after a model change.
 
 Simulation, control and TO frequencies are independent of prediction knot
 spacing and wall-clock report frequency. At coincident numerical boundaries,

@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from live_mpc import (POSITION_TOL_M, REACH_DEFAULT_TASK, SPEED_L1_TOL_RAD_S, figure8_reference,
-                      import_tiago, mpc_params, source_identity, start_pose_spec)
+                      end_effector_spec, import_tiago, mpc_params, source_identity, start_pose_spec)
 from live_presentation import mutable, snapshot
 from solver_process import SolverProcess, model_contract, validate_contract
 
@@ -77,7 +77,8 @@ class SimulatorAdapter:
         from live_mpc import build_schema, validate_settings
         from source_runtime import probe_selection
         checked = probe_selection({key: profile[key] for key in ("mpc_root", "python", "cache")})
-        schema = build_schema(checked, profile["mpc_root"], start_pose_spec(self.tiago))
+        schema = build_schema(checked, profile["mpc_root"], start_pose_spec(self.tiago),
+                              end_effector=end_effector_spec(self.tiago))
         validate_contract(self.contract, checked.get("contract", {}))
         validate_settings(config, task, schema)
         return schema

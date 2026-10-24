@@ -116,6 +116,12 @@ def start_pose_spec(tiago):
                 upper=np.asarray(limits.upper, dtype=float).tolist())
 
 
+def end_effector_spec(tiago):
+    """The simulator's grasp frame and its local origin on the full display model."""
+    from robot_frames import fixed_frame_spec
+    return fixed_frame_spec(tiago.arm_urdf(), tiago.GRASP_FRAME)
+
+
 def parameter_specs(config, available_n, predictor_friction, start_pose):
     """One entry per leaf of the Live config; predictor friction is one choice and
     the start pose one entry of kind joints, edited in the Joints tab."""
@@ -354,9 +360,10 @@ def available_modules(probe):
     return dict(available_N=sorted(set(by_mode["off"]) | set(by_mode["on"])), available_N_by_friction=by_mode)
 
 
-def build_schema(probe, mpc_root, start_pose):
+def build_schema(probe, mpc_root, start_pose, *, end_effector=None):
     """The Live schema from a selected-interpreter source probe (scripts/source_probe.py)
-    and the simulator's start pose (start_pose_spec)."""
+    and simulator model metadata. A separate solver profile supplies its own
+    probe/root but retains the simulator's start pose and grasp-frame origin."""
     from execution_session import DEFAULT_EXECUTION
     if not probe.get("compatible"):
         raise ValueError(probe.get("error") or "Selected source is incompatible")
@@ -367,7 +374,9 @@ def build_schema(probe, mpc_root, start_pose):
     predictor = probe["friction"]
     friction = dict(coefficients={key: predictor[key] for key in ("coulomb_nm", "viscous_nm_s_per_rad")},
                     predictor=deepcopy(predictor), source="reduced right-arm URDF (tiago.urdf_friction)")
+    grasp = end_effector if end_effector is not None else end_effector_spec(import_tiago(mpc_root))
     return dict(available_N_by_friction=by_mode, available_N=available, friction=friction,
+                end_effector=deepcopy(grasp),
                 defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK), execution=deepcopy(DEFAULT_EXECUTION)),
                 parameters=parameter_specs(defaults, available, predictor, start_pose),
                 tasks=[dict(kind="reach", label="Reach", defaults=deepcopy(REACH_DEFAULT_TASK)),

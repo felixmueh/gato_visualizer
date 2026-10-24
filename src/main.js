@@ -25,6 +25,7 @@ import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry, setupJointViewToggle, setupJointLock } from "./joint-telemetry.js";
 import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartPoseScene } from "./replay-library.js";
 import { setupTargetGizmo } from "./target-gizmo.js";
+import { setupJointEditor } from "./joint-editor.js";
 import { setupViewCube } from "./view-cube.js";
 import { fitPerspectivePoints, objectWorldPoints, trajectoryFitPoints, TRAJECTORY_FIT_PADDING } from "./camera-fit.js";
 import { createPathLine, setPathPoints, setPathPointCount, pathLineInfo } from "./path-lines.js";
@@ -82,6 +83,7 @@ let camera;
 let controls;
 let viewCube;
 let targetGizmo;
+let jointEditor, jointPoseOwned = false, jointDraftKey;
 let scene;
 let robotBounds;
 let ready = false;
@@ -213,7 +215,7 @@ function updateJointTelemetry(q, qd = null, torque = null, limits = data?.joint_
   // In Live the position column shows, and unlocked edits, the start pose at the run start.
   const startPose = live?.mode === 'live' ? live.startPose : null;
   updateJointTable(jointCells, {q, qd, torque, limits, mpcBounds, torqueKind, settings: limitUse, startPose});
-  limitTint?.update({q, qd, torque, limits});
+  limitTint?.update({q, qd, torque, limits, planning: startPose?.editable ? startPose.planning : null});
 }
 const pathColor = ONION_PREDICTION_COLOR;
 const targetColor = 0xffb547;
@@ -551,6 +553,23 @@ function animate(timestamp) {
   targetGizmo?.update();
   if (liveGroup?.userData.target) liveGroup.userData.target.visible = displayedLiveReference?.kind === 'figure8' || !targetGizmo?.active;
   updateSessionScene();
+  jointEditor?.update();
+  const ownsPose = Boolean(jointEditor?.ownsPose);
+  if (ownsPose) {
+    const pose = live.startPose, key = JSON.stringify([pose.value, pose.planning]);
+    if (key !== jointDraftKey) {
+      jointDraftKey = key;
+      updateJointTelemetry(pose.value, pose.value.map(() => 0), null, defaultData.joint_limits, 'applied', null);
+      auxiliaryViews?.invalidate();
+    }
+    if (liveMarker) liveMarker.visible = false;
+  } else if (jointPoseOwned) {
+    jointDraftKey = undefined;
+    live?.refreshView();
+  }
+  jointPoseOwned = ownsPose;
+  if (livePrediction) livePrediction.visible = !jointEditor?.dragging;
+  limitTint?.setHoverEnabled(!jointEditor?.dragging);
   updateOnionSkin();
   onionSkin?.sort(camera);
   trackScene?.sort(camera);
@@ -647,7 +666,9 @@ async function start() {
     // Dragging shows the pose at once (scene only); release or Enter sets the start pose.
     jointCells = createJointTable($("joint-list"), data.joint_names, {
       onStartPoseDraft: q => live?.previewStartPose(q), onStartPoseCommit: q => live?.setStartPose(q), onStartPoseReset: () => live?.resetStartPose(), resetButton: $("joint-start-reset") });
-    setupJointLock({ button: $("joint-lock"), rows: jointCells, onChange: () => { if (lastJointTelemetry) updateJointTelemetry(...lastJointTelemetry); } });
+    setupJointLock({ button: $("joint-lock"), rows: jointCells, onChange: () => {
+      if (lastJointTelemetry) updateJointTelemetry(...lastJointTelemetry);
+    } });
     setupJointViewToggle({ container: $("joint-list"), buttons: { gauges: $("joint-view-gauges"), numbers: $("joint-view-numbers") } });
     populateReplay(data, {name: 'Start pose'});
     robot.updateMatrixWorld(true);
@@ -662,7 +683,19 @@ async function start() {
     session.updateMain({ endEffectorFrame: defaultData.end_effector_frame });
     live.setSession(session);
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
-      moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note') });
+      moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note'), onSelect: () => jointEditor?.deselect() });
+    jointEditor = setupJointEditor({ scene, camera, renderer, orbit: controls, robot, jointNames: defaultData.joint_names,
+      links: limitTint.links, taskGizmo: targetGizmo, guardBadge: $('grasp-frame-warning'),
+      getPose: () => {
+        const pose = live.startPose;
+        if (!pose) return null;
+        const state = live.state, context = live.currentSegment?.context;
+        return { ...pose, available: pose.editable && session.track('live').display !== 'hidden',
+          endEffector: live.endEffector,
+          reference: state && !state.start_pose_draft ? { q: state.q, world: state.ee_xyz, frame: context?.end_effector_frame, generation: live.generation } : null };
+      },
+      previewPose: q => live.previewStartPose(q), commitPose: q => live.setStartPose(q),
+      onSelect: () => targetGizmo.deselect(), getGhostHit: raycaster => onionSkin.pick(raycaster) });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Start pose',
       onLinkedItem: item => addSessionTrack(item.id, item) });
     await live.enterLive();
@@ -685,6 +718,7 @@ async function start() {
       get plots() { return plotInspection.snapshot; },
       get workbench() { return { activeTab: workbench.activeTab, auxiliaryVisible: workbench.auxiliaryVisible }; },
       get targetGizmo() { return targetGizmo?.snapshot; },
+      get jointEdit() { return jointEditor?.snapshot; },
       get library() { return replayLibrary; },
       get replayScene() { return data; },
       get pathInfo() { return { replay: (pathGroup?.children || []).filter(line => line.isLine2).map(pathLineInfo), live: (liveGroup?.children || []).filter(line => line.isLine2).map(pathLineInfo) }; },
@@ -734,6 +768,7 @@ async function start() {
 start();
 
 function changeMode(mode) {
+  jointEditor?.deselect();
   replayLibrary?.setLive(mode === 'live');
   auxiliaryViews?.invalidate();
   playing = false;
@@ -834,10 +869,10 @@ function showLiveState(state, context = {}) {
     if (lastLiveTime !== undefined && state.sim_time_s < lastLiveTime) liveTaskStart = undefined;
     if (!liveTaskStart) liveTaskStart = [...state.ee_xyz];
   }
-  defaultData.joint_names.forEach((name, i) => {
-    robot.setJointValue(name, state.q[i]);
-  });
-  updateJointTelemetry(state.q, state.qd, state.torque_nm, context.segment?.joint_limits || defaultData.joint_limits, "applied", context.segment?.mpc_bounds || null);
+  if (!jointEditor?.ownsPose) {
+    defaultData.joint_names.forEach((name, i) => { robot.setJointValue(name, state.q[i]); });
+    updateJointTelemetry(state.q, state.qd, state.torque_nm, context.segment?.joint_limits || defaultData.joint_limits, "applied", context.segment?.mpc_bounds || null);
+  }
   // A start pose not yet run (dragged or pending) has no simulated tool point yet.
   if (state.start_pose_draft) {
     if (liveMarker) liveMarker.visible = false;
@@ -845,7 +880,7 @@ function showLiveState(state, context = {}) {
     lastLiveTime = undefined;
     return;
   }
-  if (liveMarker) liveMarker.visible = true;
+  if (liveMarker) liveMarker.visible = !jointEditor?.ownsPose;
   const referenceTarget = context.referenceTarget || (!displayedLiveReference?.draft ? state.target_xyz : null);
   if (Array.isArray(referenceTarget) && referenceTarget.length === 3 && referenceTarget.every(Number.isFinite) && liveGroup.userData.target) liveGroup.userData.target.position.fromArray(referenceTarget);
   if (context.tracePoints) {

@@ -124,6 +124,8 @@ receiving its first solved plan.
   "defaults": {"config": {...}, "task": {"kind": "reach", "target_offset_m": [0.15, 0.2, 0.2]}},
   "available_N": [16, 32, 64, 128],
   "available_N_by_friction": {"off": [16, 32, 64, 128], "on": [32]},
+  "end_effector": {"frame": "arm_right_grasp_joint", "parent_link": "arm_right_tool_link",
+                   "xyz": [0, 0, 0.139288457525], "rpy": [0, 0, 0]},
   "friction": {"coefficients": {...}, "predictor": {...}, "source": "..."},
   "parameters": [
     {"path": "solver.q_cost", "label": "Tool position cost", "group": "Costs",
@@ -133,6 +135,17 @@ receiving its first solved plan.
              "gato_commit": "..."}
 }
 ```
+
+`end_effector` describes the simulator source's grasp frame, independently of
+the selected solver profile. `parent_link` is a link in the canonical full
+display URDF; `xyz` (metres) and `rpy` (radians, URDF roll/pitch/yaw) are the
+fixed frame's local origin on that link, read from `tiago.arm_urdf()`. They are
+not a world offset. The browser uses this origin for its position-only grasp
+handle and verifies its forward kinematics against a recorded Live state
+before enabling the handle. `robot_frames.fixed_frame_spec` supplies the same
+origin to the schema and `server.RobotKinematics`, so they share one frame
+lookup. Joint positions and the frame remain in native coordinates, including
+the negative joint-6 axis.
 
 `available_N_by_friction.off` / `.on` list the N whose loss-free or
 predictor-friction module `tiago_mpc`'s `find_binary` finds, among the offered

@@ -18,7 +18,9 @@ test('hidden solid arms are unpickable while newly allocated ghosts remain visib
   assert.equal(joint.visible, true); assert.equal(mesh.visible, true);
   const ghosts = createGhostArms({ robot, scene, method: 'prepass' });
   ghosts.set([{ id: 'recorded', jointNames: ['arm_right_1_joint'], q: [0], time: 1, opacity: .55 }]);
-  assert.equal(ghosts.snapshot.count, 1); assert.deepEqual(ghosts.pick(ray), { id: 'recorded', time: 1 });
+  assert.equal(ghosts.snapshot.count, 1);
+  assert.equal(ghosts.pick(ray).id, 'recorded'); assert.equal(ghosts.pick(ray).time, 1);
+  assert(Math.abs(ghosts.pick(ray).distance - 1.9) < 1e-7);
   const annotation = new Group(); annotation.layers.set(2); joint.add(annotation);
   visibility.setVisible(false); assert.equal(annotation.layers.mask, 0);
   visibility.setVisible(true); assert.equal(mesh.layers.mask, 1); assert.equal(annotation.layers.mask, 4);

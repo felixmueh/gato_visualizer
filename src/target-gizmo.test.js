@@ -49,13 +49,16 @@ test('real TransformControls preserve scale drag baseline and restore orbit on d
   const scene = new Scene(), camera = new PerspectiveCamera(), orbit = {enabled: true};
   let target = { available: true, kind: 'figure8', position_world: [.4, -.3, 1.2], quaternion_xyzw: [0, 0, 0, 1], size_m: [.24, .16] };
   const requests = [];
+  let selections = 0;
   const gizmo = setupTargetGizmo({ scene, camera, renderer: {domElement: canvas}, orbit, getTarget: () => target,
-    moveTarget: p => p, transformTarget: pose => { requests.push(pose); target = {...target, ...pose}; return target; } });
+    onSelect: () => selections++, moveTarget: p => p, transformTarget: pose => { requests.push(pose); target = {...target, ...pose}; return target; } });
   const control = scene.children.find(child => child.isTransformControlsRoot).controls;
   const press = key => listeners.get('keydown')({key, preventDefault() {}});
   try {
     press('s'); assert.equal(control.mode, 'scale'); assert.equal(control.space, 'local'); assert.equal(control.showZ, false);
+    assert.equal(selections, 1);
     control.dragging = true; assert.equal(orbit.enabled, false);
+    assert.equal(gizmo.interactionActive, true);
     control.object.scale.set(2, 1, 1); control.dispatchEvent({type: 'objectChange'});
     assert.deepEqual(requests.at(-1).size_m, [.48, .16]);
     gizmo.update(); control.object.scale.set(3, 2, 1); control.dispatchEvent({type: 'objectChange'});
@@ -67,6 +70,9 @@ test('real TransformControls preserve scale drag baseline and restore orbit on d
     press('r'); assert.equal(control.mode, 'rotate'); assert.equal(control.space, 'world'); assert.equal(control.showZ, true);
     press('t'); assert.equal(control.mode, 'translate');
     press('g'); assert.equal(control.mode, 'translate');
+    assert.equal(selections, 4);
+    gizmo.deselect(); assert.equal(control.object, undefined); assert.equal(gizmo.interactionActive, false);
+    assert.equal(selections, 4); // Deselect never steals selection back.
   } finally {
     gizmo.dispose();
     if (original === undefined) delete globalThis.document; else globalThis.document = original;

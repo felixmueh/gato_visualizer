@@ -27,12 +27,13 @@ export function tintedQuantities(use) {
 export function createLimitTint({ robot, jointNames, camera, element, tooltip, colors = {} }) {
   const palette = Object.fromEntries(["near", "at", "beyond"].map((name) => [name, new Color(colors[name] ?? limitColor(name))]));
   const edgeMaterial = new LineBasicMaterial({ color: colors.edge ?? 0xffe1e1, transparent: true, opacity: 0.9 });
+  const planningMaterial = new LineBasicMaterial({ color: 0xf2b544, transparent: true, opacity: .9 });
   const links = jointNames.map((name) => {
     const joint = robot.joints[name];
     const meshes = (joint?.children ?? []).filter((child) => child.isURDFLink).flatMap(linkMeshes);
     return { name, meshes, colors: meshes.map((mesh) => mesh.material.color.clone()), use: null, state: null, edges: null };
   });
-  let enabled = true, settings = { ...DEFAULT_LIMIT_USE };
+  let enabled = true, hoverEnabled = true, settings = { ...DEFAULT_LIMIT_USE };
   let last;
 
   // Edge outlines are built once per link, on its first beyond state.
@@ -53,6 +54,14 @@ export function createLimitTint({ robot, jointNames, camera, element, tooltip, c
       link.use = state ? use : null; link.state = state;
       link.meshes.forEach((mesh, i) => mesh.material.color.copy(state ? palette[state] : link.colors[i]));
       outline(link, state === "beyond");
+      link.planningOutside = Boolean(last?.planning && (last.q?.[index] < last.planning.lower[index] - 1e-12 || last.q?.[index] > last.planning.upper[index] + 1e-12));
+      if (link.planningOutside && !link.planningEdges) {
+        link.planningEdges = link.meshes.map(mesh => {
+          const lines = new LineSegments(new EdgesGeometry(mesh.geometry, 30), planningMaterial);
+          lines.name = 'planning-box-outline'; lines.raycast = () => {}; mesh.add(lines); return lines;
+        });
+      }
+      link.planningEdges?.forEach(lines => { lines.visible = link.planningOutside && state !== 'beyond'; });
     });
   }
 
@@ -60,18 +69,24 @@ export function createLimitTint({ robot, jointNames, camera, element, tooltip, c
   const pointer = new Vector2();
   let pending;
   function hover(event) {
-    if (!enabled || !tooltip || pending) return;
+    if (!hoverEnabled || !tooltip || pending) return;
     pending = requestAnimationFrame(() => {
       pending = undefined;
+      if (!hoverEnabled) { tooltip.hidden = true; return; }
       const bounds = element.getBoundingClientRect();
       pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1, -(event.clientY - bounds.top) / bounds.height * 2 + 1);
       raycaster.setFromCamera(pointer, camera);
       // The nearest robot surface decides, so a tinted link hidden behind another is not named.
       const hit = raycaster.intersectObject(robot, true)[0];
-      const link = hit && links.find((item) => item.use && item.meshes.includes(hit.object));
+      const link = hit && links.find((item) => (item.use || item.planningOutside) && item.meshes.includes(hit.object));
       if (!link) { tooltip.hidden = true; return; }
-      tooltip.textContent = tintedQuantities(link.use).map((use) => describeLimitUse(link.name, use)).join("\n");
-      tooltip.dataset.state = link.state;
+      const lines = tintedQuantities(link.use).map((use) => describeLimitUse(link.name, use));
+      if (link.planningOutside) {
+        const i = links.indexOf(link);
+        lines.push(`${link.name} · ${last.q[i].toFixed(3)} rad · outside MPC planning box [${last.planning.lower[i].toFixed(3)}, ${last.planning.upper[i].toFixed(3)}] rad`);
+      }
+      tooltip.textContent = lines.join("\n");
+      tooltip.dataset.state = link.state || 'near';
       tooltip.style.left = `${event.clientX - bounds.left + 14}px`;
       tooltip.style.top = `${event.clientY - bounds.top + 14}px`;
       tooltip.hidden = false;
@@ -83,6 +98,7 @@ export function createLimitTint({ robot, jointNames, camera, element, tooltip, c
   return {
     update(sample) { last = sample; apply(); },
     setEnabled(value) { enabled = Boolean(value); if (!enabled && tooltip) tooltip.hidden = true; apply(); },
+    setHoverEnabled(value) { hoverEnabled = Boolean(value); if (!hoverEnabled && tooltip) tooltip.hidden = true; },
     setSettings(value) { settings = { ...DEFAULT_LIMIT_USE, ...value }; apply(); },
     get links() { return links; },
   };

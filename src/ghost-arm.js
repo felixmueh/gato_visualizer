@@ -51,7 +51,7 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
   function cloneArm(material) {
     const root = source.clone(true), joints = new Map(), meshes = [], groups = [], removed = [];
     root.traverse((object) => {
-      if (object.name === 'limit-beyond-outline') removed.push(object);
+      if (['limit-beyond-outline', 'planning-box-outline'].includes(object.name)) removed.push(object);
       if (object.isGroup) groups.push(object);
       if (object.isURDFJoint) {
         joints.set(object.urdfName, object);
@@ -196,7 +196,7 @@ export function createGhostArms({ robot, scene, armRoot = 'arm_right_1_joint', m
       const hit = raycaster.intersectObjects(ghost.color.meshes, false)[0];
       if (hit && (!nearest || hit.distance < nearest.distance)) { nearest = hit; result = ghost.pose; }
     }
-    return result ? { ...result } : null;
+    return result ? { ...result, distance: nearest.distance } : null;
   }
 
   function clearPool() {

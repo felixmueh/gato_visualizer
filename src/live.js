@@ -1049,6 +1049,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     liveReady = true; populate(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = false; $('live-mode').title = error.message; showSetupNotice(error.message); });
   return {
     ready,
+    refreshView: () => renderView(),
     async enterLive() { await ready; await switchMode('live'); },
     setSession(value) {
       unsubscribeSession?.(); session = value; clock.setRate(session.rate);
@@ -1066,6 +1067,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     get playbackRate() { return clock.effectiveRate; },
     get segment() { return segments.get(generation); },
     get currentSegment() { return segments.get(generation); },
+    get endEffector() { return schema?.end_effector || null; },
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
       const kind = $('live-task').value, base = kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
@@ -1119,7 +1121,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     },
     setStartPose(q) {
       const pose = this.startPose;
-      if (!pose?.editable || !Array.isArray(q) || q.length !== pose.value.length) return false;
+      if (!pose?.editable || !Array.isArray(q) || q.length !== pose.value.length || !q.every(Number.isFinite)) return false;
       poseDraft = null;
       writePath(settings.config, START_POSE_PATH, q.map((v, i) => Math.max(pose.lower[i], Math.min(pose.upper[i], v))));
       change(); renderView(); return true;
