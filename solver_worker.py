@@ -100,9 +100,9 @@ class SolverSession:
         self.mpc = m.Mpc(params, binary)
         self.restarted = True
         solver = self.mpc.controller.solver
-        rows = capture_constraint_bounds(solver, self.mpc.signs)
+        rows = capture_constraint_bounds(solver)
         configuration = asdict(params)
-        gpu_urdf, _ = self.tiago.runtime_urdf(params.friction)
+        gpu_urdf = self.tiago.runtime_urdf(params.friction)
         self.configuration = configuration
         self.model_identity = dict(self.model_identity, gpu_urdf_sha256=hashlib.sha256(gpu_urdf.read_bytes()).hexdigest(),
                                    end_effector_frame=params.ee_frame)
@@ -114,8 +114,7 @@ class SolverSession:
                     joint_limits=urdf_joint_limits(self.tiago.limits()),
                     mpc_bounds=mpc_bounds_from_rows(rows, {key: configuration[key] for key in LIMIT_KEYS}),
                     constraint_bounds_native=rows, configuration=configuration,
-                    model_identity=self.model_identity, prediction_friction=configuration["friction"],
-                    gpu_joint_coordinate_signs=self.mpc.signs.tolist())
+                    model_identity=self.model_identity, prediction_friction=configuration["friction"])
 
     def reset(self, state, time_s, reference):
         """Reseed the controller from a native state and the task reference for a request
@@ -134,7 +133,7 @@ class SolverSession:
         if mpc.params.warmup:
             mpc.warmup(State(float(time_s), x[:7], x[7:]), reference)
         else:
-            mpc.controller.reset(x * np.tile(mpc.signs, 2))
+            mpc.controller.reset(x)
         self.seed, self.restarted = seed, True
         return dict(warmup=mpc.params.warmup, skipped=False, wall_s=time.perf_counter() - started)
 

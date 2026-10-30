@@ -95,9 +95,9 @@ controller state. See [presentation.md](presentation.md) for packet/page limits.
 
 Only native coordinates cross the ordinary solver RPC boundary: a plan is
 `tiago_mpc`'s `Plan`, N knot states (q, qd) and N−1 knot torques, with no
-terminal torque. `Mpc` applies the joint-6 GPU signs; the child applies them
-itself only for controller reset, installed bound rows and inspection. Legacy
-raw XU and inspection arrays retain their own signs; portable NPZ already
+terminal torque. GATO works in native coordinates, so neither `Mpc` nor the
+child converts signs. Legacy raw XU and inspection arrays retain their own
+recorded signs; portable NPZ already
 contains native coordinates. All displayed positions use the full robot root
 frame derived from the URDF. The plant group selects `SimPlant`'s integrator
 (`plant.integrator`) and URDF friction with its Coulomb law (`plant.friction`,

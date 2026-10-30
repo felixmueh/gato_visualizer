@@ -91,8 +91,8 @@ reference frame, root transform, end-effector frame and TCP offset must agree.
 Different physical model hashes/limits/configurations are explicitly recorded;
 intentional predictor differences do not change the fixed simulator.
 
-The child returns `tiago_mpc`'s native `Plan` states and knot torques; `Mpc`
-applies the joint-6 GPU signs. Historical plans keep their recorded signs. Plan
+The child returns `tiago_mpc`'s native `Plan` states and knot torques; GATO
+itself works in native coordinates. Historical plans keep their recorded signs. Plan
 statistics come from `Plan.stats`, the per-iteration diagnostics from
 `mpc.step`. Every solve records profile/process identity, source/model
 identities, effective solver configuration, bounds, predictor dynamics, actual

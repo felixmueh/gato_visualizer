@@ -21,9 +21,6 @@ from solver_process import receive_message, send_lease, send_message, wire_value
 from solver_worker import serve
 from tests.tiago_mpc_source import MPC_ROOT, live_probe, start_pose
 
-SIGNS = np.array([1., 1., 1., 1., 1., -1., 1.])
-
-
 def float32_finite(x):
     with np.errstate(over="ignore"):
         return bool(np.isfinite(np.asarray(x, dtype=np.float32)).all())
@@ -39,8 +36,7 @@ class FakeSolver:
         pass
 
     def get_row_groups(self):
-        # GPU coordinates: joint 6's position box is mirrored.
-        return [dict(kind=i, n_rows=7, lo=np.full(7, -2.+i)*SIGNS, hi=np.full(7, 2.-i/2)*SIGNS,
+        return [dict(kind=i, n_rows=7, lo=np.full(7, -2.+i), hi=np.full(7, 2.-i/2),
                      active=[127]*self.n) for i in range(3)]
 
 
@@ -49,7 +45,7 @@ class FakeMpc:
     instances = []
 
     def __init__(self, params, binary):
-        self.params, self.N, self.dt, self.signs = params, params.N, params.dt_s, SIGNS
+        self.params, self.N, self.dt = params, params.N, params.dt_s
         self.resets, self.warmups, self.step, self._plan = [], [], None, None
         self.controller = SimpleNamespace(reset=self.reset, solver=FakeSolver(params.N))
         FakeMpc.instances.append(self)
@@ -61,7 +57,7 @@ class FakeMpc:
 
     def warmup(self, state, reference):
         if self.params.warmup:
-            self.reset(np.r_[state.q, state.qd]*np.tile(SIGNS, 2))
+            self.reset(np.r_[state.q, state.qd])
             self.warmups.append((state.t, np.array(reference)))
 
     def request(self, state, reference, updates=None):
@@ -187,7 +183,7 @@ class BoundaryTests(unittest.TestCase):
                 remote.request("bootstrap")
                 simulator.configure(config(), deepcopy(FIGURE8_DEFAULT_TASK))
                 mpc = FakeMpc.instances[-1]
-                np.testing.assert_array_equal(mpc.resets[-1], simulator.x*np.tile(SIGNS, 2))
+                np.testing.assert_array_equal(mpc.resets[-1], simulator.x)
                 simulator.x = np.arange(14, dtype=float)/10
                 simulator.t = 2.
                 captured = simulator.solve_snapshot("play", 7)
@@ -271,7 +267,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertEqual(t, 2.)
                 # The figure-eight window from the reseed's time, as the next request gets it.
                 np.testing.assert_array_equal(reference, simulator.reference)
-                np.testing.assert_array_equal(mpc.resets[-1], simulator.x*np.tile(SIGNS, 2))
+                np.testing.assert_array_equal(mpc.resets[-1], simulator.x)
                 # The same reseed again, with no solve in between, changes nothing.
                 self.assertTrue(simulator.controller.reset(simulator.x)["skipped"])
                 plan = simulator.solve_snapshot("preview", 1)  # the preview's own reseed is that one
@@ -283,7 +279,7 @@ class BoundaryTests(unittest.TestCase):
                 mpc = FakeMpc.instances[-1]
                 self.assertEqual(simulator.controller.reset(simulator.x + 1)["warmup"], False)
                 self.assertEqual(mpc.warmups, [])  # warm-up off: the plain controller reset
-                np.testing.assert_array_equal(mpc.resets[-1], (simulator.x + 1)*np.tile(SIGNS, 2))
+                np.testing.assert_array_equal(mpc.resets[-1], simulator.x + 1)
             finally:
                 remote.close()
 

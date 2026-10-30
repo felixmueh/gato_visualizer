@@ -38,23 +38,20 @@ def inspect_solve(session, payload):
     models = snapshot_models(session, payload["artifact_directory"])
     problem = payload["problem"]
     limits = problem["joint_limits"]
-    signs = np.asarray(mpc.signs)
     installed = solver.get_row_groups()
     for group, captured in enumerate(problem["constraint_bounds_native"]):
         current = installed[group]
         for key in ("kind", "block", "mech", "n_rows", "knot_lo", "knot_hi"):
             if current.get(key) != captured.get(key):
                 raise ValueError(f"Configured constraint rows differ from the captured problem ({key})")
-        low = np.asarray(captured["lo"]) * signs
-        high = np.asarray(captured["hi"]) * signs
-        solver.set_row_group_bounds(group, np.minimum(low, high), np.maximum(low, high))
+        solver.set_row_group_bounds(group, np.asarray(captured["lo"]), np.asarray(captured["hi"]))
         bits = np.asarray(captured["active"], dtype=np.uint64)
         mask = ((bits[:, None] >> np.arange(7, dtype=np.uint64)) & 1).astype(bool)
         solver.set_row_group_mask(group, mask)
     # One cold invocation. No MPCController.step(), warm-start shifting or
     # reconstruction of historical private optimizer state is involved.
     state = problem["initial_state"]
-    x = np.r_[state["q"], state["qd"]].astype(np.float32) * np.tile(signs, 2)
+    x = np.r_[state["q"], state["qd"]].astype(np.float32)
     reference = np.asarray(problem["reference_native"], dtype=np.float32)
     solver.reset_dual()
     solver.reset_rho()
@@ -72,7 +69,8 @@ def inspect_solve(session, payload):
         "initial_merit", "final_merit", "min_merit", "step_size", "pcg_iters", "pcg_times_us",
         "ls_num_iters", "budget_hit", "linsys", "admm_r_prim", "admm_r_dual", "row_max_violation",
         "row_sum_violation") if hasattr(result.stats, name)}
-    metadata = dict(model_snapshots=models, id=payload["id"], N=mpc.N, dt_s=mpc.dt, signs=signs.tolist(),
+    # The solver works in native coordinates; the recorded signs (all +1 now) decode older inspections.
+    metadata = dict(model_snapshots=models, id=payload["id"], N=mpc.N, dt_s=mpc.dt, signs=[1.]*7,
         initialization="cold_state", original=payload["original"],
         initial_state=problem["initial_state"], reference_native=problem["reference_native"],
         task=problem["task"], joint_limits=limits,

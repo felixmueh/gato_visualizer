@@ -72,19 +72,17 @@ def run_again_capability(plan):
     return dict(available=True, reason=None, initialization="cold_state")
 
 
-def capture_constraint_bounds(solver, signs):
+def capture_constraint_bounds(solver):
     """Retain the actual installed rows once after configuration, in native units."""
     result = []
-    signs = np.asarray(signs)
     groups = solver.get_row_groups()
     if len(groups) != 3:
         raise ValueError("Inspection supports exactly the configured position/velocity/torque box rows")
     for i, group in enumerate(groups):
         if int(group["kind"]) != i or int(group["n_rows"]) != 7:
             raise ValueError("Unexpected configured constraint row topology")
-        lo, hi = np.asarray(group["lo"]) * signs, np.asarray(group["hi"]) * signs
         native = deepcopy(dict(group))
-        native["lo"], native["hi"] = np.minimum(lo, hi).tolist(), np.maximum(lo, hi).tolist()
+        native["lo"], native["hi"] = np.asarray(group["lo"]).tolist(), np.asarray(group["hi"]).tolist()
         native["active"] = np.asarray(group["active"]).tolist()
         result.append(native)
     return result

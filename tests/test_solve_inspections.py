@@ -182,7 +182,7 @@ class ArtifactTests(unittest.TestCase):
 
 
 class NativeOperationTests(unittest.TestCase):
-    def test_exact_single_cold_solve_and_captured_bounds_signs(self):
+    def test_exact_single_cold_solve_and_captured_bounds(self):
         class Solver:
             lib=SimpleNamespace(ITERATION_CAPTURE_AVAILABLE=True)
             calls=0
@@ -199,12 +199,12 @@ class NativeOperationTests(unittest.TestCase):
             def reset_dual(self):pass
             def reset_rho(self):pass
         solver=Solver()
-        mpc=SimpleNamespace(signs=np.array([1,1,1,1,1,-1,1]),N=3,dt=.03,params=SimpleNamespace(ee_frame='tool'),
+        mpc=SimpleNamespace(N=3,dt=.03,params=SimpleNamespace(ee_frame='tool'),
             controller=SimpleNamespace(admm_linsys='pcg',solver=solver))
         session=SimpleNamespace(mpc=mpc,model_identity={'actual':'model'},
             configuration=plan()['problem_configuration'],tiago=SimpleNamespace())
         p=plan()
-        # Make the sign conversion observable with asymmetric effective q bounds.
+        # Asymmetric joint-6 q bounds are installed as captured, in native coordinates.
         p['constraint_bounds_native'][0]['lo'][5]=-.7
         p['constraint_bounds_native'][0]['hi'][5]=1.3
         with tempfile.TemporaryDirectory() as folder:
@@ -222,22 +222,23 @@ class NativeOperationTests(unittest.TestCase):
             self.assertIsNone(solver.inputs[2])
             self.assertTrue(solver.inputs[3])
             self.assertEqual(solver.inputs[4],.02)
-            self.assertAlmostEqual(solver.inputs[0][0,5],-.2,places=6)
-            self.assertEqual(solver.configured[0][1][5],-1.3)
-            self.assertEqual(solver.configured[0][2][5],.7)
+            self.assertAlmostEqual(solver.inputs[0][0,5],.2,places=6)
+            self.assertEqual(solver.configured[0][1][5],-.7)
+            self.assertEqual(solver.configured[0][2][5],1.3)
             self.assertAlmostEqual(solver.configured[1][2][0],.8)
             self.assertAlmostEqual(solver.configured[2][2][0],8.5)
             self.assertTrue(solver.masks[0][1].all())
             self.assertEqual(result['iterations_run'],2)
             self.assertNotIn('xu',json.dumps(result))
             record=json.loads(Path(result['path']).read_text())
+            self.assertEqual(record['signs'],[1.]*7)
             self.assertEqual(record['constraint_bounds_native'],p['constraint_bounds_native'])
             self.assertEqual(record['joint_limits']['upper_position_rad'],[2]*7)
 
     def test_capture_reads_actual_installed_native_bounds_not_display_limits(self):
-        signed=groups()
-        signed[0]['lo'][5],signed[0]['hi'][5]=-1.3,.7
-        captured=capture_constraint_bounds(SimpleNamespace(get_row_groups=lambda:signed),[1,1,1,1,1,-1,1])
+        installed=groups()
+        installed[0]['lo'][5],installed[0]['hi'][5]=-.7,1.3
+        captured=capture_constraint_bounds(SimpleNamespace(get_row_groups=lambda:installed))
         self.assertAlmostEqual(captured[0]['lo'][5],-.7)
         self.assertAlmostEqual(captured[0]['hi'][5],1.3)
         self.assertEqual(captured[0]['hi'][0],1.9) # raw2 minus configured .1

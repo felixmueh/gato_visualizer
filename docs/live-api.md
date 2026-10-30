@@ -240,7 +240,7 @@ N without a restart, and the browser updates the N choices (below,
 [Commands](#commands-and-gpu-sharing)).
 
 All positions are in the full robot's root frame. `q` values are native joint
-coordinates, already converted from the GPU convention with the joint-6 sign.
+coordinates.
 The current report default is 20 Hz of wall time, with immediate boundary
 flushes; see [presentation.md](presentation.md). SSE latest values/notices may
 coalesce, but all committed numerical records remain in the current run's history

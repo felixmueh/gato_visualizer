@@ -287,12 +287,12 @@ See [presentation](docs/presentation.md#session-and-tracks).
 
 The canonical full model is `models/tiago_pro/tiago_pro.urdf` in `tiago_mpc`.
 Recorded plant states and portable NPZ predictions use native joint coordinates.
-Legacy packed solver predictions and raw inspection XU arrays use the GPU
-convention and require their recorded `signs` conversion, including joint 6.
-Live plans arrive native from `tiago_mpc`'s `Plan` (states and knot torques);
-the solver child applies the GPU signs only where it touches GATO directly
-(controller reset, installed bounds, inspection). Do not sign-convert native
-data again.
+GATO works in native coordinates too: `tiago_mpc`'s GPU URDF keeps joint 6's
+-z axis (2026-10-30), so Live plans, controller resets, installed bounds and
+new inspections need no sign conversion. Legacy packed solver predictions and
+raw inspection XU arrays saved before then use the GPU convention and decode
+with their recorded `signs`; new inspections record all +1. Do not
+sign-convert native data.
 
 All displayed points must share the full robot's root frame. Derive the
 reduced arm's torso-to-world transform from the full URDF rather than adding
