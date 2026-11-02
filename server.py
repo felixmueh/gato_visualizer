@@ -14,6 +14,7 @@ import math
 import queue
 from pathlib import Path
 import signal
+import shutil
 import sys
 import threading
 import uuid
@@ -378,7 +379,8 @@ def accepts_gzip(value):
 
 
 def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist=None, live=None,
-                replays=None, sources=None, live_error=None, plots=None, solver_profiles=None, inspections=None, presentation=None):
+                replays=None, sources=None, live_error=None, plots=None, solver_profiles=None, inspections=None, presentation=None,
+                animation_exports=None):
     dist = Path(dist or ROOT / "dist").resolve()
     scene_json = json.dumps(scene, allow_nan=False, separators=(",", ":")).encode()
     backend_id = uuid.uuid4().hex
@@ -422,6 +424,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             self.do_GET()
 
         def do_POST(self):
+            if urlsplit(self.path).path.startswith("/api/animation-export/"):
+                self.animation_export_command()
+                return
             if self.live_unavailable(urlsplit(self.path).path):
                 return
             if urlsplit(self.path).path == "/api/presentation/settings" and presentation is not None:
@@ -671,6 +676,87 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             finally:
                 live.unsubscribe()
 
+        def animation_export_command(self):
+            if animation_exports is None:
+                self.send_json_error(503, "Animation export is unavailable")
+                return
+            origin = self.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
+                self.send_json_error(403, "Animation export requires this viewer's origin")
+                return
+            from animation_export import MAX_FRAME_BYTES
+            path = urlsplit(self.path).path
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if path == "/api/animation-export/start":
+                    if query or not 0 < length <= 4096:
+                        raise ValueError("Expected export settings under 4 KiB")
+                    if self.headers.get_content_type() != "application/json":
+                        raise ValueError("Content-Type must be application/json")
+                    settings = json.loads(self.rfile.read(length))
+                    if not isinstance(settings, dict) or not set(settings) <= {"width", "height", "fps", "frame_count"}:
+                        raise ValueError("Expected resolution, frame rate and frame count")
+                    identifier = animation_exports.start(**settings)
+                    result = dict(id=identifier)
+                else:
+                    expected = {"id", "index"} if path.endswith("/frame") else {"id"}
+                    if set(query) != expected or any(len(values) != 1 for values in query.values()):
+                        raise ValueError("Select one animation export")
+                    identifier = query["id"][0]
+                    if path == "/api/animation-export/frame":
+                        if not 0 < length <= MAX_FRAME_BYTES:
+                            raise ValueError("Expected one PNG frame under 32 MiB")
+                        if self.headers.get_content_type() != "image/png":
+                            raise ValueError("Content-Type must be image/png")
+                        accepted = animation_exports.append_frame(identifier, int(query["index"][0]), self.rfile.read(length))
+                        result = dict(accepted=accepted)
+                    elif path == "/api/animation-export/finish":
+                        if length:
+                            raise ValueError("Finish takes no request body")
+                        animation_exports.finish(identifier)
+                        result = dict(download_url=f"/api/animation-export/download?id={identifier}")
+                    elif path == "/api/animation-export/cancel":
+                        if length:
+                            raise ValueError("Cancel takes no request body")
+                        animation_exports.cancel(identifier)
+                        result = dict(cancelled=True)
+                    else:
+                        self.send_json_error(404, "Unknown animation export endpoint")
+                        return
+                self.send_payload(json.dumps(result).encode(), "application/json; charset=utf-8")
+            except (KeyError, ValueError, TypeError, OSError, RuntimeError) as exc:
+                self.send_json_error(404 if isinstance(exc, KeyError) else
+                                     500 if isinstance(exc, (OSError, RuntimeError)) else 400, str(exc))
+
+        def animation_export_download(self):
+            if animation_exports is None:
+                self.send_json_error(503, "Animation export is unavailable")
+                return
+            try:
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if set(query) != {"id"} or len(query["id"]) != 1:
+                    raise ValueError("Select one animation export")
+                identifier = query["id"][0]
+                path = animation_exports.download_path(identifier)
+                with path.open("rb") as video:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "video/mp4")
+                    self.send_header("Content-Length", str(path.stat().st_size))
+                    self.send_header("Content-Disposition", 'attachment; filename="tiago-animation.mp4"')
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        try:
+                            shutil.copyfileobj(video, self.wfile, length=1024 * 1024)
+                        finally:
+                            animation_exports.cancel(identifier)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # The download's finally already releases the encoder/result.
+            except (KeyError, ValueError, OSError, RuntimeError) as exc:
+                self.send_json_error(404 if isinstance(exc, KeyError) else 400, str(exc))
+
         def do_GET(self):
             path = unquote(urlsplit(self.path).path)
             if "\\" in path or "\x00" in path or ".." in path.split("/"):
@@ -678,7 +764,19 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 return
             if self.live_unavailable(path):
                 return
-            if path == "/api/presentation/settings" and presentation is not None:
+            if path == "/api/animation-export/status":
+                try:
+                    if animation_exports is None:
+                        raise RuntimeError("Animation export is unavailable on this backend")
+                    from animation_export import resolve_ffmpeg
+                    resolve_ffmpeg(animation_exports.ffmpeg)
+                    result = dict(available=True, fps=30)
+                except (OSError, RuntimeError) as exc:
+                    result = dict(available=False, error=str(exc))
+                self.send_payload(json.dumps(result).encode(), "application/json; charset=utf-8")
+            elif path == "/api/animation-export/download":
+                self.animation_export_download()
+            elif path == "/api/presentation/settings" and presentation is not None:
                 self.send_payload(json.dumps(presentation.settings(), allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
             elif path == "/api/scene":
@@ -854,8 +952,11 @@ def main(argv=None):
     plots.inspections = inspections
     from presentation_settings import PresentationSettings
     presentation = PresentationSettings(visualizer_config.path, live=live, initial=visualizer_config.presentation)
+    from animation_export import AnimationExportService
+    animation_exports = AnimationExportService()
     server = make_server(scene, robot_xml, meshes, args.host, args.port, live=live, replays=library,
-                         sources=sources, live_error=live_error, plots=plots, solver_profiles=profiles, inspections=inspections, presentation=presentation)
+                         sources=sources, live_error=live_error, plots=plots, solver_profiles=profiles, inspections=inspections,
+                         presentation=presentation, animation_exports=animation_exports)
     server.replay_library = library
     server.visualizer_config = visualizer_config
     print(f"TIAGo visualizer: http://{args.host}:{server.server_port}", flush=True)
@@ -874,6 +975,7 @@ def main(argv=None):
         pass
     finally:
         server.server_close()
+        animation_exports.close()
         sources.close()
         if inspections is not None:
             inspections.close()

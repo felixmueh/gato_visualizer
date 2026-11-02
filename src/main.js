@@ -6,6 +6,9 @@ import { sampleAtOrBefore } from './onion-skin.js';
 import { setupLive } from "./live.js";
 import { createSession, outsideSpan, trackTime } from "./session.js";
 import { createTrackScene } from "./track-scene.js";
+import { createAnimationExportDialog } from './animation-export-dialog.js';
+import { exportAnimation, freezeAnimationSnapshot } from './animation-export.js';
+import './animation-export-dialog.css';
 import { createArmVisibility } from './arm-visibility.js';
 import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
@@ -56,6 +59,7 @@ const icons = {
   calculate: '<path d="M13 2 5 13h6l-1 9 9-13h-6l1-7Z"/>',
   settings: '<path d="m10 3-.6 2.2-2 .9-2-.7-2 3.4 1.5 1.6v2.3L3.4 14l2 3.4 2-.7 2 .9.6 2.2h4l.6-2.2 2-.9 2 .7 2-3.4-1.5-1.6v-2.3L20.6 8l-2-3.4-2 .7-2-.9L14 3Z"/><circle cx="12" cy="11.4" r="3"/>',
   freeze: '<rect x="4" y="4" width="12" height="12" rx="2"/><path d="M8 20h10a2 2 0 0 0 2-2V8M10 7v6M7 10h6"/>',
+  video: '<rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3M7 9l5 3-5 3Z"/>',
   onion: '<path d="M3 20a17 17 0 0 1 17-17M8 20A12 12 0 0 1 20 8M13 20a7 7 0 0 1 7-7"/>',
   chevron: '<path d="m8 5 7 7-7 7"/>',
 };
@@ -89,6 +93,7 @@ let robotBounds;
 let ready = false;
 let live;
 let session, trackScene, armVisibility;
+let lastAnimationExport = null;
 // Focus stays on the main track in this deliverable; all presentation reads use it.
 const focusedTrack = () => live?.mode === "live" ? session?.focused : null;
 let solverProfiles;
@@ -133,6 +138,54 @@ let onionSkin, onionSpike;
 const ghostControls = setupGhostControls({ onChange: settings => {
   onionSkin?.setSettings(settings); auxiliaryViews?.invalidate();
 } });
+let animationExportBackend = { available: false, reason: 'Checking MP4 export…' };
+function animationExportSession() {
+  if (session?.activeTracks) return session;
+  if (live?.mode === 'live') return { activeTracks: session.tracks, span: session.span, aggregate: session.aggregate,
+    replayOnly: false, track: id => session.track(id) };
+  // Legacy Replay presents elapsed time from zero; motion retains its native timestamps.
+  const begin = trajectory?.time_s[0] || 0, end = trajectory?.time_s.at(-1) ?? begin;
+  return { activeTracks: trajectory ? [{ id: 'export-replay', kind: 'replay', visible: true, empty: false, display: 'arm',
+    motion: { ...trajectory, joint_names: data.joint_names, fixed_joints: data.fixed_joints },
+    span: [begin, end], offset_s: -begin, color: pathColor }] : [],
+    span: [0, end - begin], aggregate: expandedTimeline.snapshot.aggregate, replayOnly: true };
+}
+function animationExportContext() {
+  if (!ready || !session) return { canExport: false, reason: 'The scene is not ready.' };
+  if (!animationExportBackend.available) return { canExport: false, reason: animationExportBackend.reason };
+  const source = animationExportSession(), range = aggregateSpan(source.aggregate, source.span);
+  const visible = source.activeTracks.some(track => track.visible !== false && !track.empty &&
+    (track.kind === 'live' ? live?.history.length : track.motion?.time_s?.length));
+  return { canExport: visible && range[1] > range[0], reason: visible ? 'Select an aggregate time range.' : 'No visible recorded tracks.' };
+}
+const animationExportDialog = createAnimationExportDialog({ getContext: animationExportContext,
+  onExport: async (options, { signal, onProgress }) => {
+    const source = animationExportSession();
+    const explicit = inspectedPrediction?.active && (inspectedPrediction.pinned || inspectedPrediction.iteration != null);
+    const line = source.replayOnly ? replayInspectionPrediction : livePrediction;
+    const snapshot = freezeAnimationSnapshot({ session: source, robot, scene, camera, cameraTarget: controls.target,
+      jointNames: source.replayOnly ? data.joint_names : defaultData.joint_names,
+      liveHistory: source.replayOnly ? [] : live.animationHistory, liveState: source.replayOnly ? null : live.displayedState,
+      mainReference: source.replayOnly ? null : displayedLiveReference, prediction: explicit ? inspectedPrediction.prediction : null,
+      predictionVisible: source.replayOnly ? Boolean(line?.visible) : !jointEditor?.dragging,
+      predictionColor: line?.material.color.getHex() ?? pathColor, predictionOpacity: line?.material.opacity,
+      ghostOpacity: presentationSettings.settings.ghost_start_opacity_percent / 100,
+      interpolate: presentationSettings.settings.interpolate, mainMaterialStyles: mainMaterials });
+    lastAnimationExport = { span: [...snapshot.span], options: { ...options },
+      tracks: snapshot.tracks.map(track => ({ id: track.id, kind: track.kind, offset_s: track.offset_s, display: track.display })) };
+    const result = await exportAnimation({ snapshot, options, signal, onProgress });
+    lastAnimationExport = { ...lastAnimationExport, frameCount: result.frame_count };
+    const link = document.createElement('a'); link.href = result.download_url;
+    link.download = 'tiago-animation.mp4'; document.body.append(link); link.click(); link.remove();
+  } });
+$('animation-export-open').addEventListener('click', () => animationExportDialog.open());
+window.addEventListener('pagehide', () => animationExportDialog.destroy());
+fetch('/api/animation-export/status').then(async response => {
+  const status = response.ok ? await response.json() : null;
+  animationExportBackend = { available: status?.available === true,
+    reason: status?.error || 'Restart this backend to enable MP4 export.' };
+}).catch(() => { animationExportBackend = { available: false, reason: 'MP4 export is unavailable on this backend.' }; })
+  .finally(() => animationExportDialog.refresh());
 const workbench = setupWorkbench({ onLayout: () => auxiliaryViews?.invalidate() });
 setupSidebarResize({ shell: document.getElementById("workbench"), onLayout: () => auxiliaryViews?.invalidate() });
 const emptyTimingIntervals = [];
@@ -336,6 +389,7 @@ function fitTaskPoints(options = {}) {
 
 function refreshFitAvailability() {
   $('camera-arm').disabled = focusedTrack() ? !focusedTrack().fitAvailable : !fitTaskPoints().points.length;
+  $('animation-export-open').disabled = !ready;
 }
 
 function setCamera(mode = "robot", options = {}) {
@@ -708,6 +762,7 @@ async function start() {
       onionSpike = setupOnionSpike({ renderer, scene, camera, controls, robot, getTrajectory: () => playing || live?.mode === 'live' ? null : trajectory, getJointNames: () => data.joint_names, auxiliaryViews, setNormalVisible: value => onionSkin.setVisible(value) });
     }
     window.__motionStudio = {
+      get animationExport() { return { busy: animationExportDialog.busy, last: lastAnimationExport }; },
       get session() { return session ? { id: session.id, focusedId: session.focused?.id, span: session.span, cursor: session.cursor, rate: session.rate, aggregate: session.aggregate,
         tracks: session.tracks.map(track => ({ id: track.id, kind: track.kind, source: track.source, label: track.label, displayName: track.displayName, color: track.color, offset_s: track.offset_s,
           display: track.display, visible: track.visible, span: track.span, time: trackTime(track, session.cursor), outside: outsideSpan(track, session.cursor) })), ...trackScene?.snapshot } : null; },

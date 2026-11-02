@@ -99,6 +99,11 @@ export function createLiveHistory(options = {}) {
     clear, addPlan, addState, at, interpolateAt, addRecord, breachCrossed,
     get intervals() { return intervals; },
     get breaches() { return breaches; },
+    // Export captures the state/applied-plan relation before later control
+    // records can replace a sample's association. Payloads themselves are immutable.
+    get animationSnapshot() {
+      return Object.freeze(samples.map(({ state, plan }) => Object.freeze({ state, plan })));
+    },
     // Read-only convention: rebuild views only on recorded changes, never RAF.
     // Copies contain original immutable payload references, not copied states.
     get metricSnapshot() {

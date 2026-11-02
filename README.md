@@ -418,6 +418,13 @@ and Bottom while preserving the current pan target and zoom distance.
 Top places the robot's forward direction toward screen right. Cube corners
 select the eight equal-angle diagonal views.
 
+**Export animation** in the viewport downloads the aggregate window as a
+30 fps MP4, using the visible tracks in Live or Replay mode. Its dialog offers
+720p through 2160p, a main view or main with Top and Right views, and a main
+camera orientation including Current viewport. Current viewport preserves the
+framing with letterboxing when needed. See [animation export](docs/animation-export.md)
+for capture contents and encoder setup.
+
 **Fit robot** frames the full robot in its current pose. **Fit trajectory**
 frames a completed precalculated closed-loop path when available;
 otherwise it uses the full tracking reference, or the task start and reaching target. Both

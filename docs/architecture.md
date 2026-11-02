@@ -31,6 +31,12 @@ CPU plotting loads committed sources independently. Explicit Run again pauses
 Live at a committed boundary and uses a separate temporary solver child; only
 one GPU computation runs at a time. Live's private controller remains idle.
 
+- **Animation export:** the browser freezes visible tracks and renders a separate
+  capture scene; the HTTP parent's `AnimationExportService` streams PNGs to a
+  CPU ffmpeg child. It uses no simulation or solver process. Runtime jobs are
+  removed after download, cancellation, or expiry. See
+  [animation export](animation-export.md) for the capture and encoding contract.
+
 ## Where to change what
 
 | Area | Main source files | Contract |
