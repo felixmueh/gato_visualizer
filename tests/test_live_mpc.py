@@ -96,8 +96,11 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(config, self.config)
         self.assertIsNot(config, self.config)
         # TIAGO's defaults, without the SQP wall-time limit on the simulation clock
+        from native_cost import serialized_cost
+        expected = dict(live_probe()["defaults"], max_sqp_time_s=None,
+                        cost=serialized_cost(config["N"], config["cost_weights"]))
         self.assertEqual({key: value for key, value in config.items() if key not in ("plant", "cost_weights")},
-                         dict(live_probe()["defaults"], max_sqp_time_s=None))
+                         expected)
         self.assertIsNotNone(live_probe()["defaults"]["max_sqp_time_s"])
         self.assertIs(config["warmup"], True)
         # Euler with constraint Coulomb friction is the simulated-plant default;

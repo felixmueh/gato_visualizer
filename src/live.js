@@ -575,15 +575,6 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       width.input.disabled = !friction.input.checked;
     }
   }
-  // The orientation weights act only with the reach's orientation goal; without it they
-  // stay as disabled drafts; NaN reference orientations disable their native cost rows.
-  function syncOrientationWeights() {
-    const on = Boolean(orientationGoal(settings?.task));
-    for (const { parameter, input } of inputs) if (parameter.enabled_with === 'orientation_goal') {
-      input.disabled = !on;
-      input.title = on ? parameterTooltip(parameter) : 'Used only with an orientation goal (Task setup)';
-    }
-  }
   // Switching the goal on starts from the last goal switched off, or else from the grasp
   // frame's orientation as displayed.
   function setOrientationGoal(on) {
@@ -592,13 +583,6 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       const goal = orientationDraft || graspOrientation();
       if (!goal) return;
       settings.task.orientation_rad = [...goal];
-      const weights = settings.config.cost_weights;
-      if (!orientationDraft && weights && weights.orientation === 0 && weights.terminal_orientation === 0) {
-        weights.orientation = 1; weights.terminal_orientation = 8;
-        for (const { parameter, input } of inputs) if (parameter.path.startsWith('cost_weights.')) {
-          input.value = readPath(settings.config, parameter.path);
-        }
-      }
     } else if (!on && orientationGoal(settings.task)) {
       orientationDraft = orientationGoal(settings.task);
       settings.task.orientation_rad = null;
@@ -610,7 +594,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (replayOnly) return;
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
-    syncPlantFriction(); syncOrientationWeights();
+    syncPlantFriction();
     const next = readSettings();
     const sourceChanged = next && !settingValuesEqual(next.source_settings, acceptedSettings?.source_settings);
     if (next) {
@@ -936,7 +920,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     });
     ensureModelCompilation();
     refreshFrictionAvailability();
-    syncPlantFriction(); syncOrientationWeights();
+    syncPlantFriction();
     resetIndicators.update();
     controlsEnabled();
     $('live-mode').disabled = false; message(replayOnly ? '' : profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', !replayOnly && profileNError);

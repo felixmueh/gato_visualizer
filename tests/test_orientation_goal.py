@@ -60,9 +60,9 @@ class SettingsTests(unittest.TestCase):
         self.config = deepcopy(self.schema["defaults"]["config"])
         self.task = deepcopy(REACH_DEFAULT_TASK)
 
-    def test_native_menu_and_zero_default_weights_are_retained_with_an_optional_goal(self):
-        self.assertEqual(self.config["cost_weights"]["orientation"], 0.)
-        self.assertEqual(self.config["cost_weights"]["terminal_orientation"], 0.)
+    def test_native_menu_and_editable_default_weights_are_retained_with_an_optional_goal(self):
+        self.assertEqual(self.config["cost_weights"]["orientation"], 1.)
+        self.assertEqual(self.config["cost_weights"]["terminal_orientation"], 8.)
         self.assertIsNone(self.task["orientation_rad"])
         self.config["cost_weights"].update(orientation=1., terminal_orientation=8.)
         off = solver_params(self.config, self.task)
@@ -75,10 +75,23 @@ class SettingsTests(unittest.TestCase):
         specs = {spec["path"]: spec for spec in self.schema["parameters"]}
         for key in ("orientation", "terminal_orientation"):
             spec = specs[f"cost_weights.{key}"]
-            self.assertEqual(spec["enabled_with"], "orientation_goal")
+            self.assertNotIn("enabled_with", spec)
+            self.assertFalse(spec.get("disabled", False))
             self.assertEqual(spec["effect"], "runtime")
             self.assertEqual(spec["group"], "Costs")
         self.assertIsNone(self.schema["tasks"][0]["defaults"]["orientation_rad"])
+
+    def test_source_orientation_weights_are_preserved(self):
+        from native_cost import cost_weights, serialized_cost
+        for running, terminal in ((2., 11.), (0., 7.), (3., 0.)):
+            with self.subTest(running=running, terminal=terminal):
+                probe = deepcopy(live_probe())
+                weights = cost_weights(probe["defaults"]["cost"])
+                weights.update(orientation=running, terminal_orientation=terminal)
+                probe["defaults"]["cost"] = serialized_cost(probe["defaults"]["N"], weights)
+                schema = build_schema(probe, MPC_ROOT, start_pose())
+                self.assertEqual(schema["defaults"]["config"]["cost_weights"], weights)
+                self.assertEqual(schema["defaults"]["config"]["cost"], probe["defaults"]["cost"])
 
     def test_a_reach_goal_is_validated_and_needs_the_sources_orientation_cost(self):
         validate_settings(self.config, {**self.task, "orientation_rad": GOAL}, self.schema)

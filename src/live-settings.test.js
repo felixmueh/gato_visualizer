@@ -2294,13 +2294,14 @@ test('editing a field back to its accepted value does not submit an empty patch 
   });
 });
 
-test('the reach orientation goal starts at the displayed grasp orientation, rotates in the viewport and gates its weights', async () => {
+test('the reach orientation goal starts at the displayed grasp orientation, rotates in the viewport and keeps its weights editable', async () => {
   const h = harness();
   h.schema.task_anchors = { reach: [.5, -.2, 1], figure8: [.4, -.2, 1] };
-  Object.assign(h.schema.defaults.config, { cost_weights: { orientation: 0, terminal_orientation: 0 } });
+  Object.assign(h.schema.defaults.config, { cost_weights: { orientation: 1, terminal_orientation: 8 } });
   h.schema.defaults.task.orientation_rad = null; h.schema.tasks[0].defaults.orientation_rad = null;
+  h.schema.orientation_goal_supported = true;
   h.schema.parameters.push(...['cost_weights.orientation', 'cost_weights.terminal_orientation'].map(path =>
-    ({ path, label: path, kind: 'float', min: 0, enabled_with: 'orientation_goal', effect: 'runtime' })));
+    ({ path, label: path, kind: 'float', min: 0, effect: 'runtime' })));
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
   const displayed = [0, 0, .3];
@@ -2311,12 +2312,14 @@ test('the reach orientation goal starts at the displayed grasp orientation, rota
     const toggle = () => h.created.filter(element => element.id === 'target-orientation').at(-1);
     const weights = () => ['cost_weights.orientation', 'cost_weights.terminal_orientation'].map(path => h.created.filter(element => element.dataset.path === path).at(-1));
     assert.equal(toggle().checked, false);
-    assert(weights().every(input => input.disabled));  // drafts kept, the solver gets 0
+    assert(weights().every(input => !input.disabled));
+    assert.deepEqual(live.settings.config.cost_weights, { orientation: 1, terminal_orientation: 8 });
+    h.edit('cost_weights.orientation', 3); h.edit('cost_weights.terminal_orientation', 12);
     assert.deepEqual(live.targetInteraction.tools, ['translate']);
     toggle().checked = true; toggle().emit('change');
     assert.deepEqual(live.settings.task.orientation_rad, displayed);
     assert(weights().every(input => !input.disabled));
-    assert.deepEqual(live.settings.config.cost_weights, { orientation: 1, terminal_orientation: 8 });
+    assert.deepEqual(live.settings.config.cost_weights, { orientation: 3, terminal_orientation: 12 });
     assert.deepEqual(live.targetInteraction.tools, ['translate', 'rotate']);
     assert.equal(live.targetInteraction.rotation_space, 'local');
     live.refreshView();
@@ -2330,6 +2333,7 @@ test('the reach orientation goal starts at the displayed grasp orientation, rota
     assert.equal(live.settings.task.orientation_rad, null);
     assert.equal(live.setTaskTransform({ quaternion_xyzw: [0, 0, 0, 1] }), null);  // nothing to rotate without a goal
     live.refreshView(); assert.equal(h.$('live-orientation-stat').hidden, true);
+    assert(weights().every(input => !input.disabled));
     toggle().checked = true; toggle().emit('change');  // the goal and edited costs return
     assert.equal(live.settings.config.cost_weights.orientation, 2);
     // Deliberately zeroed weights stay zero on later toggles, too.

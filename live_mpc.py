@@ -151,8 +151,6 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
                 spec["gato_default"] = True  # None follows GATO; the panel shows its resolved value
                 if name in GATO_NONE_MEANINGS:
                     spec["gato_none"] = GATO_NONE_MEANINGS[name]  # GATO's own None
-            if name in ("cost_weights.orientation", "cost_weights.terminal_orientation"):
-                spec["enabled_with"] = "orientation_goal"
             if name.startswith("cost_weights."):
                 spec["effect"] = "runtime"
             if name == "plant.start_pose_rad":
@@ -411,10 +409,15 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_s
         raise ValueError(probe.get("error") or "Selected source is incompatible")
     defaults = dict(deepcopy(probe["defaults"]), **SIMULATION_CLOCK_DEFAULTS,
                     plant=dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=list(start_pose["default"])))
-    from native_cost import cost_weights
+    from native_cost import cost_weights, serialized_cost
     weights = cost_weights(defaults.get("cost"))
     if weights is not None:
+        # Editable starting weights; absent orientation targets mask these rows.
+        # Preserve a source's explicitly configured orientation objective.
+        if weights["orientation"] == weights["terminal_orientation"] == 0:
+            weights.update(orientation=1., terminal_orientation=8.)
         defaults["cost_weights"] = weights
+        defaults["cost"] = serialized_cost(defaults["N"], weights)
     modules = available_modules(probe)
     by_mode, available = modules["available_N_by_friction"], modules["available_N"]
     predictor = probe["friction"]

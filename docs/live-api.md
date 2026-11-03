@@ -186,9 +186,10 @@ Custom menus retain their terms and are not overwritten by convenience controls.
 They expose a fixed horizon (`schema.fixed_horizon_N`); changing it requires a
 menu supplied for that horizon. Orientation-goal capability is independent of
 convenience controls (`schema.orientation_goal_supported`).
-Orientation weights start at zero; first enabling a goal initializes them to 1
-and 8 if both are zero. These are editable starting values, not tuned weights.
-Disabling a goal retains its weights for later use.
+The standard viewer orientation weights default to 1 (running) and 8 (terminal)
+when the source has both weights zero. A source with nonzero orientation weights
+keeps its values. These are editable starting values, not tuned weights. Both
+controls remain editable without a goal, and toggling the goal never changes them.
 
 References contain grasp position and rotation vector in the solver's torso
 frame. Three NaN orientation entries mean no orientation target; on the JSON wire

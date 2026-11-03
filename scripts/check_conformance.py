@@ -161,6 +161,9 @@ def main():
         # plant's constraint-friction defaults. The reference above is loss-free.
         defaults = schema["defaults"]["config"]
         config = dict(defaults, dt_s=params.dt_s, plant=dict(defaults["plant"], integrator="rk4", friction=False))
+        if "cost_weights" in config:
+            from native_cost import cost_weights
+            config["cost_weights"] = cost_weights(to_dict(params.cost))
         if mpc_params(config) != to_dict(params):
             parser.error("Live's explicit comparison MpcParams differ from the reference's")
         adapter.configure(config, dict(kind="reach", target_offset_m=[0., 0., 0.]))

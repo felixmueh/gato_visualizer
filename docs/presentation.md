@@ -253,7 +253,8 @@ starts from the goal last switched off on this page, otherwise from the grasp
 frame's displayed orientation; it never moves the arm. With the goal on, **R**
 selects the task gizmo's rotation about the goal's own axes, so the rings line
 up with the gold glyph; **T** and **G** translate as before. The two orientation
-weights under Costs are disabled while the goal is off.
+weights under Costs remain editable while the goal is off; they take effect
+when a goal is enabled. Their standard defaults are 1 running and 8 terminal.
 
 A replay track whose recording has an orientation reference draws the same pair
 in the track colour: the goal dashed, held from the latest reference sample, and
