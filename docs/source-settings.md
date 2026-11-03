@@ -2,8 +2,13 @@
 
 This experimental visualizer branch owns standard display metadata in
 `adapters/tiago.py`. Ordinary controls are generated from native parameters;
-the bundled adapter adds no extra native fields and preserves the package's
-objects and ordinary execution law. It works with every compatible checkout,
+the bundled adapter preserves the package's native objects and ordinary execution
+law. The standard tracking controls are viewer-only `config.cost_weights` values:
+position, terminal position, joint velocity, torque, orientation and terminal
+orientation. They build `MpcParams.cost` using `tiago_mpc.default_cost`, including
+when the horizon changes. The native cost menu is retained in effective settings
+and recordings. Custom menus are preserved and do not receive the convenience
+weight controls. It works with every compatible checkout,
 without a visualizer file in `tiago_mpc` or special treatment of a branch name.
 
 An optional `<selected-tiago>/_visualizer/_settings.py` overrides the bundled
@@ -165,7 +170,9 @@ Apply/profile changes invalidate stale checks. No compilation is automatic.
 `exact_availability: true` means `available_N` describes the resolved predictor
 model, including armature, friction coefficients and width. It is not inferred
 from an on/off label. The selected interpreter calls the package's
-`find_binary(replace(actual_params, N=n))`; ordinary edits never compile.
+`find_binary` with the actual parameters and a matching horizon in the standard
+menu. Custom menus keep their captured horizon and require an explicit replacement
+menu to change N; ordinary edits never compile.
 A bundled adapter identity with no predictor controls does not itself narrow
 the ordinary off/on module catalog. Explicit native params and model-changing
 predictor adapters retain exact checks.

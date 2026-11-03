@@ -59,6 +59,17 @@ class StandardPlotNumericTests(unittest.TestCase):
         self.assertEqual(spec['series'][0]['x'], [10., 10.2])
         self.assertEqual([s['y'] for s in spec['series']], [[2., 1.], [5., 2.], [3., 1.]])
 
+    def test_orientation_error_uses_degrees_and_preserves_missing_samples(self):
+        episode = EpisodeView(dict(states=[
+            dict(sim_time_s=0., orientation_error_rad=math.pi / 2),
+            dict(sim_time_s=1.),
+            dict(sim_time_s=2., orientation_error_rad=0.),
+        ]))
+        spec = self.plot('episode.orientation_error', episode)
+        self.assertEqual(spec['series'][0]['y'], [90., None, 0.])
+        self.assertEqual(spec['y']['unit'], 'deg')
+        self.assertEqual(self.plot('episode.orientation_error')['kind'], 'unavailable')
+
     def test_tracking_error_derivation(self):
         spec = self.plot('episode.tracking_error')
         for actual, expected in zip(spec['series'][0]['y'], [300., 200., 100., 0.]):

@@ -124,3 +124,19 @@ test('temporal sources hold recorded native samples and retain each track base, 
   assert.equal(robot.joints.arm_right_1_joint.jointValue[0], 0);
   tracks.dispose();
 });
+
+test('a recording with an orientation reference shows its held goal and interpolated grasp frame as glyphs', () => {
+  const { tracks } = fixture();
+  const quarter = [0, 0, Math.PI / 2], half = [0, 0, Math.PI];
+  const oriented = track('oriented', { offset_s: 0, motion: { time_s: [2, 4], q: [[0], [1]], ee_xyz: [[0, 0, 0], [2, 0, 0]],
+    reference_time_s: [2, 3], reference_xyz: [[2, 0, 0], [2, 1, 0]], reference_rotvec: [quarter, null], ee_rotvec: [[0, 0, 0], half] } });
+  const close = (actual, expected) => actual.forEach((value, i) => assert(Math.abs(value - expected[i]) < 1e-12, `${actual} ≠ ${expected}`));
+  tracks.update({ tracks: [oriented, track('plain', { offset_s: 0 })], time: 2.5 });
+  assert.equal(tracks.snapshot.glyphs.length, 1);  // a recording without orientations draws none
+  const [{ goal, grasp }] = tracks.snapshot.glyphs;
+  close(goal.position, [2, .5, 0]); close(goal.quaternion, [0, 0, Math.SQRT1_2, Math.SQRT1_2]);  // held, not blended toward none
+  close(grasp.position, [.5, 0, 0]); close(grasp.quaternion, [0, 0, Math.sin(Math.PI / 8), Math.cos(Math.PI / 8)]);  // a quarter of the half turn
+  tracks.update({ tracks: [oriented], time: 3.5 });
+  assert.equal(tracks.snapshot.glyphs[0].goal, null);  // the reference has no target from 3 s on
+  tracks.dispose();
+});

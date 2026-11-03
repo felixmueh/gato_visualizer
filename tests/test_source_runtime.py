@@ -1,5 +1,5 @@
 """CPU/mock compatibility and subprocess boundary checks; no CUDA imports."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import importlib.util
 import json
 import os
@@ -221,22 +221,26 @@ class ProbeTests(unittest.TestCase):
 class BuilderTests(unittest.TestCase):
     def test_build_compiles_each_variant_with_half_cpu_jobs_then_probes(self):
         script = load_script("source_probe_test")
+        from tests.tiago_mpc_source import live_probe
+        live_probe()
+        from tiago_mpc import TIAGO
+        from native_cost import with_knot_count
         friction = SimpleNamespace(width_rad_s=.03)
-        mpc = SimpleNamespace(TIAGO=Params(), compile_binary=Mock(side_effect=lambda params, **kw: Path(f"N{params.N}.so")))
+        mpc = SimpleNamespace(TIAGO=TIAGO, compile_binary=Mock(side_effect=lambda params, **kw: Path(f"N{params.N}.so")))
         events, expected = [], dict(available_N=[32, 48], compatible=True)
         with patch.object(script, "build_jobs", return_value=3), patch.object(script, "probe", return_value=expected):
             result = script.build(dict(cache="unused"), (None, mpc, None, friction), [32, 48], events.append,
                                   rebuild=True, prediction_friction=True)
         self.assertEqual(result, expected)
         self.assertEqual([call.args[0] for call in mpc.compile_binary.call_args_list],
-                         [Params(32, friction), Params(48, friction)])
+                         [replace(with_knot_count(TIAGO, n), friction=friction) for n in (32, 48)])
         self.assertEqual([call.kwargs for call in mpc.compile_binary.call_args_list],
                          [dict(use_cache=False, jobs=3)]*2)
         self.assertEqual([e["path"] for e in events if e["stage"] == "built"], ["N32.so", "N48.so"])
         mpc.compile_binary.reset_mock()
         with patch.object(script, "build_jobs", return_value=3), patch.object(script, "probe", return_value=expected):
             script.build(dict(cache="unused"), (None, mpc, None, friction), [16], events.append)
-        self.assertEqual(mpc.compile_binary.call_args, ((Params(16, None),), dict(use_cache=True, jobs=3)))
+        self.assertEqual(mpc.compile_binary.call_args, ((with_knot_count(TIAGO, 16),), dict(use_cache=True, jobs=3)))
 
     def test_cli_import_error_retains_resolved_selection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -307,7 +311,11 @@ class DisplaySourceTests(unittest.TestCase):
             @dataclass(frozen=True)
             class MpcParams:
                 friction_law: object = None
-            mpc = SimpleNamespace(MpcParams=MpcParams, TIAGO=SimpleNamespace(max_sqp_time_s=.01),
+            from tests.tiago_mpc_source import live_probe
+            live_probe()
+            from tiago_mpc import SolverSettings, default_cost
+            mpc = SimpleNamespace(MpcParams=MpcParams, SolverSettings=SolverSettings, default_cost=default_cost,
+                                  TIAGO=SimpleNamespace(max_sqp_time_s=.01, solver=SolverSettings(), cost=default_cost()),
                                   Mpc=SimpleNamespace(warmup=3, request=4, result=5), find_binary=4, compile_binary=5,
                                   SimPlant=Plant, SimConfig=Config, VirtualClock=object, State=State, Plan=Plan,
                                   to_dict=lambda value: value, from_dict=lambda value: value, provenance=lambda: {})

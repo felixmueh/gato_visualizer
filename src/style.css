@@ -1505,7 +1505,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .studio-workbench .onion-tick[hidden] { display: none; }
 .studio-workbench .onion-skin-toggle[aria-pressed='true'] { color: #dbe7f2; background: #34475d; box-shadow: inset 0 0 0 1px #71869c; }
 .studio-workbench .onion-skin-toggle[data-ghost-mode='all'] { position: relative; color: #d6b8ff; border-color: #9e7dcc; }
+/* The IK preview: the goal's gold, distinct from grey onion ghosts and the teal prediction. */
+.studio-workbench .ik-preview-toggle[aria-pressed='true'] { position: relative; color: #ffd08a; background: #3a3426; box-shadow: inset 0 0 0 1px #a7823f; }
+.studio-workbench .ik-preview-toggle[data-ik-preview='setup']::after { content: 'Setup'; position: absolute; right: -6px; bottom: -3px; padding: 0 2px; border-radius: 2px; background: #5a4a2a; color: #ffe2b0; font: 8px/11px 'DM Sans', sans-serif; }
+.reach-note { color: #ff8a8a; }
+.grasp-handle-hint { position: absolute; z-index: 3; left: 50%; bottom: 14px; transform: translateX(-50%); margin: 0; pointer-events: none;
+  padding: 3px 8px; border-radius: 4px; color: #c7d8e8; background: rgba(11, 18, 32, .72); font: 11px 'DM Sans', sans-serif; white-space: nowrap; }
 .studio-workbench .onion-skin-toggle[data-ghost-mode='all']::after { content: 'All'; position: absolute; right: -4px; bottom: -3px; padding: 0 2px; border-radius: 2px; background: #48365f; color: #eadbff; font: 8px/11px 'DM Sans', sans-serif; }
 
 .onion-skin-tooltip { border-color: var(--ghost-color, #aeb7c2); color: #dbe7f2; }
 .grasp-frame-warning { color: var(--limit-near, #f2b544); font: 600 11px 'IBM Plex Mono', monospace; cursor: help; }
+/* Next to the grasp handle while its orientation is out of reach; text tone of the handle and tether. */
+.grasp-orientation-gap { position: absolute; z-index: 3; pointer-events: none; padding: 1px 5px; border-radius: 4px;
+  color: #e7edf5; background: rgba(11, 18, 32, .78); font: 600 11px 'IBM Plex Mono', monospace; }

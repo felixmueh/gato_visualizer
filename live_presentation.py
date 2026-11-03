@@ -36,7 +36,8 @@ def render_plan(captured, kinematics):
     states, torque = np.asarray(event.pop("_states")), np.asarray(event.pop("_torques"))
     q, qd = states[:, :7], states[:, 7:]
     reference = event.pop("_reference")
-    event["reference_native"] = np.asarray(reference).tolist()
+    from solver_process import reference_to_wire
+    event["reference_native"] = reference_to_wire(reference)  # a NaN orientation slot as null
     n, dt = event["N"], event["dt_s"]
     event.update(knot_time_s=(np.arange(n)*dt).tolist(), q=q.tolist(),
                  qd_rad_s=qd.tolist(), torque_nm=torque.tolist(), torque_kind="predicted",
@@ -57,7 +58,19 @@ def render_state(captured, kinematics, context):
                np.abs(x[7:]).sum() <= context["speed_l1_tol_rad_s"])
     event.update(q=x[:7].tolist(), qd=x[7:].tolist(), ee_xyz=ee.tolist(),
                  distance_m=distance, arrived=bool(arrived))
+    from live_mpc import orientation_goal
+    goal = orientation_goal(context["task"])
+    if goal is not None:
+        # The grasp frame's angle to the segment's orientation goal, as tiago_mpc's
+        # orientation_error: |log(R_goalᵀ R)|. Arrival stays position-only.
+        event["orientation_error_rad"] = rotation_angle(goal, kinematics.ee_rotvecs(x[None, :7])[0])
     return event
+
+
+def rotation_angle(a, b):
+    """The angle in radians between two rotation vectors' rotations, |log(R_aᵀ R_b)|."""
+    import pinocchio as pin
+    return float(np.linalg.norm(pin.log3(pin.exp3(np.asarray(a, dtype=float)).T @ pin.exp3(np.asarray(b, dtype=float)))))
 
 
 class LatestPresentation:

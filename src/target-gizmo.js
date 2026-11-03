@@ -1,5 +1,6 @@
 import { Box3, Group, Mesh, MeshBasicMaterial, Raycaster, SphereGeometry, Vector2, Vector3 } from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { createOrbitLock } from './orbit-lock.js';
 
 export function targetWorldPosition(base, offset) {
   return base.map((value, i) => value + offset[i]);
@@ -16,19 +17,28 @@ export function normalizeQuaternion(value) {
   return Number.isFinite(norm) && norm > 1e-12 ? value.map(x => x / norm) : null;
 }
 
-export function taskGizmoShortcut(event, kind) {
+// A target's tools: translate always; rotate for the figure-eight path (about its start,
+// world axes) and for a reach's orientation goal (about the goal's own axes); scale for
+// the figure-eight's width and height.
+export function taskGizmoShortcut(event, tools = ['translate']) {
   if (event.ctrlKey || event.metaKey || event.altKey || event.target?.isContentEditable ||
       /^(INPUT|SELECT|TEXTAREA)$/i.test(event.target?.tagName || '')) return null;
   const key = event.key.toLowerCase();
   if (key === 'escape') return 'deselect';
   if (key === 't' || key === 'g') return 'translate';
-  if (kind === 'figure8' && key === 'r') return 'rotate';
-  if (kind === 'figure8' && key === 's') return 'scale';
+  if (tools.includes('rotate') && key === 'r') return 'rotate';
+  if (tools.includes('scale') && key === 's') return 'scale';
   return null;
 }
 
-export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, moveTarget, transformTarget, button, note, onSelect = () => {} }) {
+function toolHints(tools) {
+  return ['T translate', tools.includes('rotate') && 'R rotate', tools.includes('scale') && 'S scale'].filter(Boolean).join(' · ');
+}
+
+export function setupTargetGizmo({ scene, camera, renderer, orbit, orbitLock, getTarget, moveTarget, transformTarget, button, note, onSelect = () => {} }) {
   const canvas = renderer.domElement;
+  // Orbit is disabled through the shared lock (orbit-lock.js), never restored mid-press.
+  const lock = orbitLock ?? createOrbitLock(orbit, canvas);
   const anchor = new Group();
   const marker = new Mesh(new SphereGeometry(.022, 20, 14), new MeshBasicMaterial({
     color: 0xffb547, depthTest: false, depthWrite: false, transparent: true, opacity: .9, toneMapped: false,
@@ -46,10 +56,11 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
   const pointer = new Vector2();
   let selected = false;
   let active = false;
-  let orbitWasEnabled = true;
   let pointerId, dragSize;
   let toolMode = 'translate';
   let pickGuard = () => false;
+  // Another tool with its own shortcuts (the selected grasp handle) keeps the keys.
+  let keyGuard = () => false;
 
   const cancelDrag = () => {
     const capturedPointer = pointerId;
@@ -65,8 +76,8 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     marker.material.wireframe = !selected;
   };
   transform.addEventListener('dragging-changed', (event) => {
-    if (event.value) { orbitWasEnabled = orbit.enabled; orbit.enabled = false; dragSize = getTarget()?.size_m; }
-    else orbit.enabled = orbitWasEnabled;
+    if (event.value) { lock.hold('task-gizmo'); dragSize = getTarget()?.size_m; }
+    else lock.release('task-gizmo');
   });
   transform.addEventListener('objectChange', () => {
     if (!active) return;
@@ -95,17 +106,27 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     }
   };
   canvas.addEventListener('pointerdown', pickTarget, true);
+  // A press on one of this gizmo's handles: OrbitControls must not start a gesture there.
+  const handleAt = (event) => {
+    if (!active || !selected) return false;
+    const bounds = canvas.getBoundingClientRect();
+    anchor.updateMatrixWorld(true);
+    transform.pointerHover({ x: (event.clientX - bounds.left) / bounds.width * 2 - 1, y: -(event.clientY - bounds.top) / bounds.height * 2 + 1, button: event.button });
+    return Boolean(transform.axis);
+  };
+  const removeGuard = lock.addGuard(handleAt);
   canvas.addEventListener('pointercancel', cancelDrag);
   canvas.addEventListener('lostpointercapture', cancelDrag);
   const setToolMode = (next) => {
     cancelDrag(); toolMode = next;
-    transform.setMode(next); transform.setSpace(next === 'scale' ? 'local' : 'world');
+    transform.setMode(next);
+    transform.setSpace(next === 'scale' || (next === 'rotate' && getTarget()?.rotation_space === 'local') ? 'local' : 'world');
     transform.showZ = next !== 'scale';
     anchor.scale.set(1, 1, 1);
   };
   const escape = (event) => {
-    if (!active) return;
-    const action = taskGizmoShortcut(event, getTarget()?.kind);
+    if (!active || keyGuard(event)) return;
+    const action = taskGizmoShortcut(event, getTarget()?.tools);
     if (!action) return;
     event.preventDefault();
     if (action === 'deselect') select(false);
@@ -122,17 +143,19 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     transform.enabled = active && selected;
     if (!active) select(false);
     else if (!transform.dragging) {
-      if (target.kind !== 'figure8' && toolMode !== 'translate') setToolMode('translate');
+      if (!(target.tools || ['translate']).includes(toolMode)) setToolMode('translate');
       anchor.position.fromArray(target.position_world);
       anchor.quaternion.fromArray(target.quaternion_xyzw || [0, 0, 0, 1]);
       anchor.scale.set(1, 1, 1);
     }
     helper.visible = active && selected;
     if (button) button.disabled = !active;
+    const tools = target?.tools || ['translate'];
+    const rotation = target?.kind === 'figure8' ? 'Rotate path around its start point in world coordinates' : 'Rotate the orientation goal about its own axes';
     if (note) note.textContent = !active
       ? 'Task handles become available at the latest live state after preview.'
-      : selected ? `${toolMode === 'scale' ? 'Scale local X width / Y height' : toolMode === 'rotate' ? 'Rotate path around its start point in world coordinates' : 'Move task in world coordinates'}. T translate${target.kind === 'figure8' ? ' · R rotate · S scale' : ''} · Esc deselect.${target.pending ? ' Prediction updating…' : ''}`
-        : `Click the gold task anchor or press T to translate${target.kind === 'figure8' ? ', R to rotate, S to scale' : ''}.`;
+      : selected ? `${toolMode === 'scale' ? 'Scale local X width / Y height' : toolMode === 'rotate' ? rotation : 'Move task in world coordinates'}. ${toolHints(tools)} · Esc deselect.${target.pending ? ' Prediction updating…' : ''}`
+        : `Click the gold task anchor or press ${toolHints(tools).replaceAll(' · ', ', ')}.`;
   };
   const project = (point) => {
     const position = point.clone().project(camera);
@@ -144,6 +167,8 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
     update,
     deselect: () => select(false),
     setPickGuard(fn) { pickGuard = fn || (() => false); },
+    setKeyGuard(fn) { keyGuard = fn || (() => false); },
+    setColor(color) { marker.material.color.set(color); },
     get interactionActive() { return selected && Boolean(transform.dragging || transform.axis); },
     get active() { return active; },
     get snapshot() {
@@ -158,7 +183,7 @@ export function setupTargetGizmo({ scene, camera, renderer, orbit, getTarget, mo
         target_screen: project(anchor.position), handles_screen: handles, orbit_enabled: orbit.enabled };
     },
     dispose() {
-      cancelDrag();
+      cancelDrag(); removeGuard(); if (!orbitLock) lock.dispose();
       canvas.removeEventListener('pointerdown', pickTarget, true);
       canvas.removeEventListener('pointercancel', cancelDrag);
       canvas.removeEventListener('lostpointercapture', cancelDrag);

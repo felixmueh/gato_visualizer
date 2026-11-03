@@ -3,8 +3,8 @@
 
 Runs run_virtual_time with SimConfig(substep=.001), a prebuilt Mpc(params),
 SampleKnot and a declared 5.5 ms solve latency in this process, then the visualizer's SimulatorAdapter, solver child and
-MultirateSession from the same start, target and MpcParams (Live's defaults: TIAGO
-without the SQP wall-time limit, warm-up on) and an explicitly loss-free RK4 plant
+MultirateSession from the same start, target and MpcParams (TIAGO with an explicit
+10 ms knot interval, no SQP wall-time limit and warm-up on) and an explicitly loss-free RK4 plant
 on both sides, independently of Live's plant defaults, and compares the states at every command
 tick, the commands and the plans. The rates are the reach's defaults: commands every
 2 ms (500 Hz), a control update every knot (100 Hz), physics on a 1 ms grid. The
@@ -124,13 +124,11 @@ def main():
     sys.path.insert(0, str(root))  # tiago_mpc's experiments package
     from experiments.reach import Reach
     from tiago_mpc.mpc import TIAGO, Mpc, find_binary
-    from tiago_mpc.record import from_dict
+    from tiago_mpc.record import to_dict
     from tiago_mpc.sim import SimConfig
-    params = replace(TIAGO, max_sqp_time_s=None)  # the simulation clock: no wall-time limit
+    params = replace(TIAGO, dt_s=.01, max_sqp_time_s=None)  # explicit 10 ms diagnostic case
     if not params.warmup:
         parser.error("The comparison covers the default warm-up")
-    if params.dt_s != .01:
-        parser.error("The comparison assumes the default 10 ms knot interval")
     binary = find_binary(params)
     if binary is None:
         parser.exit(2, "Not compiled: build the default N loss-free module first\n")
@@ -162,9 +160,9 @@ def main():
         # Preserve this loss-free RK4 comparison independently of the interactive
         # plant's constraint-friction defaults. The reference above is loss-free.
         defaults = schema["defaults"]["config"]
-        config = dict(defaults, plant=dict(defaults["plant"], integrator="rk4", friction=False))
-        if from_dict(mpc_params(config)) != params:
-            parser.error("Live's default MpcParams differ from the reference's")
+        config = dict(defaults, dt_s=params.dt_s, plant=dict(defaults["plant"], integrator="rk4", friction=False))
+        if mpc_params(config) != to_dict(params):
+            parser.error("Live's explicit comparison MpcParams differ from the reference's")
         adapter.configure(config, dict(kind="reach", target_offset_m=[0., 0., 0.]))
         np.testing.assert_allclose(adapter.target, task.target_m, rtol=0, atol=1e-12)
         session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000.,

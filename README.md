@@ -360,18 +360,25 @@ You can also edit the start pose directly in the **3D viewport**, independently
 of the Joints tab's lock. While paused at the run start, click an arm link to
 show its joint's rotation ring, then drag
 the ring. Click the gripper or the small wireframe sphere between its fingers
-to translate the grasp point; position-only inverse kinematics moves the arm.
-Release to set the start pose once. **Escape** during a drag restores the pose
+for the grasp handle: a pose with a gripper glyph. Dragging it translates the
+grasp point in world axes and keeps the gripper's orientation; **R** switches to
+rotation rings about the handle's own axes, which keep the grasp point, and
+**T** (or **G**) back to translation. Inverse kinematics for position and
+orientation moves the arm; hold **Shift** while translating to let the
+orientation follow freely (position only), which takes effect at once and
+keeps the orientation reached when released. Release to set the start pose once. **Escape** during a drag restores the pose
 without applying it; otherwise Escape or an empty click hides the handles.
 Drag empty space to orbit as usual. Selecting the gold task anchor deselects
 the arm handles, and vice versa.
 
 An unreachable grasp request shows a dashed tether to the nearest reachable
-point found; releasing snaps the handle there. Joint rings use the raw URDF
+point found and, dashed, the gripper glyph of the pose achieved; an orientation
+the arm cannot reach also shows its remaining angle next to the handle.
+Releasing snaps the handle to the achieved pose, orientation included. Joint rings use the raw URDF
 limits. IK keeps joints inside the MPC planning box when they started inside;
 joints already outside may use their raw limits. Amber link outlines flag a
 start pose outside the planning box. This edits a kinematic pose and performs
-no collision check. Grasp translation has no orientation control. A small
+no collision check. Holding Shift during grasp translation frees orientation. A small
 **IK** badge appears if the displayed model cannot match the recorded grasp
 frame; its tooltip explains why translation is unavailable. Joint rings remain
 usable. Playback and recorded comparison arms are read-only.
@@ -414,7 +421,15 @@ are available within backend limits; they may make calculation slower than 1×.
 The N, interval and horizon inputs sit together: horizon is `(N − 1) × interval`.
 Editing either time input updates the other using the selected compiled N.
 
-Choose Reach or Figure eight in the task selector. Reach defaults to world-axis
+Choose Reach or Figure eight in the task selector. Reach also offers an
+**Orientation goal**: enable it to hold the displayed grasp orientation, then
+press **R** on the task handle to rotate it. Costs exposes running and terminal
+orientation weights alongside the position, joint-speed and torque weights.
+These controls construct the native MPC cost menu; zero-weight terms are omitted.
+Orientation error is shown in degrees and retained in freezes and replay plots.
+See [orientation goals and cost menus](docs/live-api.md#orientation-goal-and-cost-menus).
+
+ Reach defaults to world-axis
 offsets X = 0.15 m, Y = 0.2 m, Z = 0.2 m from the imported default reaching
 target; the reset controls restore these offsets. Each task retains its own
 position when switching; Figure eight also retains its rotation and dimensions.

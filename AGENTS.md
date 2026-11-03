@@ -140,7 +140,7 @@ follows the package API that experiments use, without shims.
   then sync its own uv environment and use Source Apply to restart the backend.
   Do not automatically track main or copy its uncommitted working changes.
   The older `tiago_mpc_vis_baseline` worktree remains retired.
-- **Current package API (Felix, 2026-10-28):** stable base is `7fa9c75` (TIAGo main with GATO 0.1.7, advanced 2026-11-03): its settings follow GATO's defaults, so a None in `MpcParams` (warm_start, reset_rho_each_step, admm_linsys, linsys, the thresholds, the `AdmmLimits` fields) is offered as the choice "GATO default". An MPC's `params` are the values GATO resolved; the solver worker's configure reply sends them as `resolved`, `effective_settings.params` holds them, and the panel shows them as "GATO default (value)" while a field follows GATO. Friction holds coefficients only; `SimConfig.friction_law` and `MpcParams.friction_law` select evaluation separately, and predictor armature is explicit.
+- **Current package API (Felix, 2026-10-28):** stable base is `221acad` (TIAGo main with GATO 0.1.7 and native cost menus, advanced 2026-11-03): its settings follow GATO's defaults, so a None in `MpcParams` (warm_start, reset_rho_each_step, admm_linsys, linsys, the thresholds, the `AdmmLimits` fields) is offered as the choice "GATO default". An MPC's `params` are the values GATO resolved; the solver worker's configure reply sends them as `resolved`, `effective_settings.params` holds them, and the panel shows them as "GATO default (value)" while a field follows GATO. Friction holds coefficients only; `SimConfig.friction_law` and `MpcParams.friction_law` select evaluation separately, and predictor armature is explicit.
   Construct the plant with `SimConfig(q=..., qd=..., substep=..., friction=...,
   friction_law=..., integrator=...).build()`, then call `start(VirtualClock(sim_time_s))`.
   Friction is coefficient-only; `MpcParams.friction_law` and `SimConfig.friction_law`
@@ -434,13 +434,13 @@ to `Q_START`. The initial scene shows the arm at `Q_START`. "Start pose" is the 
 require a lock; the Joints tab's lock protects only its gauges and number fields.
 Changing that lock must not clear viewport selection or cancel a viewport drag.
 Keep the existing Live, paused, t = 0 eligibility. Click an arm link for its single native-axis joint
-ring, or the gripper/grasp handle for position-only browser IK. Both edit
+ring, or the gripper/grasp handle for browser pose IK. Both edit
 `plant.start_pose_rad`, preview locally and commit once on release, starting a
 new run at zero. Escape cancels a drag. Rings clamp to raw URDF limits; IK uses
 the planning box per joint when the drag began inside it, otherwise raw limits.
 Flag planning-box excursions in amber. An unreachable request gets a tether
-and snaps to the achieved grasp point on release. No orientation targets,
-collision checks or editing during playback/Replay. Keep the CPU FK/Jacobian
+and snaps to the achieved grasp point on release. Grasp pose editing supports orientation, with Shift during translation freeing it.
+There are no collision checks or editing during playback/Replay. Keep the CPU FK/Jacobian
 fixture and runtime recorded-grasp guard; metadata comes from the simulator
 source even when a separate solver profile is selected.
 
@@ -620,3 +620,14 @@ session, inspect loose changes/results and propose the exact paths and branches
 to remove, stating where useful work is retained. Do not remove worktrees or
 delete branches automatically; wait for approval. Do not interrupt ongoing tasks
 with cleanup proposals.
+
+## Native cost menus and orientation — Felix, 2026-11-03
+
+The viewer follows `tiago_mpc` main `221acad`: `SolverSettings` contains numerical
+settings, and `MpcParams.cost` is a native `CostMenu`. Standard tracking weights
+are viewer convenience controls (`config.cost_weights`) that call `default_cost`;
+the effective native menu is retained in recordings. Custom menus must keep their
+terms and do not receive convenience weight controls. See
+[Live orientation and cost menus](docs/live-api.md#orientation-goal-and-cost-menus).
+The current saved source selects main; the stable base worktree has also advanced
+to `221acad`. The new adapter requires the native menu API.

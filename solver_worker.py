@@ -19,7 +19,7 @@ import traceback
 
 import numpy as np
 
-from solver_process import receive_leased_message, send_message, model_contract
+from solver_process import receive_leased_message, send_message, model_contract, reference_from_wire
 
 DIAGNOSTICS = ("initial_merit", "final_merit", "min_merit", "step_size", "pcg_iters", "pcg_times_us",
                "ls_num_iters", "budget_hit", "linsys", "admm_r_prim", "admm_r_dual", "row_max_violation",
@@ -89,9 +89,10 @@ class SolverSession:
         """Mpc(params, find_binary(params)): loads a compiled module, never compiles."""
         from inspection_problem import capture_constraint_bounds
         from live_mpc import LIMIT_KEYS, mpc_bounds_from_rows, urdf_joint_limits
-        from tiago_mpc.record import from_dict, to_dict
+        from tiago_mpc.record import to_dict
         m = self.module
-        params = from_dict(params)
+        from native_cost import native_params, validate_native_cost
+        params = native_params(params)
         if not isinstance(params, m.MpcParams):
             raise ValueError("Solver configuration must be tagged MpcParams from tiago_mpc.record.to_dict")
         from worktree_settings import resolve_predictor
@@ -101,7 +102,8 @@ class SolverSession:
         else:
             resolution = dict(values=None, effective=to_dict(params), module=None)
         if max_sqp_iters is not None:
-            params = replace(params, solver=params.solver.replace(max_sqp_iters=max_sqp_iters))
+            params = replace(params, solver=replace(params.solver, max_sqp_iters=max_sqp_iters))
+        validate_native_cost(params)
         binary = m.find_binary(params)
         if binary is None:
             raise ValueError(f"Not compiled: N={params.N} {'with' if params.friction else 'without'} predictor "
@@ -138,7 +140,7 @@ class SolverSession:
         nothing and is skipped. Returns whether a warm-up ran and its wall time."""
         from tiago_mpc.interfaces import State
         mpc, x = self.mpc, solver_state(state)
-        reference = np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6)
+        reference = reference_from_wire(reference, mpc.N)
         seed = (x.tobytes(), reference.tobytes())
         if seed == self.seed:
             return dict(warmup=False, skipped=True, wall_s=0.)
@@ -154,7 +156,7 @@ class SolverSession:
     def solve(self, state, time_s, reference, origin, settings_version, measured_time_s=None):
         from tiago_mpc.interfaces import State
         mpc, x = self.mpc, solver_state(state)
-        reference = np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6)
+        reference = reference_from_wire(reference, mpc.N)
         if origin == "preview":
             self.reset(x, time_s, reference)
         self.seed = None  # the solve moves the controller on from its seed

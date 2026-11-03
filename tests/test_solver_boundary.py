@@ -17,7 +17,7 @@ import numpy as np
 from live_mpc import FIGURE8_DEFAULT_TASK, PLANT_DEFAULTS
 from live_presentation import mutable, render_plan, snapshot
 from solver_adapter import SimulatorAdapter
-from solver_process import receive_message, send_lease, send_message, wire_value
+from solver_process import receive_message, send_lease, send_message, wire_value, reference_to_wire
 from solver_worker import serve
 from tests.tiago_mpc_source import MPC_ROOT, live_probe, start_pose
 
@@ -125,7 +125,10 @@ class Remote:
 
 
 def config(**changes):
-    return {**live_probe()["defaults"], "N": 4, "plant": dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=start_pose()["default"]),
+    from native_cost import cost_weights, serialized_cost
+    defaults = live_probe()["defaults"]
+    defaults["cost"] = serialized_cost(4, cost_weights(defaults["cost"]))
+    return {**defaults, "N": 4, "plant": dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=start_pose()["default"]),
             **changes}
 
 
@@ -156,7 +159,7 @@ class BoundaryTests(unittest.TestCase):
                 configured = remote.request("configure", params=params)
                 self.assertEqual(configured["configuration"], params)
                 self.assertEqual(configured["configuration"]["type"], "MpcParams")
-                self.assertEqual(configured["configuration"]["solver"]["type"], "SolverParams")
+                self.assertEqual(configured["configuration"]["solver"]["type"], "SolverSettings")
                 self.assertEqual(configured["configuration"]["admm"]["type"], "AdmmLimits")
                 self.assertNotIn("ee_frame", configured["configuration"])
                 self.assertEqual(configured["model_identity"]["end_effector_frame"], GRASP_FRAME)
@@ -249,7 +252,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertEqual(expected["torque_nm"], np.arange(21.).reshape(3, 7).tolist())
                 from inspection_problem import captured_problem
                 problem = captured_problem(dict(context, **expected))
-                self.assertEqual(problem["reference_native"], simulator.reference.tolist())
+                self.assertEqual(problem["reference_native"], reference_to_wire(simulator.reference))
                 self.assertEqual(context["task_anchors"], mutable(simulator.task_anchors))
                 self.assertEqual(context["task_path_xyz"], simulator.task_path_xyz)
                 self.assertFalse(simulator.solve_snapshot("play", 8)["stats"]["controller_restarted"])

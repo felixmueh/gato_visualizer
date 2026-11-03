@@ -12,8 +12,8 @@ The single exporter lives in **`tiago_mpc/experiments/replay.py`**, on the
 producer side. Run it in the prepared uv environment; its package imports
 include Pinocchio and GATO's Python package, without ROS or a compiled CUDA solver. An experiment
 run writes `<run>/replay.npz` with `export_replay(record)`: execution-time
-states and commands, the task reference and every plan, with
-`provenance={"params": to_dict(MpcParams)}`. Other producers call
+states and commands, the task reference (with its orientation target when the
+task has one) and every plan, with `provenance={"params": to_dict(MpcParams)}`. Other producers call
 `save_replay` directly from the `tiago_mpc` checkout:
 
 ```python
@@ -73,6 +73,14 @@ it in every trajectory. Provenance values must be finite JSON.
 For a moving reference, add `reference_time_s` and pass an `(R, 3)` array as
 `reference_xyz_m`. Each timestamp uses the same clock as `time_s`. References
 are linearly interpolated, holding the nearest endpoint outside their range.
+
+An optional `reference_rotvec_rad`, the shape of `reference_xyz_m`, is the end
+effector's target orientation at each reference sample: a rotation vector (axis
+times angle, radians) in `reference_frame`, or a NaN row for no orientation
+target at that sample. `tiago_mpc`'s reference rows hold the same vectors in
+their orientation slots (`tm.ee_orientation(q)` gives the grasp frame's). Unlike
+positions, an orientation reference holds each sample until the next one
+(zero-order hold; the first sample before it).
 Optional `fixed_joints={"torso_lift_joint": 0.15}` records static context in
 native metres/radians. The viewer's resting left-arm display remains the
 default unless explicitly overridden.
@@ -134,6 +142,9 @@ References require `reference_frame` to be `base_footprint` or
 
 A static reference uses `reference_xyz_m` with shape `(3,)`. A moving reference
 uses both `reference_time_s` `(R,)` and `reference_xyz_m` `(R, 3)` (R ≥ 1).
+The optional `reference_rotvec_rad` has the shape of `reference_xyz_m`; each
+row is three finite values or three NaN (no orientation target there). It
+needs reference positions. Plan references have no orientation.
 
 `predictions` is a list of descriptors with required `origin_time_s`,
 `time_key`, `q_key`, and optional `id`, `label`, `stats`, `reference_xyz_key`,
@@ -234,7 +245,10 @@ API:
   Invalid uploads return `{accepted:false,error}`; collisions use HTTP 409.
 
 An uploaded scene includes full-root `reference_time_s`/`reference_xyz` for
-each trajectory when present, and `metadata.time_basis`. Prediction
+each trajectory when present, and `metadata.time_basis`. With an orientation
+reference, the recorded trajectory also has `orientation_error_rad` per state:
+the end effector's angle to the held orientation target, or null where it has
+none; Episode plots and aggregates read it. Prediction
 `metadata.recorded_start_s` records the explicit origin. With no reference,
 `target_xyz` is null. Start-pose scenes have `source.bootstrap=true` and no
 trajectories; they do not manufacture recordings or timestamps.
@@ -252,14 +266,19 @@ Removing a browser track does not delete its file. Keep to disk is deferred.
 `id`, `revision`, `label`, `time_basis`, `end_effector_frame`, `fixed_joints`,
 `joint_limits`, `model_warning`, `time_s`, `q`, `ee_xyz`, `reference_time_s`,
 `reference_xyz`, `arm_base` (4×4 row-major world transform of the first arm
-joint's parent), `plan_count` and `provenance`. It computes FK for recorded
+joint's parent), `plan_count` and `provenance`. A recording with an orientation
+reference adds `reference_rotvec` (world rotation vectors aligned with
+`reference_time_s`, null where a sample has no target) and `ee_rotvec` (the
+recorded end effector's world orientation at each state), from which the track
+draws its [gripper glyphs](presentation.md#orientation-goal-glyphs). It computes FK for recorded
 motion only, caches by catalog id and revision, and never switches the current
 Replay or discards its Run again results. Queries accept exactly one catalog
 id, never paths. `/api/replays/scene` still serves full Replay payloads.
 
 Freeze uses the selected checkout's unchanged `experiments.replay.save_replay`.
 It includes every committed state (`time_s`, native q and qd), applied torque,
-state-time targets as a moving reference, every controller plan with origin,
+state-time targets as a moving reference (with the segment's orientation goal
+at every state as `reference_rotvec_rad`, when it has one), every controller plan with origin,
 knot states/velocities/predicted torques and finite scalar statistics, joint
 limits, end-effector frame and the scene's fixed joints. Preview plans are
 excluded. Live world coordinates derive from the full URDF root,

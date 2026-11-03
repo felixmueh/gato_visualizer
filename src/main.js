@@ -30,6 +30,10 @@ import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry, setupJointViewToggle, setupJointLock } from "./joint-telemetry.js";
 import { setupReplayLibrary, linkedKeys, validateReference, referencePosition, playbackClock, isStartPoseScene } from "./replay-library.js";
 import { setupTargetGizmo } from "./target-gizmo.js";
+import { createOrbitLock } from "./orbit-lock.js";
+import { createGraspGlyph, setGlyphColor, setGlyphPose } from "./grasp-glyph.js";
+import { setupIkPreview } from "./ik-preview.js";
+import { quaternionToRotvec } from "./rotations.js";
 import { setupJointEditor } from "./joint-editor.js";
 import { setupViewCube } from "./view-cube.js";
 import { fitPerspectivePoints, objectWorldPoints, trajectoryFitPoints, TRAJECTORY_FIT_PADDING } from "./camera-fit.js";
@@ -63,6 +67,7 @@ const icons = {
   freeze: '<rect x="4" y="4" width="12" height="12" rx="2"/><path d="M8 20h10a2 2 0 0 0 2-2V8M10 7v6M7 10h6"/>',
   video: '<rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3M7 9l5 3-5 3Z"/>',
   onion: '<path d="M3 20a17 17 0 0 1 17-17M8 20A12 12 0 0 1 20 8M13 20a7 7 0 0 1 7-7"/>',
+  ik: '<path d="M4 20h5l3-7 5-3"/><circle cx="19.5" cy="8.5" r="2.5"/>',
   chevron: '<path d="m8 5 7 7-7 7"/>',
 };
 const icon = (name) =>
@@ -89,7 +94,7 @@ let camera;
 let controls;
 let viewCube;
 let targetGizmo;
-let jointEditor, jointPoseOwned = false, jointDraftKey;
+let jointEditor, jointPoseOwned = false, jointDraftKey, orbitLock;
 let scene;
 let robotBounds;
 let ready = false;
@@ -137,6 +142,13 @@ let livePrediction;
 let replayInspectionPrediction;
 let liveReference;
 let displayedLiveReference;
+// The orientation goal (gold) and the displayed arm's grasp frame (white), drawn while
+// the Live reference has an orientation goal.
+let liveGoalGlyph, liveGraspGlyph;
+// The IK preview and the reach goal's reachability: an unreachable goal turns red.
+let ikPreview, goalReachability = null;
+const unreachableColor = 0xff4b4b;
+const goalColor = () => goalReachability && !goalReachability.reachable ? unreachableColor : targetColor;
 let displayedLivePlan;
 let liveTaskStart;
 let lastCameraFit;
@@ -634,6 +646,8 @@ function animate(timestamp) {
   if (liveGroup?.userData.target) liveGroup.userData.target.visible = displayedLiveReference?.kind === 'figure8' || !targetGizmo?.active;
   updateSessionScene();
   jointEditor?.update();
+  updateLiveGlyphs();  // after every change of the displayed arm in this frame
+  ikPreview?.update();
   const ownsPose = Boolean(jointEditor?.ownsPose);
   if (ownsPose) {
     const pose = live.startPose, key = JSON.stringify([pose.value, pose.planning]);
@@ -653,6 +667,7 @@ function animate(timestamp) {
   updateOnionSkin();
   onionSkin?.sort(camera);
   trackScene?.sort(camera);
+  ikPreview?.sort(camera);
   onionSpike?.beforeRender(camera);
   renderer.render(scene, camera);
   workbench.update(); updateExpandedTimeline(); plotInspection.update(); comparisonPlots.update(); auxiliaryViews?.render(timestamp);
@@ -725,7 +740,7 @@ async function start() {
     auxiliaryViews = setupAuxiliaryViews({ scene, top: $('auxiliary-top'), right: $('auxiliary-right'),
       getBounds: () => { const bounds = visibleSceneBounds(robot, focusedTrack() ? liveGroup : pathGroup);
         if (focusedTrack() && trackScene?.group.visible) bounds.union(trackScene.bounds); return bounds; },
-      visible: () => workbench.auxiliaryVisible, beforeRender: viewCamera => { onionSkin?.sort(viewCamera); trackScene?.sort(viewCamera); onionSpike?.beforeRender(viewCamera); } });
+      visible: () => workbench.auxiliaryVisible, beforeRender: viewCamera => { onionSkin?.sort(viewCamera); trackScene?.sort(viewCamera); ikPreview?.sort(viewCamera); onionSpike?.beforeRender(viewCamera); } });
     robot.traverse((object) => {
       if (object.isMesh) {
         object.material = object.material.clone();
@@ -759,16 +774,19 @@ async function start() {
     live = setupLive({ presentationSettings: presentationSettings.settings, replayOnly: linkedKeys(location.href).length > 0, onReplayMode: () => {
       if (!inspectedPrediction?.pinned) inspectedPrediction = null;
       auxiliaryViews?.invalidate(); plotInspection.invalidate(); renderInspectedPrediction(); refreshFitAvailability();
-    }, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item), onFreeze: async item => {
+    }, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace,
+      graspOrientation: () => displayedGraspPose()?.rotvec ?? null, onSolverProfile: item => solverProfiles.handleEvent(item), onFreeze: async item => {
       await addSessionTrack(item.id, item, { replayOnly: false }); await replayLibrary?.refresh();
     } });
     session = createSession();
     session.updateMain({ endEffectorFrame: defaultData.end_effector_frame });
     live.setSession(session);
-    targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, getTarget: () => live.targetInteraction,
+    // One owner of controls.enabled for both gizmos (the camera bug of 2026-10-30).
+    orbitLock = createOrbitLock(controls, renderer.domElement);
+    targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, orbitLock, getTarget: () => live.targetInteraction,
       moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note'), onSelect: () => jointEditor?.deselect() });
-    jointEditor = setupJointEditor({ scene, camera, renderer, orbit: controls, robot, jointNames: defaultData.joint_names,
-      links: limitTint.links, taskGizmo: targetGizmo, guardBadge: $('grasp-frame-warning'),
+    jointEditor = setupJointEditor({ scene, camera, renderer, orbit: controls, orbitLock, robot, jointNames: defaultData.joint_names,
+      links: limitTint.links, taskGizmo: targetGizmo, guardBadge: $('grasp-frame-warning'), gapLabel: $('grasp-orientation-gap'), hint: $('grasp-handle-hint'),
       getPose: () => {
         const pose = live.startPose;
         if (!pose) return null;
@@ -779,6 +797,8 @@ async function start() {
       },
       previewPose: q => live.previewStartPose(q), commitPose: q => live.setStartPose(q),
       onSelect: () => targetGizmo.deselect(), getGhostHit: raycaster => onionSkin.pick(raycaster) });
+    ikPreview = setupIkPreview({ robot, scene, jointNames: defaultData.joint_names, button: $('live-ik-preview'),
+      getContext: liveReachContext, onReachability: showReachability });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Start pose',
       onLinkedItem: (item, { multiple }) => addSessionTrack(item.id, item, { linkedComparison: multiple }) });
     await live.enterLive();
@@ -809,6 +829,10 @@ async function start() {
       get pathInfo() { return { replay: (pathGroup?.children || []).filter(line => line.isLine2).map(pathLineInfo), live: (liveGroup?.children || []).filter(line => line.isLine2).map(pathLineInfo) }; },
       get liveReference() { return displayedLiveReference; },
       get liveReferenceTarget() { return liveGroup?.userData.target?.position.toArray() ?? null; },
+      get ikPreview() { return ikPreview?.snapshot ?? null; },
+      get goalColor() { return goalColor(); },
+      get liveGlyphs() { return Object.fromEntries([['goal', liveGoalGlyph], ['grasp', liveGraspGlyph]].map(([key, glyph]) =>
+        [key, glyph ? { visible: glyph.visible, position: glyph.position.toArray(), quaternion: glyph.quaternion.toArray() } : null])); },
       get replayTarget() { return referenceMarker?.position.toArray() ?? null; },
       get live() {
         return live;
@@ -826,6 +850,7 @@ async function start() {
         };
       },
       get cameraFit() { return lastCameraFit; },
+      get orbitLock() { return orbitLock?.snapshot ?? null; },
       get trajectory() {
         return trajectory;
       },
@@ -878,7 +903,9 @@ function changeMode(mode) {
       liveGroup = new THREE.Group();
       scene.add(liveGroup);
       liveTrace = createPathLine([], { color: 0xffffff, name: 'live-trace' });
-      liveGroup.add(liveTrace);
+      liveGoalGlyph = createGraspGlyph({ color: targetColor, name: 'live-goal-glyph' });
+      liveGraspGlyph = createGraspGlyph({ color: 0xffffff, name: 'live-grasp-glyph' });
+      liveGroup.add(liveTrace, liveGoalGlyph, liveGraspGlyph);
     }
   }
   refreshFitAvailability();
@@ -922,6 +949,58 @@ function renderInspectedPrediction() {
   refreshFitAvailability();
 }
 
+// The displayed arm's grasp frame in world coordinates, from the very robot model shown
+// (its grasp parent link and the simulator's fixed grasp origin), so it follows every
+// displayed pose: recorded, interpolated or a start pose being edited.
+function displayedGraspPose() {
+  const grasp = live?.endEffector, link = grasp && robot?.links[grasp.parent_link];
+  if (!link) return null;
+  link.updateWorldMatrix(true, false);
+  const offset = new THREE.Matrix4().compose(new THREE.Vector3().fromArray(grasp.xyz),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(...grasp.rpy, 'ZYX')), new THREE.Vector3(1, 1, 1));
+  const position = new THREE.Vector3(), quaternion = new THREE.Quaternion();
+  new THREE.Matrix4().multiplyMatrices(link.matrixWorld, offset).decompose(position, quaternion, new THREE.Vector3());
+  return { position: position.toArray(), rotvec: quaternionToRotvec(quaternion.toArray()) };
+}
+
+// The displayed Live reach goal for the IK preview, in world coordinates, with the start
+// pose as posture and seed and the MPC planning box as joint bounds; null otherwise.
+function liveReachContext() {
+  const reference = displayedLiveReference, pose = live?.startPose, grasp = live?.endEffector;
+  if (live?.mode !== 'live' || session?.replayOnly || reference?.kind !== 'reach' || !reference.target_xyz || !pose || !grasp) return null;
+  const baseLink = robot.joints[defaultData.joint_names[0]].parent;
+  baseLink.updateWorldMatrix(true, false);
+  return { target: reference.target_xyz, orientation_rotvec: reference.orientation_rotvec ?? null, start: pose.value,
+    current: live.displayedState?.q, lower: pose.planning.lower, upper: pose.planning.upper, setup: live.setupPhase,
+    endEffector: grasp, base: baseLink.matrixWorld.clone() };
+}
+
+function showReachability(result) {
+  goalReachability = result;
+  const color = goalColor();
+  liveGroup?.userData.target?.material.color.set(color);
+  if (liveGoalGlyph) setGlyphColor(liveGoalGlyph, color);
+  targetGizmo?.setColor(color);
+  const note = $('target-reach-note');
+  note.hidden = !result || result.reachable;
+  if (note.hidden) return;
+  const angle = result.orientation_gap_rad == null ? '' : `, ${(result.orientation_gap_rad * 180 / Math.PI).toFixed(1)}°`;
+  note.textContent = `No exact IK solution: ${(result.gap_m * 1000).toFixed(1)} mm${angle} short`;
+  note.title = `The nearest grasp pose inverse kinematics found within the MPC planning box (${result.seeds} seeds; ` +
+    'reached means within 2 mm and 1°). A kinematic check without collisions; not a proof.';
+}
+
+// Once per animation frame: the goal follows the displayed reference, the grasp glyph the arm.
+function updateLiveGlyphs() {
+  if (!liveGoalGlyph) return;
+  const goal = displayedLiveReference?.orientation_rotvec;
+  if (!setGlyphPose(liveGoalGlyph, displayedLiveReference?.target_xyz, goal)) { liveGraspGlyph.visible = false; return; }
+  const grasp = displayedGraspPose();
+  setGlyphPose(liveGraspGlyph, grasp?.position, grasp?.rotvec);
+  // A selected grasp handle draws this pose with its own glyphs.
+  if (jointEditor?.mode === 'grasp') liveGraspGlyph.visible = false;
+}
+
 function showLiveReference(reference) {
   if (!liveGroup) return;
   auxiliaryViews?.invalidate();
@@ -932,7 +1011,7 @@ function showLiveReference(reference) {
   liveReference = liveGroup.userData.target = undefined;
   if (reference) {
     liveReference = makeLiveLine(reference.points, targetColor, true);
-    liveGroup.userData.target = makeMarker(reference.target_xyz, targetColor, 0.022, true);
+    liveGroup.userData.target = makeMarker(reference.target_xyz, goalColor(), 0.022, true);
     liveGroup.add(liveReference, liveGroup.userData.target);
   }
   refreshFitAvailability();

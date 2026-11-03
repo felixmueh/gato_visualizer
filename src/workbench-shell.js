@@ -23,7 +23,7 @@ export function workbenchShell(icon) {
           <div class="target-offsets">${['X', 'Y', 'Z'].map((axis, i) => `<label>${axis}<input id="target-offset-${i}" aria-label="Target ${axis} offset in metres" type="number" step="0.01" value="0"></label>`).join('')}</div>
           <div id="live-task-parameters"></div>
           <button id="target-move" class="secondary-action" disabled>Move in viewport</button>
-          <p id="target-move-note" class="settings-note"></p><p id="live-task-note" class="settings-note"></p>
+          <p id="target-move-note" class="settings-note"></p><p id="target-reach-note" class="settings-note reach-note" hidden></p><p id="live-task-note" class="settings-note"></p>
         </details>
         <details class="execution-settings settings-group" open><summary>Execution timing</summary>
           <div class="execution-rate-row" aria-label="Execution rates and periods">
@@ -60,6 +60,8 @@ export function workbenchShell(icon) {
     </aside>
     <main class="main">
       <section class="viewport" id="viewport" aria-label="Interactive 3D robot workspace">
+        <p id="grasp-handle-hint" class="grasp-handle-hint" role="status" hidden></p>
+        <span id="grasp-orientation-gap" class="grasp-orientation-gap" role="status" title="Orientation the arm could not reach: the angle between the grasp handle and the achieved grasp frame" hidden></span>
         <div class="viewport-top">
           <button id="left-sidebar-toggle" class="viewport-tool" aria-label="Hide settings sidebar" aria-expanded="true" aria-controls="left-sidebar" title="Toggle settings sidebar">${icon('panelLeft')}</button>
           <div class="camera-controls"><span id="grasp-frame-warning" class="grasp-frame-warning" role="status" title="" hidden>IK</span><button id="source-settings-open" title="Settings" aria-label="Settings">${icon('settings')}</button><button id="animation-export-open" title="Export animation" aria-label="Export animation" aria-haspopup="dialog" disabled>${icon('video')}</button><button id="camera-home" title="Fit robot" aria-label="Fit robot">${icon('robot')}</button><button id="camera-arm" title="Fit trajectory" aria-label="Fit trajectory">${icon('focus')}</button><button id="right-sidebar-toggle" aria-label="Hide inspection sidebar" aria-expanded="true" aria-controls="right-sidebar" title="Toggle inspection sidebar">${icon('panelRight')}</button></div>
@@ -90,6 +92,7 @@ export function workbenchShell(icon) {
           <button id="live-freeze" class="transport-button" disabled aria-label="Freeze for comparison" title="Freeze for comparison">${icon('freeze')}</button>
         </div>
         ${ghostControl('live', icon)}
+        <button id="live-ik-preview" class="transport-button ik-preview-toggle" aria-label="IK preview of the final pose" aria-pressed="true" data-ik-preview="setup">${icon('ik')}</button>
         <button id="live-timeline-expand" class="transport-button timeline-expand" aria-label="Expand timeline" aria-expanded="false" aria-controls="expanded-timeline" title="Expand timeline">${icon('chevron')}</button>
         <div hidden><input id="live-continue" type="checkbox"><button id="live-preview">Preview</button><button id="live-cancel">Cancel calculation</button><button id="live-history-latest">Go latest</button></div>
       </section>
@@ -113,7 +116,7 @@ export function workbenchShell(icon) {
       <section id="inspection-episode" class="inspection-panel" role="tabpanel" aria-labelledby="inspection-tab-episode" hidden>
         <div id="episode-plots"></div><div hidden>
         <div class="live-metrics"><div class="metric-heading"><span id="live-status">IDLE</span><span id="live-playback-rate">Paused</span></div><div class="timing-legend" aria-label="History timing colors"><span><i class="interval-key red"></i>MPC over budget</span><span><i class="interval-key yellow"></i>Simulation / combined</span></div><h2 id="live-plan-label">Waiting for a prediction</h2>
-          <div class="solver-stats"><div><span>Solve wall</span><strong><b id="live-solve">—</b> ms</strong></div><div><span>SQP / PCG</span><strong><b id="live-sqp">—</b> / <b id="live-pcg">—</b></strong></div><div><span>ADMM / linear</span><strong><b id="live-admm">—</b> / <b id="live-linsys">—</b></strong></div><div><span>Row violation</span><strong id="live-violation">—</strong></div><div><span>Target distance</span><strong id="live-distance">—</strong></div><div><span>Calculation RTF</span><strong id="live-rtf">—</strong></div><div><span>Simulation time</span><strong id="live-sim-time">0.00</strong></div></div>
+          <div class="solver-stats"><div><span>Solve wall</span><strong><b id="live-solve">—</b> ms</strong></div><div><span>SQP / PCG</span><strong><b id="live-sqp">—</b> / <b id="live-pcg">—</b></strong></div><div><span>ADMM / linear</span><strong><b id="live-admm">—</b> / <b id="live-linsys">—</b></strong></div><div><span>Row violation</span><strong id="live-violation">—</strong></div><div><span>Target distance</span><strong id="live-distance">—</strong></div><div id="live-orientation-stat" hidden><span>Orientation error</span><strong id="live-orientation-error" title="Angle between the grasp frame and the orientation goal">—</strong></div><div><span>Calculation RTF</span><strong id="live-rtf">—</strong></div><div><span>Simulation time</span><strong id="live-sim-time">0.00</strong></div></div>
           <p id="live-rates" class="settings-note"></p><p id="live-history-window" class="settings-note"></p><p id="live-horizon" class="settings-note"></p><p id="live-arrival" class="settings-note"></p><p id="live-restarted" class="settings-note" hidden>Controller restarted</p><p id="live-history-note" class="settings-note"></p>
         </div>
         <div class="replay-metrics"><h2 id="playback-title">Motion timeline</h2><span id="playback-kind" class="eyebrow">RECORDED MOTION</span><span id="playback-state">READY TO LOAD</span><div class="trajectory-kind" id="trajectory-kind"></div><p id="trajectory-description" class="settings-note"></p><p id="timing-note" class="settings-note"></p>

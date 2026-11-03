@@ -229,6 +229,68 @@ finishes. Playback of retained data does not defer plots. An already submitted
 CPU job can finish, but its stale response is ignored. See
 [comparison plotting](plot-api.md#comparison-plots).
 
+## Orientation goal glyphs
+
+A reach with an [orientation goal](live-api.md#orientation-goal) draws two
+gripper glyphs in the Live view: the goal at the target point in gold, and the
+displayed arm's grasp frame in white. Each glyph has a 7 cm stem along the grasp
+frame's approach axis, ending at the grasp point; a crossbar of ±4.5 cm along
+the fingers' opening direction; and a knob at the bar's +y end, which shows a
+half turn about the approach axis that the symmetric bar alone would hide. The
+axes come from the full URDF: the grasp frame (`arm_right_grasp_joint`) sits
+139 mm along `arm_right_tool_link`'s z without rotation, so the gripper
+approaches along +z, and the finger joints move the fingertip pads along that
+link's y (±51 mm open, ±16 mm closed). Glyphs draw through the arm.
+
+The goal glyph follows the draft while the goal is edited. The grasp glyph is
+read from the displayed robot model, so it follows every shown pose: recorded,
+interpolated or a start pose being edited. The Live panel shows the displayed
+state's **Orientation error** (degrees) next to Target distance while the
+settings or the displayed run have a goal.
+
+Task setup's **Orientation goal** checkbox switches the goal. Switching it on
+starts from the goal last switched off on this page, otherwise from the grasp
+frame's displayed orientation; it never moves the arm. With the goal on, **R**
+selects the task gizmo's rotation about the goal's own axes, so the rings line
+up with the gold glyph; **T** and **G** translate as before. The two orientation
+weights under Costs are disabled while the goal is off.
+
+A replay track whose recording has an orientation reference draws the same pair
+in the track colour: the goal dashed, held from the latest reference sample, and
+the recorded grasp frame solid, interpolated along the shortest rotation between
+recorded states.
+
+## IK preview and unreachable goals
+
+The **IK preview** button sits beside the onion-skin button. It cycles **setup
+only** (default), off and on, and remembers the choice in browser storage (in a
+try/catch, like the onion skin). Its ghost arm, in the goal's gold at 30 %
+opacity and never pickable, shows an inverse-kinematics pose that reaches the
+displayed Live reach goal: position, plus the orientation goal when that is on;
+without it, position only with the posture term toward the start pose. It is a
+kinematic pose, not the MPC's predicted final pose, as the button's tooltip says.
+**Setup only** shows it while Live is set up: not playing, with the displayed
+state at the run start (t = 0, as for start-pose editing). It is not shown in
+Replay mode, whose recordings have their own references, nor for a figure eight.
+
+The same check colours the goal. A reach goal is reachable when some seed brings
+the grasp frame within 2 mm and, with an orientation goal, 1° (the grasp
+handle's thresholds), with every joint inside the MPC planning box (URDF range
+less `joint_margin_rad`), the bounds the MPC itself plans within. Otherwise the
+goal marker, its glyph and the gizmo anchor turn red (`0xff4b4b`), whatever the
+preview setting, and Task setup reads "No exact IK solution: … mm, …° short",
+the nearest pose found. Collisions are not checked.
+
+Each seed runs `solveGraspIk` until it reaches the goal, converges, stalls or
+improves the weighted error by less than 0.1 mm per call (at most 40 calls); a
+seed ending within 2 cm is polished without the posture term at 5 mm damping.
+Seeds: the last solution, the start pose, the displayed pose, the middle of the
+bounds and two fixed spreads; the first seed that reaches the goal ends the
+check. Unreachable therefore means no seed reached it, not a proof. While the goal, the
+orientation goal or the start pose changes (gizmo or start-pose drags), a quick
+check of the last solution and the start pose runs at most every 120 ms; 250 ms
+after the last change the full check follows. `window.__motionStudio.ikPreview` and `.goalColor` expose the state.
+
 ## Viewport start-pose editing
 
 Viewport editing needs no lock. The Joints tab's remembered lock, initially
@@ -243,31 +305,54 @@ Escape cancels the draft. Empty clicks deselect. Ordinary drags still orbit.
 
 Click an arm link for its joint ring: rotation about that joint's local axis,
 clamped to raw URDF limits. Joint 6 keeps its native negative axis. Click the
-gripper or wireframe grasp sphere for world-axis translation. Task, ring and
-grasp selections exclude each other. A gizmo consumes its pointer interaction;
+gripper or wireframe grasp sphere for the grasp handle, a pose: translation in
+world axes (**T** or **G**, the default), which holds the handle's orientation,
+or rotation rings in the handle's own axes (**R**), which hold its position. A
+new selection starts with translation. While the grasp handle is selected these
+keys belong to it, not to the task gizmo. Gizmo presses never move the camera:
+`src/orbit-lock.js` disables orbiting before OrbitControls sees a press on a task
+or editor handle, counts the tools' holds, and lets orbiting resume only after
+that button is released, even when the drag ends early (for example when Live
+turns busy and the handles become unavailable). Holding **Shift** during a translate
+drag frees the orientation (position-only IK with the posture term, as before
+the handle had an orientation): pressing or releasing it switches at once from
+the current pose; while free the handle follows the orientation the arm reaches,
+and after Shift it holds that orientation. Shift does nothing in a rotate drag.
+A hint line at the bottom of the viewport names the selected handle's keys. Task, ring and grasp selections
+exclude each other. A gizmo consumes its pointer interaction;
 otherwise the nearest solid/ghost surface decides between selection and seeking.
 Recorded comparison arms are never editable. Top/Right views show the same
 handles; interaction remains in the main viewport.
 
 The grasp sphere and dashed tether use text white (`0xe7edf5`); the sphere is
 2 cm in radius, distinct from the recorded marker and gold task anchor. Both
-controls have size 0.6. A gap of at least 2 mm shows the tether to the achieved
-point. Releasing snaps to that point, the nearest reachable point found from
-the warm start, without claiming a global optimum. Amber outlines flag joints
+controls have size 0.6. The selected handle carries a
+[gripper glyph](#orientation-goal-glyphs) of the requested pose in the same tone;
+the white Live grasp glyph is hidden meanwhile. A gap of at least 2 mm shows the
+tether to the achieved point, and a gap of 2 mm or 1° shows the achieved pose as a
+dashed glyph. An orientation gap of 1° or more also shows its angle, in degrees,
+next to the handle. Releasing snaps the handle to the achieved pose, position and
+orientation, the nearest reachable pose found from the warm start, without
+claiming a global optimum. Amber outlines flag joints
 outside the MPC planning box independently of the optional raw-limit tint.
 
-Position-only damped least squares runs once per animation frame, up to 16
-iterations, with 0.04 m damping, a 0.05 m task-error clamp, 0.05 rad maximum
-joint step, 0.1 null-space posture gain and 0.1 mm convergence tolerance. The
-previous solution seeds each frame; posture stays near the drag-start pose.
-Deterministic backtracking and a task-only fallback prevent the damped posture
-term from increasing the distance or blocking final convergence. Each joint
-uses planning bounds when it began inside them, raw bounds otherwise. There is
-no gripper orientation or collision constraint.
+Damped least squares on the handle's full pose runs once per animation frame:
+a six-dimensional error, the position gap in metres and then the rotation vector
+to the handle's orientation (world frame) in radians times 0.1 m, so 1 rad weighs
+as much as 10 cm and 1° as 1.7 mm. Up to 16 iterations, 0.04 m damping, a 0.05 m
+clamp on that error, 0.05 rad maximum joint step, 0.1 null-space posture gain, and
+convergence below 1e-4 m of weighted error (0.1 mm and 1 mrad). The previous
+solution seeds each frame; posture stays near the drag-start pose. Deterministic
+backtracking and a task-only fallback prevent the damped posture term from
+increasing the weighted error or blocking final convergence; a frame that cannot
+reduce it stops as stalled. Each joint uses planning bounds when it began inside
+them, raw bounds otherwise. Out of reach, the weighting decides the compromise
+between position and orientation. There is no collision constraint.
 
 Browser FK uses the full display URDF and the simulator's schema grasp origin.
 A recorded-state comparison checks the world grasp position within 0.1 mm and
-the frame identity. Missing/inconsistent data disables grasp translation and
+the frame identity. Missing/inconsistent data disables the grasp handle and
 shows an IK badge with the reason in its tooltip; joint rings remain usable.
 `window.__motionStudio.jointEdit` exposes the guard distance, draft, selection,
-achieved/requested point, gap and projected handles for browser checks.
+grasp tool, achieved/requested position and orientation, both gaps and projected
+handles and rings for browser checks.

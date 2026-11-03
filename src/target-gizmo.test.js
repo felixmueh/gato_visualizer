@@ -19,17 +19,22 @@ test('drag targets respect the API offset range and reject invalid coordinates',
 });
 
 
-test('task shortcuts support world movement and figure-eight rotation and scaling without stealing typing', () => {
-  assert.equal(taskGizmoShortcut({key: 'G'}, 'reach'), 'translate');
-  assert.equal(taskGizmoShortcut({key: 'T'}, 'reach'), 'translate');
-  assert.equal(taskGizmoShortcut({key: 'R'}, 'figure8'), 'rotate');
-  assert.equal(taskGizmoShortcut({key: 's'}, 'figure8'), 'scale');
-  assert.equal(taskGizmoShortcut({key: 'Escape'}, 'figure8'), 'deselect');
-  assert.equal(taskGizmoShortcut({key: 's'}, 'reach'), null);
-  for (const tagName of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(taskGizmoShortcut({key: 's', target: {tagName}}, 'figure8'), null);
-  for (const tagName of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(taskGizmoShortcut({key: 't', target: {tagName}}, 'figure8'), null);
-  assert.equal(taskGizmoShortcut({key: 'r', target: {isContentEditable: true}}, 'figure8'), null);
-  assert.equal(taskGizmoShortcut({key: 's', ctrlKey: true}, 'figure8'), null);
+test('task shortcuts offer the target\'s own tools without stealing typing', () => {
+  const figure8 = ['translate', 'rotate', 'scale'], reach = ['translate'], goal = ['translate', 'rotate'];
+  assert.equal(taskGizmoShortcut({key: 'G'}, reach), 'translate');
+  assert.equal(taskGizmoShortcut({key: 'T'}, reach), 'translate');
+  assert.equal(taskGizmoShortcut({key: 'R'}, figure8), 'rotate');
+  assert.equal(taskGizmoShortcut({key: 's'}, figure8), 'scale');
+  assert.equal(taskGizmoShortcut({key: 'Escape'}, figure8), 'deselect');
+  assert.equal(taskGizmoShortcut({key: 's'}, reach), null);
+  assert.equal(taskGizmoShortcut({key: 'r'}, reach), null);  // position only: nothing to rotate
+  assert.equal(taskGizmoShortcut({key: 'r'}, goal), 'rotate');  // a reach with an orientation goal
+  assert.equal(taskGizmoShortcut({key: 's'}, goal), null);
+  assert.equal(taskGizmoShortcut({key: 't'}), 'translate');
+  for (const tagName of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(taskGizmoShortcut({key: 's', target: {tagName}}, figure8), null);
+  for (const tagName of ['INPUT', 'SELECT', 'TEXTAREA']) assert.equal(taskGizmoShortcut({key: 't', target: {tagName}}, figure8), null);
+  assert.equal(taskGizmoShortcut({key: 'r', target: {isContentEditable: true}}, figure8), null);
+  assert.equal(taskGizmoShortcut({key: 's', ctrlKey: true}, figure8), null);
 });
 
 test('rotation normalization rejects malformed transforms and preserves unit orientation', () => {
@@ -47,7 +52,8 @@ test('real TransformControls preserve scale drag baseline and restore orbit on d
   const canvas = { style: {}, addEventListener() {}, removeEventListener() {}, hasPointerCapture: () => false,
     getBoundingClientRect: () => ({left: 0, top: 0, width: 800, height: 600}) };
   const scene = new Scene(), camera = new PerspectiveCamera(), orbit = {enabled: true};
-  let target = { available: true, kind: 'figure8', position_world: [.4, -.3, 1.2], quaternion_xyzw: [0, 0, 0, 1], size_m: [.24, .16] };
+  let target = { available: true, kind: 'figure8', tools: ['translate', 'rotate', 'scale'], rotation_space: 'world',
+    position_world: [.4, -.3, 1.2], quaternion_xyzw: [0, 0, 0, 1], size_m: [.24, .16] };
   const requests = [];
   let selections = 0;
   const gizmo = setupTargetGizmo({ scene, camera, renderer: {domElement: canvas}, orbit, getTarget: () => target,
@@ -73,6 +79,66 @@ test('real TransformControls preserve scale drag baseline and restore orbit on d
     assert.equal(selections, 4);
     gizmo.deselect(); assert.equal(control.object, undefined); assert.equal(gizmo.interactionActive, false);
     assert.equal(selections, 4); // Deselect never steals selection back.
+  } finally {
+    gizmo.dispose();
+    if (original === undefined) delete globalThis.document; else globalThis.document = original;
+  }
+});
+
+
+test('a reach with an orientation goal rotates the goal about its own axes and returns to translation without one', () => {
+  const original = globalThis.document;
+  const listeners = new Map();
+  globalThis.document = { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) };
+  const canvas = { style: {}, addEventListener() {}, removeEventListener() {}, hasPointerCapture: () => false,
+    getBoundingClientRect: () => ({left: 0, top: 0, width: 800, height: 600}) };
+  const scene = new Scene(), camera = new PerspectiveCamera(), orbit = {enabled: true};
+  const goal = [0, Math.SQRT1_2, 0, Math.SQRT1_2];
+  let target = { available: true, kind: 'reach', tools: ['translate', 'rotate'], rotation_space: 'local',
+    position_world: [.5, -.2, 1], quaternion_xyzw: goal, size_m: null };
+  const requests = [];
+  const gizmo = setupTargetGizmo({ scene, camera, renderer: {domElement: canvas}, orbit, getTarget: () => target,
+    moveTarget: p => p, transformTarget: pose => { requests.push(pose); return pose; } });
+  const control = scene.children.find(child => child.isTransformControlsRoot).controls;
+  const press = key => listeners.get('keydown')({key, preventDefault() {}});
+  try {
+    press('s'); assert.equal(control.object, undefined);  // no scaling for a reach
+    press('r'); assert.equal(control.mode, 'rotate'); assert.equal(control.space, 'local');
+    control.object.quaternion.toArray().forEach((value, i) => assert(Math.abs(value - goal[i]) < 1e-12));
+    control.object.quaternion.set(0, 0, Math.sin(.25), Math.cos(.25)); control.dispatchEvent({type: 'objectChange'});
+    assert.deepEqual(requests.at(-1), { quaternion_xyzw: [0, 0, Math.sin(.25), Math.cos(.25)] });
+    target = { ...target, tools: ['translate'], quaternion_xyzw: [0, 0, 0, 1] }; gizmo.update();
+    assert.equal(control.mode, 'translate'); assert.equal(control.space, 'world');  // the goal was switched off
+  } finally {
+    gizmo.dispose();
+    if (original === undefined) delete globalThis.document; else globalThis.document = original;
+  }
+});
+
+// Felix's camera bug (2026-10-30): OrbitControls starts its own gesture at the press, so
+// re-enabling it while that button is still held swings the camera with the pointer.
+test('a task drag that ends while the button is still held keeps the camera locked until the release', () => {
+  const original = globalThis.document;
+  const documentListeners = [], canvasListeners = [];
+  globalThis.document = { addEventListener: (name, fn, capture) => documentListeners.push({ name, fn, capture }),
+    removeEventListener: (name, fn) => { const i = documentListeners.findIndex(item => item.name === name && item.fn === fn); if (i >= 0) documentListeners.splice(i, 1); } };
+  const canvas = { style: {}, ownerDocument: globalThis.document, hasPointerCapture: () => false, setPointerCapture() {}, releasePointerCapture() {},
+    addEventListener: (name, fn, capture) => canvasListeners.push({ name, fn, capture }), removeEventListener() {},
+    getBoundingClientRect: () => ({left: 0, top: 0, width: 800, height: 600}) };
+  const emit = (listeners, name, event) => listeners.filter(item => item.name === name && item.capture).forEach(item => item.fn(event));
+  const scene = new Scene(), camera = new PerspectiveCamera(), orbit = {enabled: true};
+  let target = { available: true, kind: 'reach', tools: ['translate'], position_world: [.5, -.2, 1], quaternion_xyzw: [0, 0, 0, 1] };
+  const gizmo = setupTargetGizmo({ scene, camera, renderer: {domElement: canvas}, orbit, getTarget: () => target, moveTarget: p => p });
+  const control = scene.children.find(child => child.isTransformControlsRoot).controls;
+  try {
+    documentListeners.find(item => item.name === 'keydown').fn({ key: 't', preventDefault() {} });
+    emit(canvasListeners, 'pointerdown', { pointerId: 7, button: 0, isPrimary: true, clientX: 400, clientY: 300 });
+    control.dragging = true; assert.equal(orbit.enabled, false);
+    target = { ...target, available: false }; gizmo.update();  // e.g. Live turns gpu_busy mid-drag
+    assert.equal(control.dragging, false);
+    assert.equal(orbit.enabled, false, 'orbit came back while the button was still held');
+    emit(documentListeners, 'pointerup', { pointerId: 7, button: 0 });
+    assert.equal(orbit.enabled, true);
   } finally {
     gizmo.dispose();
     if (original === undefined) delete globalThis.document; else globalThis.document = original;

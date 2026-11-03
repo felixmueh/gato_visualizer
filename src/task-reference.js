@@ -27,5 +27,11 @@ export function taskReference(task, base, samples = 257) {
   const count = Math.max(5, Math.floor(samples));
   const points = task.kind === 'reach' ? [anchor] : Array.from({ length: count }, (_, i) =>
     taskReferencePoint(task, base, task.period_s * i / (count - 1)));
-  return { kind: task.kind, points, target_xyz: anchor, draft: true };
+  return { kind: task.kind, points, target_xyz: anchor, orientation_rotvec: orientationGoal(task), draft: true };
+}
+
+// The reach task's orientation goal for the grasp frame, a world rotation vector, or null.
+export function orientationGoal(task) {
+  const goal = task?.kind === 'reach' ? task.orientation_rad : null;
+  return Array.isArray(goal) && goal.length === 3 && goal.every(Number.isFinite) ? [...goal] : null;
 }

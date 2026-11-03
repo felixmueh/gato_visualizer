@@ -116,6 +116,11 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
                      reference_xyz_m=np.asarray([record["target_xyz"] for record in states]),
                      reference_frame=world_frame, plans=plans,
                      provenance=dict(params=deepcopy(header["problem_configuration"]), live=live))
+    from live_mpc import orientation_goal
+    goal = orientation_goal(header["settings"]["task"])
+    if goal is not None:
+        # The segment's orientation goal at every state time, a world-frame rotation vector.
+        arguments["reference_rotvec_rad"] = np.tile(np.asarray(goal, dtype=float), (len(states), 1))
     if sent:
         arguments.update(torque_nm=np.asarray([record["torque_nm"] for record in sent]),
                          torque_time_s=np.asarray([record["sim_time_s"] for record in sent]))

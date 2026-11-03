@@ -23,7 +23,7 @@ no SQP wall-time limit). Every editable Live field in the returned schema can
 be changed through this route, using the same validation as the UI:
 
 ```bash
-python3 scripts/control.py patch live '{"config":{"solver":{"q_cost":20,"max_sqp_iters":10},"max_sqp_time_s":null}}'
+python3 scripts/control.py patch live '{"config":{"cost_weights":{"position":20},"solver":{"max_sqp_iters":10},"max_sqp_time_s":null}}'
 python3 scripts/control.py patch live '{"execution":{"to_hz":50}}'
 python3 scripts/control.py patch live '{"task":{"kind":"figure8","width_m":0.2,"period_s":12}}'
 python3 scripts/control.py patch presentation '{"buffer_ms":400,"ghost_start_opacity_percent":65}'
@@ -54,7 +54,7 @@ compiled horizons and field definitions. Read these before choosing values.
 To ensure a change still applies to a version you inspected:
 
 ```bash
-python3 scripts/control.py patch live '{"config":{"solver":{"q_cost":20}}}' --expected-version 7
+python3 scripts/control.py patch live '{"config":{"cost_weights":{"position":20}}}' --expected-version 7
 ```
 
 A stale version returns HTTP 409 and the current snapshot under `settings`. The CLI does not

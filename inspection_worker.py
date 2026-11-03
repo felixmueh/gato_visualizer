@@ -52,7 +52,13 @@ def inspect_solve(session, payload):
     # reconstruction of historical private optimizer state is involved.
     state = problem["initial_state"]
     x = np.r_[state["q"], state["qd"]].astype(np.float32)
-    reference = np.asarray(problem["reference_native"], dtype=np.float32)
+    from solver_process import reference_from_wire
+    from tiago_mpc.costs import with_reference
+    reference = reference_from_wire(problem["reference_native"], mpc.N)
+    # Native menus ignore solve's separate reference argument, so retarget the
+    # captured objective before the cold solve, just as Mpc.request does.
+    solver.set_cost_menu(with_reference(mpc.params.cost, reference))
+    reference[:, 3:] = 0.
     solver.reset_dual()
     solver.reset_rho()
     # The cold controller's held-state seed has zero prediction error and no

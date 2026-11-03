@@ -197,8 +197,29 @@ class RobotKinematics:
             positions.append((self.data.oMf[self.ee_frame] * self.ee_offset).translation.copy())
         return finite_array(positions, "world end-effector positions", (len(arm_q), 3))
 
+    def ee_rotvecs(self, arm_q):
+        """World orientations of the end effector, rotation vectors log(R) (axis times angle)."""
+        rotations = []
+        q = self.neutral.copy()
+        for row in arm_q:
+            q[self.arm_indices] = row
+            pin.forwardKinematics(self.model, self.data, q)
+            pin.updateFramePlacements(self.model, self.data)
+            rotations.append(pin.log3((self.data.oMf[self.ee_frame] * self.ee_offset).rotation))
+        return finite_array(rotations, "world end-effector orientations", (len(arm_q), 3))
+
     def target_to_world(self, target):
         return self.world_from_torso.act(finite_array(target, "torso target", (3,)))
+
+    def rotation_to_world(self, rotvec):
+        """A torso-frame rotation vector in the world frame."""
+        rotation = pin.exp3(finite_array(rotvec, "torso orientation", (3,)))
+        return pin.log3(self.world_from_torso.rotation @ rotation)
+
+    def rotation_to_torso(self, rotvec):
+        """A world-frame rotation vector in the torso frame (tiago_mpc's ROOT_FRAME)."""
+        rotation = pin.exp3(finite_array(rotvec, "world orientation", (3,)))
+        return pin.log3(self.world_from_torso.rotation.T @ rotation)
 
 
 def sha256(path):
@@ -293,8 +314,38 @@ def replay_motion(replay, path, mpc_root, base_scene):
             times = replay.time_s[[0, -1]]
             points = np.repeat(points, 2, axis=0)
         result.update(reference_time_s=times.tolist(), reference_xyz=points.tolist())
+        rotations = _reference_rotations(replay.reference, kinematics)
+        if rotations is not None:
+            # The orientation reference per reference sample (null: none there) and the
+            # recorded end-effector orientation per state, both world rotation vectors.
+            result.update(reference_rotvec=rotations * 2 if replay.reference.time_s is None else rotations,
+                          ee_rotvec=kinematics.ee_rotvecs(replay.q).tolist())
     json.dumps(result, allow_nan=False)
     return result
+
+
+def _reference_rotations(reference, kinematics):
+    """World rotation vectors of a reference's orientation rows, None for a row without a
+    target; None for a reference without orientations."""
+    if reference.rotvec is None:
+        return None
+    convert = kinematics.rotation_to_world if reference.frame == "torso_lift_link" else (lambda row: row)
+    return [np.asarray(convert(row)).tolist() if np.isfinite(row).all() else None
+            for row in np.atleast_2d(reference.rotvec)]
+
+
+def orientation_errors(reference, kinematics, times, q):
+    """The end effector's angle to the orientation reference at each recorded state, None
+    where it has no target, or None without recorded orientations. An orientation reference
+    holds each sample until the next one (zero-order hold; the first sample before it)."""
+    rotations = _reference_rotations(reference, kinematics)
+    if rotations is None:
+        return None
+    from live_presentation import rotation_angle
+    held = (np.zeros(len(times), dtype=int) if reference.time_s is None else
+            np.clip(np.searchsorted(reference.time_s, times, side="right") - 1, 0, len(rotations) - 1))
+    return [None if rotations[i] is None else rotation_angle(rotations[i], actual)
+            for i, actual in zip(held, kinematics.ee_rotvecs(q))]
 
 
 def replay_scene(replay, path, mpc_root, base_scene):
@@ -332,6 +383,9 @@ def replay_scene(replay, path, mpc_root, base_scene):
 
     trajectories = [trajectory("recorded", replay.metadata.get("label", "Recorded motion"), "recorded",
                                replay.time_s, replay.q, replay.reference)]
+    if replay.reference is not None and replay.reference.rotvec is not None:
+        trajectories[0]["orientation_error_rad"] = orientation_errors(replay.reference, kinematics,
+                                                                      replay.time_s, replay.q)
     add_telemetry(trajectories[0], replay.qd_rad_s, replay.torque_nm, replay.torque_time_s)
     trajectories.extend(trajectory(plan.identifier, plan.label, "prediction", plan.time_s, plan.q,
                                    plan.reference or replay.reference, plan.origin_time_s, plan.stats)

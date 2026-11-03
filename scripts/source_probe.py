@@ -28,6 +28,7 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from source_runtime import KNOT_COUNTS, build_jobs, resolve_selection, source_identity
+from native_cost import native_params, with_knot_count, validate_native_cost
 
 
 def load_source(selection):
@@ -58,6 +59,16 @@ def load_source(selection):
             {field.name for field in fields(config)} or not callable(getattr(config, "build", None)) or
             "config" not in inspect.signature(plant).parameters):
         raise ValueError("The visualizer needs tiago_mpc.sim.SimConfig(..., friction_law=...).build() and SimPlant(config)")
+    from gato.cost_menu import CostMenu
+    solver_settings = getattr(mpc, "SolverSettings", None)
+    default_cost = getattr(importlib.import_module("tiago_mpc.costs"), "default_cost", None)
+    if (not is_dataclass(solver_settings) or not isinstance(mpc.TIAGO.solver, solver_settings)
+            or not isinstance(getattr(mpc.TIAGO, "cost", None), CostMenu)
+            or {"q_cost", "N_cost", "qd_cost", "u_cost"} & {field.name for field in fields(solver_settings)}
+            or not callable(default_cost) or not {"position", "terminal_position", "velocity", "torque",
+                                                   "orientation", "terminal_orientation"} <=
+            set(inspect.signature(default_cost).parameters)):
+        raise ValueError("The visualizer needs native MpcParams.cost CostMenu and SolverSettings (tiago_mpc 221acad or later)")
     if not is_dataclass(mpc.MpcParams) or "friction_law" not in {field.name for field in fields(mpc.MpcParams)}:
         raise ValueError("The visualizer needs MpcParams.friction_law (coefficient-only friction API)")
     start = getattr(plant, "start", None)
@@ -84,18 +95,29 @@ def load_source(selection):
 
 
 def variant(mpc, n, friction):
-    return replace(mpc.TIAGO, N=n, friction=friction)
+    return replace(with_knot_count(mpc.TIAGO, n), friction=friction)
+
+
+def find_variant(mpc, params, n):
+    """A custom menu only offers its captured horizon; never overwrite its objective."""
+    from tiago_mpc.record import to_dict
+    from native_cost import cost_weights
+    validate_native_cost(params)
+    if n != params.N and cost_weights(to_dict(params.cost)) is None:
+        return None
+    return mpc.find_binary(with_knot_count(params, n))
 
 
 _UNPINNED_SETTINGS = object()
 
 def requested_params(selection, mpc, params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
     """Resolve a draft, or retain already captured native params without current hooks."""
-    from tiago_mpc.record import from_dict, to_dict
+    from tiago_mpc.record import to_dict
     from worktree_settings import describe_settings, resolve_predictor, validate_description
-    base = mpc.TIAGO if params is None else from_dict(params)
+    base = mpc.TIAGO if params is None else native_params(params)
     if not isinstance(base, mpc.MpcParams):
         raise ValueError("params must be the selected package's serialized MpcParams")
+    validate_native_cost(base)
     if params is not None and source_settings is None:
         # Historical inspection/build supplies already-resolved native params.
         # Even importing a current provider would make history depend on its code.
@@ -106,6 +128,7 @@ def requested_params(selection, mpc, params=None, source_settings=None, source_s
     values = description["predictor"]["defaults"] if source_settings is None else source_settings
     expected = description["module"] if source_settings_module is _UNPINNED_SETTINGS else source_settings_module
     actual, captured = resolve_predictor(selection["mpc_root"], values, base, to_dict, expected_module=expected)
+    validate_native_cost(actual)
     return actual, captured, description
 
 
@@ -123,7 +146,7 @@ def probe(selection, tiago, mpc, kinematics, friction, params=None, source_setti
         ("off", replace(actual, friction=None)), ("on", replace(actual, friction=friction))]
     for mode, model_params in variants:
         for n in KNOT_COUNTS:
-            path = mpc.find_binary(replace(model_params, N=n))
+            path = find_variant(mpc, model_params, n)
             modules.append(dict(N=n, friction=mode == "on", status="compatible" if path else "missing",
                                 path=None if path is None else str(path)))
             if path is not None:
@@ -160,7 +183,7 @@ def model(selection, tiago, mpc, kinematics, friction, params=None, source_setti
         raise ValueError(f"Requested N must be among {', '.join(map(str, KNOT_COUNTS))}")
     available, binary = [], None
     for n in KNOT_COUNTS:
-        path = mpc.find_binary(replace(actual, N=n))
+        path = find_variant(mpc, actual, n)
         if path is not None:
             available.append(n)
             if n == actual.N:
@@ -199,6 +222,7 @@ def build(selection, loaded, ns, emit, rebuild=False, prediction_friction=False,
              or source_settings_module is not _UNPINNED_SETTINGS)
     actual = (requested_params(selection, mpc, params, source_settings, source_settings_module)[0] if exact else
               replace(mpc.TIAGO, friction=friction if prediction_friction else None))
+    validate_native_cost(actual)
     jobs = build_jobs()
     emit(dict(event="progress", stage="starting", jobs=jobs, N=ns, prediction_friction=prediction_friction,
               exact_availability=exact))
@@ -211,7 +235,7 @@ def build(selection, loaded, ns, emit, rebuild=False, prediction_friction=False,
         thread = threading.Thread(target=report, daemon=True)
         thread.start()
         try:
-            path = mpc.compile_binary(replace(actual, N=n),
+            path = mpc.compile_binary(with_knot_count(actual, n),
                                       use_cache=not rebuild, jobs=jobs)
         finally:
             stop.set()

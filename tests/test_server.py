@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
@@ -14,6 +15,36 @@ import pinocchio as pin
 from server import JOINT_NAMES, RobotKinematics, SourceError, decode_prediction, decode_prediction_telemetry, load_scene, make_server
 
 from tiago_mpc_source import MPC_ROOT, arm_urdf, start_pose
+
+
+class OrientationReferenceTests(unittest.TestCase):
+    def test_orientation_error_holds_targets_and_preserves_absent_rows(self):
+        from replay_format import Reference
+        from server import orientation_errors
+        reference = Reference(xyz=np.zeros((3, 3)), time_s=np.array([1., 2., 3.]),
+                              frame='base_footprint',
+                              rotvec=np.array([[0., 0., np.pi / 2], [np.nan] * 3, [0., 0., 0.]]))
+        kinematics = SimpleNamespace(ee_rotvecs=lambda q: np.zeros((len(q), 3)))
+        errors = orientation_errors(reference, kinematics, np.array([1., 1.5, 2., 3.]),
+                                    np.zeros((4, 7)))
+        np.testing.assert_allclose(errors[:2], [np.pi / 2] * 2)
+        self.assertIsNone(errors[2])
+        self.assertEqual(errors[3], 0.)
+
+    def test_reference_wire_preserves_absent_orientation_and_rejects_invalid_rows(self):
+        from solver_process import reference_from_wire, reference_to_wire
+        reference = np.array([[1., 2., 3., np.nan, np.nan, np.nan],
+                              [4., 5., 6., 0., .2, .3]])
+        wire = reference_to_wire(reference)
+        self.assertEqual(wire[0][3:], [None] * 3)
+        json.dumps(wire, allow_nan=False)
+        np.testing.assert_allclose(reference_from_wire(wire, 2), reference, rtol=1e-6)
+        for invalid in ([[1., 2., 3., None, 0., None]], [[1., 2., 3., np.inf, np.inf, np.inf]],
+                        [[None, 2., 3., 0., 0., 0.]]):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                reference_from_wire(invalid, 1)
+        with self.assertRaises(ValueError):
+            reference_to_wire([[1., 2., 3., np.inf, np.inf, np.inf]])
 
 
 class PredictionTests(unittest.TestCase):

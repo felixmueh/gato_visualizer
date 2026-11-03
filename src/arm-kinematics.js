@@ -1,4 +1,5 @@
-import { Euler, Matrix3, Matrix4, Quaternion, Vector3 } from 'three';
+import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
+import { relativeRotvec } from './rotations.js';
 
 export const DAMPING = 0.04; // m
 export const ITERATIONS_PER_FRAME = 16;
@@ -7,6 +8,11 @@ export const JOINT_STEP_MAX = 0.05; // rad per iteration
 export const POSTURE_GAIN = 0.1;
 export const POSITION_TOLERANCE = 1e-4; // m
 export const STEP_TOLERANCE = 1e-7; // rad
+// With an orientation goal the task error is six-dimensional: the position gap in metres,
+// then the rotation vector to the goal in radians times this length, so 1 rad weighs as
+// much as 0.1 m (1° as 1.7 mm). Damping, clamps and the tolerance then apply to one error in
+// metres; convergence (1e-4 m) means within 0.1 mm and 1 mrad (0.06°).
+export const ORIENTATION_LENGTH = 0.1; // m per rad
 
 const finiteVector = (value, count, name) => {
   if (!Array.isArray(value) || value.length !== count || !value.every(Number.isFinite)) throw new Error(`${name} must contain ${count} finite numbers`);
@@ -49,7 +55,8 @@ export function armChain(robot, { jointNames, grasp }) {
   return { jointNames: [...jointNames], joints, origins, axes, end, baseLink: joints[0].parent };
 }
 
-/** base is the world matrix of chain.baseLink, read at the start of each drag. */
+/** base is the world matrix of chain.baseLink, read at the start of each drag. The grasp
+ * frame's orientation is a quaternion [x, y, z, w] in base's frame. */
 export function forwardKinematics(chain, base, q) {
   finiteVector(q, chain.origins.length, 'Joint positions');
   const matrix = base.clone(), origins = [], axes = [], orientations = [];
@@ -62,7 +69,8 @@ export function forwardKinematics(chain, base, q) {
     matrix.multiply(turn.makeRotationFromQuaternion(rotation.setFromAxisAngle(axis.fromArray(chain.axes[i]), q[i])));
   }
   matrix.multiply(chain.end);
-  return { grasp: new Vector3().setFromMatrixPosition(matrix).toArray(), origins, axes, orientations };
+  return { grasp: new Vector3().setFromMatrixPosition(matrix).toArray(), rotation: new Quaternion().setFromRotationMatrix(matrix).toArray(),
+    origins, axes, orientations };
 }
 
 /** Position rows of the world-aligned geometric Jacobian, in native joint order. */
@@ -73,6 +81,11 @@ export function positionJacobian(fk) {
     column.toArray().forEach((value, row) => { result[row][i] = value; });
   });
   return result;
+}
+
+/** Rotation rows of the world-aligned geometric Jacobian: each joint's axis. */
+export function angularJacobian(fk) {
+  return [0, 1, 2].map(row => fk.axes.map(axis => axis[row]));
 }
 
 /** Keep joints already in the planning box inside it; allow raw limits otherwise. */
@@ -89,34 +102,65 @@ const norm = value => Math.hypot(...value);
 const difference = (a, b) => a.map((v, i) => v - b[i]);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-function inverseNormal(j, free, damping) {
-  const entries = Array.from({ length: 3 }, (_, r) => Array.from({ length: 3 }, (_, s) => j[r].reduce((sum, v, i) => sum + (free[i] ? v * j[s][i] : 0), r === s ? damping * damping : 0)));
-  return new Matrix3().set(...entries.flat()).invert();
+// The damped normal matrix J_f J_fᵀ + λ² I of the free joints' columns (3×3 or 6×6).
+function dampedNormal(j, free, damping) {
+  return j.map((row, r) => j.map((other, s) => row.reduce((sum, v, i) => sum + (free[i] ? v * other[i] : 0), r === s ? damping * damping : 0)));
 }
-const solve3 = (matrix, vector) => new Vector3().fromArray(vector).applyMatrix3(matrix).toArray();
+// Gaussian elimination with partial pivoting; the damped normal matrix is positive definite.
+function solveLinear(matrix, vector) {
+  const n = vector.length, a = matrix.map((row, i) => [...row, vector[i]]);
+  for (let c = 0; c < n; c++) {
+    let pivot = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(a[r][c]) > Math.abs(a[pivot][c])) pivot = r;
+    [a[c], a[pivot]] = [a[pivot], a[c]];
+    for (let r = c + 1; r < n; r++) {
+      const factor = a[r][c] / a[c][c];
+      for (let k = c; k <= n; k++) a[r][k] -= factor * a[c][k];
+    }
+  }
+  const x = Array(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) x[r] = (a[r][n] - a[r].slice(r + 1, n).reduce((sum, v, k) => sum + v * x[r + 1 + k], 0)) / a[r][r];
+  return x;
+}
 const transposeMultiply = (j, vector, free) => j[0].map((_, i) => free[i] ? j.reduce((sum, row, r) => sum + row[i] * vector[r], 0) : 0);
 
-/** One deterministic bounded DLS frame, warm-started by the preceding frame. */
-export function solveGraspIk(chain, base, { q: input, q0, target, lower, upper,
+/** One deterministic bounded DLS frame, warm-started by the preceding frame, toward a grasp
+ * position and, with orientation (a quaternion [x, y, z, w] in base's frame), the grasp
+ * frame's orientation too (ORIENTATION_LENGTH). gap_m is the position gap and
+ * orientation_gap_rad the angle to the orientation goal (null without one). */
+export function solveGraspIk(chain, base, { q: input, q0, target, orientation = null, lower, upper,
   damping = DAMPING, iterations = ITERATIONS_PER_FRAME, errorMax = ERROR_MAX,
   jointStepMax = JOINT_STEP_MAX, postureGain = POSTURE_GAIN,
-  tolerance = POSITION_TOLERANCE } = {}) {
+  tolerance = POSITION_TOLERANCE, orientationLength = ORIENTATION_LENGTH } = {}) {
   const count = chain.origins.length;
   for (const [value, name] of [[input, 'Joint positions'], [q0, 'Drag-start positions'], [lower, 'Lower bounds'], [upper, 'Upper bounds']]) finiteVector(value, count, name);
   finiteVector(target, 3, 'Grasp target');
-  if (!(damping > 0 && errorMax > 0 && jointStepMax > 0 && tolerance > 0 && postureGain >= 0 && Number.isInteger(iterations) && iterations >= 0) || ![damping, errorMax, jointStepMax, tolerance, postureGain].every(Number.isFinite)) throw new Error('Invalid IK options');
+  let goal = null;
+  if (orientation != null) {
+    finiteVector(orientation, 4, 'Grasp orientation');
+    const length = Math.hypot(...orientation);
+    if (!(length > 1e-12) || !Number.isFinite(length)) throw new Error('Grasp orientation must be a finite nonzero quaternion');
+    goal = orientation.map(v => v / length);
+  }
+  if (!(damping > 0 && errorMax > 0 && jointStepMax > 0 && tolerance > 0 && postureGain >= 0 && orientationLength > 0 && Number.isInteger(iterations) && iterations >= 0) || ![damping, errorMax, jointStepMax, tolerance, postureGain, orientationLength].every(Number.isFinite)) throw new Error('Invalid IK options');
   if (lower.some((v, i) => v > upper[i])) throw new Error('IK bounds must be ordered');
+  // The task error in metres: the position gap, then with an orientation goal the
+  // rotation vector to it (world frame) times orientationLength; the Jacobian rows match.
+  const residual = fk => goal ? [...difference(target, fk.grasp), ...relativeRotvec(goal, fk.rotation).map(v => v * orientationLength)]
+    : difference(target, fk.grasp);
+  const jacobian = fk => goal ? [...positionJacobian(fk), ...angularJacobian(fk).map(row => row.map(v => v * orientationLength))]
+    : positionJacobian(fk);
   let q = input.map((v, i) => clamp(v, lower[i], upper[i])), used = 0, stalled = false;
-  let fk = forwardKinematics(chain, base, q), gap = norm(difference(target, fk.grasp));
+  let fk = forwardKinematics(chain, base, q), residualNow = residual(fk), gap = norm(residualNow);
   for (; used < iterations && gap >= tolerance; used++) {
-    const j = positionJacobian(fk), error = difference(target, fk.grasp).map(v => v * Math.min(1, errorMax / gap));
-    const free = q.map((_, i) => Math.hypot(j[0][i], j[1][i], j[2][i]) > 1e-12);
+    const j = jacobian(fk), error = residualNow.map(v => v * Math.min(1, errorMax / gap));
+    const free = q.map((_, i) => Math.hypot(...j.map(row => row[i])) > 1e-12);
     let task, posture, normal;
     for (let activeSet = 0; activeSet <= count; activeSet++) {
-      normal = inverseNormal(j, free, damping);
-      task = transposeMultiply(j, solve3(normal, error), free);
+      normal = dampedNormal(j, free, damping);
+      task = transposeMultiply(j, solveLinear(normal, error), free);
       const toward = q.map((v, i) => free[i] ? postureGain * (q0[i] - v) : 0);
-      const correction = transposeMultiply(j, solve3(normal, j.map(row => row.reduce((sum, v, i) => sum + v * toward[i], 0))), free);
+      const correction = transposeMultiply(j, solveLinear(normal, j.map(row => row.reduce((sum, v, i) => sum + v * toward[i], 0))), free);
       posture = toward.map((v, i) => v - correction[i]);
       let changed = false;
       q.forEach((v, i) => {
@@ -134,7 +178,7 @@ export function solveGraspIk(chain, base, { q: input, q0, target, lower, upper,
       for (let backtrack = 0; backtrack < 10; backtrack++) {
         const scale = cap * 2 ** -backtrack;
         next = q.map((v, i) => clamp(v + scale * step[i], lower[i], upper[i]));
-        nextFk = forwardKinematics(chain, base, next); nextGap = norm(difference(target, nextFk.grasp));
+        nextFk = forwardKinematics(chain, base, next); nextGap = norm(residual(nextFk));
         const movement = Math.max(...difference(next, q).map(Math.abs));
         if (nextGap < gap - 1e-14 && (movement >= STEP_TOLERANCE || nextGap < tolerance)) { accepted = true; break; }
       }
@@ -142,8 +186,10 @@ export function solveGraspIk(chain, base, { q: input, q0, target, lower, upper,
     }
     if (!accepted) { stalled = true; used++; break; }
     const moved = Math.max(...difference(next, q).map(Math.abs));
-    q = next; fk = nextFk; gap = nextGap;
+    q = next; fk = nextFk; gap = nextGap; residualNow = residual(fk);
     if (moved < STEP_TOLERANCE) { stalled = true; used++; break; }
   }
-  return { q, achieved: fk.grasp, gap_m: gap, iterations: used, converged: gap < tolerance, stalled };
+  return { q, achieved: fk.grasp, achieved_quaternion: fk.rotation, gap_m: norm(difference(target, fk.grasp)),
+    orientation_gap_rad: goal ? norm(relativeRotvec(goal, fk.rotation)) : null, error_m: gap,
+    iterations: used, converged: gap < tolerance, stalled };
 }

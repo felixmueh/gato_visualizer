@@ -4,6 +4,8 @@ import { createPathLine } from './path-lines.js';
 import { sampleTrajectory } from './playback.js';
 import { TRACK_OPACITY as PREVIOUS_TRACK_OPACITY, TRACK_OUTSIDE_OPACITY as PREVIOUS_OUTSIDE_OPACITY } from './session.js';
 import { DEFAULT_GHOST_SETTINGS, sampleAtOrBefore } from './onion-skin.js';
+import { referencePosition } from './replay-library.js';
+import { createGraspGlyph, heldRotvec, interpolatedRotvec, setGlyphColor, setGlyphPose } from './grasp-glyph.js';
 export const TRACK_OPACITY = DEFAULT_GHOST_SETTINGS.opacityStart;
 export const TRACK_OUTSIDE_OPACITY = TRACK_OPACITY * (PREVIOUS_OUTSIDE_OPACITY / PREVIOUS_TRACK_OPACITY);
 
@@ -86,7 +88,13 @@ export function createTrackScene({ robot, scene, jointNames = [] }) {
         const index = sampleAtOrBefore(motion.time_s, time);
         return index < 0 ? null : { time: motion.time_s[index], q: [...fixedQ, ...motion.q[index]] };
       }) };
-    return { group: container, path, dot, base, motion,
+    // A recording with an orientation reference: its goal (dashed) and recorded grasp
+    // frame (solid) as gripper glyphs, both in the track colour.
+    const glyphs = motion.reference_rotvec && motion.ee_rotvec ? {
+      goal: createGraspGlyph({ color: track.color, dashed: true, opacity: TRACK_PATH_OPACITY, name: 'track-goal-glyph' }),
+      grasp: createGraspGlyph({ color: track.color, name: 'track-grasp-glyph' }) } : null;
+    if (glyphs) container.add(glyphs.goal, glyphs.grasp);
+    return { group: container, path, dot, base, motion, glyphs,
       poseNames, fixedQ, onionSource,
       reference: null, mainReference: undefined, referenceInitialized: false };
   }
@@ -133,6 +141,12 @@ export function createTrackScene({ robot, scene, jointNames = [] }) {
         record.mainReference = mainReference; record.referenceInitialized = true;
       }
       record.reference?.material.color.set(track.color);
+      if (record.glyphs) {
+        const { goal, grasp } = record.glyphs;
+        setGlyphPose(goal, referencePosition(motion, trackTime), heldRotvec(motion.reference_time_s, motion.reference_rotvec, trackTime));
+        setGlyphPose(grasp, sample.xyz, interpolatedRotvec(motion.time_s, motion.ee_rotvec, trackTime));
+        setGlyphColor(goal, track.color); setGlyphColor(grasp, track.color, Math.max(opacity, .6));
+      }
       if (shown && visible && track.display !== 'dot') poses.push({ id: track.id, time: trackTime, q: [...record.fixedQ, ...sample.q],
         jointNames: record.poseNames, color: track.color, opacity, base: record.base });
       sampled.push({ id: track.id, time: trackTime, sampledTime: Math.max(motion.time_s[0], Math.min(motion.time_s.at(-1), trackTime)),
@@ -160,6 +174,9 @@ export function createTrackScene({ robot, scene, jointNames = [] }) {
       dotCount: normalVisible ? sampled.filter(track => track.visible && track.display === 'dot').length : 0,
       pathCount: normalVisible ? [...records.values()].filter(record => record.group.visible && record.path.visible).length : 0,
       referenceCount: normalVisible ? [...records.values()].filter(record => record.group.visible && record.reference).length : 0,
+      glyphs: normalVisible ? [...records.entries()].filter(([, record]) => record.group.visible && record.glyphs).map(([id, { glyphs }]) =>
+        ({ id, goal: glyphs.goal.visible ? { position: glyphs.goal.position.toArray(), quaternion: glyphs.goal.quaternion.toArray() } : null,
+          grasp: glyphs.grasp.visible ? { position: glyphs.grasp.position.toArray(), quaternion: glyphs.grasp.quaternion.toArray() } : null })) : [],
       sampled: sampled.map(track => ({ ...track })), renderer: ghosts.snapshot }; },
   };
 }

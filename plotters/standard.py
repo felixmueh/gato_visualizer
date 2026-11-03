@@ -1,4 +1,6 @@
 """Bundled plots use the same public API as project-authored plots."""
+import math
+
 from gato_visualizer.plotting import (
     plot_episode, plot_solve, Joint, Number, Choice, Boolean, EpisodeView, SolveView,
     lines, series, table, unavailable, histogram, quantile, distance, path_length, peak,
@@ -22,6 +24,9 @@ def limit_guides(limits, mpc_bounds, quantity, joint):
                 guide = dict(axis='y', value=value, label=f"{name} {label.split()[0].lower()}")
                 guides.append(dict(guide, style='hard') if urdf else guide)
     return guides
+
+
+DEGREES = 180 / math.pi
 
 
 def scaled(value, factor=1000):
@@ -83,6 +88,16 @@ def episode_tracking_error(data: EpisodeView):
     return lines('End-effector tracking error', [series('Position error', [s['sim_time_s'] for s in data.states], values)], unit='mm', y_label='Position error')
 
 
+@plot_episode(id='episode.orientation_error', title='Grasp-frame orientation error', requires=('states',),
+              optional=('states.orientation_error_rad',))
+def episode_orientation_error(data: EpisodeView):
+    values = [scaled(state.get('orientation_error_rad'), DEGREES) for state in data.states]
+    if not any(v is not None for v in values):
+        return unavailable('Grasp-frame orientation error', 'No orientation goal or reference in this run.')
+    return lines('Grasp-frame orientation error', [series('Orientation error', [s['sim_time_s'] for s in data.states], values)],
+                 unit='deg', y_label='Angle to the orientation goal')
+
+
 @plot_episode(id='episode.joint', title='Recorded joint motion and bounds', requires=('states',),
               optional=('states.qd', 'states.torque_nm', 'joint_limits', 'mpc_bounds'),
               inputs={'joint': Joint(), 'quantity': Choice(('q', 'qd', 'torque_nm'), 'q', 'Quantity'), 'show_bounds': Boolean(True, 'Show URDF limits and MPC bounds')})
@@ -133,6 +148,10 @@ def episode_summary(data: EpisodeView):
             row('Recorded EE path length', path_length([s.get('ee_xyz') for s in states]), 'm'),
             row('Final target error', scaled(errors[-1]) if errors else None, 'mm'),
             row('Minimum target error', scaled(min((e for e in errors if e is not None), default=None)), 'mm')]
+    angles = [number(s.get('orientation_error_rad')) for s in states]
+    if any(angle is not None for angle in angles):  # only runs with an orientation goal
+        rows += [row('Final orientation error', scaled(angles[-1], DEGREES), 'deg'),
+                 row('Minimum orientation error', scaled(min((a for a in angles if a is not None), default=None), DEGREES), 'deg')]
     for key, label in [('mpc', 'MPC over-budget share'), ('physics', 'Physics over-budget share'), ('combined_only', 'Combined-only over-budget share')]:
         rows.append(row(label, shares[key]/covered*100 if covered else None, '%', 'Union of covered interval durations; MPC has precedence.'))
     return table('Episode aggregates', rows, notes=['Uses the host-selected analysis range. Timing is visualizer diagnostic evidence, not an experiment benchmark.'])

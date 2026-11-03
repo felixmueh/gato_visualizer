@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { taskReference, taskReferencePoint } from './task-reference.js';
+import { orientationGoal, taskReference, taskReferencePoint } from './task-reference.js';
 
 const task = { kind: 'figure8', target_offset_m: [.1, -.2, .3], width_m: .24, height_m: .16, period_s: 8 };
 const close = (actual, expected) => actual.forEach((value, i) => assert(Math.abs(value - expected[i]) < 1e-12));
@@ -28,4 +28,14 @@ test('reach uses its own base and malformed drafts do not render invented geomet
   assert.equal(taskReference(task, null), null);
   assert.equal(taskReference({ ...task, width_m: NaN }, [0,0,0]), null);
   assert.equal(taskReference({ ...task, orientation_xyzw: [0,0,0,0] }, [0,0,0]), null);
+});
+
+test('a reach draft carries its orientation goal; position-only reaches and figure eights carry none', () => {
+  const goal = [0, 0, .5];
+  const reach = taskReference({ kind: 'reach', target_offset_m: [0, 0, 0], orientation_rad: goal }, [.7, -.2, .9]);
+  assert.deepEqual(reach.orientation_rotvec, goal);
+  assert.notEqual(reach.orientation_rotvec, goal);  // a copy: editing the draft cannot move the drawn goal
+  assert.equal(taskReference({ kind: 'reach', target_offset_m: [0, 0, 0], orientation_rad: null }, [0, 0, 0]).orientation_rotvec, null);
+  assert.equal(taskReference({ ...task, orientation_rad: goal }, [0, 0, 0]).orientation_rotvec, null);
+  assert.equal(orientationGoal({ kind: 'reach', orientation_rad: [0, NaN, 0] }), null);
 });

@@ -132,7 +132,11 @@ kept out of JSON responses; plots load only the requested prediction.
 
 The visualizer retains ordinary solves' final q/v/u, initial state, exact
 reference, effective configuration, installed bounds/masks, model/source identity
-and available scalar traces. It does not retain their incoming warm trajectory
+and available scalar traces. Current configurations retain the native `CostMenu`
+and `SolverSettings`. Run again updates that captured menu with the exact captured
+reference before solving; absent orientation targets remain absent. Recordings
+using the previous `SolverParams` cost API remain viewable, but require their
+original MPC checkout to rerun. It does not retain their incoming warm trajectory
 or private optimizer state. Historical sources without complete captured inputs
 cannot be rerun safely and explain that limitation in the inspector.
 

@@ -140,7 +140,7 @@ class FrictionAdapterTests(unittest.TestCase):
             values = settings.describe()["predictor"]["defaults"]
             base = replace(tm.TIAGO, N=16, dt_s=.023, joint_margin_rad=.2, effort_fraction=.7,
                            velocity_fraction=.6, max_sqp_time_s=None, warm_start="hold",
-                           solver=tm.TIAGO.solver.replace(mu=3., u_cost=.0003))
+                           solver=replace(tm.TIAGO.solver, mu=3.), cost=tm.default_cost(16, torque=.0003))
             off = settings.build_predictor(values, base)
             self.assertEqual(off.armature, tm.ARMATURE_KG_M2)
             self.assertIsNone(off.friction)
@@ -152,6 +152,7 @@ class FrictionAdapterTests(unittest.TestCase):
             self.assertEqual(params.friction.viscous_nm_s_per_rad, tm.urdf_friction().viscous_nm_s_per_rad)
             self.assertEqual(replace(params, armature=base.armature, friction=base.friction,
                                      friction_law=base.friction_law), base)
+            self.assertIs(params.cost, base.cost)
             self.assertIs(params.solver, base.solver)
             self.assertIs(params.admm, base.admm)
             self.assertEqual(tm.from_dict(json.loads(json.dumps(tm.to_dict(params)))), params)

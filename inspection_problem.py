@@ -23,7 +23,11 @@ def captured_problem(plan):
     config = detached(dict(plan["problem_configuration"]))
     if config.get("type") != "MpcParams" or "solver_params" in config or "controller" in config:
         raise ValueError("Run again unavailable: pre-migration recording")
-    if (not isinstance(config.get("solver"), dict) or config["solver"].get("type") != "SolverParams"
+    if isinstance(config.get("solver"), dict) and config["solver"].get("type") == "SolverParams":
+        raise ValueError("Run again unavailable: recording uses the previous cost API; "
+                         "view its recorded motion or use its original tiago_mpc checkout")
+    if (not isinstance(config.get("solver"), dict) or config["solver"].get("type") != "SolverSettings"
+            or not isinstance(config.get("cost"), dict) or config["cost"].get("type") != "CostMenu"
             or not isinstance(config.get("admm"), dict) or config["admm"].get("type") != "AdmmLimits"):
         raise ValueError("Run again unavailable: captured MpcParams are incomplete")
     if ("friction_law" not in config or
@@ -43,9 +47,11 @@ def captured_problem(plan):
     if (isinstance(measured, bool) or not isinstance(measured, (int, float))
             or not math.isfinite(measured) or measured > initial["time_s"]):
         raise ValueError("Run again unavailable: invalid captured observation time")
-    reference = np.asarray(plan["reference_native"], dtype=float)
-    if reference.shape != (n, 6) or not np.isfinite(reference).all():
-        raise ValueError("Run again unavailable: exact native reference is missing or incompatible")
+    from solver_process import reference_from_wire
+    try:
+        reference_from_wire(plan["reference_native"], n)  # a null orientation slot: no target
+    except ValueError as error:
+        raise ValueError("Run again unavailable: exact native reference is missing or incompatible") from error
     limits = detached(dict(plan["joint_limits"]))
     for key in ("lower_position_rad", "upper_position_rad", "velocity_rad_s", "effort_nm"):
         array = np.asarray(limits.get(key), dtype=float)
@@ -67,7 +73,7 @@ def captured_problem(plan):
             raise ValueError("Run again unavailable: invalid captured constraint bounds")
         if len(group.get("active", [])) != n:
             raise ValueError("Run again unavailable: captured constraint activity mask is missing")
-    return dict(constraint_bounds_native=constraints, initial_state=initial, reference_native=reference.tolist(), problem_configuration=config,
+    return dict(constraint_bounds_native=constraints, initial_state=initial, reference_native=detached(plan["reference_native"]), problem_configuration=config,
                 joint_limits=limits, task=detached(dict(plan["task"])),
                 original_model_identity=detached(dict(plan.get("model_identity", {}))),
                 original_solver_profile=detached(dict(plan.get("solver_profile", {}))))

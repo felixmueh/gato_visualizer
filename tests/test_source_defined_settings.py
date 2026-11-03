@@ -9,11 +9,12 @@ import unittest
 from unittest.mock import Mock, patch
 
 from execution_bridge import ProcessLiveService
-from live_mpc import build_schema, validate_settings
+from live_mpc import build_schema, validate_settings, mpc_params
 from source_runtime import PROBE_SCRIPT, resolve_selection
 from tests.test_execution import FakeAdapter, FakeRenderer, fake_schema, fake_worker
 from tests.tiago_mpc_source import MPC_ROOT, live_probe, start_pose
 from worktree_settings import describe_settings, resolve_predictor, resolve_simulation
+from native_cost import with_knot_count
 
 
 def exact_fake_schema(root):
@@ -81,8 +82,7 @@ class SourceDefinedTests(unittest.TestCase):
             with patch("source_runtime.probe_selection", return_value=accepted) as probe:
                 self.assertTrue(live.refresh_compiled(live.active_profile, built))
             self.assertEqual(live.settings_snapshot()["available_N"], [16])
-            self.assertEqual(probe.call_args.kwargs["params"], {key: value for key, value in before["config"].items()
-                                                              if key != "plant"})
+            self.assertEqual(probe.call_args.kwargs["params"], mpc_params(before["config"]))
         finally:
             live.close()
 
@@ -124,7 +124,7 @@ class BundledAdapterTests(unittest.TestCase):
                 patch.object(self.script, "probe", return_value={}):
             self.script.build(self.selection, (None, self.mpc, None, friction), [16], events.append,
                               prediction_friction=True)
-        self.assertEqual(compile_native.call_args.args[0], replace(self.mpc.TIAGO, N=16, friction=friction))
+        self.assertEqual(compile_native.call_args.args[0], replace(with_knot_count(self.mpc.TIAGO, 16), friction=friction))
         self.assertFalse(events[0]["exact_availability"])
 
     def test_explicit_bundled_values_and_pin_remain_exact_in_probe(self):
@@ -138,7 +138,45 @@ class BundledAdapterTests(unittest.TestCase):
                                        source_settings={}, source_settings_module=description["module"])
         self.assertTrue(result["exact_availability"])
         self.assertEqual(find.call_count, 1)
-        self.assertEqual(find.call_args.args[0], replace(self.mpc.TIAGO, N=16))
+        self.assertEqual(find.call_args.args[0], with_knot_count(self.mpc.TIAGO, 16))
+
+    def test_custom_native_menu_only_checks_its_horizon_and_build_preserves_it(self):
+        tm = self.tm
+        from gato.cost_menu import Term
+        custom = replace(tm.TIAGO, cost=replace(tm.TIAGO.cost, input=Term(.01, target=(.1,)*7)))
+        with patch.object(self.mpc, "find_binary", return_value=Path("mock.so")) as find:
+            self.assertIsNone(self.script.find_variant(self.mpc, custom, 16))
+            find.assert_not_called()
+            self.assertEqual(self.script.find_variant(self.mpc, custom, 32), Path("mock.so"))
+            self.assertIs(find.call_args.args[0], custom)
+        with patch.object(self.mpc, "compile_binary", return_value=Path("mock.so")) as compile_native, \
+                patch.object(self.script, "probe", return_value={}):
+            self.script.build(self.selection, (None, self.mpc, None, None), [32], lambda _: None,
+                              params=tm.to_dict(custom))
+            self.assertEqual(tm.to_dict(compile_native.call_args.args[0]), tm.to_dict(custom))
+        with patch.object(self.mpc, "compile_binary") as compile_native, \
+                self.assertRaisesRegex(ValueError, "custom CostMenu.*explicit menu"):
+            self.script.build(self.selection, (None, self.mpc, None, None), [16], lambda _: None,
+                              params=tm.to_dict(custom))
+            compile_native.assert_not_called()
+
+    def test_edited_custom_horizon_is_rejected_before_lookup_or_compile(self):
+        tm = self.tm
+        custom = replace(tm.TIAGO, N=16, cost=replace(tm.TIAGO.cost,
+                         frame_pos=replace(tm.TIAGO.cost.frame_pos, activation="pseudo_huber", eps=.1)))
+        # Changing params.N directly must not make the old menu claim its new N.
+        with patch.object(self.mpc, "find_binary") as find, \
+                patch.object(self.mpc, "compile_binary") as compile_native:
+            for operation in ("model", "build"):
+                with self.subTest(operation=operation), \
+                        self.assertRaisesRegex(ValueError, "Invalid native CostMenu for N=16.*frame_pos.weight"):
+                    if operation == "model":
+                        self.script.model(self.selection, None, self.mpc, None, None, params=tm.to_dict(custom))
+                    else:
+                        self.script.build(self.selection, (None, self.mpc, None, None), [16], lambda _: None,
+                                          params=tm.to_dict(custom))
+            find.assert_not_called()
+            compile_native.assert_not_called()
 
     def test_explicit_bundled_pin_is_checked_before_build(self):
         description = describe_settings(self.selection["mpc_root"])
@@ -218,7 +256,8 @@ class NativeProviderTests(unittest.TestCase):
         mpc = importlib.import_module("tiago_mpc.mpc")
         values = deepcopy(self.description["predictor"]["defaults"])
         values.update(armature_on=False, friction_on=True, friction_width_rad_s=.217)
-        base = replace(tm.TIAGO, dt_s=.03, solver=tm.TIAGO.solver.replace(mu=1., qd_cost=.01))
+        base = replace(tm.TIAGO, dt_s=.03, solver=replace(tm.TIAGO.solver, mu=1.),
+                       cost=tm.default_cost(tm.TIAGO.N, velocity=.01))
         expected, _ = resolve_predictor(MPC_ROOT, values, base, tm.to_dict)
         selection = resolve_selection(MPC_ROOT)
         with patch.object(mpc, "compile_binary", return_value=Path("mock.so")) as compile_native, \
@@ -227,7 +266,7 @@ class NativeProviderTests(unittest.TestCase):
                          params=tm.to_dict(base), source_settings=values,
                          source_settings_module=self.description["module"])
         self.assertEqual([call.args[0] for call in compile_native.call_args_list],
-                         [replace(expected, N=32), replace(expected, N=64)])
+                         [with_knot_count(expected, 32), with_knot_count(expected, 64)])
 
     def test_build_rejects_unapplied_provider_before_compilation(self):
         tm, script = self.tm, self.script()

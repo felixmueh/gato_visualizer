@@ -36,7 +36,7 @@ def plan():
     return dict(id='chosen', seq=7, origin='controller', N=3, dt_s=.03,
         initial_state=dict(q=[.2]*7, qd=[.1]*7, time_s=1.25), reference_native=[[.1,.2,.3,0,0,0]]*3,
         problem_configuration=dict(type='MpcParams', N=3, dt_s=.03,
-            solver=dict(type='SolverParams', max_sqp_iters=5), admm=dict(type='AdmmLimits', rho=.01),
+            solver=dict(type='SolverSettings', max_sqp_iters=5), cost=dict(type='CostMenu', input=dict(type='Term', weight=.0001)), admm=dict(type='AdmmLimits', rho=.01),
             admm_linsys='pcg', joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85, friction=None,
             friction_law=dict(type='Tanh', width_rad_s=.03)),
         joint_limits=dict(lower_position_rad=[-2]*7,upper_position_rad=[2]*7,
@@ -181,6 +181,24 @@ class ArtifactTests(unittest.TestCase):
         p=plan();p['problem_configuration']['solver'].pop('type')
         with self.assertRaisesRegex(ValueError,'captured MpcParams are incomplete'): captured_problem(p)
 
+    def test_previous_cost_api_is_viewable_but_cannot_be_run_again(self):
+        p = plan()
+        p['problem_configuration']['solver']['type'] = 'SolverParams'
+        p['problem_configuration'].pop('cost')
+        with self.assertRaisesRegex(ValueError, 'previous cost API'):
+            captured_problem(p)
+
+    def test_reference_preserves_disabled_orientation_and_rejects_partial_targets(self):
+        p = plan()
+        p['reference_native'] = [[.1, .2, .3, None, None, None],
+                                 [.2, .3, .4, 0., .4, 0.],
+                                 [.3, .4, .5, None, None, None]]
+        self.assertEqual(captured_problem(p)['reference_native'], p['reference_native'])
+        json.dumps(captured_problem(p), allow_nan=False)
+        p['reference_native'][0][3] = 0.
+        with self.assertRaisesRegex(ValueError, 'reference'):
+            captured_problem(p)
+
     def test_previous_friction_api_is_viewable_but_cannot_be_run_again(self):
         for nested in (False, True):
             p = plan()
@@ -206,6 +224,10 @@ class ArtifactTests(unittest.TestCase):
 
 class NativeOperationTests(unittest.TestCase):
     def test_exact_single_cold_solve_and_captured_bounds(self):
+        from live_mpc import import_tiago
+        from tests.tiago_mpc_source import MPC_ROOT
+        import_tiago(MPC_ROOT)
+        from tiago_mpc import default_cost
         class Solver:
             lib=SimpleNamespace(ITERATION_CAPTURE_AVAILABLE=True)
             calls=0
@@ -216,17 +238,21 @@ class NativeOperationTests(unittest.TestCase):
                 self.inputs=(x.copy(),reference.copy(),xu_warm,capture_iterations,budget_s)
                 return SimpleNamespace(iteration_trace=trace(),solve_time_us=1234,
                     stats=SimpleNamespace(min_merit=np.array([[3.]]),step_size=np.array([[1.]])))
+            def set_cost_menu(self, menu): self.menu = menu
             def get_row_groups(self): return groups()
             def set_row_group_bounds(self,g,lo,hi):self.configured.append((g,lo.copy(),hi.copy()))
             def set_row_group_mask(self,g,mask):self.masks.append((g,mask.copy()))
             def reset_dual(self):pass
             def reset_rho(self):pass
         solver=Solver()
-        mpc=SimpleNamespace(N=3,dt=.03,params=SimpleNamespace(),
+        mpc=SimpleNamespace(N=3,dt=.03,params=SimpleNamespace(cost=default_cost(3, orientation=2., terminal_orientation=5.)),
             controller=SimpleNamespace(admm_linsys='pcg',solver=solver))
         session=SimpleNamespace(mpc=mpc,model_identity={'actual':'model'},
             configuration=plan()['problem_configuration'],tiago=SimpleNamespace(GRASP_FRAME='tool'))
         p=plan()
+        p['reference_native'] = [[.1, .2, .3, None, None, None],
+                                 [.2, .3, .4, 0., .4, 0.],
+                                 [.3, .4, .5, 0., .4, 0.]]
         # Asymmetric joint-6 q bounds are installed as captured, in native coordinates.
         p['constraint_bounds_native'][0]['lo'][5]=-.7
         p['constraint_bounds_native'][0]['hi'][5]=1.3
@@ -242,6 +268,12 @@ class NativeOperationTests(unittest.TestCase):
                 budget_s=.02,original={'solve_id':'chosen'},actual_solver_profile={'profile':{'id':'active','mpc_root':str(root)}},
                 artifact_directory=folder))
             self.assertEqual(solver.calls,1)
+            np.testing.assert_allclose(solver.menu.frame_pos.target,
+                                       np.asarray(p['reference_native'], dtype=float)[:, :3])
+            np.testing.assert_allclose(solver.menu.orientation.weight[:, 0], [0., 2., 5.])
+            self.assertFalse(np.allclose(solver.menu.orientation.target, np.eye(3)))
+            np.testing.assert_array_equal(solver.inputs[1].reshape(3, 6)[:, 3:], 0.)
+            self.assertEqual(mpc.params.cost.orientation.weight[0][0], 2.)
             self.assertIsNone(solver.inputs[2])
             self.assertTrue(solver.inputs[3])
             self.assertEqual(solver.inputs[4],.02)

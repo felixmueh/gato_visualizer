@@ -313,9 +313,9 @@ def scene_records(scene):
             for i, time_s in enumerate(trajectory.get("time_s", [])):
                 state = dict(type="state", sim_time_s=time_s-origin, recorded_time_s=time_s,
                              trajectory_index=trajectory_index)
-                for field in ("q", "qd_rad_s", "ee_xyz"):
+                for field in ("q", "qd_rad_s", "ee_xyz", "orientation_error_rad"):
                     values = trajectory.get(field)
-                    if values is not None and i < len(values):
+                    if values is not None and i < len(values) and values[i] is not None:
                         state[field] = values[i]
                 if targets is not None:
                     state["target_xyz"] = targets[i]

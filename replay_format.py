@@ -51,6 +51,9 @@ class Reference:
     xyz: np.ndarray
     time_s: np.ndarray | None
     frame: str
+    # The end effector's target orientation per sample, rotation vectors in frame;
+    # NaN rows: no orientation target there. None: no orientation in the recording.
+    rotvec: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -126,10 +129,25 @@ def _times(archive, key, minimum=2):
     return result
 
 
-def _reference(archive, xyz_key, time_key, frame):
+def _rotvec(archive, key, shape):
+    """Reference orientations: the positions' shape, each row three finite values or three NaN."""
+    if key is None:
+        return None
+    if key not in archive.files:
+        raise ReplayError(f"Missing array: {key!r}")
+    result = archive[key]
+    if result.dtype.kind not in "fiu" or result.shape != shape:
+        raise ReplayError(f"{key}: expected a real array of shape {shape}")
+    result = result.astype(float, copy=False)
+    if not (np.isfinite(result).all(axis=-1) | np.isnan(result).all(axis=-1)).all():
+        raise ReplayError(f"{key}: each orientation is three finite values or three NaN (none)")
+    return result
+
+
+def _reference(archive, xyz_key, time_key, frame, rotvec_key=None):
     if xyz_key is None:
-        if time_key is not None:
-            raise ReplayError("Reference times require reference positions")
+        if time_key is not None or rotvec_key is not None:
+            raise ReplayError("Reference times and orientations require reference positions")
         return None
     if frame not in REFERENCE_FRAMES:
         raise ReplayError("Reference positions require explicit reference_frame: base_footprint or torso_lift_link")
@@ -137,11 +155,11 @@ def _reference(archive, xyz_key, time_key, frame):
     if time_key is None:
         if xyz.shape != (3,):
             raise ReplayError(f"Static {xyz_key} must have shape (3,); moving references require a time array")
-        return Reference(xyz=xyz, time_s=None, frame=frame)
+        return Reference(xyz=xyz, time_s=None, frame=frame, rotvec=_rotvec(archive, rotvec_key, (3,)))
     times = _times(archive, time_key, minimum=1)
     if xyz.shape != (len(times), 3):
         raise ReplayError(f"{xyz_key}: expected shape ({len(times)}, 3), got {xyz.shape}")
-    return Reference(xyz=xyz, time_s=times, frame=frame)
+    return Reference(xyz=xyz, time_s=times, frame=frame, rotvec=_rotvec(archive, rotvec_key, xyz.shape))
 
 
 def _fixed_joints(value, model_urdf):
@@ -291,7 +309,8 @@ def load_replay(source, *, model_urdf):
         limits = normalize_joint_limits(metadata.get("joint_limits"), order)
         reference = _reference(archive, "reference_xyz_m" if "reference_xyz_m" in archive.files else None,
                                "reference_time_s" if "reference_time_s" in archive.files else None,
-                               metadata.get("reference_frame"))
+                               metadata.get("reference_frame"),
+                               "reference_rotvec_rad" if "reference_rotvec_rad" in archive.files else None)
         predictions = metadata.get("predictions", [])
         if not isinstance(predictions, list):
             raise ReplayError("predictions must be a list of plan descriptors")

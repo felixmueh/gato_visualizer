@@ -321,9 +321,10 @@ class TransportTests(unittest.TestCase):
             world_from_reference=np.eye(4).tolist(), tcp_offset=np.eye(4).tolist())
         profile = dict(mpc_root=str(MPC_ROOT), python=sys.executable, cache="unused")
         checked = dict(live_probe(), contract=adapter.contract, available_N=[32], available_N_by_friction=dict(off=[32], on=[]))
+        from live_mpc import build_schema
+        initial = build_schema(checked, MPC_ROOT, start_pose())["defaults"]
         with patch("source_runtime.probe_selection", return_value=checked):
-            schema = adapter.preflight_profile(profile, dict(checked["defaults"], plant=dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=start_pose()["default"])),
-                                               dict(kind="reach", target_offset_m=[0, 0, 0]))
+            schema = adapter.preflight_profile(profile, initial["config"], initial["task"])
             self.assertEqual(schema["available_N"], [32])
             checked["defaults"]["additional_setting"] = True
             with self.assertRaisesRegex(ValueError, "Complete config required"):

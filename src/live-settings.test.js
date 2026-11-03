@@ -2294,6 +2294,111 @@ test('editing a field back to its accepted value does not submit an empty patch 
   });
 });
 
+test('the reach orientation goal starts at the displayed grasp orientation, rotates in the viewport and gates its weights', async () => {
+  const h = harness();
+  h.schema.task_anchors = { reach: [.5, -.2, 1], figure8: [.4, -.2, 1] };
+  Object.assign(h.schema.defaults.config, { cost_weights: { orientation: 0, terminal_orientation: 0 } });
+  h.schema.defaults.task.orientation_rad = null; h.schema.tasks[0].defaults.orientation_rad = null;
+  h.schema.parameters.push(...['cost_weights.orientation', 'cost_weights.terminal_orientation'].map(path =>
+    ({ path, label: path, kind: 'float', min: 0, enabled_with: 'orientation_goal', effect: 'runtime' })));
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  const displayed = [0, 0, .3];
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {}, graspOrientation: () => displayed });
+    await flush(); h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    const toggle = () => h.created.filter(element => element.id === 'target-orientation').at(-1);
+    const weights = () => ['cost_weights.orientation', 'cost_weights.terminal_orientation'].map(path => h.created.filter(element => element.dataset.path === path).at(-1));
+    assert.equal(toggle().checked, false);
+    assert(weights().every(input => input.disabled));  // drafts kept, the solver gets 0
+    assert.deepEqual(live.targetInteraction.tools, ['translate']);
+    toggle().checked = true; toggle().emit('change');
+    assert.deepEqual(live.settings.task.orientation_rad, displayed);
+    assert(weights().every(input => !input.disabled));
+    assert.deepEqual(live.settings.config.cost_weights, { orientation: 1, terminal_orientation: 8 });
+    assert.deepEqual(live.targetInteraction.tools, ['translate', 'rotate']);
+    assert.equal(live.targetInteraction.rotation_space, 'local');
+    live.refreshView();
+    assert.deepEqual(live.reference.orientation_rotvec, displayed);
+    assert.equal(h.$('live-orientation-stat').hidden, false);
+    const turned = live.setTaskTransform({ quaternion_xyzw: [0, 0, Math.sin(.25), Math.cos(.25)] });
+    assert(turned.tools.includes('rotate'));
+    live.settings.task.orientation_rad.forEach((value, i) => assert(Math.abs(value - [0, 0, .5][i]) < 1e-12));
+    h.edit('cost_weights.orientation', 2);
+    toggle().checked = false; toggle().emit('change');
+    assert.equal(live.settings.task.orientation_rad, null);
+    assert.equal(live.setTaskTransform({ quaternion_xyzw: [0, 0, 0, 1] }), null);  // nothing to rotate without a goal
+    live.refreshView(); assert.equal(h.$('live-orientation-stat').hidden, true);
+    toggle().checked = true; toggle().emit('change');  // the goal and edited costs return
+    assert.equal(live.settings.config.cost_weights.orientation, 2);
+    // Deliberately zeroed weights stay zero on later toggles, too.
+    h.edit('cost_weights.orientation', 0); h.edit('cost_weights.terminal_orientation', 0);
+    toggle().checked = false; toggle().emit('change');
+    toggle().checked = true; toggle().emit('change');
+    assert.deepEqual(live.settings.config.cost_weights, { orientation: 0, terminal_orientation: 0 });
+    live.settings.task.orientation_rad.forEach((value, i) => assert(Math.abs(value - [0, 0, .5][i]) < 1e-12));
+    await new Promise(resolve => setTimeout(resolve, 380)); await flush();
+    const submitted = h.commands.filter(command => ['set_settings', 'patch_settings'].includes(command.type)).at(-1);
+    const task = submitted.task ?? submitted.patch.task;
+    task.orientation_rad.forEach((value, i) => assert(Math.abs(value - [0, 0, .5][i]) < 1e-12));
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('a saved orientation goal is restored only for a source with the orientation cost', () => {
+  const h = harness();
+  h.schema.tasks[0].defaults.orientation_rad = null;
+  const saved = { ...structuredClone(h.schema.defaults), task: { kind: 'reach', target_offset_m: [0, 0, 0], orientation_rad: [0, 0, .5] } };
+  assert.equal(restoreCompatibleSettings(h.schema, saved).task.orientation_rad, null);
+  h.schema.parameters.push({ path: 'cost_weights.orientation', kind: 'float', min: 0, enabled_with: 'orientation_goal' });
+  assert.deepEqual(restoreCompatibleSettings(h.schema, saved).task.orientation_rad, [0, 0, .5]);
+  saved.task.orientation_rad = [0, 0, 4];  // beyond pi: not a rotation vector the backend accepts
+  assert.equal(restoreCompatibleSettings(h.schema, saved).task.orientation_rad, null);
+});
+
+test('a custom-menu profile preserves the orientation goal across switching and toggling without rewriting costs', async () => {
+  const h = harness();
+  h.schema.task_anchors = { reach: [.5, -.2, 1], figure8: [.4, -.2, 1] };
+  h.schema.defaults.task.orientation_rad = null; h.schema.tasks[0].defaults.orientation_rad = null;
+  h.schema.orientation_goal_supported = true;
+  const custom = { type: 'CostMenu', orientation: { type: 'Term', weight: [2, 3, 4], target: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] } };
+  h.schema.defaults.config.cost = structuredClone(custom);
+  h.schema.fixed_horizon_N = 32;
+  h.schema.parameters.find(parameter => parameter.path === 'N').disabled = true;
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {}, graspOrientation: () => [0, 0, .3] });
+    await live.ready; h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    const toggle = () => h.created.filter(element => element.id === 'target-orientation').at(-1);
+    assert.equal(toggle().checked, false);
+    const knot = h.created.filter(element => element.dataset.path === 'N').at(-1);
+    assert.equal(knot.disabled, true); assert.deepEqual(knot.children.map(option => option.textContent), ['32']);
+    toggle().checked = true; toggle().emit('change');
+    assert.deepEqual(live.settings.task.orientation_rad, [0, 0, .3]);
+    assert.deepEqual(live.settings.config.cost, custom); assert.equal(live.settings.config.cost_weights, undefined);
+    live.beginSolverProfileSwitch();
+    await live.finishSolverProfileSwitch({ state: 'active', profile_id: 'custom', generation: 2 }); await flush();
+    assert.equal(toggle().checked, true);
+    assert.deepEqual(live.settings.task.orientation_rad, [0, 0, .3]);
+    toggle().checked = false; toggle().emit('change');
+    assert.equal(live.settings.task.orientation_rad, null);
+    toggle().checked = true; toggle().emit('change');
+    assert.deepEqual(live.settings.task.orientation_rad, [0, 0, .3]);
+    assert.deepEqual(live.settings.config.cost, custom); assert.equal(live.settings.config.cost_weights, undefined);
+    const poseReset = h.created.filter(element => element.dataset.resetSetting === 'task.pose').at(-1);
+    assert.equal(poseReset.disabled, false); poseReset.emit('click');
+    assert.equal(live.settings.task.orientation_rad, null); assert.equal(toggle().checked, false);
+    assert.equal(poseReset.disabled, true);
+    assert.deepEqual(live.settings.config.cost, custom);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
 test('a field following GATO looks as if GATO\'s value were chosen and stays None until changed', async () => {
   const h = harness();
   Object.assign(h.schema.defaults.config, { warm_start: null, admm: { iters: null }, reseed_threshold: null });

@@ -19,7 +19,8 @@ class GraspFixtureTests(unittest.TestCase):
         self.assertEqual(len(saved['poses']), len(fresh['poses']), message)
         for old, new in zip(saved['poses'], fresh['poses']):
             self.assertEqual(old['label'], new['label'], message)
-            for key in ('q', 'grasp_torso_m', 'grasp_world_m', 'jacobian_torso'):
+            for key in ('q', 'grasp_torso_m', 'grasp_world_m', 'jacobian_torso',
+                        'rotation_torso', 'angular_jacobian_torso', 'rotvec_world'):
                 np.testing.assert_allclose(old[key], new[key], rtol=0, atol=1e-9,
                                            err_msg=f'{message} ({old["label"]}, {key})')
 

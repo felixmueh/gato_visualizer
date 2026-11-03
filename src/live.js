@@ -1,6 +1,7 @@
 import { createSettingResets, canonicalOrientation, settingValuesEqual } from './setting-resets.js';
 import { targetWorldPosition, targetWorldOffset, normalizeQuaternion } from './target-gizmo.js';
-import { taskReference, taskReferencePoint } from './task-reference.js';
+import { orientationGoal, taskReference, taskReferencePoint } from './task-reference.js';
+import { quaternionToRotvec, rotvecToQuaternion } from './rotations.js';
 import { DEFAULT_PRESENTATION, validatePresentation } from './presentation-settings.js';
 
 // The API uses native joint values and full robot-root coordinates. No sign or
@@ -36,7 +37,7 @@ export function availableKnotCounts(schema, config) {
   return schema.available_N_by_friction?.[mode] ?? schema.available_N;
 }
 
-export const supportedKnotCounts = schema => schema.supported_N ?? schema.available_N;
+export const supportedKnotCounts = schema => schema.fixed_horizon_N != null ? [schema.fixed_horizon_N] : schema.supported_N ?? schema.available_N;
 
 export function initialLiveSettings(schema) {
   const supported = supportedKnotCounts(schema);
@@ -103,11 +104,18 @@ export function restoreCompatibleSettings(schema, saved) {
     }
     const orientation = normalizeQuaternion(saved.task.orientation_xyzw);
     if (orientation && task.kind === 'figure8') settings.task.orientation_xyzw = orientation;
+    const goal = orientationGoal(saved.task);
+    if (goal && orientationGoalSupported(schema) && Math.hypot(...goal) <= Math.PI + 1e-6) settings.task.orientation_rad = goal;
   }
   try { settings.execution = validateExecution(saved.execution); } catch {}
   if (schema.source_settings) settings.source_settings = restoreWorktreeSettings(schema, saved.source_settings);
   return settings;
 }
+
+// Orientation references are a native-menu capability, independent of whether the
+// profile offers scalar convenience weight controls (custom menus retain their terms).
+export const orientationGoalSupported = schema => schema?.orientation_goal_supported ??
+  Boolean(schema?.parameters?.some(parameter => parameter.enabled_with === 'orientation_goal'));
 
 export function solverProfileSettings(schema, saved) {
   const restored = restoreCompatibleSettings(schema, saved);
@@ -177,7 +185,7 @@ export function validPoints(points) {
     Array.isArray(point) && point.length === 3 && point.every(Number.isFinite));
 }
 
-export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayOnly = false, onReplayMode = () => {}, onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {}, onFreeze = async () => {}, settingsPollMs = typeof window === 'undefined' ? 0 : 1000 }) {
+export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayOnly = false, onReplayMode = () => {}, onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {}, onFreeze = async () => {}, graspOrientation = () => null, settingsPollMs = typeof window === 'undefined' ? 0 : 1000 }) {
   const $ = id => document.getElementById(id);
   let schema, settings, defaultSettings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
@@ -188,6 +196,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   let inspectingPreview = false, inspectionPlan = null;
   let defaultTargetWorld, figure8BaseWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
   let desiredReference, referenceKey, renderedReference;
+  // The last orientation goal switched off, restored when it is switched on again.
+  let orientationDraft = null;
   let profileSwitching = false, profileUnavailable = false, profileNError = false, schemaReload = 0, suppressInitialPreview = false;
   let populationBindings = [];
   let session, unsubscribeSession, freezing = false;
@@ -539,6 +549,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (compilationEnabled()) { refreshFrictionAvailability(); controlsEnabled(); return; }
     const knot = inputs.find(entry => entry.parameter.path === 'N');
     if (!knot) return;
+    if (knot.parameter.disabled) { refreshFrictionAvailability(); controlsEnabled(); return; }
     const value = settings.config.N, wasUnavailable = profileNError;
     knot.parameter.choices = schema.available_N;
     const options = schema.available_N.map((n, i) => { const option = document.createElement('option'); option.value = String(i); option.textContent = String(n); return option; });
@@ -564,12 +575,42 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       width.input.disabled = !friction.input.checked;
     }
   }
+  // The orientation weights act only with the reach's orientation goal; without it they
+  // stay as disabled drafts; NaN reference orientations disable their native cost rows.
+  function syncOrientationWeights() {
+    const on = Boolean(orientationGoal(settings?.task));
+    for (const { parameter, input } of inputs) if (parameter.enabled_with === 'orientation_goal') {
+      input.disabled = !on;
+      input.title = on ? parameterTooltip(parameter) : 'Used only with an orientation goal (Task setup)';
+    }
+  }
+  // Switching the goal on starts from the last goal switched off, or else from the grasp
+  // frame's orientation as displayed.
+  function setOrientationGoal(on) {
+    if (settings?.task.kind !== 'reach') return;
+    if (on && !orientationGoal(settings.task)) {
+      const goal = orientationDraft || graspOrientation();
+      if (!goal) return;
+      settings.task.orientation_rad = [...goal];
+      const weights = settings.config.cost_weights;
+      if (!orientationDraft && weights && weights.orientation === 0 && weights.terminal_orientation === 0) {
+        weights.orientation = 1; weights.terminal_orientation = 8;
+        for (const { parameter, input } of inputs) if (parameter.path.startsWith('cost_weights.')) {
+          input.value = readPath(settings.config, parameter.path);
+        }
+      }
+    } else if (!on && orientationGoal(settings.task)) {
+      orientationDraft = orientationGoal(settings.task);
+      settings.task.orientation_rad = null;
+    } else return;
+    change();
+  }
   const unavailableFrictionMessage = () => compilationEnabled() ? 'This predictor model is not compiled. Use Compile above the viewport; the active settings are unchanged.' : `N=${settings.config.N} is not compiled for this predictor. Choose a compiled N or build the current predictor in Settings › Backend.`;
   function change() {
     if (replayOnly) return;
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
-    syncPlantFriction();
+    syncPlantFriction(); syncOrientationWeights();
     const next = readSettings();
     const sourceChanged = next && !settingValuesEqual(next.source_settings, acceptedSettings?.source_settings);
     if (next) {
@@ -636,6 +677,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       resetIndicators.forget('task-parameters');
       const descriptor = tasks.find(task => task.kind === $('live-task').value);
       $('live-task-parameters').replaceChildren();
+      let orientationCheckbox = null;
       for (const parameter of descriptor?.parameters || []) {
         const label = document.createElement('label'); label.className = 'parameter-row';
         const caption = document.createElement('span'); caption.textContent = parameter.label;
@@ -651,19 +693,35 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
         listen(input, 'input', change); label.append(caption, input); $('live-task-parameters').append(label);
         bindReset(input, { ...parameter, kind: parameter.kind || 'float' }, () => activeTaskDefaults()[parameter.path], { key: `task.${parameter.path}`, group: 'task-parameters' });
       }
+      if (descriptor?.kind === 'reach' && orientationGoalSupported(schema)) {
+        const label = document.createElement('label'); label.className = 'parameter-row orientation-goal';
+        label.title = 'Also hold the grasp frame at a goal orientation. R in the viewport rotates the goal; its weights are under Costs.';
+        const caption = document.createElement('span'); caption.textContent = 'Orientation goal';
+        const input = document.createElement('input'); input.type = 'checkbox'; input.id = 'target-orientation'; orientationCheckbox = input;
+        input.checked = settings.task.kind === 'reach' && Boolean(orientationGoal(settings.task));
+        listen(input, 'change', () => { setOrientationGoal(input.checked); input.checked = Boolean(orientationGoal(settings.task)); });
+        label.append(caption, input); $('live-task-parameters').append(label);
+      }
       const poseCaption = document.createElement('span'); poseCaption.className = 'task-pose-reset-caption'; poseCaption.textContent = 'Task pose';
       $('live-task-parameters').append(poseCaption);
       resetIndicators.bind({ key: 'task.pose', name: 'task pose', host: poseCaption, group: 'task-parameters', focusTarget: $('target-offset-0'),
         getValue: () => ({ offset: [0, 1, 2].map(i => parseParameter({ kind: 'float', label: 'Target offset', min: -1, max: 1 }, $(`target-offset-${i}`))),
-          orientation: canonicalOrientation(settings.task.kind === $('live-task').value ? settings.task.orientation_xyzw : undefined) }),
-        getDefault: () => ({ offset: activeTaskDefaults().target_offset_m, orientation: canonicalOrientation(activeTaskDefaults().orientation_xyzw) }),
+          orientation: canonicalOrientation(settings.task.kind === $('live-task').value ? settings.task.orientation_xyzw : undefined),
+          goal: orientationGoal(settings.task) }),
+        getDefault: () => ({ offset: activeTaskDefaults().target_offset_m, orientation: canonicalOrientation(activeTaskDefaults().orientation_xyzw),
+          goal: orientationGoal(activeTaskDefaults()) }),
         reset: value => {
           value.offset.forEach((offset, i) => { $(`target-offset-${i}`).value = String(offset); $(`target-offset-${i}`).setCustomValidity(''); });
           if ($('live-task').value === 'figure8') settings.task.orientation_xyzw = [...value.orientation];
+          else if (orientationGoalSupported(schema)) {
+            settings.task.orientation_rad = value.goal ? [...value.goal] : null;
+            orientationDraft = null;
+            if (orientationCheckbox) orientationCheckbox.checked = Boolean(value.goal);
+          }
           change();
         },
       });
-      $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'G moves the path in world coordinates; R rotates and S scales width/height about its start. Period sets speed. Reset restarts phase.' : 'Offset from the default reaching target. Click the target to move it along an axis.';
+      $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'G moves the path in world coordinates; R rotates and S scales width/height about its start. Period sets speed. Reset restarts phase.' : 'Offset from the default reaching target. Click the target to move it along an axis; with an orientation goal, R rotates it.';
     };
     taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
     taskFields(); listen($('live-task'), 'change', () => {
@@ -878,7 +936,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     });
     ensureModelCompilation();
     refreshFrictionAvailability();
-    syncPlantFriction();
+    syncPlantFriction(); syncOrientationWeights();
     resetIndicators.update();
     controlsEnabled();
     $('live-mode').disabled = false; message(replayOnly ? '' : profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', !replayOnly && profileNError);
@@ -1109,7 +1167,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       referenceKey = nextReferenceKey;
       desiredReference = draft ? taskReference(draft, base) : shownPlan ? {
         kind: segmentOf(shownPlan)?.task.kind, points: segmentOf(shownPlan)?.task_path_xyz || shownPlan.reference_xyz,
-        target_xyz: shownPlan.target_xyz || shownPlan.reference_xyz[0], draft: false,
+        target_xyz: shownPlan.target_xyz || shownPlan.reference_xyz[0],
+        orientation_rotvec: orientationGoal(segmentOf(shownPlan)?.task), draft: false,
       } : null;
     }
     const stats = shownPlan?.stats || {};
@@ -1122,6 +1181,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     $('live-rtf').textContent = Number.isFinite(job.calculation_rtf) ? `${number(job.calculation_rtf, 2)}×` : '—';
     $('live-playback-rate').textContent = clock.buffering ? 'Buffering' : clock.playing ? (continueAtEnd() && clock.time >= history.bounds[1] - 1e-7 && (job.job_active || extensionPending) ? 'Waiting' : `${clock.effectiveRate}×`) : 'Paused';
     $('live-distance').textContent = Number.isFinite(shownState?.distance_m) ? `${number(shownState.distance_m * 1000, 1)} mm` : '—';
+    // Shown with an orientation goal, in the settings or in the displayed run.
+    const angle = shownState?.orientation_error_rad;
+    $('live-orientation-stat').hidden = !Number.isFinite(angle) && !orientationGoal(settings?.task);
+    $('live-orientation-error').textContent = Number.isFinite(angle) ? `${number(angle * 180 / Math.PI, 1)}°` : '—';
     $('live-arrival').textContent = shownState?.arrived ? 'Arrival flag reached · holding target' : 'Following task reference';
     const execution = settings?.execution || DEFAULT_EXECUTION;
     $('live-rates').textContent = `Nominal simulated Hz: TO ${number(execution.to_hz)} · control ${number(execution.control_hz)} · physics ${number(execution.simulation_hz)}. Achieved per calculation-wall second: TO ${number(job.mpc_hz, 1)} · control ${number(job.control_hz, 1)} · physics ${number(job.simulation_hz, 1)}.`;
@@ -1461,8 +1524,11 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
       const kind = $('live-task').value, base = kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
       const available = mode === 'live' && !replayOnly && !clock.playing && (clock.time == null || clock.time >= history.bounds[1] - 1e-7) && liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && Boolean(base) && settings.task.kind === kind && Boolean(readSettings()) && status !== 'gpu_busy' && status !== 'error';
+      const goal = kind === 'reach' ? orientationGoal(settings?.task) : null;
       return { available, kind, position_world: base ? targetWorldPosition(base, offset) : null,
-        quaternion_xyzw: settings?.task.orientation_xyzw || [0, 0, 0, 1],
+        quaternion_xyzw: goal ? rotvecToQuaternion(goal) : settings?.task.orientation_xyzw || [0, 0, 0, 1],
+        tools: kind === 'figure8' ? ['translate', 'rotate', 'scale'] : goal ? ['translate', 'rotate'] : ['translate'],
+        rotation_space: kind === 'figure8' ? 'world' : 'local',
         size_m: kind === 'figure8' ? [settings?.task.width_m, settings?.task.height_m] : null,
         pending: dirty || pending, offset_m: offset };
     },
@@ -1474,7 +1540,15 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       change(); return this.targetInteraction.position_world;
     },
     setTaskTransform(pose) {
-      if (!this.targetInteraction.available || settings.task.kind !== 'figure8') return null;
+      if (!this.targetInteraction.available) return null;
+      if (settings.task.kind === 'reach') {
+        // A reach rotates only its orientation goal, when it has one.
+        const goal = orientationGoal(settings.task) && quaternionToRotvec(pose.quaternion_xyzw);
+        if (!goal) return null;
+        settings.task.orientation_rad = goal;
+        change(); return this.targetInteraction;
+      }
+      if (settings.task.kind !== 'figure8') return null;
       const quaternion = normalizeQuaternion(pose.quaternion_xyzw || settings.task.orientation_xyzw || [0, 0, 0, 1]);
       if (!quaternion || (pose.size_m && (!Array.isArray(pose.size_m) || pose.size_m.length !== 2 || !pose.size_m.every(Number.isFinite)))) return null;
       settings.task.orientation_xyzw = quaternion;
@@ -1521,6 +1595,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     },
     get presentationSettings() { return { ...presentation }; },
     get reference() { return desiredReference; },
+    // The run's setup: Live, not playing, the displayed state at the run start (t = 0),
+    // as for start-pose editing (without its connection requirement).
+    get setupPhase() { return mode === 'live' && !replayOnly && !clock.playing && (!presentedState || atRunStart(presentedState)); },
     get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
     // Onion skin reads recorded sample holds, never the interpolated display pose.
     historyStates(times) { return times.map(time => {

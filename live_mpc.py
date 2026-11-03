@@ -58,7 +58,22 @@ def source_identity(mpc_root):
 
 def mpc_params(config):
     """The native serialized MpcParams, including its fixed type metadata."""
-    return {key: deepcopy(value) for key, value in config.items() if key != "plant"}
+    params = {key: deepcopy(value) for key, value in config.items() if key not in ("plant", "cost_weights")}
+    if "cost_weights" in config:
+        from native_cost import serialized_cost
+        params["cost"] = serialized_cost(config["N"], config["cost_weights"])
+    return params
+
+
+def orientation_goal(task):
+    """The reach's grasp orientation goal as a world rotation vector, or None."""
+    return task.get("orientation_rad") if task.get("kind") == "reach" else None
+
+
+# Native references use NaN to disable orientation without changing the cost menu.
+def solver_params(config, task):
+    """Native params remain intact; reference NaNs disable absent orientation goals."""
+    return mpc_params(config)
 
 
 LIMIT_KEYS = ("joint_margin_rad", "velocity_fraction", "effort_fraction")
@@ -119,14 +134,14 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
     specs = []
     def visit(value, path=""):
         for key, item in value.items():
-            if key == "type":
+            if key == "type" or (not path and key == "cost"):
                 continue  # native serialization metadata, not a user parameter
             name = f"{path}.{key}" if path else key
             if isinstance(item, dict) and name not in ("friction", "friction_law"):
                 visit(item, name)
                 continue
             spec = dict(path=name, label=LABELS.get(name, LABELS.get(key, key.replace("_", " ").capitalize())),
-                        group="Friction" if name in FRICTION_PATHS else "Costs" if key.endswith("cost") else (
+                        group="Friction" if name in FRICTION_PATHS else "Costs" if key.endswith("cost") or name.startswith("cost_weights.") else (
                             "Limit handling" if name.startswith(("plant.clip_effort", "plant.stop_on_breach.")) else
                             "ADMM" if name.startswith("admm.") else "Limits" if name in LIMIT_KEYS else "Solver"),
                         scale="linear", effect="runtime" if name.startswith("plant.") else PARAMETER_EFFECTS.get(name, "compiled_model"))
@@ -136,6 +151,10 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
                 spec["gato_default"] = True  # None follows GATO; the panel shows its resolved value
                 if name in GATO_NONE_MEANINGS:
                     spec["gato_none"] = GATO_NONE_MEANINGS[name]  # GATO's own None
+            if name in ("cost_weights.orientation", "cost_weights.terminal_orientation"):
+                spec["enabled_with"] = "orientation_goal"
+            if name.startswith("cost_weights."):
+                spec["effect"] = "runtime"
             if name == "plant.start_pose_rad":
                 spec.update(kind="joints", group="Start pose", lower=list(start_pose["lower"]),
                             upper=list(start_pose["upper"]))
@@ -155,7 +174,7 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
                 spec.update(kind="choice", choices=[item], disabled=True, label=spec["label"] + " (fixed)")
             else:
                 spec["kind"] = "int" if isinstance(item, int) or name in INTEGER_PATHS else "float"
-                lo, hi = RANGES.get(name, (0, 1e5) if key.endswith("cost") else (1e-8, 1e4))
+                lo, hi = RANGES.get(name, (0, 1e5) if key.endswith("cost") or name.startswith("cost_weights.") else (1e-8, 1e4))
                 spec.update(min=lo, max=hi, nullable=item is None or name in NULLABLE)
                 if lo > 0 and hi / lo >= 1000:
                     spec["scale"] = "log"
@@ -164,7 +183,7 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
     return specs
 
 
-REACH_DEFAULT_TASK = dict(kind="reach", target_offset_m=[.15, .2, .2])
+REACH_DEFAULT_TASK = dict(kind="reach", target_offset_m=[.15, .2, .2], orientation_rad=None)
 
 
 FIGURE8_DEFAULT_TASK = dict(kind="figure8", target_offset_m=[0, 0, 0],
@@ -206,12 +225,13 @@ def validate_settings(config, task, schema, *, check_available=True):
         raise ValueError("config and task must be JSON objects")
     expected = {s["path"]: s for s in schema["parameters"]}
     fixed_types = {}
+    fixed_cost = schema["defaults"]["config"].get("cost")
     def collect_types(value, prefix=""):
         for key, item in value.items():
             path = f"{prefix}.{key}" if prefix else key
             if key == "type":
                 fixed_types[path] = item
-            elif isinstance(item, dict) and path not in expected:
+            elif path != "cost" and isinstance(item, dict) and path not in expected:
                 collect_types(item, path)
     collect_types(schema["defaults"]["config"])
     def flatten(value, prefix=""):
@@ -220,16 +240,20 @@ def validate_settings(config, task, schema, *, check_available=True):
             if not isinstance(key, str):
                 raise ValueError("Configuration keys must be strings")
             path = f"{prefix}.{key}" if prefix else key
-            if isinstance(item, dict) and path not in expected:
+            if path != "cost" and isinstance(item, dict) and path not in expected:
                 result.update(flatten(item, path))
             else:
                 result[path] = item
         return result
     values = flatten(config)
-    required = set(expected) | set(fixed_types)
+    required = set(expected) | set(fixed_types) | ({"cost"} if fixed_cost is not None else set())
     if set(values) != required:
         raise ValueError(f"Complete config required; missing={sorted(required-set(values))}, "
                          f"unknown={sorted(set(values)-required)}")
+    if fixed_cost is not None and config.get("cost") != fixed_cost:
+        raise ValueError("Native cost is fixed by this profile; edit the exposed cost weights")
+    if fixed_cost is not None and "cost_weights" not in schema["defaults"]["config"] and config.get("N") != schema["defaults"]["config"]["N"]:
+        raise ValueError(f"Custom CostMenu fixes N={schema['defaults']['config']['N']}; changing its horizon requires an explicit menu")
     for path, tag in fixed_types.items():
         if type(values[path]) is not str or values[path] != tag:
             raise ValueError(f"Invalid fixed configuration type {path}: {values[path]!r}")
@@ -273,7 +297,7 @@ def validate_settings(config, task, schema, *, check_available=True):
         raise ValueError(f"Not compiled: N={config['N']} {'with' if mode == 'on' else 'without'} predictor "
                          "friction. Build it in Settings › Backend (Build selected N).")
     task_kind = task.get("kind")
-    required_task_fields = ({"kind", "target_offset_m"} if task_kind == "reach" else
+    required_task_fields = (set(REACH_DEFAULT_TASK) if task_kind == "reach" else
                             (set(FIGURE8_DEFAULT_TASK) - {"orientation_xyzw"}) if task_kind == "figure8" else None)
     supplied_task_fields = set(task)
     if task_kind == "figure8":
@@ -291,6 +315,14 @@ def validate_settings(config, task, schema, *, check_available=True):
             if (isinstance(value, bool) or not isinstance(value, (int, float)) or
                     not math.isfinite(value) or not lo <= value <= hi):
                 raise ValueError(f"{field} must be finite within [{lo}, {hi}]")
+    if task_kind == "reach" and task["orientation_rad"] is not None:
+        rotation = task["orientation_rad"]
+        if (not isinstance(rotation, list) or len(rotation) != 3 or
+                any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in rotation) or
+                math.hypot(*rotation) > math.pi + 1e-6):
+            raise ValueError("orientation_rad must be null or a finite rotation vector [x, y, z] of at most pi rad")
+        if "cost" not in config:
+            raise ValueError("The selected tiago_mpc has no orientation cost menu")
     offset = task["target_offset_m"]
     if (not isinstance(offset, list) or len(offset) != 3 or
             any(isinstance(x, bool) or not isinstance(x, (int, float)) or
@@ -379,6 +411,10 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_s
         raise ValueError(probe.get("error") or "Selected source is incompatible")
     defaults = dict(deepcopy(probe["defaults"]), **SIMULATION_CLOCK_DEFAULTS,
                     plant=dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=list(start_pose["default"])))
+    from native_cost import cost_weights
+    weights = cost_weights(defaults.get("cost"))
+    if weights is not None:
+        defaults["cost_weights"] = weights
     modules = available_modules(probe)
     by_mode, available = modules["available_N_by_friction"], modules["available_N"]
     predictor = probe["friction"]
@@ -391,7 +427,13 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_s
         role_settings["simulation"] = deepcopy(simulation_settings)
     source_values = {role: deepcopy(role_settings[role]["defaults"]) for role in ROLES}
     offered = list(probe.get("supported_N", available))
+    custom_cost = defaults.get("cost") is not None and weights is None
+    if custom_cost:
+        offered = [defaults["N"]]
     specs = parameter_specs(defaults, offered, predictor, start_pose)
+    if custom_cost:
+        next(spec for spec in specs if spec["path"] == "N").update(
+            disabled=True, description="This custom CostMenu fixes its knot count; changing N requires an explicit menu.")
     for spec in specs:
         path = spec["path"]
         role = "simulation" if path.startswith("plant.") else "predictor"
@@ -405,6 +447,8 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_s
     return dict(available_N_by_friction=by_mode, available_N=available, friction=friction,
                 **({"supported_N": offered} if "supported_N" in probe else {}),
                 exact_availability=modules["exact_availability"], source_settings=role_settings,
+                orientation_goal_supported=isinstance(defaults.get("cost"), dict) and defaults["cost"].get("type") == "CostMenu",
+                **({"fixed_horizon_N": defaults["N"]} if custom_cost else {}),
                 effective_settings=deepcopy(probe.get("effective_settings", {})),
                 end_effector=deepcopy(grasp),
                 defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK), execution=deepcopy(DEFAULT_EXECUTION),

@@ -80,23 +80,24 @@ editable. Missing compiled models still block numerical calculation until an
 explicit Build. See [source settings](source-settings.md).
 
 `config` is `to_dict(MpcParams)` of the selected `tiago_mpc` plus the
-visualizer's simulated-plant group:
+visualizer's simulated-plant group and standard cost-weight controls:
 
 The native serializer tags dataclasses: `type: "MpcParams"`, nested
-`solver.type: "SolverParams"`, `admm.type: "AdmmLimits"`, and the friction
+`solver.type: "SolverSettings"`, `cost.type: "CostMenu"`, `admm.type: "AdmmLimits"`, and the friction
 and law types. These fixed metadata fields travel with the configuration;
 they are required and validated, and have no UI controls. A source change
 rebuilds settings from the new source's schema rather than converting old
 parameter formats.
 
-- `MpcParams` fields: `N`, `dt_s`, `solver` (GATO's `SolverParams`: SQP/PCG
-  caps and tolerance, `mu`, `rho`, costs, `linsys`, `exact_hessian`, …),
+- `MpcParams` fields: `N`, `dt_s`, `solver` (`SolverSettings`: SQP/PCG
+  caps and tolerance, `mu`, `rho`, bound penalties, `linsys`, `exact_hessian`, …),
+  `cost` (the native tracking objective),
   `warm_start`, `reset_rho_each_step`, `admm_linsys`, `admm`
   (ADMM limit-row settings), `joint_margin_rad`, `velocity_fraction`,
   `effort_fraction`, `friction` (predictor friction, `null` when loss-free),
-  `friction_law` (separate native tanh law; the standard adapter fixes it at 0.03 rad/s),
-  `armature` (native reflected-inertia vector; zero with the standard adapter, which adds
-  no control; a [source settings adapter](source-settings.md) may control both),
+  `friction_law` (separate native tanh law),
+  `armature` (native reflected-inertia vector; the standard adapter retains the
+  selected source's defaults and adds no control; a [source settings adapter](source-settings.md) may control both),
   `max_sqp_time_s` (wall time for a solve's SQP iterations within
   `solver.max_sqp_iters`; `null`: no time limit) and `warmup` (a boolean:
   GATO's warm-up solve at every reseed, below).
@@ -168,6 +169,37 @@ tracking start. They do not move when the simulated state, task position,
 tracking dimensions or orientation change; the UI can edit either task before
 receiving its first solved plan.
 
+### Orientation goal and cost menus
+
+Reach accepts `task.orientation_rad`: a world-frame rotation vector in radians,
+or `null` for position only. The Orientation goal checkbox initializes a new goal
+from the displayed grasp orientation, and retains the last goal when switched off.
+The rotation gizmo edits the goal in its own axes. Figure eight retains its separate
+path orientation and currently has no grasp-orientation goal in the viewer.
+
+Native `config.cost` is a serialized GATO `CostMenu`; `config.solver` holds
+`SolverSettings`, whose fields exclude tracking weights. For a standard tracking
+menu, `config.cost_weights` provides convenience controls named `position`,
+`terminal_position`, `velocity`, `torque`, `orientation` and
+`terminal_orientation`. These build the native menu with `default_cost(N, ...)`.
+Custom menus retain their terms and are not overwritten by convenience controls.
+They expose a fixed horizon (`schema.fixed_horizon_N`); changing it requires a
+menu supplied for that horizon. Orientation-goal capability is independent of
+convenience controls (`schema.orientation_goal_supported`).
+Orientation weights start at zero; first enabling a goal initializes them to 1
+and 8 if both are zero. These are editable starting values, not tuned weights.
+Disabling a goal retains its weights for later use.
+
+References contain grasp position and rotation vector in the solver's torso
+frame. Three NaN orientation entries mean no orientation target; on the JSON wire
+and in history these entries are `null`. Each solve retargets the native menu;
+missing orientation targets mask its orientation weight at those knots. Cost and
+goal edits require no compilation. Arrival continues to use position and speed.
+
+States with a goal carry `orientation_error_rad`, the angle between the actual
+and desired grasp orientations. Live displays this in degrees; freezes and replays
+retain orientation references and expose the same error to Episode plots.
+
 ## Schema response
 
 ```json
@@ -179,7 +211,7 @@ receiving its first solved plan.
                    "xyz": [0, 0, 0.139288457525], "rpy": [0, 0, 0]},
   "friction": {"coefficients": {...}, "predictor": {...}, "source": "..."},
   "parameters": [
-    {"path": "solver.q_cost", "label": "Tool position cost", "group": "Costs",
+    {"path": "cost_weights.position", "label": "Tool position cost", "group": "Costs",
      "kind": "float", "scale": "linear", "min": 0, "max": 100000}
   ],
   "source": {"mpc_root": "...", "mpc_commit": "...", "mpc_dirty": false,
@@ -191,7 +223,7 @@ receiving its first solved plan.
 the selected solver profile. `parent_link` is a link in the canonical full
 display URDF; `xyz` (metres) and `rpy` (radians, URDF roll/pitch/yaw) are the
 fixed frame's local origin on that link, read from `tiago.arm_urdf()`. They are
-not a world offset. The browser uses this origin for its position-only grasp
+not a world offset. The browser uses this origin for its pose-editing grasp
 handle and verifies its forward kinematics against a recorded Live state
 before enabling the handle. `robot_frames.fixed_frame_spec` supplies the same
 origin to the schema and `server.RobotKinematics`, so they share one frame

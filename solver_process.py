@@ -145,6 +145,35 @@ def wire_value(value):
     return value.item() if isinstance(value, np.generic) else value
 
 
+def reference_to_wire(rows):
+    """tiago_mpc's (N, 6) reference rows (grasp-frame position, then orientation as a
+    rotation vector, in its ROOT_FRAME) as JSON rows. The solver RPC and the history carry
+    finite numbers only, so a NaN orientation slot (no orientation target) travels as null."""
+    reference = np.asarray(rows, dtype=float)
+    if reference.ndim != 2 or reference.shape[1] != 6:
+        raise ValueError("A reference needs rows of six values")
+    rotation = reference[:, 3:]
+    if (not np.isfinite(reference[:, :3]).all() or
+            not (np.isfinite(rotation).all(axis=1) | np.isnan(rotation).all(axis=1)).all()):
+        raise ValueError("Reference positions must be finite; an orientation is three finite values or none")
+    return [[None if math.isnan(value) else float(value) for value in row] for row in reference]
+
+
+def reference_from_wire(rows, n):
+    """The (n, 6) float32 rows tiago_mpc reads from reference_to_wire's JSON rows: null
+    orientation slots become NaN; positions and given orientations must be finite."""
+    if not isinstance(rows, (list, tuple, np.ndarray)) or len(rows) != n or any(
+            not isinstance(row, (list, tuple, np.ndarray)) or len(row) != 6 for row in rows):
+        raise ValueError(f"A reference needs {n} rows of six values")
+    reference = np.array([[math.nan if value is None else value for value in row] for row in rows],
+                         dtype=np.float32)
+    rotation = reference[:, 3:]
+    if (not np.isfinite(reference[:, :3]).all() or
+            not (np.isfinite(rotation).all(axis=1) | np.isnan(rotation).all(axis=1)).all()):
+        raise ValueError("Reference positions must be finite; an orientation is three finite values or none")
+    return reference
+
+
 def send_message(channel, message, *, array_buffers=False):
     # Let the JSON encoder traverse ordinary containers and numeric buffers in
     # C. Recursively normalizing every float in Python doubled this work.

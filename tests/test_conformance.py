@@ -15,8 +15,8 @@ from tests.tiago_mpc_source import MPC_ROOT
 class NativeLoopMpc:
     """Only the MPC is fake; the loop, plant, task and RunRecord are upstream's."""
     def __init__(self):
-        from tiago_mpc.mpc import TIAGO
-        self.params = replace(TIAGO, N=3, dt_s=.01, max_sqp_time_s=None)  # an update every 10 ms
+        from tiago_mpc import TIAGO, default_cost
+        self.params = replace(TIAGO, N=3, cost=default_cost(3), dt_s=.01, max_sqp_time_s=None)  # an update every 10 ms
         self.N, self.dt = self.params.N, self.params.dt_s
         self.warmups, self.requests, self.pending = [], [], None
 

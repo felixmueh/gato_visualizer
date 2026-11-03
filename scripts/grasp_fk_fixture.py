@@ -50,11 +50,17 @@ def build_fixture(mpc_root=None):
             q[i] = bounds[i]
             labelled.append((f'joint_{i+1}_{label}', q))
     world = kinematics.ee_positions([q for _, q in labelled])
+    world_rotations = kinematics.ee_rotvecs([q for _, q in labelled])
     poses = []
-    for (label, q), point in zip(labelled, world):
-        jacobian = pin.computeFrameJacobian(model, data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)[:3]
+    for (label, q), point, rotvec in zip(labelled, world, world_rotations):
+        jacobian = pin.computeFrameJacobian(model, data, q, frame_id, pin.LOCAL_WORLD_ALIGNED)
+        pin.framesForwardKinematics(model, data, q)
         poses.append(dict(label=label, q=q.tolist(), grasp_torso_m=tiago.fk(q).tolist(),
-                          jacobian_torso=jacobian.tolist(), grasp_world_m=point.tolist()))
+                          jacobian_torso=jacobian[:3].tolist(), grasp_world_m=point.tolist(),
+                          # The grasp frame's orientation (rotation matrix, torso frame), the
+                          # Jacobian's rotation rows and the world rotation vector (display frame).
+                          rotation_torso=data.oMf[frame_id].rotation.tolist(),
+                          angular_jacobian_torso=jacobian[3:].tolist(), rotvec_world=rotvec.tolist()))
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=mpc_root, text=True).strip()
     digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
     return dict(tiago_mpc_commit=commit, full_urdf_sha256=digest(tiago.FULL_URDF),

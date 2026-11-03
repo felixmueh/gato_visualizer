@@ -84,19 +84,20 @@ class ModelStatusTests(unittest.TestCase):
             result = self.status(source_settings=values, source_settings_module=self.description["module"])
         self.assertEqual(result["effective_settings"]["params"], self.record.to_dict(expected))
         self.assertEqual([call.args[0] for call in find.call_args_list],
-                         [replace(expected,N=n) for n in source_runtime.KNOT_COUNTS])
+                         [script.with_knot_count(expected,n) for n in source_runtime.KNOT_COUNTS])
         self.assertEqual(result["source_settings"]["predictor"]["module"], self.description["module"])
         self.assertEqual(result["effective_settings"]["modules"]["predictor"], self.description["module"])
 
     def test_runtime_params_reuse_the_native_path_without_a_visualizer_field_rule(self):
-        modified = replace(self.params, dt_s=.03, solver=self.params.solver.replace(q_cost=27.))
+        from tiago_mpc import default_cost
+        modified = replace(self.params, dt_s=.03, cost=default_cost(self.params.N, position=27.))
         with patch.object(self.mpc, "find_binary", side_effect=lambda p: Path("/native/same.so") if p.N == 32 else None) as find:
             first, second = self.status(), self.status(modified)
         self.assertTrue(first["compilation"]["ready"] and second["compilation"]["ready"])
         self.assertEqual(first["compilation"]["binary_path"], second["compilation"]["binary_path"])
         self.assertNotEqual(first["effective_settings"]["params"], second["effective_settings"]["params"])
         self.assertEqual(find.call_args_list[-1].args[0].dt_s, .03)
-        self.assertEqual(find.call_args_list[-1].args[0].solver.q_cost, 27.)
+        self.assertEqual(find.call_args_list[-1].args[0].cost.frame_pos.weight[0][0], 27.)
 
     def test_wrong_adapter_pin_is_rejected_before_lookup(self):
         wrong = dict(self.description["module"], sha256="0"*64)

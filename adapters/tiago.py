@@ -5,8 +5,10 @@ fields are owned here yet. Promote reviewed experiment controls into describe
 and their builders when those native APIs become standard.
 This module imports neither tiago_mpc nor ROS/CUDA.
 """
-LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "q_cost": "Tool position cost",
-          "qd_cost": "Joint speed cost", "u_cost": "Control cost", "N_cost": "Terminal position cost",
+LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "cost_weights.position": "Tool position cost",
+          "cost_weights.velocity": "Joint speed cost", "cost_weights.torque": "Control cost",
+          "cost_weights.terminal_position": "Terminal position cost",
+          "cost_weights.orientation": "Orientation cost", "cost_weights.terminal_orientation": "Terminal orientation cost",
           "friction": "Predictor friction", "friction_law": "Predictor Coulomb law", "plant.integrator": "Plant integrator",
           "plant.friction": "Plant friction", "plant.coulomb_law": "Coulomb law",
           "plant.friction_width_rad_s": "tanh width (rad/s)",
@@ -16,6 +18,8 @@ LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "q_cost": "Tool posit
           "plant.start_pose_rad": "Start pose"}
 
 DESCRIPTIONS = {
+    "cost_weights.orientation": "Running grasp orientation weight on ½·w·|log(R_goalᵀ R)|²; disabled at knots without a target.",
+    "cost_weights.terminal_orientation": "Last-knot grasp orientation weight; disabled without a target.",
     "friction": "The predictor's dynamics: loss-free, or the URDF Coulomb and viscous coefficients "
                 "evaluated with the separate predictor Coulomb law (a compiled GATO variant)",
     "friction_law": "The predictor's separate tanh Coulomb law and compiled velocity width",
@@ -59,12 +63,13 @@ PARAMETER_EFFECTS = {name: "runtime" for name in (
     "reseed_threshold",
     "joint_margin_rad", "velocity_fraction", "effort_fraction", "max_sqp_time_s", "warmup",
     "solver.max_sqp_iters", "solver.max_pcg_iters", "solver.pcg_tol", "solver.solve_ratio",
-    "solver.mu", "solver.rho", "solver.adapt_rho", "solver.linsys", "solver.q_cost",
-    "solver.qd_cost", "solver.u_cost", "solver.N_cost", "solver.q_lim_cost",
+    "solver.mu", "solver.rho", "solver.adapt_rho", "solver.linsys", "solver.q_lim_cost",
     "solver.vel_lim_cost", "solver.ctrl_lim_cost", "solver.exact_hessian",
     "solver.cost_curvature", "solver.defect_telemetry", "solver.defect_exit",
     "admm.iters", "admm.eps_abs", "admm.eps_rel", "admm.check_every", "admm.rho_q", "admm.rho_qd", "admm.rho_u",
 )}
+PARAMETER_EFFECTS.update({"cost_weights." + name: "runtime" for name in (
+    "position", "terminal_position", "velocity", "torque", "orientation", "terminal_orientation")})
 PARAMETER_EFFECTS.update({name: "compiled_model" for name in ("N", "friction", "friction_law", "armature")})
 
 

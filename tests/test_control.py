@@ -29,13 +29,13 @@ class ControlTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue(), calls
 
     def test_get_snapshot_is_read_only_and_retains_server_version(self):
-        snapshot = {"settings_version": 8, "config": {"solver": {"q_cost": 9}}}
+        snapshot = {"settings_version": 8, "config": {"cost_weights": {"position": 9}}}
         code, out, err, calls = self.invoke(["--url", "http://example:9000/", "get", "live"], snapshot)
         self.assertEqual((code, json.loads(out), err), (0, snapshot, ""))
         self.assertEqual(calls, [("http://example:9000/api/live/settings", "GET", None, 30)])
 
     def test_nested_patch_null_and_version_pass_through_without_fetch_or_full_replacement(self):
-        patch = {"config": {"solver": {"q_cost": 20}, "max_sqp_time_s": None}}
+        patch = {"config": {"cost_weights": {"position": 20}, "max_sqp_time_s": None}}
         code, _, err, calls = self.invoke(["patch", "live", json.dumps(patch), "--expected-version", "7"])
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(len(calls), 1)

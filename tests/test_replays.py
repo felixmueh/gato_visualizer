@@ -66,6 +66,28 @@ class ReplayTests(unittest.TestCase):
                              model_urdf=MODEL, default_scene=self.base_scene,
                              scene_builder=lambda replay, path: replay_scene(replay, path, MPC_ROOT, self.base_scene))
 
+    def test_orientation_reference_roundtrip_preserves_missing_targets(self):
+        path = self.export(self.path, reference_xyz_m=[[.3, -.2, .5]] * 2,
+                           reference_time_s=self.time, reference_frame='torso_lift_link',
+                           reference_rotvec_rad=[[0., .2, -.3], [np.nan] * 3])
+        replay = load_replay(path, model_urdf=MODEL)
+        np.testing.assert_allclose(replay.reference.rotvec[0], [0., .2, -.3])
+        self.assertTrue(np.isnan(replay.reference.rotvec[1]).all())
+        scene = replay_scene(replay, path, MPC_ROOT, self.base_scene)
+        errors = scene['trajectories'][0]['orientation_error_rad']
+        self.assertIsInstance(errors[0], float)
+        self.assertIsNone(errors[1])
+        json.dumps(scene, allow_nan=False)
+
+    def test_replay_rejects_partial_or_infinite_orientation_rows(self):
+        for row in ([0., np.nan, 0.], [np.inf] * 3):
+            with self.subTest(row=row):
+                data = self.rewritten(reference_xyz_m=np.array([.3, -.2, .5]),
+                                      reference_rotvec_rad=np.array(row),
+                                      metadata=dict(reference_frame='base_footprint'))
+                with self.assertRaisesRegex(ReplayError, 'each orientation'):
+                    load_replay(data, model_urdf=MODEL)
+
     def test_current_run_record_export_preserves_native_typed_params(self):
         from dataclasses import replace
         from live_mpc import import_tiago

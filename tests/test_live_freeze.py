@@ -129,6 +129,15 @@ class LiveFreezeTests(unittest.TestCase):
         complete = load_replay(self.export(complete=True), model_urdf=MODEL)
         self.assertTrue(complete.metadata["provenance"]["live"]["complete"])
 
+    def test_freeze_preserves_world_orientation_goal(self):
+        records = deepcopy(self.records)
+        records[0]['context']['settings']['task']['orientation_rad'] = [0., .2, -.3]
+        replay = load_replay(self.export(records=records), model_urdf=MODEL)
+        self.assertEqual(replay.reference.frame, self.scene['world_frame'])
+        np.testing.assert_allclose(replay.reference.rotvec, [[0., .2, -.3]] * 3)
+        scene = replay_scene(replay, self.folder / 'freeze.npz', MPC_ROOT, self.scene)
+        self.assertEqual(len(scene['trajectories'][0]['orientation_error_rad']), 3)
+
     def test_compensated_freeze_preserves_future_origin_and_actual_request_time_for_plots(self):
         from plot_sources import SourceReader
         from replay_library import _signature

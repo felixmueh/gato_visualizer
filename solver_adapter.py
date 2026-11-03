@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 
 from live_mpc import (POSITION_TOL_M, REACH_DEFAULT_TASK, SPEED_L1_TOL_RAD_S, figure8_reference,
-                      end_effector_spec, import_tiago, mpc_params, source_identity, start_pose_spec)
+                      end_effector_spec, import_tiago, mpc_params, orientation_goal, source_identity, start_pose_spec)
 from live_presentation import mutable, snapshot
-from solver_process import SolverProcess, model_contract, validate_contract
+from solver_process import SolverProcess, model_contract, reference_to_wire, validate_contract
 
 class RemoteController:
     def __init__(self, adapter):
@@ -23,7 +23,7 @@ class RemoteController:
         no record, no interval timing."""
         a = self.adapter
         return a.remote.request("reset", state=np.asarray(native_state).tolist(), time_s=float(a.t),
-                                reference=a.task_reference().tolist())
+                                reference=reference_to_wire(a.task_reference()))
 
 
 class SimulatorAdapter:
@@ -174,8 +174,11 @@ class SimulatorAdapter:
                               if task["kind"] == "figure8" else None)
         world_target = self.kinematics.target_to_world(self.default_target) + np.asarray(task["target_offset_m"])
         self.target = self.kinematics.world_from_torso.actInv(world_target)
-        self.reference = np.zeros((self.N, 6), dtype=np.float32)
+        self.reference = np.full((self.N, 6), np.nan, dtype=np.float32)
         self.reference[:, :3] = self.target
+        rotation = orientation_goal(task)
+        if rotation is not None:
+            self.reference[:, 3:] = self.kinematics.rotation_to_torso(rotation)
         if self.task["kind"] == "figure8":
             self.update_tracking_reference()
 
@@ -256,7 +259,7 @@ class SimulatorAdapter:
         self.task_reference(at)
         predicted = {} if initial is None else dict(measured_time_s=float(initial.measured_t))
         response = self.remote.request("solve", state=state, time_s=at,
-            reference=self.reference, origin=origin, settings_version=settings_version, **predicted)
+            reference=reference_to_wire(self.reference), origin=origin, settings_version=settings_version, **predicted)
         self.sequence += 1
         event = dict(response["plan"], seq=self.sequence, sim_time_s=float(self.t),
                      _reference=self.reference.copy(), target_xyz=self.target_world_at(at).tolist())

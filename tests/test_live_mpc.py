@@ -72,7 +72,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(config, self.config)
         self.assertIsNot(config, self.config)
         # TIAGO's defaults, without the SQP wall-time limit on the simulation clock
-        self.assertEqual({key: value for key, value in config.items() if key != "plant"},
+        self.assertEqual({key: value for key, value in config.items() if key not in ("plant", "cost_weights")},
                          dict(live_probe()["defaults"], max_sqp_time_s=None))
         self.assertIsNotNone(live_probe()["defaults"]["max_sqp_time_s"])
         self.assertIs(config["warmup"], True)
@@ -89,7 +89,7 @@ class SettingsTests(unittest.TestCase):
             "admm_threshold", "linsys", "bdsv_threshold", "reseed_threshold", "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "friction_law", "warmup", "max_sqp_time_s",
             *(["armature"] if "armature" in config else []),
             "plant.integrator", "plant.friction", "plant.coulomb_law", "plant.friction_width_rad_s", "plant.clip_effort", "plant.stop_on_breach.position", "plant.stop_on_breach.velocity",
-            "plant.stop_on_breach.torque", "plant.start_pose_rad", *(f"solver.{key}" for key in config["solver"] if key != "type"), *(f"admm.{key}" for key in config["admm"] if key != "type")})
+            "plant.stop_on_breach.torque", "plant.start_pose_rad", *(f"cost_weights.{key}" for key in config.get("cost_weights", {})), *(f"solver.{key}" for key in config["solver"] if key != "type"), *(f"admm.{key}" for key in config["admm"] if key != "type")})
         gato_default = dict(value=None, label="GATO default")  # MpcParams' None follows GATO
         self.assertEqual(specs["warm_start"]["choices"], [gato_default, "shift", "hold"])
         self.assertEqual(specs["admm_linsys"]["choices"], [gato_default, "pcg", "bdsv_factor", "auto"])
@@ -130,6 +130,36 @@ class SettingsTests(unittest.TestCase):
                          {"Stop on breach"})
         validate_settings(dict(self.config, max_sqp_time_s=.05, warmup=False, friction=self.friction), self.task, self.schema)
 
+    def test_custom_native_menu_is_retained_without_convenience_weight_controls(self):
+        from live_mpc import mpc_params
+        probe = live_probe()
+        probe["defaults"]["cost"]["input"]["weight"] = [.1] * 7
+        schema = build_schema(probe, MPC_ROOT, start_pose())
+        config = deepcopy(schema["defaults"]["config"])
+        self.assertNotIn("cost_weights", config)
+        self.assertTrue(schema["orientation_goal_supported"])
+        self.assertEqual(schema["fixed_horizon_N"], config["N"])
+        knot = next(spec for spec in schema["parameters"] if spec["path"] == "N")
+        self.assertEqual(knot["choices"], [config["N"]]); self.assertTrue(knot["disabled"])
+        changed = dict(config, N=16 if config["N"] != 16 else 32)
+        with self.assertRaisesRegex(ValueError, "Custom CostMenu fixes N"):
+            validate_settings(changed, self.task, schema, check_available=False)
+        self.assertFalse(any(spec["path"].startswith("cost") for spec in schema["parameters"]))
+        validate_settings(config, self.task, schema, check_available=False)
+        self.assertEqual(mpc_params(config)["cost"], probe["defaults"]["cost"])
+
+    def test_weight_controls_rebuild_the_native_menu_for_the_edited_horizon(self):
+        from live_mpc import mpc_params
+        from native_cost import serialized_cost
+        config = deepcopy(self.config)
+        config["N"] = 16
+        config["cost_weights"].update(position=6., orientation=1., terminal_orientation=8.)
+        valid, _ = validate_settings(config, self.task, self.schema)
+        payload = mpc_params(valid)
+        self.assertEqual(payload["cost"], serialized_cost(16, config["cost_weights"]))
+        self.assertEqual(len(payload["cost"]["frame_pos"]["weight"]), 16)
+        self.assertNotIn("cost_weights", payload)
+
     def test_native_config_roundtrips_with_hidden_fixed_type_metadata(self):
         from live_mpc import mpc_params
         from tiago_mpc.mpc import MpcParams
@@ -138,7 +168,7 @@ class SettingsTests(unittest.TestCase):
         paths = {spec["path"] for spec in self.schema["parameters"]}
         self.assertFalse(any(path == "type" or path.endswith(".type") for path in paths))
         self.assertEqual(self.config["type"], "MpcParams")
-        self.assertEqual(self.config["solver"]["type"], "SolverParams")
+        self.assertEqual(self.config["solver"]["type"], "SolverSettings")
         self.assertEqual(self.config["admm"]["type"], "AdmmLimits")
         for friction in (None, self.friction):
             config = dict(self.config, friction=friction)
