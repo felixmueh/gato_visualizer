@@ -1,5 +1,355 @@
 # Handoff: Live at TO 500 Hz falls behind real time
 
+Consolidation, 2026-11-03: the trial changes are integrated on separate
+`integration/shared-loop-consolidation` branches in
+`../tiago_mpc-shared-loop-integration` and
+`../tiago_mpc_visualizer-shared-loop-integration`. Their main bases are native
+`221acad` and visualizer `61430ec`. The original trial directories and the
+viewer on 8132 remain available. Both complete trial working states were
+preserved on `wip/shared-loop-preserved-20261103` before integration; neither
+original main checkout was changed. Current-main orientation/cost-menu settings,
+orientation display/IK and asynchronous-settings Play behavior must survive.
+
+Integration order:
+
+1. Retain the prepared GATO dependency. Felix confirmed that the merged setup
+   should use the local armature + collision-cache work until upstream includes
+   it. The native integration selects
+   `../GATO-tiago-armature-collision-cache`, based on `69bd8d8` with the existing
+   collision-cache changes in `gato/bsqp/bsqp.cuh` and
+   `gato/bsqp/kernels/admm.cuh`. These files were not changed by consolidation.
+   GRiD remains `../GRiD-tiago-armature-060`. The two repository changes alone
+   do not package those external dependency sources.
+2. Review and merge the native shared-loop change first. Advance the stable
+   `visualizer/base` source explicitly to include it, then sync that checkout's
+   own environment. A source without the required hooks fails the probe.
+3. Review and merge the visualizer change, then select the updated native source.
+   Before merging, the two integration worktrees can be used together explicitly.
+4. If either main advances during review, replay that integration commit onto
+   its new main and repeat the affected checks, native first and visualizer second.
+
+The initial replay of the preserved trial commits preceded consolidation so
+cleanup targets the combined current code. Review commits contain the
+consolidated result, one per repository; no main branch is advanced here.
+
+The consolidation separates `history_store.py` from service orchestration,
+`src/live-history-paging.js` from Live settings/playback state, and
+`src/live-prediction.js` from transport and rendering. Unused presentation
+helpers and the circular session reexport are removed. Generation/cursor state
+has one owner; explicit ownership comments cover the native gate, committed
+progress, shared control buffers and recording-slot retirement. Integration
+also preserves optional orientation references across shared-memory and warmup
+transport, compact historical display and exact prediction export.
+
+Validation on the integrated code: 594 native tests plus 67 subtests, mypy,
+500 visualizer Python tests (two adapter-specific skips), 518 frontend tests,
+and the production frontend build passed. Three-second GPU conformance at
+500 Hz commands / 100 Hz TO / declared 5.5 ms latency compared 1501 command-tick
+states and all commands/plans with zero array differences. A real Chromium
+check ran a 0.4 s orientation-enabled case with 500 Hz simulation/control and
+ASAP TO, retained 201 states, scrubbed and hydrated exact export predictions,
+and reported no JavaScript errors. This is functional/numerical validation,
+not a fresh throughput claim. Logs, source identities, review commit IDs and
+the dependency patch are under each integration worktree's
+`_expr_data/shared-loop/consolidation/`. The combined review viewer is
+**http://192.168.178.82:8133/**; 8132 remains the previous working trial.
+
+Latest follow-up, 2026-11-03, browser data churn: playback now reads a compact
+companion JSONL stream with identical cursors and full state/control/event
+records, but prediction summaries instead of horizon arrays. Indexed prediction
+requests run independently, with a generation-scoped 128-plan LRU cache and
+at most 32 plans per request. Playing geometry selects a 60 Hz display-time
+grid with 18 frames of lookahead; paused selection and animation export hydrate
+the exact recorded solves. Motion retains every sample. Full backend records,
+inspection, and replay export remain lossless. FK/serialization of the full
+server recording still happens; this change removes browser/network churn.
+
+On the measured 1024-record page, gzip payload fell from 2,067,350 to 125,678
+bytes (16.45x). This excludes separately requested display predictions, so it
+is not a claim of a 16x reduction in all traffic. Eager unused metric-history
+rebuilds were removed, and live path/prediction geometry reuses allocated GPU
+buffers. API, cache, delayed-download, scrub/export and geometry tests cover
+the new path. Evidence is under `_expr_data/shared-loop/compact-playback/`.
+
+Validation: 464 frontend tests; 459 Python tests with two skips, followed by
+10 passing compact-API tests including the preview/Play sequence collision
+regression; production frontend build passed. Chromium exercised a 3 MiB/s
+connection with the first prediction download held for three seconds: motion
+continued, exact paused/export predictions loaded, and no JavaScript errors
+occurred. Full robot rendering in this container's software-rendered browser
+was slow; a second diagnostic hid the robot to separate rendering load from
+delivery and verified that pending predictions do not redisplay stale geometry.
+In that diagnostic the median compact-page resource duration was 70.7 ms;
+buffering still occurred. These browser checks are functional evidence, not a
+hardware-accelerated laptop performance qualification. The updated isolated
+viewer is **http://192.168.178.82:8132/**.
+
+The separate native follow-up retained reduced state-vector allocation and
+frictional Euler matrix allocation in the authorized trial checkout. A focused
+Euler microbenchmark improved from 106.1 to 71.9 us; 600 randomized numerical
+cases and the full production fixed-latency run (1001 states, 999 commands,
+1000 plans) matched exactly. Native validation passed 457 tests plus 67
+subtests. This did not demonstrate sustained real time: frozen-runtime
+alternating measured-latency calculation RTF was 0.887/0.929 before and
+0.873/0.900 after. Shared-desktop timing and variable solve counts limit that
+comparison. GC was only about 10–17 ms per three simulated seconds. Remaining
+candidates include result serialization, GATO reset_rho and ASAP scheduling
+against native compute latency rather than actual result arrival. Changing
+that timing policy would change the simulated workload and was not done.
+Evidence and the isolated native patch are under
+`_expr_data/shared-loop/realtime-followup/`.
+
+Latest follow-up, 2026-11-03, buffered ingestion at 1 kHz controls: a dedicated
+CPU process now drains raw solve captures before history deserialization, FK and
+JSON processing. The producer ring and separate byte-bounded ingestion queue
+each default to 256 MiB. Simulation remains lossless and blocks only when its
+bounded queues fill; this does not implement a real-robot telemetry policy.
+Startup budgets and ownership are documented in the execution contract.
+
+Three before/after production-pipeline trials used the current reaching target,
+N32, one SQP iteration, frictional Euler physics and controls at 1000 Hz,
+measured latency, compensation off, ASAP TO and three simulated seconds.
+Mean reported calculation RTF improved from 0.805 to 0.924; numerical compute
+RTF was 0.921 before and 0.931 after. Command-to-completion wall time, including
+initialization/warmup and final history drain, was 4.286 s before and 4.194 s
+after. Thus the steady history penalty decreased, but end-to-end improvement is
+small and 1 kHz real-time operation is still not sustained. These are sequential
+shared-desktop diagnostic windows, not isolated or fixed-work timing: measured
+latency changes the number of solves. HTTP/browser activity was excluded.
+Peak buffered payload was 3.68 MiB, with zero ingestion-capacity wait.
+
+Validation: 450 Python tests, two skips; process-level slow-consumer, bounded
+backpressure, stale-generation, shutdown and ingestion-crash tests. A separate
+fixed-1-ms-latency run through the full production pipeline retained exactly
+equal numerical records for 1000 plans, 1001 states and 999 applied commands
+before/after. Cross-channel arrival interleaving and measured overrun events
+can differ; conformance compares each numerical channel in order. Review found
+four lifecycle/filtering issues, all fixed; no remaining high-severity finding.
+Raw timings, conformance records, test logs and source hashes are under
+`_expr_data/shared-loop/buffered-ingestion/`. The updated demo is on port 8131;
+the prior paused viewer on 8130 remains available.
+
+Latest state, 2026-11-03, asynchronous batch publication: ordinary reporting no
+longer parks the numerical invocation. Two bounded batches carry detached
+records and immutable committed progress snapshots to the coordinator owner.
+Explicit Pause drains and quiesces; cancellation restores state and interval
+costs to the consumed checkpoint. Paced Play uses short windows when ahead,
+but catches up without a stop at every batch when behind wall time. Forecast
+and capture serialization remain unchanged. Control submission combines the
+lease and request notification in one send, and float32-range validation uses
+the shared input directly instead of rebuilding its state vector.
+
+Validation: 436 visualizer Python tests, two skips; bitwise GPU conformance for
+three simulated seconds / 1500 solves at 500 Hz. Native code is unchanged from
+the previously verified 457-test snapshot. Astra re-reviewed the pause race,
+cancelled handoff ownership, terminal errors and interval checkpoints; all five
+findings were fixed. The actual coordinator/solver/history pipeline also ran
+three two-second trials and GPU Pause/resume checks, preserving every state,
+command and returned plan.
+
+| Measurement, previous readiness split → asynchronous batches | Before | After |
+| --- | --- | --- |
+| Profiled gap between native solves | 672 µs | 596 µs |
+| Profiled boundary callback wall time | 70 µs | 29 µs |
+| Unprofiled numerical visualizer wall, 2 simulated seconds | 2.918 s | 2.844 s |
+| Numerical visualizer overhead over asynchronous bare loop | 6.8% | 3.8% |
+| Actual worker/FK/JSON/history pipeline wall, 2 simulated seconds | 3.430 s | 3.413 s |
+
+The numerical comparison uses three rotating-order repeats. The production
+pipeline measurements include initialization, warmup and final consumer drain;
+they exclude HTTP/browser activity. GPU desktop load varies. The remaining
+production difference is small enough that no meaningful end-to-end speedup or
+performance parity is claimed. Raw results, failures, test logs and the review
+are in `_expr_data/shared-loop/async-batches/`; the current receipt is
+`validation-receipt.json` there. Earlier windows below remain historical evidence.
+
+Previous readiness-split state, 2026-11-03: the profiling issues are fixed and control readiness
+now precedes recording serialization. Torque breaches quiesce before parking;
+shutdown returns all known recording ownership; interval physics/total costs
+share a boundary. Ordinary recording errors quarantine the idle controller
+until leased reconfiguration/close. Command ticks avoid the condition lock
+unless entering a reporting/pause gate, reach targets are cached, and compact
+control/schedule observations are expanded by the consumer. Ring capacity is
+derived from the SQP cap and qualified for N128/100000-iteration diagnostics.
+Astra's high-effort follow-up has no unresolved P1/P2 findings in these paths.
+
+Validation: 457 native tests including mypy; 426 visualizer Python tests with two
+skips. Three-second 500 Hz GPU conformance remains bitwise identical for states,
+commands and all returned plans. One earlier full-suite attempt exposed a race
+in the abrupt-parent-death test's immediate lock assertion; the test now waits
+within its existing bounded lifetime checks for actual final file release, and
+the full suite passed. Original logs remain retained.
+
+Matched diagnostic snapshots (old numerical files restored into an isolated
+runtime copy; old native loop loaded explicitly) and the updated implementation
+show these instrumented steady means over 1,499 transitions each:
+
+| Critical-path part | Before | After |
+| --- | --- | --- |
+| Native completion → control notification | 146 µs | 44 µs |
+| Owned plan → next submission | 439 µs | 378 µs |
+| Total gap between native requests | 836 µs | 674 µs |
+| Callback boundary thread CPU | 59 µs | 29 µs |
+
+The inter-solve gap fell about 19%. Its excess over async headless fell from
+263 to 152 µs. Recording publication still costs about 98 µs, now overlapping
+coordinator work instead of preceding the control notification. Forecasting
+is unchanged. Short unprofiled three-repeat/two-second windows gave recording
+overhead versus async headless of 8.5% before and 6.5% after. Absolute numerical
+visualizer wall time was 2.986 versus 2.974 s; that is little overall change
+amid varying desktop GPU activity. Overhead against in-process headless was
+8.7% versus 11.3% in those windows. These results establish reduced targeted
+host costs, not isolated end-to-end speedup or performance parity. HTTP/browser
+remain excluded; the profiling consumer includes production rendering/history
+and retains the old redundant discard for matched before/after instrumentation.
+
+Current evidence: [readiness-split receipt](../_expr_data/shared-loop/ready-split/validation-receipt.json),
+[Astra follow-up](../_expr_data/shared-loop/ready-split/astra-readiness-review.json),
+`ready-split/profile-before/`, `profile-after/`, `throughput-before/`,
+`throughput-after/` and `gpu-conformance/`. The sections below retain earlier
+investigations; their pending findings are resolved by this latest state.
+
+Implementation update, 2026-11-03: the approved shared-loop design is now in
+`/workspace/tiago_mpc_visualizer-live-loop` and native trial
+`/workspace/tiago_mpc-visualizer-trial-loop-events`, uncommitted and isolated
+from both original checkouts. Live invokes `run_virtual_time` through
+`NativeSession`; command-law effort policy, typed observations, cooperative
+pause/cancel/reset and configurable age expiry replace the independent loop.
+Diagnostics remain binary until presentation. See the current
+[execution contract](execution-api.md) and [ADR 001](adr/001-upstream-and-clocks.md).
+
+Validation: 411 visualizer Python tests (two expected skips), 454 browser tests,
+450 native tests, native mypy and frontend build passed. Astra reviewed the
+design and integration. Logs and task-only diffs are under
+`_expr_data/shared-loop/` in each worktree.
+
+GPU follow-up, 2026-11-03: the experiment locks were free; desktop GPU activity
+remained around 20%, so these are diagnostic timings. Three-second numerical
+comparisons were bitwise identical for states, applied commands and all returned
+plans: 100 Hz TO with 5.5 ms declared latency, and 500 Hz TO with 2 ms latency
+and compensation. The latter also passed with combined GATO armature support
+and collision-cache commit `c610c34`. Comparing before/after GATO outputs also
+gave exactly equal arrays. The native trial now selects the isolated
+`/workspace/GATO-tiago-armature-collision-cache` worktree; its 14 armature
+checks and the native/visualizer Python suites passed again.
+
+Unpaced matched-work timing, three repeats of two simulated seconds, N32,
+loss-free RK4, 1000 Hz physics, 500 Hz commands/TO, 2 ms declared latency and
+compensation, excluding setup/warm-up:
+
+| GATO dependency | Headless real-time factor | NativeSession/RPC real-time factor | Visualizer/headless wall time |
+| --- | --- | --- | --- |
+| Armature support | 0.756 | 0.533 | 1.419× |
+| Armature + collision cache | 0.739 | 0.520 | 1.422× |
+
+This comparison includes native simulation and visualizer record capture/RPC;
+it excludes HTTP, JSON/disk history and the browser. It uses the same static
+reference with arrival stopping disabled on both sides. Final states matched
+exactly in every timing run. Before the dependency change, mean native solver
+time was 2.14 ms on both paths, and RPC/capture added about 0.93 ms per solve.
+The native Python forecast took roughly 130–150 microseconds, not a few
+microseconds. The earlier C++ feasibility probe is not a production path.
+Performance parity remains unmet: the dominant gap is serial RPC/capture.
+The collision cache optimizes collision rows, which this workload does not
+enable; this is compatibility evidence, not a collision-workload speedup test.
+
+Raw timings: [before](../_expr_data/shared-loop/throughput-before-collision-cache/summary.json),
+[combined](../_expr_data/shared-loop/throughput-with-collision-cache/summary.json).
+Numerics: [500 Hz combined comparison](../_expr_data/shared-loop/gpu-conformance-500hz-collision-cache/comparison.json).
+
+Asynchronous implementation follow-up: the coordinator and solver now remain
+separate for every profile, with shared control arrays and a separate lossless
+recording ring. The co-location draft was removed. The loop advances independent
+physics before waiting at the activation boundary; reporting/pause quiesces
+outstanding GPU work. Producer/consumer ownership, full-buffer backpressure,
+retired-ring lifetime, real process overlap and reset/resume are CPU tested.
+Capacity-triggered draining is independent of browser report cadence, including
+the 1 Hz report / 100 kHz command stress fixture. The final suites passed 456
+native tests (including mypy) and 416 visualizer Python tests (two skips).
+The forecast is unchanged. GPU conformance at 500 Hz remained bitwise identical.
+
+The final matched three-repeat/two-second diagnostic compares in-process
+headless, the same asynchronous engine without recordings, and the numerical
+visualizer with an independent recording consumer (HTTP/FK/JSON/browser excluded):
+
+| Scheduling | In-process headless RTF | Async headless RTF | Async + recording RTF | Recording / async headless wall |
+| --- | --- | --- | --- | --- |
+| Normal OS scheduling | 0.904 | 0.884 | 0.781 | 1.132× |
+| Three separate physical cores | 0.749 | 0.733 | 0.668 | 1.096× |
+
+These are separate diagnostic windows, not isolated GPU benchmarks. Do not
+compare their absolute RTFs or the earlier windows as a controlled A/B speedup.
+Current recording overhead is about 10–13%; total additional wall time against
+in-process headless is about 12–16%. Parity remains unmet. The unprofiled CPU
+fake-solver control path dropped from about 712 microseconds (old RPC/capture)
+to 249 microseconds with shared arrays and recording publication, or 165 without
+recording. These CPU figures include the fake solver's numerical wrapper and
+process scheduling, and are not a decomposition of actual GPU solves.
+
+Artifacts: `_expr_data/shared-loop/throughput-async-final/`,
+`throughput-async-pinned/`, `shared-control-cpu-comparison.json`,
+`gpu-conformance-500hz-async/`, and `async-validation-receipt.json`.
+
+Profiling follow-up, 2026-11-03: cross-process monotonic-clock spans, thread CPU
+times and a separate cProfile pass identify the added critical path. The long
+run records 1,500 solves over three simulated seconds; the table uses its 1,499
+steady solve-to-solve transitions, excluding startup/warm-up/final drain. This
+is an instrumented shared-desktop diagnostic, not an isolated speed comparison.
+
+| Mean time per transition | Async headless | Async visualizer | Added |
+| --- | --- | --- | --- |
+| Native controller request | 2,273 µs | 2,332 µs | 60 µs |
+| Native completion → control notification | 30 µs | 136 µs | 106 µs |
+| Notification → owned plan | 90 µs | 85 µs | −5 µs |
+| Owned plan → next submission | 245 µs | 417 µs | 172 µs |
+| Submission → next native request starts | 150 µs | 157 µs | 7 µs |
+| Total gap between native requests | 516 µs | 796 µs | 280 µs |
+
+The added gap is primarily coordinator observation/callback/batch work and
+recording publication before the control notification. `RecordingRing.put`
+averages 92 µs, including 74 µs in pickle; this is serialization work, rather
+than sustained full-ring backpressure. Native controller time remains the
+largest overall cost, with GPU activity varying between windows. Forecasting
+is common to both paths and unchanged. Observed physics averages 279 µs per
+command interval, with about 90% overlapping the native request in this run.
+
+A consumer using the production resolve/discard/render/HistoryStore functions
+takes about 0.67 ms for rendering and 0.70 ms for JSON/history per solve, plus
+0.08 ms for consumption. It runs independently and keeps up with the roughly
+3.13 ms numerical cycle. HTTP/SSE/browser behavior is not included. Short
+instrumented passes were 3–8% slower than nearby unprofiled passes, including
+both instrumentation and changing GPU activity; use the spans for attribution.
+The existing throughput harness subtracts explicit warm-up but still includes
+predictor/stream initialization; steady-cycle attribution avoids that setup.
+
+Astra (`gpt-6-astra`, high) recommends keeping the process boundaries and shared
+native loop. Its correctness review found: torque-breach Tick parking can
+expose a pending solve before lease release; closed/unsuccessful output paths
+can lose recording-slot ownership; and asynchronous collection can charge an
+interval's physics one boundary ahead of total wall. CPU probes reproduced a
+parked pending request, a failed-emission slot leak, and physics costs of
+400/200/0 µs for equal intervals that should each receive 200 µs. These findings
+remain unfixed in this diagnostic follow-up. The review also notes redundant
+successful-record discards (about 8 µs/solve in the consumer), and a 256 KiB
+capture cap not qualified for every accepted diagnostic iteration count.
+
+Next changes should fix those ownership/accounting paths, reduce record-derived
+work in the coordinator, then separate control readiness from recording
+readiness. Moving the notification alone would expose an unreadable recording
+locator; it needs explicit lifetime/readiness semantics. No evidence supports
+removing the forecast, dropping history or changing process ownership.
+
+Artifacts: [profiling receipt](../_expr_data/shared-loop/profiling/profiling-receipt.json),
+[interactive cycle trace](../_expr_data/shared-loop/profiling/profile.html),
+[Astra architecture review](../_expr_data/shared-loop/profiling/astra-architecture-review.json),
+[CPU reproductions](../_expr_data/shared-loop/profiling/review-reproductions.json).
+The same directory contains raw spans, Chrome trace JSON, pstats, text profiles,
+scripts, unprofiled reference runs and logs. Production code was not changed.
+
+The remainder is the original investigation and its proposed fixes, retained
+as historical context; its file locations and scheduling contracts predate
+the shared-loop implementation.
+
 For the coding agent addressing it. Written 2026-11-03 against visualizer main
 `f7f1122` plus its uncommitted working tree. The hot-path files
 (`execution_session.py`, `execution_worker.py`, `solver_worker.py`,

@@ -24,6 +24,16 @@ test('latency compensation is one optional execution toggle with an off default'
   for (const value of [0, 1, 'true', null]) assert.throws(() => validateExecution({ latency_compensation: value }));
 });
 
+test('plan age expiry is disabled by default and accepts positive finite seconds', () => {
+  assert.equal(DEFAULT_EXECUTION.max_plan_age_s, null);
+  assert.equal(validateExecution({}).max_plan_age_s, null);
+  assert.equal(validateExecution({ max_plan_age_s: .25 }).max_plan_age_s, .25);
+  assert.equal(validateExecution({ max_plan_age_s: null }).max_plan_age_s, null);
+  for (const value of [0, -1, true, '0.1', NaN, Infinity]) {
+    assert.throws(() => validateExecution({ max_plan_age_s: value }), /Maximum plan age/);
+  }
+});
+
 test('MPC overrun is red even when simulation is slower, combined-only overrun is yellow', () => {
   assert.equal(intervalSeverity({ mpc_overrun: true, physics_overrun: true, physics_wall_s: 1 }), 'red');
   assert.equal(intervalSeverity({ severity: 'red', total_ratio: 4 }), 'red');

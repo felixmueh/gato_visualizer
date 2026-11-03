@@ -7,7 +7,7 @@ import { setupLive } from "./live.js";
 import { createSession, outsideSpan, trackTime } from "./session.js";
 import { createTrackScene } from "./track-scene.js";
 import { createAnimationExportDialog } from './animation-export-dialog.js';
-import { exportAnimation, freezeAnimationSnapshot } from './animation-export.js';
+import { exportAnimation, freezeAnimationSnapshot, animationSchedule, disposeCaptureScene } from './animation-export.js';
 import './animation-export-dialog.css';
 import { createArmVisibility } from './arm-visibility.js';
 import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
@@ -183,7 +183,7 @@ const animationExportDialog = createAnimationExportDialog({ getContext: animatio
     const source = animationExportSession();
     const explicit = inspectedPrediction?.active && (inspectedPrediction.pinned || inspectedPrediction.iteration != null);
     const line = source.replayOnly ? replayInspectionPrediction : livePrediction;
-    const snapshot = freezeAnimationSnapshot({ session: source, robot, scene, camera, cameraTarget: controls.target,
+    let snapshot = freezeAnimationSnapshot({ session: source, robot, scene, camera, cameraTarget: controls.target,
       jointNames: source.replayOnly ? data.joint_names : defaultData.joint_names,
       liveHistory: source.replayOnly ? [] : live.animationHistory, liveState: source.replayOnly ? null : live.displayedState,
       mainReference: source.replayOnly ? null : displayedLiveReference, prediction: explicit ? inspectedPrediction.prediction : null,
@@ -191,6 +191,13 @@ const animationExportDialog = createAnimationExportDialog({ getContext: animatio
       predictionColor: line?.material.color.getHex() ?? pathColor, predictionOpacity: line?.material.opacity,
       ghostOpacity: presentationSettings.settings.ghost_start_opacity_percent / 100,
       interpolate: presentationSettings.settings.interpolate, mainMaterialStyles: mainMaterials });
+    try {
+      if (!source.replayOnly && snapshot.predictionVisible && !explicit) {
+        onProgress({ progress: 0, message: 'Loading recorded predictions…' });
+        const liveHistory = await live.hydrateAnimationHistory(snapshot.liveHistory, animationSchedule(...snapshot.span), { signal });
+        snapshot = Object.freeze({ ...snapshot, liveHistory });
+      }
+    } catch (error) { disposeCaptureScene(snapshot.scene); throw error; }
     lastAnimationExport = { span: [...snapshot.span], options: { ...options },
       tracks: snapshot.tracks.map(track => ({ id: track.id, kind: track.kind, offset_s: track.offset_s, display: track.display })) };
     const result = await exportAnimation({ snapshot, options, signal, onProgress });
@@ -662,7 +669,7 @@ function animate(timestamp) {
     live?.refreshView();
   }
   jointPoseOwned = ownsPose;
-  if (livePrediction) livePrediction.visible = !jointEditor?.dragging;
+  if (livePrediction) livePrediction.visible = !jointEditor?.dragging && livePrediction.geometry.instanceCount > 0;
   limitTint?.setHoverEnabled(!jointEditor?.dragging);
   updateOnionSkin();
   onionSkin?.sort(camera);
@@ -943,9 +950,14 @@ function renderInspectedPrediction() {
   }
   if (replayInspectionPrediction) replayInspectionPrediction.visible = false;
   if (!liveGroup) return;
-  disposeLiveObject(livePrediction); livePrediction = undefined;
   const plan = livePredictionForView(focusedTrack()?.plan, inspectedPrediction);
-  if (plan?.ee_xyz?.length) { livePrediction = plan === inspectedPrediction?.prediction ? makePredictionLine(plan.ee_xyz, inspectedPrediction) : makeLiveLine(plan.ee_xyz, pathColor, false); liveGroup.add(livePrediction); }
+  if (plan?.ee_xyz?.length) {
+    if (!livePrediction) { livePrediction = makeLiveLine(plan.ee_xyz, pathColor, false); liveGroup.add(livePrediction); }
+    else setPathPoints(livePrediction, plan.ee_xyz);
+    const style = plan === inspectedPrediction?.prediction ? inspectedPathStyle(inspectedPrediction, plan) : {};
+    livePrediction.material.color.set(style.pinned ? getComputedStyle(document.documentElement).getPropertyValue('--pin-red').trim() : pathColor);
+    livePrediction.material.opacity = style.context ? .4 : .95;
+  } else if (livePrediction) setPathPoints(livePrediction, []);
   refreshFitAvailability();
 }
 

@@ -84,6 +84,8 @@ def load_source(selection):
     record = importlib.import_module("tiago_mpc.record")
     if not all(callable(getattr(record, name, None)) for name in ("to_dict", "from_dict", "provenance")):
         raise ValueError("The visualizer needs tiago_mpc.record.to_dict, from_dict and provenance")
+    require_shared_loop(importlib.import_module("tiago_mpc.loops"), interfaces,
+                        importlib.import_module("tiago_mpc.laws"))
     if not hasattr(tiago, "arm_urdf"):
         raise ValueError("tiago_mpc.tiago lacks arm_urdf; the visualizer needs tiago_mpc's derived arm (2026-10-23)")
     # An importable solver alone cannot make a checkout displayable. Check the same
@@ -92,6 +94,34 @@ def load_source(selection):
     canonical_model_assets(root)
     kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.arm_urdf())
     return tiago, mpc, kinematics, tiago.urdf_friction()
+
+
+def require_shared_loop(loops, interfaces, laws):
+    """Fail explicitly when a selected source cannot run Live's shared engine."""
+    run = getattr(loops, "run_virtual_time", None)
+    required = {"settings", "duration", "message_callbacks", "before_tick", "quiesce_at", "cancelled",
+                "start_time_s", "initial_command"}
+    setting_fields = {"command_period", "update_period", "solve_latency_s", "compensation", "max_plan_age_s",
+                      "effort_handling"}
+    if not callable(run) or not required <= set(inspect.signature(run).parameters):
+        raise ValueError("The visualizer needs tiago_mpc's shared run_virtual_time API "
+                         "(settings, duration, messages, tick boundary, cancellation, "
+                         "start time and initial command); "
+                         "select a source with the shared Live loop")
+    settings = getattr(loops, "VirtualTimeSettings", None)
+    if not inspect.isclass(settings) or not is_dataclass(settings) or not setting_fields <= {
+            field.name for field in fields(settings)}:
+        raise ValueError("The visualizer needs tiago_mpc.loops.VirtualTimeSettings with command/update periods, "
+                         "solve latency, compensation, plan age and effort handling")
+    completed = getattr(interfaces, "SolveCompleted", None)
+    if not is_dataclass(completed) or not {"request_time_s", "initial", "reference", "updates", "plan", "wall_s"} <= {
+            field.name for field in fields(completed)}:
+        raise ValueError("The visualizer needs tiago_mpc.interfaces.SolveCompleted from the shared Live loop")
+    tick = getattr(interfaces, "Tick", None)
+    if not is_dataclass(tick) or not {"requested_command", "clipped"} <= {field.name for field in fields(tick)}:
+        raise ValueError("The visualizer needs tiago_mpc.interfaces.Tick command-policy metadata")
+    if not all(callable(getattr(laws, name, None)) for name in ("EffortClip", "RejectOnEffort")):
+        raise ValueError("The visualizer needs tiago_mpc.laws.EffortClip and RejectOnEffort")
 
 
 def variant(mpc, n, friction):
@@ -164,7 +194,7 @@ def probe(selection, tiago, mpc, kinematics, friction, params=None, source_setti
                 model_identity=dict(full_urdf_sha256=digest(tiago.FULL_URDF), native_urdf_sha256=digest(tiago.arm_urdf()),
                                     armature=list(getattr(actual, "armature", (0.,)*7)), friction=to_dict(actual.friction)),
                 capabilities=dict(iteration_capture_by_friction=captures, python_iteration_capture=python_capture,
-                                  exact_resume=False),
+                                  exact_resume=False, shared_loop=True),
                 selection=dict(selection, effective_cache=str(importlib.import_module("tiago_mpc.util").cache_root())),
                 source=dict(source_identity(selection["mpc_root"]), gato=source_provenance["gato"]),
                 python=dict(executable=sys.executable, version=sys.version, prefix=sys.prefix))

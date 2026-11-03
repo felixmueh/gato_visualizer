@@ -110,7 +110,9 @@ class BundledAdapterTests(unittest.TestCase):
         live_probe()
         self.tm = importlib.import_module("tiago_mpc")
         self.mpc = importlib.import_module("tiago_mpc.mpc")
-        self.temporary = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/"_expr_data/adapter-ownership-20261027")
+        parent = Path(__file__).resolve().parents[1]/"_expr_data/adapter-ownership-20261027"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=parent)
         self.addCleanup(self.temporary.cleanup)
         self.selection = dict(mpc_root=self.temporary.name)
         spec = importlib.util.spec_from_file_location("bundled_source_probe_test", PROBE_SCRIPT)

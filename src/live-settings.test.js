@@ -69,7 +69,7 @@ function harness() {
     ],
   };
   const commands = [], sources = [];
-  let version = 0, historyHandler, commandHandler, freezeHandler, settingsHandler;
+  let version = 0, historyHandler, commandHandler, freezeHandler, settingsHandler, plansHandler;
   class EventSource {
     static OPEN = 1;
     constructor() { this.readyState = 0; sources.push(this); }
@@ -78,7 +78,8 @@ function harness() {
     emit(item) { this.onmessage?.({ data: JSON.stringify(item) }); }
   }
   const fetch = async (url, options) => {
-    if (url.includes('/history?')) return historyHandler(url);
+    if (url.includes('/history?') || url.includes('/playback?')) return historyHandler(url);
+    if (url.includes('/plans?')) return plansHandler(url);
     if (url.endsWith('/schema')) return { ok: true, json: async () => structuredClone(schema) };
     if (url.endsWith('/settings')) return settingsHandler ? settingsHandler() : { ok: false, json: async () => ({}) };
     if (url.endsWith('/freeze')) return freezeHandler(JSON.parse(options.body));
@@ -91,7 +92,7 @@ function harness() {
     const element = path.startsWith('target-offset-') ? $(path) : created.filter(el => el.dataset.path === path).at(-1);
     element.value = String(value); element.emit('input');
   };
-  return { $, document, EventSource, fetch, commands, sources, created, edit, schema, setHistoryHandler(value) { historyHandler = value; }, setCommandHandler(value) { commandHandler = value; }, setFreezeHandler(value) { freezeHandler = value; }, setVersion(value) { version = value; }, setSettingsHandler(value) { settingsHandler = value; } };
+  return { $, document, EventSource, fetch, commands, sources, created, edit, schema, setPlansHandler(value) { plansHandler = value; }, setHistoryHandler(value) { historyHandler = value; }, setCommandHandler(value) { commandHandler = value; }, setFreezeHandler(value) { freezeHandler = value; }, setVersion(value) { version = value; }, setSettingsHandler(value) { settingsHandler = value; } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -2238,6 +2239,56 @@ test('separate measured and back-to-back checkboxes submit native modes and pres
   });
 });
 
+test('plan age checkbox submits nullable seconds and retains the numeric draft while disabled', async () => {
+  await sharedSettingsCase(async (h, live, source) => {
+    assert.equal(live.settings.execution.max_plan_age_s, null);
+    assert.equal(h.$('live-plan-age-enabled').checked, false);
+    assert.equal(h.$('live-max-plan-age').disabled, true);
+    assert.equal(h.$('live-max-plan-age').value, '0.1');
+    h.$('live-plan-age-enabled').checked = true; h.$('live-plan-age-enabled').emit('change');
+    h.$('live-max-plan-age').value = '250 ms'; h.$('live-max-plan-age').emit('input');
+    h.$('live-preview').emit('click'); await flush();
+    assert.deepEqual(h.commands.findLast(command => command.type === 'patch_settings').patch.execution,
+      { max_plan_age_s: .25 });
+    source.emit({ type: 'settings', ...live.settings, settings_version: 2 }); h.setVersion(2);
+    h.$('live-plan-age-enabled').checked = false; h.$('live-plan-age-enabled').emit('change');
+    h.$('live-preview').emit('click'); await flush();
+    assert.deepEqual(h.commands.findLast(command => command.type === 'patch_settings').patch.execution,
+      { max_plan_age_s: null });
+    assert.equal(h.$('live-max-plan-age').disabled, true);
+    assert.equal(h.$('live-max-plan-age').value, '250 ms');
+    source.emit({ type: 'settings', ...live.settings, settings_version: 3 }); h.setVersion(3);
+    h.$('live-plan-age-enabled').checked = true; h.$('live-plan-age-enabled').emit('change');
+    h.$('live-preview').emit('click'); await flush();
+    assert.equal(h.$('live-max-plan-age').disabled, false);
+    assert.equal(h.commands.findLast(command => command.type === 'patch_settings').patch.execution.max_plan_age_s, .25);
+    const reset = h.created.findLast(element => element.dataset.resetSetting === 'execution.max_plan_age_s');
+    assert.equal(reset.disabled, false);
+    reset.emit('click');
+    assert.equal(live.settings.execution.max_plan_age_s, null);
+    assert.equal(h.$('live-plan-age-enabled').checked, false);
+  });
+});
+
+test('remote plan age settings hydrate the enabled state and preserve typed equivalent values', async () => {
+  await sharedSettingsCase(async (h, live, source) => {
+    const remote = structuredClone(live.settings); remote.execution.max_plan_age_s = .2;
+    source.emit({ type: 'settings', ...remote, settings_version: 2 }); h.setVersion(2);
+    assert.equal(h.$('live-plan-age-enabled').checked, true);
+    assert.equal(h.$('live-max-plan-age').disabled, false);
+    assert.equal(h.$('live-max-plan-age').value, '0.2');
+    assert.equal(h.created.findLast(element => element.dataset.resetSetting === 'execution.max_plan_age_s').disabled, false);
+    h.$('live-max-plan-age').value = '200 ms'; h.$('live-max-plan-age').emit('input');
+    source.emit({ type: 'settings', ...remote, settings_version: 3 });
+    assert.equal(h.$('live-max-plan-age').value, '200 ms');
+    remote.execution.max_plan_age_s = null;
+    source.emit({ type: 'settings', ...remote, settings_version: 4 });
+    assert.equal(h.$('live-plan-age-enabled').checked, false);
+    assert.equal(h.$('live-max-plan-age').disabled, true);
+    assert.equal(h.$('live-max-plan-age').value, '200 ms');
+  });
+});
+
 test('Live timing accepts periods and frequencies without changing canonical API units', async () => {
   await sharedSettingsCase(async (h, live) => {
     h.$('live-simulation-hz').value = '1 ms'; h.$('live-simulation-hz').emit('input');
@@ -2523,5 +2574,76 @@ test('a field following GATO looks as if GATO\'s value were chosen and stays Non
     assert.equal(live.settings.config.admm.iters, null);
     h.edit('admm.iters', 12);
     assert.equal(live.settings.config.admm.iters, 12);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('compact playback advances through a stalled prediction fetch and scrubbing/export hydrate exact solves', async () => {
+  const h = harness(), originals = Object.fromEntries(['document','fetch','EventSource'].map(key => [key,globalThis[key]]));
+  Object.assign(globalThis,{document:h.document,fetch:h.fetch,EventSource:h.EventSource});
+  h.schema.live_playback = {version:1}; h.schema.defaults.execution.calculation = 'manual';
+  const full = seq => ({...plan(1,seq),generation:1,origin:'play',sim_time_s:(seq-10)/1000,available_time_s:0});
+  const records = [{...segment('reach',{settings:h.schema.defaults,task:{kind:'reach',orientation_rad:[0,0,.3]},task_anchors:{reach:[.5,0,1]}}),generation:1,settings_version:1}];
+  for(let i=0;i<=100;i++) {
+    records.push({type:'plan',summary:true,seq:i+10,generation:1,settings_version:1,origin:'play',sim_time_s:i/1000,available_time_s:0,N:32,dt_s:.01,stats:{}});
+    records.push({type:'state',generation:1,settings_version:1,sim_time_s:i/1000,q:Array(7).fill(i/1000),qd:Array(7).fill(0),ee_xyz:[i/1000,0,1],target_xyz:[.65,.2,1.2],plan_seq:i+10});
+  }
+  let release, hold = true, historyUrl;
+  h.setHistoryHandler(url => {historyUrl=url;const after=Number(new URL(url,'http://local').searchParams.get('after'));return {ok:true,json:async()=>({generation:1,records:records.slice(after),next_cursor:records.length,complete:true})};});
+  h.setPlansHandler(url => {
+    const ids=new URL(url,'http://local').searchParams.get('ids').split(',').map(Number);
+    const response={ok:true,json:async()=>({generation:1,plans:ids.map(full)})};
+    return hold ? new Promise(resolve=>{release=()=>{hold=false;resolve(response);};}) : response;
+  });
+  let live;
+  try {
+    const session=createSession(); live=setupLive({onMode(){},onPlan(){},onState(){},onReset(){}});live.setSession(session);
+    await live.enterLive(); const source=h.sources.at(-1);source.open();source.emit({type:'status',state:'paused',settings_version:0});
+    await flush(); source.emit(plan(1,1));source.emit({type:'history',generation:1,settings_version:1,history_cursor:records.length,complete:true});
+    await flush(); await flush();
+    assert(historyUrl.includes('/playback?')); assert.equal(live.history.length,101);
+    live.seek(0); await flush(); h.$('live-play').emit('click');live.frame(0);live.frame(50);
+    assert.equal(live.history.selectedTime,.05);assert.equal(live.displayedState.sim_time_s,.05);
+    await flush();
+    assert(release); release(); await flush(); await flush();
+    live.seek(.025);
+    assert.deepEqual(live.reference.orientation_rotvec,[0,0,.3]);
+    await flush(); await flush();
+    assert.equal(session.focused.plan.seq,35);assert.equal(session.focused.plan.summary,undefined);
+    assert(live.animationHistory.every(sample=>sample.plan?.summary));
+    const hydrated=await live.hydrateAnimationHistory(live.animationHistory,{frameCount:3,time:i=>[0,.025,.1][i]});
+    assert.deepEqual([hydrated[0].plan.seq,hydrated[25].plan.seq,hydrated[100].plan.seq],[10,35,110]);
+    assert(hydrated[25].plan.ee_xyz);assert(live.animationHistory[25].plan.summary);
+  } finally {live?.dispose();Object.assign(globalThis,originals);}
+});
+
+test('playback grid retains a full preview when its sequence overlaps a cached play solve', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  h.schema.live_playback = { version: 1 }; h.schema.defaults.execution.calculation = 'manual';
+  const preview = { ...plan(1, 1), generation: 1 };
+  const play = { ...preview, origin: 'play', sim_time_s: .001, available_time_s: .001, ee_xyz: [[.8, 0, 1], [.9, 0, 1]] };
+  const state = time => ({ type: 'state', generation: 1, settings_version: 1, sim_time_s: time,
+    q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1], plan_seq: 1 });
+  const records = [{ ...segment('reach', { settings: h.schema.defaults }), generation: 1, settings_version: 1 },
+    preview, state(0), { ...play, summary: true }, state(.001), state(.1)];
+  h.setHistoryHandler(url => ({ ok: true, json: async () => ({ generation: 1, complete: true,
+    records: records.slice(Number(new URL(url, 'http://viewer').searchParams.get('after'))), next_cursor: records.length }) }));
+  h.setPlansHandler(() => ({ ok: true, json: async () => ({ generation: 1, plans: [play] }) }));
+  let live;
+  try {
+    const session = createSession();
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); live.setSession(session);
+    await live.enterLive(); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
+    source.emit(plan(1, 1)); source.emit({ type: 'history', generation: 1, settings_version: 1, complete: true });
+    await flush(); await flush();
+    live.seek(.001); await flush(); await flush();
+    assert.equal(session.focused.plan.origin, 'play');
+    h.$('live-play').emit('click'); live.frame(0);
+    assert.equal(session.focused.plan.origin, 'preview');
+    assert.deepEqual(session.focused.plan.ee_xyz, preview.ee_xyz);
+    live.frame(20);
+    assert.equal(session.focused.plan.origin, 'play');
+    assert.deepEqual(session.focused.plan.ee_xyz, play.ee_xyz);
   } finally { live?.dispose(); Object.assign(globalThis, originals); }
 });

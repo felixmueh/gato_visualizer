@@ -31,7 +31,10 @@ Python catalog uses `@plot_comparison`; see
 ## Run
 
 Use the prepared sibling `../tiago_mpc-visualizer-base` worktree (branch
-`visualizer/base`) with canonical models, fetched LFS meshes and GATO dependencies
+`visualizer/base`) after advancing it to include the shared-loop API. Live requires
+native message callbacks, cancellation, plan-age settings and composable effort
+laws; the source probe rejects checkouts missing those capabilities. The selected
+source needs canonical models, fetched LFS meshes and GATO dependencies
 (select another checkout with `--mpc-root`,
 `TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the start pose,
 in one Live workspace, ready to calculate or add recordings as tracks.
@@ -72,6 +75,20 @@ Open **http://192.168.178.82:8090** from the laptop on the local network (or use
 your desktop's current address). Port 8080 is used by the older container viewer.
 Omit `--host 0.0.0.0` to listen only on the desktop itself. No cloud service,
 laptop Python environment, or internet connection is needed after setup.
+
+Raw recording ingestion runs in a separate CPU process before history FK/JSON
+processing. The capture ring and ingestion queue each default to 256 MiB;
+`TIAGO_VISUALIZER_RECORDING_BUFFER_MIB` and `TIAGO_VISUALIZER_INGEST_BUFFER_MIB`
+set their startup budgets. These bound buffered data, not total application
+memory. See [recording buffers and backpressure](docs/execution-api.md) for
+capacity constraints and lossless simulation behavior.
+
+Live playback downloads compact state/control records and prediction summaries.
+Full predictions load independently into a bounded browser cache, so a slow
+prediction download does not stop robot motion. Playing prediction geometry
+updates on a 60 Hz display-time grid; scrubbing and animation export select the
+exact recorded solve. The server retains all original records for inspection
+and replay export. See [presentation](docs/presentation.md) for cache behavior.
 
 **Direct replay links:** `http://192.168.178.82:8090/?replay=reaching/study/run_017`
 adds that library recording as a track and opens **Replay mode** (the path
@@ -412,6 +429,15 @@ ticks when no solve is pending, using `tiago_mpc`'s `Schedule`; missed slots are
 skipped. The old plan continues until the first control tick at or after the
 new plan becomes available. Its age still starts at the state used for the
 solve, so latency may skip its first knots. The prediction knot interval is separate.
+Live runs `tiago_mpc.loops.run_virtual_time` directly, passing the native
+`VirtualTimeSettings` object through required `settings=` and using
+`duration=None`, with callbacks for reporting and pause. That object holds
+command/update periods, solve latency, compensation, plan age and effort handling.
+The source probe requires this API. **Plan age limit** is off by default; enabling it sets a
+positive age deadline. A plan's finite horizon always applies. The native loop
+applies effort handling after evaluating the selected command law; Live selects
+`EffortClip` when **Clip effort** is enabled and `None` otherwise. Optional
+latency compensation predicts using the same law and effort handling.
 The history records every command, plan and timing interval and the state at
 every command tick (every 2 ms at the defaults); the physics steps
 between them are simulated, not recorded. The warm-start policy is
@@ -471,11 +497,15 @@ limit (`max_sqp_time_s`) defaults to none, shown as "none": Live and
 precalculation run on the simulation clock, where `tiago_mpc`'s 10 ms
 wall-clock limit does not belong; a limit can still be set (Felix,
 2026-10-23). Every reseed of the controller (configuring, Reset, an anchor, a
-preview, rollback, resuming Play) runs `tiago_mpc`'s `Mpc.warmup` from that
+preview, rollback) runs `tiago_mpc`'s `Mpc.warmup` from that
 state with the task reference then: GATO's warm-up solve while **Warm-up
 solve** is on (the default), the plain controller reset when it is off. The
-warm-up is no plan and is not timed. Only compiled N are offered; changing a
-setting never compiles one, and an N that is not compiled for the chosen
+warm-up is no plan and is not timed. Ordinary Pause/resume retains the same native invocation,
+pending plans and warm state remain parked. Cancel wakes and joins the old
+invocation; Reset creates fresh execution and controller state. A numerical
+source must provide the shared-loop callbacks; the source probe reports an
+older source as incompatible. Changing a setting never compiles a module,
+and an N that is not compiled for the chosen
 predictor shows as unavailable. Use Settings › Backend to build modules
 explicitly, or to inspect changed `tiago_mpc` code and Apply. See the
 [execution API](docs/execution-api.md) and [prediction fields](docs/live-api.md).
@@ -484,7 +514,10 @@ Predicted tool path, task reference, and recorded simulated motion have separate
 labels. The display shows solver work, constraint violation and solve time for
 each plan. A finite plan does not establish convergence. A persistent simulation
 coordinator and a separate persistent solver child keep native calls independent
-of HTTP and rendering. See [process ownership](docs/architecture.md).
+of HTTP and rendering. Requests are asynchronous: physics advances while a solve
+is pending, with synchronization at possible activation boundaries. Control
+arrays and buffered solve recordings have separate shared-memory paths.
+See [process ownership](docs/architecture.md).
 
 This MVP is a simulation diagnostic. It does not command a physical robot,
 check collisions, or provide experiment/timing evidence. Plotting exposes only
@@ -553,7 +586,7 @@ torque. Live torque reports the last command actually applied to the plant.
 The canonical full URDF supplies the torso-to-root transform for every tool
 path and reference. Models and existing recordings stay in `tiago_mpc` and are
 read-only; the viewer imports its MPC (`tiago_mpc.mpc`), plant (`SimPlant`)
-and model code unchanged. The Live history (current run only), preview captures,
+and shared native execution loop from the selected source. The Live history (current run only), preview captures,
 Run again results (only while their Live run or replay is current) and solver logs
 are RAM-backed runtime files in `<system temp>/tiago-mpc-visualizer-<uid>/`
 (`/tmp` on this host, tmpfs; `TIAGO_VISUALIZER_RUNTIME_DIR` overrides it; startup
@@ -588,34 +621,23 @@ check only when the experiment locks are free:
 "$python_bin" scripts/check_conformance.py --mpc-root /absolute/path/to/tiago_mpc
 ```
 
-It runs `tiago_mpc`'s `run_virtual_time` with a `Reach` task with `SimPlant` (1 ms
-substeps) and `Mpc` in this process, then the visualizer's adapter, solver child
-and multirate session with the same `MpcParams` (Live's defaults: `TIAGO`
-without the SQP time limit, warm-up on), start, target and rates: commands
-every 2 ms (500 Hz, the reach's default), a control update every 10 ms knot,
-physics on a 1 ms grid. This diagnostic explicitly selects a loss-free RK4 plant
-on both sides, independently of the interactive constraint-friction default.
-Both sides use a declared 5.5 ms latency (first activation at 6 ms), so the
-comparison exercises old-plan execution and delayed activation; ordinary Live
-keeps its measured-latency default.
-`run_virtual_time()` warms up from the start state before its first
-tick; the session's configure reseeds with the same `Mpc.warmup`. The session
-records as Live does, the state at every command tick. It compares
-the states at every command tick, the commands and the plans (`--atol`, default
-1e-3) over `--steps` knot intervals (default 300, that is 3 s). The reference
-reach gets a zero position tolerance, so it never arrives and runs the whole
-duration; the default reach would otherwise arrive early. By default the
-reference plant steps on the session's 1 ms grid. The earlier zero-latency
-comparison was bit for bit against `tiago_mpc` 56db0fd (2026-10-26); that saved
-result does not qualify the new delayed timing. `--accumulated-ticks`
-keeps `run_virtual_time()`'s accumulated tick times instead: their last-bit differences in
-the substep lengths grow through GATO's float32 solves until the plans diverge
-(after about 1 s with 10 ms commands, 2026-10-22), which is round-off, not a
-scheduling difference. It needs the default loss-free N module and covers the default reach, not
-every profile, friction or inspection path. Run it with the selected checkout's
-interpreter and pass the source explicitly (`--mpc-root`, else `TIAGO_MPC_ROOT`,
-else `../tiago_mpc-visualizer-base`); it does not read the saved source selection. Both raw
-outputs are retained below `_expr_data/conformance/`. The declared solve delay is included;
-this is a numerical comparison, not a wall-clock benchmark.
+It runs `tiago_mpc.loops.run_virtual_time` headless with a `Reach` task and
+in-process `Mpc`, then through Live's `NativeSession`, adapter and persistent
+solver child. Both use the same native integration grid, loss-free RK4 plant,
+500 Hz commands, 100 Hz TO, Live's default `MpcParams` without an SQP wall-time
+limit, and declared 5.5 ms latency (first activation at 6 ms). It compares every
+command-tick state, applied command and returned plan, including unused plans.
+The default run spans 300 TO intervals (3 s); `--steps`, `--to-hz`,
+`--solve-latency` and `--latency-compensation` select additional cases. For
+example, `--to-hz 500 --solve-latency 0.001 --steps 500` exercises 500 Hz TO.
+Optional age expiry is disabled on both sides; the finite horizon still applies.
+
+Use the selected checkout's prepared interpreter and pass the source explicitly
+(`--mpc-root`, else `TIAGO_MPC_ROOT`, else `../tiago_mpc-visualizer-base`);
+the script does not read saved source selection and never compiles a missing
+module. Raw outputs and comparisons are retained below `_expr_data/conformance/`.
+This is numerical conformance, not a throughput benchmark. Historical results
+from the old independent scheduler do not qualify this implementation.
+
 Mesh ownership and model provenance remain with the selected MPC checkout;
 see its `models/README.md` and license files.

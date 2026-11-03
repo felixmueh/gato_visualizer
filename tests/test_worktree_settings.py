@@ -58,6 +58,7 @@ DESCRIPTION = dict(predictor=dict(
 
 class WorktreeSettingsTests(unittest.TestCase):
     def setUp(self):
+        HERE.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=HERE)
         self.root = Path(self.temporary.name)
 

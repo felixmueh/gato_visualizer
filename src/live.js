@@ -7,13 +7,15 @@ import { DEFAULT_PRESENTATION, validatePresentation } from './presentation-setti
 // The API uses native joint values and full robot-root coordinates. No sign or
 // frame conversions belong in the browser.
 import { createLiveHistory } from './live-history.js';
+import { createLiveHistoryPaging } from './live-history-paging.js';
+import { createLivePlanCache } from './live-plan-cache.js';
+import { livePredictionWindow, hydrateLiveAnimationHistory } from './live-prediction.js';
 import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
 import { sessionSpan } from './session.js';
 import { settingsPatch, rebaseSettings } from './shared-settings.js';
 import { createVectorField, createWorktreeFields, restoreWorktreeSettings, fieldValue, resolvedValueText, validateField, parameterTooltip } from './worktree-fields.js';
 import { createModelCompilation, createModelCompilePrompt, modelCheckInputs } from './model-compilation.js';
 import { canonicalTimeUnit, parseTimeValue, configureTimeInput, readTimeInput, setTimeInputValue } from './time-input.js';
-const HISTORY_PAGE_SIZE = 1024;
 
 export function cloneSettings(value) {
   return JSON.parse(JSON.stringify(value));
@@ -191,7 +193,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
   let settingsVersion, expectedVersion, needsInitialPreview = false, settingsTimer, submission = 0;
   let historyEpoch = 0, playbackIntent = 0, initialResetPending = true;
-  let generation = null, cursor = 0, historyComplete = false, fetching = false, fetchAgain = false;
+  let generation = null, cursor = 0, historyComplete = false;
   let historyRevision = 0, paintedRevision = -1, job = {}, extensionPending = false, extensionStartTime = null, frozenAnchor;
   let inspectingPreview = false, inspectionPlan = null;
   let defaultTargetWorld, figure8BaseWorld, renderDirty = true, traceRevision = -1, displayPath = { points: [], stride: 1 };
@@ -216,6 +218,15 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   const resetIndicators = createSettingResets();
   let presentation = validatePresentation(presentationSettings);
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock({ bufferMs: presentation.buffer_ms }), inputs = [];
+  const planCache = createLivePlanCache({ fetch, onChange: () => { renderDirty = true; if (!clock.playing && !disposed) renderView(); },
+    onError: error => message(`Prediction download failed: ${error.message}`, true) });
+  const compactPlayback = () => schema?.live_playback?.version === 1;
+  const historyPaging = createLiveHistoryPaging({ fetch,
+    getRequest: () => !disposed && generation != null && mode === 'live' && !replayOnly
+      ? { generation, cursor, epoch: historyEpoch, compact: compactPlayback() } : null,
+    onBatch: acceptHistoryBatch, onGeneration: useGeneration,
+    onError: error => message(`History download failed: ${error.message}`, true),
+    onIdle: () => { if (!disposed) controlsEnabled(); } });
   let sourceFields = null, nativeVectors = [], resolvedFields = [], effectiveSettings = null;
   // Fields whose empty value (None) follows GATO's default look as if GATO's value were chosen.
   // The configured solver reports that value (effective_settings) while the accepted settings
@@ -245,7 +256,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     }
   }
   let modelCompilation, modelPrompt, modelState = { phase: 'idle' };
-  let declaredLatencyDraft = .005, fixedToDraft = DEFAULT_EXECUTION.to_hz;
+  let declaredLatencyDraft = .005, fixedToDraft = DEFAULT_EXECUTION.to_hz, maxPlanAgeDraft = .1;
   const compilationEnabled = () => Array.isArray(schema?.supported_N) && Boolean(schema.compile_selection);
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
@@ -254,7 +265,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   const continueAtEnd = () => connected() && (calculateWhilePlaying || Boolean(settings?.execution.continue_at_end));
   // Completion metadata can precede later history pages. Do not drain a short
   // final tail until the local download is caught up.
-  const growingHistory = () => !replayOnly && Boolean((connected() && (job.job_active || extensionPending)) || fetching || fetchAgain);
+  const growingHistory = () => !replayOnly && Boolean((connected() && (job.job_active || extensionPending)) || historyPaging.fetching || historyPaging.queued);
   const activeTracks = () => session?.activeTracks || [];
   const sessionBounds = () => session ? sessionSpan(activeTracks().map(track => track.kind === 'live' ? { ...track, span: history.bounds, empty: !history.length } : track)) : replayOnly ? [0, 0] : history.bounds;
   const presentationBounds = () => session ? sessionSpan(activeTracks().map(track => track.kind === 'live' ? { ...track, span: clock.presentationBounds(history.bounds), empty: !history.length } : track)) : replayOnly ? [0, 0] : clock.presentationBounds(history.bounds);
@@ -266,7 +277,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   const playbackDisabled = () => !connected() && (!anyPlayableSessionSpan() || (dirty && profileNError && !hasComparison()));
   function historySnapshot() { return { length: history.length, bounds: history.bounds, sessionBounds: sessionBounds(), presentationBounds: presentationBounds(), following: clock.following, buffering: clock.buffering, playing: clock.playing, growing: growingHistory(), selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals, breaches: history.breaches }; }
   function precomputedPath() {
-    if (dirty || pending || !historyComplete || fetching || history.length < 2 || settings?.execution.calculation === 'on_play') return undefined;
+    if (dirty || pending || !historyComplete || historyPaging.fetching || history.length < 2 || settings?.execution.calculation === 'on_play') return undefined;
     if (precomputedRevision !== historyRevision) { precomputedPoints = history.pathPoints; precomputedRevision = historyRevision; }
     return precomputedPoints;
   }
@@ -276,7 +287,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     session.updateMain({ source: { kind: 'live', generation }, span: history.bounds, empty: !history.length, segment, context,
       settings: context?.settings || null, endEffectorFrame: context?.end_effector_frame || session.track('live').endEffectorFrame,
       state, displayedState: shownState, plan: shownPlan, reference: desiredReference, limits: history.limits,
-      metricHistory: history.metricSnapshot, historyRevision, history: historySnapshot(),
+      historyRevision, history: historySnapshot(),
       precomputedPath: precomputedPath(),
       fitAvailable: Boolean(history.length || plan?.ee_xyz?.length || segmentOf(plan)?.task_path_xyz?.length) });
     session.setCursor(clock.time ?? (history.length ? history.bounds[0] : session.span[0]));
@@ -397,8 +408,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     $('live-duration').disabled = replayOnly;
     $('live-to-asap').disabled = replayOnly;
     $('live-latency-measured').disabled = replayOnly;
+    $('live-plan-age-enabled').disabled = replayOnly;
     $('live-to-hz').disabled = replayOnly || $('live-to-asap').checked;
     $('live-solve-latency').disabled = replayOnly || $('live-latency-measured').checked;
+    $('live-max-plan-age').disabled = replayOnly || !$('live-plan-age-enabled').checked;
     if ($('session-replay-mode')) {
       $('session-replay-mode').setAttribute('aria-pressed', String(replayOnly));
       $('session-replay-mode').title = replayOnly ? 'Return to Live; keep recording tracks' : 'Replay recordings without simulation';
@@ -446,6 +459,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       latencyInput.setCustomValidity('');
       try { execution.solve_latency_s = $('live-latency-measured').checked ? 'measured' : readTimeInput(latencyInput, { unit: 's', min: 0, label: 'Solve latency' }); }
       catch (error) { latencyInput.setCustomValidity(error.message); if (reportErrors) latencyInput.reportValidity(); throw error; }
+      const ageInput = $('live-max-plan-age');
+      ageInput.setCustomValidity('');
+      try { execution.max_plan_age_s = $('live-plan-age-enabled').checked ? readTimeInput(ageInput, { unit: 's', min: 0, minExclusive: true, label: 'Maximum plan age' }) : null; }
+      catch (error) { ageInput.setCustomValidity(error.message); if (reportErrors) ageInput.reportValidity(); throw error; }
       execution.latency_compensation = Boolean($('live-latency-compensation').checked);
       execution.continue_at_end = Boolean($('live-continue').checked);
       next.execution = validateExecution(execution);
@@ -606,14 +623,15 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task));
       if (next.execution.to_hz > 0) fixedToDraft = next.execution.to_hz;
       if (typeof next.execution.solve_latency_s === 'number') declaredLatencyDraft = next.execution.solve_latency_s;
+      if (typeof next.execution.max_plan_age_s === 'number') maxPlanAgeDraft = next.execution.max_plan_age_s;
     }
     if (compilationEnabled()) modelCompilation?.invalidate();
     if (compilationEnabled() && !next) modelCompilation?.check();
     refreshFrictionAvailability();
     calculationControls();
-    resetIndicators.update();
     dirty = true; renderDirty = true; pausePlayback(); refreshPlanLabel();
     controlsEnabled();
+    resetIndicators.update();
     const missingModel = profileNError && (!compilationEnabled() || modelState.phase === 'missing');
     message(profileSwitching ? 'Solver switching · settings draft retained.' : profileUnavailable ? 'No solver is active · settings draft retained.' : missingModel ? unavailableFrictionMessage() : 'Settings changed · replacing obsolete calculation…', missingModel);
     // An unsupported draft cannot reach set_settings, which normally stops
@@ -908,6 +926,17 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     resetIndicators.bind({ key: 'execution.solve_latency_s', name: 'solve latency', input: latencyInput,
       getValue: () => measured.checked ? 'measured' : readTimeInput(latencyInput, { unit: 's', min: 0 }), getDefault: () => defaultSettings.execution?.solve_latency_s ?? DEFAULT_EXECUTION.solve_latency_s,
       reset: value => { measured.checked = value === 'measured'; if (!measured.checked) { declaredLatencyDraft = value; setTimeInputValue(latencyInput, value, { unit: 's', min: 0, force: true }); } change(); } });
+    const ageInput = $('live-max-plan-age'), ageEnabled = $('live-plan-age-enabled');
+    ageEnabled.checked = settings.execution.max_plan_age_s !== null;
+    if (ageEnabled.checked) maxPlanAgeDraft = settings.execution.max_plan_age_s;
+    configureTimeInput(ageInput, { unit: 's' });
+    setTimeInputValue(ageInput, maxPlanAgeDraft, { unit: 's', min: 0, minExclusive: true });
+    listen(ageInput, 'input', change);
+    listen(ageEnabled, 'change', change);
+    resetIndicators.bind({ key: 'execution.max_plan_age_s', name: 'maximum plan age', input: ageInput,
+      getValue: () => ageEnabled.checked ? readTimeInput(ageInput, { unit: 's', min: 0, minExclusive: true }) : null,
+      getDefault: () => defaultSettings.execution?.max_plan_age_s ?? DEFAULT_EXECUTION.max_plan_age_s,
+      reset: value => { ageEnabled.checked = value !== null; if (ageEnabled.checked) { maxPlanAgeDraft = value; setTimeInputValue(ageInput, value, { unit: 's', min: 0, minExclusive: true, force: true }); } change(); } });
     const compensationInput = $('live-latency-compensation');
     compensationInput.checked = settings.execution.latency_compensation;
     listen(compensationInput, 'change', change);
@@ -926,8 +955,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     ensureModelCompilation();
     refreshFrictionAvailability();
     syncPlantFriction();
-    resetIndicators.update();
     controlsEnabled();
+    resetIndicators.update();
     $('live-mode').disabled = false; message(replayOnly ? '' : profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', !replayOnly && profileNError);
     if (focusPath) inputs.find(item => item.parameter.path === focusPath)?.input.focus?.();
     if (focusSource.sourcePath) [...document.querySelectorAll('[data-source-path]')].find(input =>
@@ -962,6 +991,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (!force && next === generation) return true;
     historyEpoch++;
     generation = next; cursor = 0; historyComplete = false; history.clear(); historyRevision++; paintedRevision = -1;
+    if (force) planCache.setGeneration(null);
+    planCache.setGeneration(next);
     const following = clock.following, wasPlaying = clock.playing;
     state = undefined; clock.seek(null);
     if (wasPlaying) clock.play(performance.now(), { follow: following, growing: true });
@@ -970,44 +1001,25 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     fetchHistory();
     return true;
   }
-  async function fetchHistory() {
-    if (generation == null || mode !== 'live' || replayOnly) return;
-    if (fetching) { fetchAgain = true; return; }
-    fetching = true;
-    try {
-      let more = true;
-      while (more && mode === 'live' && !replayOnly) {
-        const requestedGeneration = generation, requestedCursor = cursor, requestedEpoch = historyEpoch;
-        const response = await fetch(`/api/live/history?generation=${encodeURIComponent(generation)}&after=${cursor}&limit=${HISTORY_PAGE_SIZE}`);
-        const batch = await response.json();
-        if (replayOnly) break;
-        if (requestedGeneration !== generation || requestedEpoch !== historyEpoch) continue;
-        if (response.status === 409) { if (batch.generation != null) useGeneration(batch.generation); break; }
-        if (!response.ok) throw new Error(batch.error || 'History unavailable');
-        if (batch.generation !== generation || requestedCursor !== cursor) continue;
-        const records = batch.records || [];
-        let appliedRecords = 0;
-        for (const record of records) {
-          if (record.generation !== generation || (expectedVersion != null && record.settings_version < expectedVersion)) continue;
-          if (record.type === 'segment') acceptSegment(record);
-          history.addRecord(record); appliedRecords++;
-          if (record.type === 'state') state = record;
-          if (record.type === 'plan') acceptPlan(record, false);
-        }
-        const nextCursor = batch.next_cursor;
-        more = Number.isInteger(nextCursor) && nextCursor > cursor && records.length >= HISTORY_PAGE_SIZE;
-        if (Number.isInteger(nextCursor)) cursor = nextCursor;
-        historyComplete = Boolean(batch.complete);
-        if (extensionPending && historyComplete && history.bounds[1] > extensionStartTime + 1e-8) extensionPending = false;
-        if (appliedRecords) historyRevision++; renderDirty = true;
-        if (!clock.playing && clock.time == null && history.length) clock.seek(history.bounds[0]);
-        syncSession();
-      }
-    } catch (error) { message(`History download failed: ${error.message}`, true); }
-    finally { fetching = false; if (fetchAgain) { fetchAgain = false; fetchHistory(); } controlsEnabled(); }
+  function fetchHistory() { return historyPaging.refresh(); }
+  function acceptHistoryBatch(batch) {
+    let appliedRecords = 0;
+    for (const record of batch.records || []) {
+      if (record.generation !== generation || (expectedVersion != null && record.settings_version < expectedVersion)) continue;
+      if (record.type === 'segment') acceptSegment(record);
+      history.addRecord(record); appliedRecords++;
+      if (record.type === 'state') state = record;
+      if (record.type === 'plan') acceptPlan(record, false);
+    }
+    if (Number.isInteger(batch.next_cursor)) cursor = batch.next_cursor;
+    historyComplete = Boolean(batch.complete);
+    if (extensionPending && historyComplete && history.bounds[1] > extensionStartTime + 1e-8) extensionPending = false;
+    if (appliedRecords) historyRevision++; renderDirty = true;
+    if (!clock.playing && clock.time == null && history.length) clock.seek(history.bounds[0]);
+    syncSession();
   }
   function acceptPlan(item, presentation = true) {
-    if (!validPoints(item.ee_xyz) || !validPoints(item.reference_xyz)) return false;
+    if (!item.summary && (!validPoints(item.ee_xyz) || !validPoints(item.reference_xyz))) return false;
     plan = item;
     if (presentation && inspectingPreview && item.origin === 'preview') inspectionPlan = item;
     if (Number.isInteger(item.settings_version)) settingsVersion = Math.max(settingsVersion ?? 0, item.settings_version);
@@ -1019,7 +1031,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       if (!dirty) frozenAnchor = undefined;
     }
     const context = segmentOf(item);
-    if (!defaultTargetWorld && (context?.task.kind || submittedSettings?.task.kind) === 'reach' && submittedSettings?.task.kind === 'reach') {
+    if (!defaultTargetWorld && validPoints(item.reference_xyz) && (context?.task.kind || submittedSettings?.task.kind) === 'reach' && submittedSettings?.task.kind === 'reach') {
       defaultTargetWorld = item.reference_xyz[0].map((value, i) => value - submittedSettings.task.target_offset_m[i]);
     }
     if (!figure8BaseWorld && context?.task.kind === 'figure8' && submittedSettings?.task.kind === 'figure8' && validPoints(context.task_path_xyz)) {
@@ -1119,7 +1131,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     const interval = replayOnly ? null : history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time) || history.intervals.at(-1);
     if (!timeline.matches?.(':hover')) timeline.title = interval ? intervalDescription(interval) : 'Recorded simulation time';
     timeline.setAttribute('aria-valuetext', `${number(time, 3)} seconds${interval ? ` · ${intervalDescription(interval)}` : ''}`);
-    $('live-history-window').textContent = `Recorded ${number(mainStart, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
+    $('live-history-window').textContent = `Recorded ${number(mainStart, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${historyPaging.fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
     $('live-history-note').textContent = clock.buffering ? `Buffering ${number(Math.max(0, recordedEnd - time) * 1000)} / ${number(presentation.buffer_ms)} ms of recorded simulation time. Pause or scrub to inspect history.` : clock.following ? `Following Live at ${clock.effectiveRate}× · recorded through ${number(recordedEnd, 2)} s. Calculation may limit progress. Pause or scrub to inspect the full recording.` : clock.playing ? `Session playback at ${clock.effectiveRate}×. At the Live tip, Continue may wait for calculation.` : 'Scrub or Play recorded history. Go latest only moves the view; Continue controls new motion at the end.';
     const speed = $('live-speed');
     if (speed) { speed.value = String(clock.effectiveRate); speed.disabled = clock.rateForced; speed.title = clock.rateForced ? 'Following a growing Live tip at 1×' : 'Session playback speed'; }
@@ -1137,7 +1149,15 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     const selected = presentation.interpolate ? history.interpolateAt(clock.time, { trace: false }) : history.at(clock.time, { trace: false });
     if (traceRevision !== historyRevision) { displayPath = history.displayPath(); traceRevision = historyRevision; }
     let shownState = selected?.state || state;
-    const shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || (plan && !('available_time_s' in plan) ? plan : null);
+    let shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || (plan && !('available_time_s' in plan) ? plan : null);
+    if (shownPlan?.summary) {
+      const window = livePredictionWindow(shownPlan, history, clock);
+      shownPlan = window.plan;
+      if (shownPlan?.summary) {
+        planCache.setWindow([shownPlan], window.lookahead);
+        shownPlan = planCache.get(shownPlan.seq) || shownPlan;
+      } else planCache.setWindow([]);
+    }
     const historical = clock.time != null && clock.time < history.bounds[1] - 1e-7;
     const editing = dirty || pending || Boolean(poseDraft);
     // At the run start the arm shows the start pose being dragged or not yet run.
@@ -1154,7 +1174,11 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     const nextReferenceKey = draft ? JSON.stringify([draft, base]) : shownPlan;
     if (referenceKey !== nextReferenceKey) {
       referenceKey = nextReferenceKey;
-      desiredReference = draft ? taskReference(draft, base) : shownPlan ? {
+      const context = segmentOf(shownState) || segmentOf(shownPlan);
+      desiredReference = draft ? taskReference(draft, base) : shownPlan?.summary && validPoints([shownState?.target_xyz]) ? {
+        kind: context?.task.kind, points: context?.task_path_xyz || [shownState.target_xyz],
+        target_xyz: shownState.target_xyz, orientation_rotvec: orientationGoal(context?.task), draft: false,
+      } : shownPlan && !shownPlan.summary ? {
         kind: segmentOf(shownPlan)?.task.kind, points: segmentOf(shownPlan)?.task_path_xyz || shownPlan.reference_xyz,
         target_xyz: shownPlan.target_xyz || shownPlan.reference_xyz[0],
         orientation_rotvec: orientationGoal(segmentOf(shownPlan)?.task), draft: false,
@@ -1224,7 +1248,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       // Playback stops at a recorded limit breach; Play continues from it.
       const breach = !replayOnly && before != null && history.breachCrossed(before, tick.time);
       if (breach) { clock.seek(breach.sim_time_s); pausePlayback(); message(breach.message, true); controlsEnabled(); }
-      else if (tick.atEnd && ((!job.job_active && !fetching) || !connected())) {
+      else if (tick.atEnd && ((!job.job_active && !historyPaging.fetching) || !connected())) {
         // A calculation stopped by a breach never extends past it: playback stops at
         // its tip once that is downloaded (also for a breach at the time it resumed from).
         if (job.breach && continueAtEnd()) { if (history.bounds[1] >= job.breach.sim_time_s - 1e-9) { pausePlayback(); message(job.message, true); controlsEnabled(); } }
@@ -1244,7 +1268,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   function connectLive() {
     if (replayOnly || !liveReady || source) return;
     needsInitialPreview = !suppressInitialPreview && !profileSwitching && !profileUnavailable && (serverSettingsVersion == null || serverSettingsVersion === 0 || dirty); suppressInitialPreview = false;
-    const connection = new EventSource('/api/live/events'); source = connection;
+    const connection = new EventSource(compactPlayback() ? '/api/live/events?compact=1' : '/api/live/events'); source = connection;
     connection.onmessage = event => { if (source === connection && mode === 'live' && !replayOnly) receive(event); };
     connection.onopen = () => {
       latestServerEvents.clear(); controlsEnabled(); message('Connected · waiting for solver status…');
@@ -1486,7 +1510,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     ready,
     refreshSettings,
     refreshView: () => renderView(),
-    dispose() { disposed = true; clearTimeout(settingsPoll); clearTimeout(settingsTimer); modelCompilation?.dispose(); modelPrompt?.dispose(); source?.close(); unsubscribeSession?.(); },
+    dispose() { disposed = true; clearTimeout(settingsPoll); clearTimeout(settingsTimer); planCache.dispose(); modelCompilation?.dispose(); modelPrompt?.dispose(); source?.close(); unsubscribeSession?.(); },
     async enterLive() { await ready; await switchMode('live'); },
     setReplayOnly,
     get replayOnly() { return replayOnly; },
@@ -1597,6 +1621,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     get generation() { return generation; },
     get metricHistory() { return history.metricSnapshot; },
     get animationHistory() { return history.animationSnapshot; },
+    hydrateAnimationHistory(samples, schedule, options) {
+      return hydrateLiveAnimationHistory(samples, schedule, planCache.ensure, options);
+    },
     get history() { return historySnapshot(); },
     get fitAvailable() { return Boolean(history.length || plan?.ee_xyz?.length || segmentOf(plan)?.task_path_xyz?.length); },
     segmentOf,

@@ -1,5 +1,5 @@
 // Mirrors execution_session.DEFAULT_EXECUTION: commands at 500 Hz.
-export const DEFAULT_EXECUTION = { simulation_hz: 1000, control_hz: 500, to_hz: 100, solve_latency_s: 'measured', latency_compensation: false, calculation: 'on_play', duration_s: 10, continue_at_end: false };
+export const DEFAULT_EXECUTION = { simulation_hz: 1000, control_hz: 500, to_hz: 100, solve_latency_s: 'measured', latency_compensation: false, max_plan_age_s: null, calculation: 'on_play', duration_s: 10, continue_at_end: false };
 
 export function parseSolveLatency(value) {
   const text = String(value).trim();
@@ -16,6 +16,7 @@ export function validateExecution(value) {
   }
   if (!Number.isFinite(next.to_hz) || next.to_hz < 0) throw new Error('TO Hz must be nonnegative; 0 requests back-to-back.');
   if (next.solve_latency_s !== 'measured' && (typeof next.solve_latency_s !== 'number' || !Number.isFinite(next.solve_latency_s) || next.solve_latency_s < 0)) throw new Error('Solve latency needs “measured” or nonnegative seconds.');
+  if (next.max_plan_age_s !== null && (typeof next.max_plan_age_s !== 'number' || !Number.isFinite(next.max_plan_age_s) || next.max_plan_age_s <= 0)) throw new Error('Maximum plan age needs positive seconds or a disabled limit.');
   if (next.simulation_hz < next.control_hz || next.control_hz < next.to_hz) throw new Error('Use Simulation Hz ≥ Control Hz ≥ TO Hz.');
   if (typeof next.latency_compensation !== 'boolean') throw new Error('Latency compensation must be a checkbox value.');
   if (!['on_play', 'manual', 'automatic'].includes(next.calculation)) throw new Error('Choose a calculation mode.');

@@ -9,6 +9,18 @@ A solver profile selects a prepared interpreter/source/cache; activating it
 replaces the optimizer child under GPU leases and begins a new history segment.
 Private warm state is never transferred between implementations.
 
+Amendment, 2026-11-03: isolation remains, with asynchronous numerical requests
+and shared control arrays. The coordinator's native loop integrates the plant
+while the solver works, and waits at a potential activation boundary. Full
+captures go to a separate RAM ring drained by a CPU ingestion process. It copies
+raw bytes into a byte-bounded queue before history does FK/JSON processing;
+presentation delays therefore consume buffer capacity before slowing simulation.
+The ring and queue each default to 256 MiB, with explicit startup budgets. There is
+no automatically selected in-process solver path. Pause quiesces GPU work and
+retains pending activation/controller state. Cancel wakes and joins the run,
+finishes/discards outstanding work and releases uncommitted recordings before
+replacement. Reset/settings/profile changes configure a fresh controller.
+
 Run again needs authentic intermediate data without mutating the episode's
 controller. Pause Live at a committed boundary, retain its idle child, and run a
 separate cold inspection solver from captured problem inputs. Only one GPU job

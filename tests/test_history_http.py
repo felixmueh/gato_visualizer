@@ -18,7 +18,7 @@ class HistoryHTTPTests(unittest.TestCase):
                  q=[i/1000+j for j in range(7)],
                  qd=[j/10 for j in range(7)]) for i in range(256)])
         def history(generation, after, limit):
-            from execution_bridge import HistoryGenerationError
+            from history_store import HistoryGenerationError
             if generation != 7:
                 raise HistoryGenerationError("History changed; current generation=7")
             self.assertEqual((after, limit), (0, 256))
@@ -72,7 +72,7 @@ class HistoryHTTPTests(unittest.TestCase):
         self.assertEqual(json.load(response)["generation"], 7)
 
     def test_encoded_history_fast_path_preserves_plain_gzip_head_and_query_errors(self):
-        from execution_bridge import HistoryGenerationError
+        from history_store import HistoryGenerationError
         encoded = json.dumps(self.page, allow_nan=False, separators=(",", ":")).encode()
         calls = []
         def history_json(generation, after, limit):

@@ -11,8 +11,9 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from execution_bridge import HistoryStore, ProcessLiveService
-from execution_session import MultirateSession
+from execution_bridge import ProcessLiveService
+from history_store import HistoryStore
+from native_session import NativeSession
 from execution_worker import CompletedRecords, worker_main
 from presentation_settings import DEFAULT_PRESENTATION, PresentationSettings, validate_presentation
 from server import make_server
@@ -275,7 +276,7 @@ class ReportingCadenceTests(unittest.TestCase):
                           task=deepcopy(schema['defaults']['task']), execution=execution))
         sessions, batches, rates = [], [], []
 
-        class Session(MultirateSession):
+        class Session(NativeSession):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 sessions.append(self)
@@ -298,7 +299,7 @@ class ReportingCadenceTests(unittest.TestCase):
                 if any(e.get('message') == 'Precalculation complete' for e in message.get('events', ())):
                     shutdown.set()
 
-        with patch('live_mpc.GPULocks', FakeLocks), patch('execution_worker.MultirateSession', Session), \
+        with patch('live_mpc.GPULocks', FakeLocks), patch('execution_worker.NativeSession', Session), \
              patch('execution_worker.CompletedRecords', Buffer), \
              patch('execution_worker.time.monotonic', return_value=100.):
             worker_main(Path('.'), commands, Results(), revision, shutdown,

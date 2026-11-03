@@ -241,6 +241,11 @@ class SimulatorAdapter:
             self.update_tracking_reference(time_s)
         return self.reference
 
+    def warmup(self, state, reference):
+        """Prepare the selected child for the native loop's actual first request."""
+        return self.remote.request("reset", state=np.r_[state.q, state.qd],
+                                   time_s=float(state.t), reference=reference_to_wire(reference))
+
     def segment_header(self, settings_version, execution):
         """The record that starts a segment: its constant context, which the state,
         control, plan, breach and interval records of that generation leave out,
@@ -252,17 +257,18 @@ class SimulatorAdapter:
                        effective_settings=deepcopy(self.effective_settings))
         return dict(type="segment", sim_time_s=float(self.t), settings_version=settings_version, context=context)
 
-    def solve_snapshot(self, origin, settings_version, initial=None):
+    def solve_snapshot(self, origin, settings_version, initial=None, reference=None):
         # History records the request time; the trajectory has its own origin.
         at = float(self.t if initial is None else initial.t)
         state = self.x if initial is None else np.r_[initial.q, initial.qd]
-        self.task_reference(at)
-        predicted = {} if initial is None else dict(measured_time_s=float(initial.measured_t))
+        reference = self.task_reference(at) if reference is None else np.asarray(reference)
+        predicted = ({} if initial is None else
+                     dict(measured_time_s=float(getattr(initial, "measured_t", initial.t))))
         response = self.remote.request("solve", state=state, time_s=at,
-            reference=reference_to_wire(self.reference), origin=origin, settings_version=settings_version, **predicted)
+            reference=reference_to_wire(reference), origin=origin, settings_version=settings_version, **predicted)
         self.sequence += 1
         event = dict(response["plan"], seq=self.sequence, sim_time_s=float(self.t),
-                     _reference=self.reference.copy(), target_xyz=self.target_world_at(at).tolist())
+                     _reference=reference.copy(), target_xyz=self.target_world_at(at).tolist())
         return snapshot(event)
 
     def _state_fields(self, settings_version=0):

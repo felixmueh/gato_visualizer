@@ -3,8 +3,8 @@
 The application is a local simulation and inspection diagnostic. It imports
 `tiago_mpc`'s model (`tiago_mpc.tiago`), MPC (`tiago_mpc.mpc`: `MpcParams`,
 `find_binary`, `compile_binary`, `Mpc`) and plant (`tiago_mpc.sim.SimPlant`)
-unchanged and owns browser interaction, execution scheduling and retained
-history. Read [AGENTS.md](../AGENTS.md) for
+and uses its shared `run_virtual_time` loop. It owns browser interaction,
+callback gating, reporting and retained history. Read [AGENTS.md](../AGENTS.md) for
 project constraints and [the glossary](../UBIQUITOUS_LANGUAGE.md) for domain terms.
 [README.md](../README.md) contains startup, prepared-environment/source selection,
 cache/build policy and user workflows.
@@ -17,8 +17,9 @@ optimizer inspection/continuation. It is a proposal, not the current contract.
 This experimental branch also supports [visualizer-owned settings adapters](source-settings.md):
 `adapters/tiago.py` owns standard display metadata, with an optional ignored
 checkout-local override for extra controls and native plant/law/predictor builders.
-The friction adapter and its tests live in this repository. Main's execution
-timing remains an independent feature.
+The friction adapter and its tests live in this repository. This worktree
+requires shared-loop hooks in the selected native source; older checkouts
+fail the source probe without a second scheduler fallback.
 
 The shared Live compilation UI uses a read-only selected-interpreter model check
 before accepting a draft. Supported N choices are independent of cached N.
@@ -32,8 +33,11 @@ latest draft and source/profile/cache identity after completion. See
 ```mermaid
 flowchart LR
     B[Browser] <-->|HTTP / SSE / history pages| H[HTTP parent and history]
-    H <-->|bounded queues| S[Simulation coordinator]
-    S <-->|native state / reference / prediction| G[Persistent solver child]
+    H -->|commands| S[Simulation coordinator]
+    S -->|bounded numerical packets| R[Raw ingestion process]
+    R -->|byte-bounded binary queue| H
+    S <-->|notifications / shared control arrays| G[Persistent solver child]
+    G -->|bounded RAM recording ring| R
     H <-->|read-only records / plot specs| P[CPU plot process]
     H <-->|explicit Run again| I[Temporary inspection solver child]
 ```
@@ -41,13 +45,53 @@ flowchart LR
 `server.py` wires the services. The HTTP parent drains numerical output and
 retains every committed record before publishing latest-value notices. It also
 renders FK for those records; it owns no live controller/CUDA objects. The
-simulation coordinator owns native plant state/time, the `SimPlant` it steps and
+browser consumes a compact companion stream with the same committed cursors;
+prediction summaries replace full prediction arrays there. Indexed full-plan
+requests fill a bounded browser cache independently of motion playback. Full
+server recording and FK work remain unchanged. The presentation contract
+defines display-time sampling and exact scrubbing/export behavior.
+The simulation coordinator owns native plant state/time, the `SimPlant` it steps and
 the GPU leases; it imports no compiled GATO module. Its persistent solver child
 holds `tiago_mpc`'s `Mpc(params, find_binary(params))` and its private warm state,
 using the selected profile's interpreter. Normal solves reuse that child.
+The shared loop submits requests without waiting, integrates the independent
+plant interval, then waits only at a possible activation boundary. Control
+arrays occupy a preallocated mmap buffer; the private socket carries small
+request/result notifications and borrowed GPU leases. Full solve captures use
+a separate bounded RAM recording ring. Control-ready notifications precede
+capture serialization; reserved recording locators become readable independently.
+The child serializes before accepting its next request, preserving diagnostic
+ownership. The ingestion process copies raw bytes and frees those slots before
+capture deserialization, statistics formatting, FK and JSON in the history
+process; stale packets also release their slots. The producer ring and ingestion
+queue each default to a 256 MiB budget. See the execution contract for startup
+configuration, memory accounting and lossless simulation backpressure. The
+coordinator never freezes/thaws whole solve records.
+`NativeSession` retains one native loop invocation on a coordinator thread;
+ordinary batches enter a bounded queue while execution continues. The owner
+reads committed immutable progress snapshots; explicit Pause drains and quiesces
+the invocation before releasing GPU leases. Blocking callbacks gate requested
+ends and actual pauses, while a full queue applies lossless backpressure. The native loop owns
+request scheduling, activation, command laws and latency prediction. The
+visualizer captures detached numerical observations; HTTP-side FK, diagnostic
+formatting, history serialization and plotting run outside the solver child.
 CPU plotting loads committed sources independently. Explicit Run again pauses
 Live at a committed boundary and uses a separate temporary solver child; only
 one GPU computation runs at a time. Live's private controller remains idle.
+
+The lifetime rules are part of these boundaries:
+
+- The native invocation thread owns evolving plant/controller state. The
+  coordinator reads committed `Progress` snapshots and sends gate/cancellation
+  requests; it does not inspect partially updated numerical state.
+- Pause quiesces pending solver work and retains the invocation. Cancellation
+  wakes and joins it before replacement; reset gets new numerical state.
+- A recording locator belongs to the ingestion process after handoff. Stale
+  generations still release their slots; shutdown drains or reclaims only the
+  stopped producer's storage.
+- Browser generation and cursor ownership stays in `live.js`. Paging accepts
+  only responses matching its captured generation, cursor and reset epoch.
+  Prediction downloads cannot advance motion history or replace its records.
 
 - **Animation export:** the browser freezes visible tracks and renders a separate
   capture scene; the HTTP parent's `AnimationExportService` streams PNGs to a
@@ -61,10 +105,11 @@ one GPU computation runs at a time. Live's private controller remains idle.
 | --- | --- | --- |
 | HTTP, scene/model/FK, service wiring | [server.py](../server.py) | [Live payloads](live-api.md) |
 | Agent CLI and shared-settings controls | [scripts/control.py](../scripts/control.py), [src/backend-watch.js](../src/backend-watch.js) | [Agent API](agent-api.md) |
-| History, generations, SSE publication | [execution_bridge.py](../execution_bridge.py), [execution_worker.py](../execution_worker.py) | [Execution/history](execution-api.md), [reporting](presentation.md) |
-| Simulation clocks, held torque, interval costs | [execution_session.py](../execution_session.py), [solver_adapter.py](../solver_adapter.py) | [Execution](execution-api.md) |
+| Retained records, cursors, compact pages and indexed plans | [history_store.py](../history_store.py) | [Execution/history](execution-api.md) |
+| Generation lifecycle, commands and SSE publication | [execution_bridge.py](../execution_bridge.py), [execution_worker.py](../execution_worker.py) | [Execution/history](execution-api.md), [reporting](presentation.md) |
+| Native loop observations, callback gate, interval costs | [native_session.py](../native_session.py), [execution_session.py](../execution_session.py), [solver_adapter.py](../solver_adapter.py) | [Execution](execution-api.md) |
 | `tiago_mpc` import, settings schema and validation, reference geometry, GPU locks | [live_mpc.py](../live_mpc.py) | [Live settings/tasks](live-api.md) |
-| Solver RPC, native conversion, leases, child lifetime | [solver_process.py](../solver_process.py), [solver_worker.py](../solver_worker.py), [solver_lifecycle.py](../solver_lifecycle.py) | [Solver profiles](solver-profiles.md) |
+| Solver requests, shared buffers, leases, child lifetime | [solver_process.py](../solver_process.py), [solver_exchange.py](../solver_exchange.py), [solver_worker.py](../solver_worker.py), [solver_lifecycle.py](../solver_lifecycle.py) | [Solver profiles](solver-profiles.md) |
 | Source/interpreter/cache selection, source probe (`find_binary`) and explicit builds (`compile_binary`) | [source_runtime.py](../source_runtime.py), [source_settings.py](../source_settings.py), [visualizer_config.py](../visualizer_config.py), [scripts/source_probe.py](../scripts/source_probe.py) | [README source setup](../README.md#run) |
 | Run again, exact captured problem, binary SQP trace | [solve_inspections.py](../solve_inspections.py), [inspection_problem.py](../inspection_problem.py), [inspection_worker.py](../inspection_worker.py), [inspection_artifacts.py](../inspection_artifacts.py) | [Inspection](inspection.md) |
 | Plot jobs, source views, standard plots | [plot_service.py](../plot_service.py), [plot_sources.py](../plot_sources.py), [gato_visualizer/plotting/](../gato_visualizer/plotting), [plotters/standard.py](../plotters/standard.py) | [Plot API](plot-api.md), [author workflow](plot-authoring.md) |
@@ -76,26 +121,39 @@ one GPU computation runs at a time. Live's private controller remains idle.
 | Solid arm visibility without hiding ghost clones | [src/arm-visibility.js](../src/arm-visibility.js) | [Session and tracks](presentation.md#session-and-tracks) |
 | Viewport start-pose joint rings and grasp translation | [src/joint-editor.js](../src/joint-editor.js), [src/arm-kinematics.js](../src/arm-kinematics.js), [robot_frames.py](../robot_frames.py) | [Viewport start-pose editing](presentation.md#viewport-start-pose-editing), [Live grasp metadata](live-api.md) |
 | Browser Live history, playback, settings | [src/live.js](../src/live.js), [src/live-history.js](../src/live-history.js), [src/live-execution.js](../src/live-execution.js), [src/presentation-settings.js](../src/presentation-settings.js) | [Execution](execution-api.md), [presentation](presentation.md) |
+| Browser history HTTP paging and stale-response rejection | [src/live-history-paging.js](../src/live-history-paging.js) | [Execution](execution-api.md) |
+| Prediction display/export selection and bounded downloads | [src/live-prediction.js](../src/live-prediction.js), [src/live-plan-cache.js](../src/live-plan-cache.js) | [Presentation](presentation.md) |
 | Episode/Solve selection and shared plot rendering | [src/plot-inspection.js](../src/plot-inspection.js), [src/plot-state.js](../src/plot-state.js), [src/solve-run.js](../src/solve-run.js), [src/plot-renderer.js](../src/plot-renderer.js) | [Inspection](inspection.md), [plotting](plotting.md) |
 
 Production Live uses `SimulatorAdapter`, the solver child and
-`MultirateSession`; `scripts/check_conformance.py` compares exactly that path
-with `tiago_mpc`'s `run_virtual_time` with a `Reach` task. `LatestPresentation` and `src/live-playout.js` retain older
-presentation helpers; the current motion clock is `createHistoryClock` in
+`NativeSession`; `scripts/check_conformance.py` compares exactly that path
+with `tiago_mpc`'s `run_virtual_time` with a `Reach` task. The motion clock is `createHistoryClock` in
 `src/live-execution.js`, driven by fetched history over the browser session span,
-with the main track owning Live tip decisions. Do not infer production
-ownership or playback timing from an old helper alone.
+with the main track owning Live tip decisions. Browser HTTP paging owns only
+in-flight/coalesced request state; the Live controller owns its generation,
+cursor and reset epoch. Prediction selection is independent of that transport
+and can be tested using recorded samples without starting a solver or renderer.
+The unused older presentation worker and playout helper have been removed.
 
 The adapter builds `SimConfig(q=..., qd=..., substep=..., integrator=...,
 friction=..., friction_law=...).build()` from the native state and starts the plant with
 `VirtualClock(sim_time_s)`. Reset and rollback get fresh clocks; numerical time never
 moves backward in a plant instance. The source probe checks this lifecycle and
 the MPC's `request`/`result` interface before a source can be selected. The
-session reuses upstream `Schedule` with pending activation at command ticks;
-measured solve latency is the normal default. The conformance reference uses
-upstream `run_virtual_time` with a declared 5.5 ms latency on both sides, including
-activation between request slots. Live retains its simulation-only limit policy
-and final-command hold; it does not adopt the package's robot-plan lease.
+session constructs native `VirtualTimeSettings` and invokes upstream
+`run_virtual_time(..., settings=settings, duration=None, ...)` directly,
+preserving its integration grid and pending activation at command ticks.
+The settings object owns command/update periods, solve latency, compensation,
+maximum plan age and effort handling; callbacks and lifecycle controls remain
+invocation arguments. The source probe requires this settings dataclass and
+the `settings`/`duration` parameters. Measured solve latency is the
+normal default. Conformance uses declared latency (5.5 ms by default) on both
+sides. Effort clipping is the native loop's separate effort handling after
+command-law evaluation; physics breach events are detected at every substep and
+delivered at the next command boundary.
+Age expiry is configurable and disabled by default in Live; the finite horizon
+still applies, with no implicit final-command hold. See
+[execution](execution-api.md#simulation-clock-and-plan-execution).
 
 The visible application has a single session workspace. Startup awaits
 `live.ready` before entering it so both available and offline sources share
@@ -227,7 +285,7 @@ and coordinate an idle GPU window when such work is authorized and relevant.
 
 ## Accepted decisions and limits
 
-- [ADR 001: reuse upstream numerics; own execution clocks](adr/001-upstream-and-clocks.md).
+- [ADR 001: share the native execution loop](adr/001-upstream-and-clocks.md).
 - [ADR 002: isolate solver state and explicit inspection](adr/002-solver-isolation.md).
 - [ADR 003: retain all numerical history; batch presentation](adr/003-history-and-presentation.md).
 
@@ -235,6 +293,12 @@ The prototype provides simulated motion, no physical-robot command or collision
 qualification, and diagnostic timings rather than benchmark evidence. History
 files are deleted when replaced (only the current run is kept); there is no
 historical-generation/branch browser.
+Ordinary Pause parks the callback and retains pending/controller state. Cancel
+sets the invocation's flag, wakes it and joins it before replacement. Reset and
+reconfiguration start fresh native plant/controller/law/predictor state. No
+special memory-compaction policy is required on Pause. On Play pacing remains
+in the visualizer and rebases its wall-time anchor on resume.
+
 Ordinary solves do not retain full incoming optimizer state or intermediate
 trajectory traces; missing historical data stays unavailable. These limits are
 part of the current contract, not implicit permission to expand scientific scope.

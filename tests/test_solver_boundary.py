@@ -79,6 +79,10 @@ class FakeMpc:
         plan, self._plan = self._plan, None
         return plan
 
+    def close(self):
+        self.closed = True
+        self.controller = self.step = self._plan = None
+
 
 @contextmanager
 def fake_gpu():
@@ -133,6 +137,82 @@ def config(**changes):
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_native_session_rejects_internally_consistent_but_wrong_solver_replies(self):
+        from execution_session import DEFAULT_EXECUTION
+        from native_session import NativeSession
+        from tests.test_execution import FakeAdapter
+        malformed = (
+            dict(N=4), dict(dt_s=.04), dict(plan_origin_time_s=1.), dict(measured_time_s=1.),
+            dict(_states=np.zeros((2,14)), _torques=np.zeros((1,7))),
+            dict(_states=np.zeros((3,12)), _torques=np.zeros((2,6))),
+        )
+        for changes in malformed:
+            with self.subTest(fields=list(changes)):
+                adapter = FakeAdapter()
+                original = adapter.solve_snapshot
+                def solve(*args, **kwargs):
+                    return dict(original(*args, **kwargs), **changes)
+                adapter.solve_snapshot = solve
+                session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+                try:
+                    with self.assertRaisesRegex(ValueError, 'Solver reply|Unexpected plan layout'):
+                        session.advance_interval(.002)
+                    self.assertEqual(session.control_updates, 0)
+                    np.testing.assert_array_equal(adapter.x, np.zeros(14))
+                finally:
+                    session.close()
+
+    def test_native_session_runs_the_real_rpc_adapter_with_observed_and_predicted_initial_states(self):
+        from execution_session import DEFAULT_EXECUTION
+        from native_session import NativeSession
+        for compensation in (False, True):
+            with self.subTest(compensation=compensation), fake_gpu():
+                remote = Remote()
+                adapter = SimulatorAdapter(MPC_ROOT)
+                adapter.remote, adapter.profile = remote, dict(id='native-session')
+                adapter.profile_schema = dict(available_N_by_friction=dict(off=[4], on=[]),
+                                              source_settings=live_probe().get('source_settings', {}))
+                session = None
+                try:
+                    remote.request('bootstrap')
+                    execution = dict(DEFAULT_EXECUTION, to_hz=500., solve_latency_s=.002,
+                                     latency_compensation=compensation)
+                    adapter.configure(config(), dict(kind='reach', target_offset_m=[0., 0., 0.]),
+                                      execution=execution)
+                    session = NativeSession(adapter, execution)
+                    records = []
+                    while session.progress.t < .1-1e-12:
+                        records.extend(session.advance_interval(.1))
+                    plans = [r for r in records if r['type']=='plan']
+                    commands = [r for r in records if r['type']=='control']
+                    self.assertEqual(len(plans), 50)
+                    self.assertEqual(len(commands), 49)
+                    self.assertTrue(all(r['available_time_s'] >= r['request_time_s'] for r in plans))
+                    self.assertEqual(plans[0]['initial_state']['measured_time_s'], 0.)
+                    self.assertEqual(plans[0]['initial_state']['time_s'], .002 if compensation else 0.)
+                    self.assertTrue(np.isfinite(adapter.x).all())
+                    # Deferred formatting still produces the complete historical payload.
+                    rendered = render_plan(plans[-1], adapter.kinematics)
+                    self.assertEqual(rendered['diagnostics']['step_size'], [1., None])
+                finally:
+                    if session is not None:
+                        session.close()
+                    remote.close()
+
+    def test_binary_telemetry_preserves_unavailable_values_without_admitting_invalid_control_arrays(self):
+        sender, receiver = socket.socketpair()
+        try:
+            message = dict(result=dict(plan=dict(diagnostics=dict(trace=np.array([1., np.nan, np.inf])))))
+            send_message(sender, message, array_buffers=True)
+            received = receive_message(receiver)
+            np.testing.assert_array_equal(received['result']['plan']['diagnostics']['trace'], [1., np.nan, np.inf])
+            with self.assertRaisesRegex(ValueError, 'Nonfinite solver RPC array'):
+                send_message(sender, dict(result=dict(plan=dict(_torques=np.array([[np.nan]*7])))),
+                             array_buffers=True)
+        finally:
+            sender.close()
+            receiver.close()
+
     def test_json_encoder_preserves_nested_arrays_and_rejects_nonfinite(self):
         sender, receiver = socket.socketpair()
         try:
@@ -245,10 +325,13 @@ class BoundaryTests(unittest.TestCase):
                     sqp_iters=2, pcg_iters=7, admm_iters=3, admm_linsys_iters=1, admm_linsys_mode="pcg",
                     zero_pcg_rows=0, budget_hit=False, solve_time_ms=1.5, step_wall_s=.002,
                     row_violation=[0., 1e-3], controller_restarted=True))
-                self.assertEqual(mutable(captured["diagnostics"]), dict(final_merit=1.5, step_size=[1., None]))
+                self.assertEqual(captured['diagnostics']['final_merit'], 1.5)
+                np.testing.assert_array_equal(captured['diagnostics']['step_size'], [1., np.nan])
                 np.testing.assert_array_equal(mpc.reference, simulator.reference)
                 self.assertEqual(mpc.reference.dtype, np.float32)
                 expected = render_plan(captured, simulator.kinematics)
+                self.assertEqual(expected['diagnostics'], dict(final_merit=1.5, step_size=[1., None]))
+                self.assertNotIn('_native_stats', expected)
                 self.assertEqual(expected["torque_nm"], np.arange(21.).reshape(3, 7).tolist())
                 from inspection_problem import captured_problem
                 problem = captured_problem(dict(context, **expected))

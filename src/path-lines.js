@@ -43,11 +43,30 @@ export function setPathPoints(line, points) {
     const point = positions.length ? positions : [0, 0, 0];
     positions.splice(0, positions.length, ...point, ...point);
   }
-  const geometry = new LineGeometry();
-  geometry.setPositions(positions);
-  const previousGeometry = line.geometry;
-  line.geometry = geometry;
-  previousGeometry?.dispose();
+  const needed = positions.length / 3 - 1;
+  let geometry = line.geometry;
+  let buffer = geometry.attributes.instanceStart?.data;
+  if (!buffer || buffer.count < needed) {
+    // Grow geometrically; live trace/prediction updates reuse the GPU buffer.
+    const capacity = 2 ** Math.ceil(Math.log2(Math.max(1, needed)));
+    const vertices = new Float32Array((capacity + 1) * 3);
+    vertices.set(positions);
+    const last = positions.slice(-3);
+    for (let i = positions.length; i < vertices.length; i += 3) vertices.set(last, i);
+    geometry = new LineGeometry(); geometry.setPositions(vertices);
+    line.geometry.dispose(); line.geometry = geometry;
+    buffer = geometry.attributes.instanceStart.data;
+  } else {
+    for (let i = 0; i < buffer.count; i++) {
+      const from = Math.min(i, needed)*3, to = Math.min(i+1, needed)*3;
+      for (let axis = 0; axis < 3; axis++) {
+        buffer.array[i*6+axis] = positions[from+axis];
+        buffer.array[i*6+3+axis] = positions[to+axis];
+      }
+    }
+    buffer.needsUpdate = true;
+    geometry.computeBoundingBox(); geometry.computeBoundingSphere();
+  }
   line.userData.path = { pointCount: points.length, segmentsAtPoint, segmentCount: segments };
   if (line.material.dashed) line.computeLineDistances();
   setPathPointCount(line, points.length);

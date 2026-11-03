@@ -32,6 +32,7 @@
 | **Keyframe** | A time at which a ghost arm is drawn. | Frame (a coordinate frame here) |
 | **Ghost arm** | A translucent right arm at a recorded state other than the solid robot’s displayed state. | Preview (a Live preview solve) |
 | **Simulation time** | The task/plant clock recorded with robot states, independent of time spent computing them. | Solver time, wall time |
+| **Virtual-time settings** | Native `VirtualTimeSettings`: command/update periods, solve latency, compensation, maximum plan age and effort handling, passed through required `settings=` to `run_virtual_time`. Duration and callbacks belong to the invocation. | `VirtualTime` (removed class name), split loop configuration arguments |
 | **Simulation frequency** | The nominal plant integration rate (RK4 or semi-implicit Euler), with steps split at control or replanning boundaries. | Display rate |
 | **Control frequency** | The rate at which the current prediction supplies a held actuator command. | MPC frequency, replanning frequency |
 | **TO frequency** | The trajectory-optimization request-slot rate. Requests start at command ticks with no solve pending; missed slots are skipped. Zero means back-to-back. | Control frequency, reporting frequency |
@@ -39,6 +40,8 @@
 | **Control events** | The command ticks and TO updates; the Live history records every command and plan and the simulated state at each control event, not at physics steps. | Recording substeps, sample rate |
 | **Segment header** | The first record of a generation's Live history: everything constant within that segment (effective settings, source and identities, limits and bounds, task path and anchors). Other records name their segment by generation. | Plan context, per-record context |
 | **Knot interval** | The time spacing of states in a prediction horizon. | Control period |
+| **Plan age limit** | Optional positive deadline from the source observation, disabled by null in Live. Disabling it does not extend the finite prediction horizon. | Final-command hold |
+| **SolveCompleted** | Native observation emitted for every returned plan, whether or not it later supplies a command. | Plan activation |
 | **Report frequency** | The wall-clock cadence for publishing batches of completed numerical records. | Simulation frequency, sample reduction |
 | **Aggregate window** | The session time range, selected on the timeline with independently unbounded left/right bounds, over which episode plots and aggregates are computed; an unbounded end follows new history. | Visible window, zoom, analysis range selector |
 | **Playback buffer** | The desired amount of received simulation-time history ahead of the Live cursor. | Integration delay, reporting interval |
@@ -50,8 +53,8 @@
 | **Simulator source** | The selected checkout providing the fixed plant (`tiago_mpc`'s `SimPlant`), robot assets, initial state and task geometry. | Solver profile |
 | **Solver profile** | A named checkout/interpreter/cache selection providing a compatible predictor and optimizer. | Simulator source, warm-state checkpoint |
 | **Compiled module** | The GATO module `tiago_mpc` compiles for one `MpcParams` variant (knot count N, predictor friction). `find_binary` finds it; only an explicit Build compiles it. | Prebuilt binary, compatible binary |
-| **Clip effort** | The simulation setting that clips each command to ± the raw URDF effort limit before it reaches the simulated plant; the robot path never clips. | Torque saturation of the MPC, effort bound (the MPC's `effort_fraction` row) |
-| **Limit breach** | A simulated position, velocity or applied (clipped) torque that starts to be beyond its raw URDF limit, checked at every physics step or command; with **Stop on breach** Live pauses there. Planned knots never breach. | Limit use near/at (presentation states), MPC bound violation |
+| **Clip effort** | The simulation setting selecting native `EffortClip` in `VirtualTimeSettings.effort_handling` after the command law returns its torque array. The forecast uses the same law and effort handling; the robot path retains its own checks. | Torque saturation of the MPC, effort bound (the MPC's `effort_fraction` row) |
+| **Limit breach** | A simulated position, velocity or applied torque that starts to exceed its raw URDF limit. Physics detects it every substep and queues it for delivery/pause at the next command boundary, retaining exact detection time/state. Planned knots never breach. | Limit use near/at (presentation states), MPC bound violation |
 | **Native coordinates** | The canonical robot joint coordinates used by plant states, portable replays and public Live predictions. | GPU coordinates |
 
 ## Session and tracks — Felix, 2026-10-23

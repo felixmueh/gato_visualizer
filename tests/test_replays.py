@@ -96,7 +96,7 @@ class ReplayTests(unittest.TestCase):
         from experiments.reach import Reach
         params = replace(tm.TIAGO, N=3, friction=tm.urdf_friction(), friction_law=tm.Tanh(.03))
         record = tm.RunRecord(self.folder / 'native-run', params=params, task=Reach(),
-                              plant=tm.SimConfig(), timing=tm.VirtualTime.ideal(), law=tm.SampleKnot())
+                              plant=tm.SimConfig(), timing=tm.VirtualTimeSettings.ideal(), law=tm.SampleKnot())
         states = np.repeat(np.r_[tm.Q_START, np.zeros(7)][None, :], 3, axis=0)
         prediction = tm.Plan(0., params.dt_s, states, np.zeros((2, 7)), measured_t=0.)
         for i, t in enumerate([0., .002]):
@@ -258,7 +258,8 @@ class ReplayTests(unittest.TestCase):
                            plans=[dict(origin_time_s=.015, time_s=[0, .015], q=self.q)])
         replay = load_replay(path, model_urdf=MODEL)
         scene = replay_scene(replay, path, MPC_ROOT, self.base_scene)
-        kin = RobotKinematics(MODEL, fixed_joints=dict(torso_lift_joint=.15))
+        kin = RobotKinematics(MODEL, fixed_joints=dict(torso_lift_joint=.15),
+                              end_effector_frame=replay.metadata["end_effector_frame"])
         recorded, plan = scene["trajectories"]
         np.testing.assert_allclose(recorded["ee_xyz"], kin.ee_positions(self.q), atol=1e-12)
         expected = np.array([kin.target_to_world(row) for row in replay.reference.xyz])

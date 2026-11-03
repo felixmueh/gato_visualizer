@@ -62,7 +62,9 @@ code idiom; dialogs use the same palette as the workbench.
 ## Relationship to tiago_mpc — Felix, 2026-10-21
 
 `tiago_mpc` keeps changing and the visualizer must follow it, but this project
-avoids changes to `tiago_mpc`, including its GATO dependency. Locate it through
+avoids changes to `tiago_mpc`, including its GATO dependency, unless explicitly
+authorized. Live requires the selected source to provide the shared-loop
+callback, cancellation and command-law API. Locate it through
 the configurable path (`--mpc-root` / `TIAGO_MPC_ROOT`, default
 `../tiago_mpc-visualizer-base`). Do not add a submodule or move this repository unless Felix
 decides so.
@@ -152,9 +154,14 @@ follows the package API that experiments use, without shims.
   GATO identity comes from `record.provenance()["gato"]`. Solver calls use
   `Mpc.request` and `Mpc.result`; `Mpc.step` holds the latest raw result for
   diagnostics. The conformance reference uses `run_virtual_time` with explicit
-  declared `solve_latency_s=.0055` on both sides; the visualizer reuses
-  `loops.Schedule` and retains its multirate/history lifecycle. Normal Live
-  uses measured solve latency.
+  declared `solve_latency_s=.0055` on both sides. Since 2026-11-03 the visualizer
+  invokes `loops.run_virtual_time` directly through `NativeSession`, retaining
+  reporting/history ownership. `NativeSession` constructs native
+  `VirtualTimeSettings` and passes required `settings=` and `duration=None`;
+  command/update periods, latency, compensation, maximum plan age and effort
+  handling belong to that object. The source probe requires the new API;
+  the old `VirtualTime` name and split loop arguments have no fallback.
+  Normal Live uses measured solve latency.
 - **The reduced arm is derived, not a file in the checkout** (tiago_mpc,
   2026-10-23). `tiago.arm_urdf()` derives it with the grasp frame from
   `models/tiago_pro/tiago_pro.urdf` into the cache (`GATO_CACHE_DIR`) and
@@ -172,11 +179,12 @@ clock only) and `warmup` a boolean with `Mpc.warmup(state, reference)`.
   simulation clock, so Live's default is `replace(TIAGO, max_sqp_time_s=None)`,
   shown as "none"; the user can still set a limit. `warmup` keeps `TIAGO`'s
   default (on).
-- **Every reseed warms up.** Configuring, Reset, anchors, previews, rollback
-  and resuming Play reseed the solver child's controller with `Mpc.warmup`
+- **Every reseed warms up.** Configuring, Reset, anchors, previews and rollback
+  reseed the solver child's controller with `Mpc.warmup`
   from that state and the task reference a request then gets; with `warmup`
   off that is the plain controller reset. A reseed repeating the previous one
-  with no solve in between is skipped. The warm-up is no plan, creates no
+  with no solve in between is skipped. Ordinary Pause/resume retains the native
+  invocation, pending plans and warm state without reseeding. The warm-up is no plan, creates no
   record, is not part of interval timing and, like a solve, has no RPC
   deadline.
 - **Build refreshes Live without a restart.** Building only adds modules for
@@ -214,14 +222,44 @@ Only render intermediate trajectories when actually recorded. Exact Continue
 SQP requires an optimizer checkpoint API; do not substitute another warm-seeded
 solve while describing it as exact continuation.
 
-### Visualizer timing ownership — Felix, 2026-10-21
+### Shared execution loop — Felix, 2026-11-03
 
-The visualizer owns its scheduling, precalculation and playback. Reuse the
-existing upstream MPC controller and `tiago_mpc` simulation steps directly.
-Do not require a shared timing engine in `tiago_mpc`: its self-contained
-experiments and real-robot execution have their own timing requirements.
-Keep upstream GATO unchanged. Accept its existing heuristic warm-start behavior;
-exact warm-start time alignment is not a prerequisite and has no UI option.
+This supersedes the 2026-10-21 independent timing-engine decision. Live and
+experiments use `tiago_mpc.loops.run_virtual_time`; do not duplicate scheduling,
+activation, forecasting or command evaluation here. `NativeSession` retains a
+single invocation on a coordinator thread, publishes detached batches through a
+bounded queue, and parks its before-tick callback for Pause/end boundaries.
+Read committed `progress` snapshots from the owner; the native thread owns the
+live adapter and numerical counters. Pause drains and quiesces before releasing
+GPU leases, and resumes intact. Cancel sets a per-invocation flag and
+wakes/joins it before replacement. Reset/settings/profile changes create fresh
+plant, controller, law and forecast state. On Play wall-clock pacing stays here
+and rebases on resume; precalculation is unpaced. No special pause memory policy.
+
+Use the native Tick, SolveCompleted and Event callbacks; every returned plan
+is observable even if never activated. Full-rate physics observers queue breach
+events until the next command boundary, retaining exact detection time/state.
+Command laws return torque arrays. `VirtualTimeSettings.effort_handling`
+defaults to `EffortClip`; experiments can select `RejectOnEffort`.
+Live passes `EffortClip` with its watched effort limits when clipping is enabled,
+and `None` otherwise so its breach watcher can pause on applied torque.
+Latency prediction evaluates the same law and effort handling with private
+hypothetical state. Keep forecast computation in the numerical path.
+`max_plan_age_s` is configurable, null in Live by default;
+finite horizon validity still applies and there is no implicit final-knot hold.
+The physical robot retains stricter safety checks.
+
+Keep the solver and numerical coordinator in separate processes for every
+profile. Requests are asynchronous; advance the independent plant interval
+before waiting at a possible activation boundary. Use preallocated shared
+control arrays plus small notifications, and a separate bounded recording ring
+consumed by the raw ingestion process. It releases slots before the HTTP/history
+process decodes captures or derives geometry. Preserve every observation with explicit
+backpressure. Reclaim stale/cancelled slots and retain retired rings until their
+published records are consumed. Quiesce GPU work before reporting/pause releases
+leases. Move diagnostic formatting, FK and JSON out of the numerical path;
+measure total wall directly because physics and solver costs overlap. Keep upstream GATO unchanged and native warm-start behavior intact.
+See [ADR 001](docs/adr/001-upstream-and-clocks.md).
 
 Expose simulation, control and TO/replanning frequencies separately from the
 prediction knot interval. The simulation clock follows the requested schedule;
@@ -236,12 +274,6 @@ automatic jobs use a frozen displayed starting state. History playback follows
 recorded simulation timestamps at the session playback rate, with a separate
 "Continue simulation at end" toggle. Imported Replay recordings remain
 independent of Live settings.
-
-Import `tiago_mpc` code unchanged instead of re-implementing it. Which code
-that is changed on 2026-10-22; see "The tiago_mpc API the visualizer uses"
-above. Re-implement only what the visualizer's own clocks need: the multirate
-schedule and its zero-order hold of a plan's knot torques (as `tiago_mpc`'s
-`sample_knot`, except that it holds the last torque past the horizon).
 
 **Live commands at 500 Hz — Felix, 2026-10-23.** Live's default Control Hz (the
 thesis's command rate) is 500, as `tiago_mpc`'s experiments; simulation 1000 Hz
@@ -296,20 +328,16 @@ Startup warns when the directory is not on tmpfs (for example a distribution who
 `/tmp` is on disk; then set the override to a tmpfs such as `/dev/shm`) or nearly
 full. See [runtime files](docs/execution-api.md#runtime-files).
 
-Conformance (Felix, 2026-10-22, replaces the comparison with `reach_sim.py`):
-the opt-in GPU script `scripts/check_conformance.py` runs
-`run_virtual_time` with a `Reach` task with `SimPlant` and `Mpc` in-process, then the
-visualizer's adapter, solver child and multirate session at the same rates,
-start, target and `MpcParams`, and compares states at every command tick,
-commands and plans, so drift in `tiago_mpc` fails loudly. By default the
-reference steps on the session's 1 ms grid for 3 s without arriving, and the
-comparison uses a sensible numerical tolerance. The native 3 s delayed comparison
-also passed with exactly matching arrays (2026-10-27). It covers the explicit loss-free RK4 reach case, not every
-profile, friction or inspection path. Since `tiago_mpc` 31c405a (Felix,
-2026-10-23) both sides use `TIAGO` without the SQP time limit and with the
-warm-up (`run_virtual_time()` warms up before its first tick, the session's configure
-reseeds the same way), at the reach's default rates: 500 Hz commands, a
-control update per 10 ms knot.
+Conformance (amended 2026-11-03): `scripts/check_conformance.py` runs the
+same native loop headless with in-process `Mpc` and through Live's adapter,
+solver child and `NativeSession`. Compare every command-tick state, command and
+returned plan, including unused plans, on the native integration grid. Default:
+loss-free RK4 reach, 1000 Hz physics, 500 Hz command, 100 Hz TO, 5.5 ms declared
+latency, age expiry off, no SQP time limit, warm-up on. Additional rates/latency
+and compensation are explicit options. Do not normalize tick times with a
+second integration grid. Retain raw outputs; this proves only the selected
+numerical case, not throughput or all-profile equivalence. Historical results
+from the old scheduler are historical evidence only.
 
 ## Session model — Felix, 2026-10-23
 
@@ -473,7 +501,7 @@ tooltips, the docs, or nowhere. Mark each distinction once, at the element it
 concerns. Do not add caveats for unlikely misreadings or repeat a label across
 panels; permanent text is a last resort of a few words.
 
-The visualizer's independent simulation/control/TO clocks govern generation;
+The shared native simulation/control/TO clocks govern generation;
 recorded playback uses simulation timestamps at the session playback rate,
 forced to 1× while following a growing Live tip. Visualizer runs are
 diagnostics, not experiment or timing evidence.

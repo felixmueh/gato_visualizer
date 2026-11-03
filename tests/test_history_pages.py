@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from execution_bridge import HistoryGenerationError, HistoryStore
+from history_store import HistoryGenerationError, HistoryStore
 
 
 class EncodedHistoryPageTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class EncodedHistoryPageTests(unittest.TestCase):
             with self.subTest(after=after, limit=limit):
                 page = self.store.page(7, after, limit)
                 expected = json.dumps(page, allow_nan=False, separators=(',', ':')).encode()
-                with patch('execution_bridge.json.loads', side_effect=AssertionError('Decoded history JSON')):
+                with patch('history_store.json.loads', side_effect=AssertionError('Decoded history JSON')):
                     actual = self.store.page_json(7, after, limit)
                 self.assertEqual(actual, expected)
                 self.assertEqual(json.loads(actual)['records'], self.records[after:after+limit])
@@ -49,7 +49,7 @@ class EncodedHistoryPageTests(unittest.TestCase):
         for after, limit in ((0,1024), (1024,1024), (2048,1024), (0,2048)):
             with self.subTest(after=after, limit=limit):
                 expected = self.store.page(7,after,limit)
-                with patch('execution_bridge.json.loads', side_effect=AssertionError('Decoded history JSON')):
+                with patch('history_store.json.loads', side_effect=AssertionError('Decoded history JSON')):
                     raw = self.store.page_json(7,after,limit)
                 self.assertEqual(raw,json.dumps(expected,allow_nan=False,separators=(',',':')).encode())
                 self.assertEqual(expected['records'],records[after:after+limit])

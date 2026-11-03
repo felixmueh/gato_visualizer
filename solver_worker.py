@@ -13,6 +13,7 @@ import importlib
 import inspect
 import os
 import socket
+import struct
 from pathlib import Path
 import time
 import traceback
@@ -28,6 +29,8 @@ DIAGNOSTICS = ("initial_merit", "final_merit", "min_merit", "step_size", "pcg_it
 
 def finite_or_none(value):
     """Plain JSON values; nonfinite telemetry is reported as unavailable."""
+    if isinstance(value, dict):
+        return {key: finite_or_none(item) for key, item in value.items()}
     if isinstance(value, np.ndarray):
         return finite_or_none(value.tolist())
     if isinstance(value, (list, tuple)):
@@ -35,6 +38,18 @@ def finite_or_none(value):
     if isinstance(value, (float, np.floating)) and not np.isfinite(value):
         return None
     return value.item() if isinstance(value, np.generic) else value
+
+
+def capture_diagnostic(value):
+    """Detach numerical telemetry once; JSON formatting belongs to presentation."""
+    if isinstance(value, np.ndarray):
+        return value.copy()
+    if isinstance(value, (tuple, list)):
+        array = np.asarray(value)
+        if array.dtype.kind in "biuf":
+            return array.copy()
+        return [capture_diagnostic(item) for item in value]
+    return finite_or_none(value)
 
 
 def plan_stats(stats, restarted):
@@ -175,23 +190,34 @@ class SolverSession:
                                        measured_time_s=measured),
                     plan_origin_time_s=float(plan.t0), measured_time_s=measured,
                     sim_time_s=float(time_s), N=mpc.N, dt_s=mpc.dt,
-                    _states=np.array(plan.states), _torques=np.array(plan.torques), stats=stats,
-                    diagnostics={name: finite_or_none(getattr(raw, name)) for name in DIAGNOSTICS if hasattr(raw, name)})
+                    _states=plan.states, _torques=plan.torques, stats=stats,
+                    _native_stats=dict(plan.stats),
+                    diagnostics={name: capture_diagnostic(getattr(raw, name)) for name in DIAGNOSTICS if hasattr(raw, name)})
 
 
 def serve(channel, root):
     session = None
+    control = recording = None
+    capture_error = None
     while True:
         request, lease_descriptors = receive_leased_message(channel)
         identity = {key: request.get(key) for key in ("protocol", "epoch", "request_id")}
         operation, payload = request.get("operation"), request.get("payload", {})
+        notified = False
+        reserved = None
         try:
             if identity["protocol"] != 1:
                 raise ValueError("Unsupported solver RPC protocol")
+            if capture_error is not None and operation not in ('close','end_stream','configure'):
+                raise RuntimeError(f'Previous solve recording failed: {capture_error}')
             if operation == "bootstrap":
                 session = SolverSession(root)
                 result = session.bootstrap()
             elif operation == "close":
+                if control is not None:
+                    control.close()
+                if recording is not None:
+                    recording.close()
                 session = None
                 send_message(channel, dict(identity, ok=True, result=None))
                 return
@@ -200,8 +226,51 @@ def serve(channel, root):
             elif operation == "configure":
                 result = session.configure(payload["params"], payload.get("max_sqp_iters"),
                                            payload.get("source_settings"), payload.get("settings_module"))
+                capture_error = None
             elif session.mpc is None:
                 raise ValueError("Solver is not configured")
+            elif operation == 'start_stream':
+                from solver_exchange import ControlArrays, RecordingRing
+                if control is not None:
+                    raise RuntimeError('A numerical stream is already active')
+                if payload['n'] != session.mpc.N or payload['dt'] != session.mpc.dt:
+                    raise ValueError('Numerical stream differs from the configured MPC')
+                control = ControlArrays(payload['n'], payload['dt'], payload['control_path'])
+                recording = RecordingRing(payload['recording_path']) if payload['recording_path'] else None
+                result = None
+            elif operation == 'end_stream':
+                control.close()
+                if recording is not None:
+                    recording.close()
+                control = recording = None
+                result = None
+            elif operation == 'submit_stream':
+                if control is None:
+                    raise ValueError('No numerical stream configured')
+                identifier = request['request_id']
+                initial, reference = control.read_request(identifier)
+                session.seed = None
+                started = time.perf_counter()
+                session.mpc.request(initial, reference)
+                plan = session.mpc.result(block=True)
+                wall_s = time.perf_counter()-started
+                slot = recording.reserve(identifier) if recording is not None else 0
+                reserved = slot if recording is not None else None
+                control.write_result(identifier, plan, wall_s)
+                channel.sendall(b'R'+struct.pack('!QI', identifier, slot))
+                notified = True
+                if recording is not None:
+                    raw = session.mpc.step.solve.stats
+                    record = dict(type='plan', origin='play', N=session.mpc.N, dt_s=session.mpc.dt,
+                        plan_origin_time_s=plan.t0, measured_time_s=plan.measured_t,
+                        initial_state=dict(q=initial.q, qd=initial.qd, time_s=initial.t,
+                                           measured_time_s=plan.measured_t),
+                        _states=plan.states, _torques=plan.torques, _reference=reference,
+                        _native_stats=plan.stats, _controller_restarted=session.restarted,
+                        diagnostics={name:getattr(raw,name) for name in DIAGNOSTICS if hasattr(raw,name)})
+                    recording.put(identifier, record, slot=slot)
+                session.restarted = False
+                continue
             elif operation == "reset":
                 result = session.reset(payload["state"], payload["time_s"], payload["reference"])
                 if result["warmup"]:  # diagnostics log: one line per warm-up
@@ -220,6 +289,17 @@ def serve(channel, root):
             send_message(channel, dict(identity, ok=True, result=result), array_buffers=operation == "solve")
         except Exception as exc:
             traceback.print_exc()
+            if reserved is not None:
+                if notified:
+                    recording.put(request['request_id'],dict(_recording_error=f'Solve recording failed: {exc}'),slot=reserved)
+                else:
+                    from solver_exchange import take_record
+                    take_record(dict(path=str(recording.path),slot=reserved,request_id=request['request_id']),discard=True)
+            if notified:
+                # Keep CUDA objects idle until the coordinator reconfigures or
+                # closes under its next GPU lease. No unsolicited control reply.
+                capture_error = str(exc)
+                continue
             send_message(channel, dict(identity, ok=False, error=str(exc)))
         finally:
             for descriptor in lease_descriptors:

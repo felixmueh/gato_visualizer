@@ -1,10 +1,13 @@
 """CPU checks of the independent plant and predictor friction."""
 from copy import deepcopy
+from contextlib import ExitStack
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
-from execution_session import DEFAULT_EXECUTION, MultirateSession
+from execution_session import DEFAULT_EXECUTION
+from native_session import NativeSession
 from live_mpc import REACH_DEFAULT_TASK
 from solver_adapter import SimulatorAdapter
 from tests.tiago_mpc_source import MPC_ROOT, live_probe
@@ -18,7 +21,6 @@ class FrictionTests(unittest.TestCase):
 
     def test_the_session_steps_tiago_mpc_sim_plant_with_each_integrator_and_coulomb_law(self):
         from tiago_mpc.clock import VirtualClock
-        from tiago_mpc.sim import SimConfig
         from tiago_mpc.dynamics import Tanh, Sign, StickSlip
         adapter, tiago = self.adapter, self.adapter.tiago
         # Compare the session's command-tick stepping with the upstream plant
@@ -27,21 +29,25 @@ class FrictionTests(unittest.TestCase):
                                           ("euler", tiago.urdf_friction(), "tanh"),
                                           ("euler", tiago.urdf_friction(), "sign"),
                                           ("euler", tiago.urdf_friction(), "stick_slip")):
-            with self.subTest(integrator=integrator, law=friction and law):
+            with self.subTest(integrator=integrator, law=friction and law), ExitStack() as cleanup:
                 adapter.reset_state()
                 adapter.x[7:] = np.linspace(-.2, .2, 7)
                 evaluation = Tanh(.03) if law == 'tanh' else Sign() if law == 'sign' else StickSlip()
                 adapter.plant_options = dict(integrator=integrator, friction=friction, friction_law=evaluation)
                 adapter.configure_task(3, .02, deepcopy(REACH_DEFAULT_TASK))
                 torques = np.arange(14.).reshape(2, 7)/10
-                adapter.solve_snapshot = lambda origin, version: dict(
-                    type="plan", seq=1, N=3, dt_s=.02, sim_time_s=adapter.t,
-                    _states=np.zeros((3, 14)), _torques=torques, stats=dict(solve_time_ms=1.,step_wall_s=0.))
-                adapter.state_record = lambda version=0: dict(type="state")
-                session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000.))
+                cleanup.enter_context(patch.object(adapter, "solve_snapshot", lambda origin, version,
+                    initial=None, reference=None: dict(
+                        type="plan", seq=1, N=3, dt_s=.02, sim_time_s=adapter.t if initial is None else initial.t,
+                        _states=np.zeros((3, 14)), _torques=torques, stats=dict(solve_time_ms=1.,step_wall_s=0.))))
+                cleanup.enter_context(patch.object(adapter, "warmup", lambda state, reference: None))
+                cleanup.enter_context(patch.object(adapter, "state_record", lambda version=0: dict(type="state")))
+                session = NativeSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000.))
+                cleanup.callback(session.close)
                 # The provider may add inertia/change coefficients. Compare the
                 # scheduler with the exact native configuration it built.
                 reference = session.plant.config.build()
+                cleanup.callback(reference.close)
                 reference.start(VirtualClock())
                 reference.apply(torques[0])
                 states = [r for r in session.advance_interval(.01) if r["type"] == "state"]
@@ -53,7 +59,6 @@ class FrictionTests(unittest.TestCase):
                 self.assertEqual(reference.config.friction_law, evaluation)
                 np.testing.assert_allclose(adapter.x, np.r_[expected.q, expected.qd], rtol=0, atol=1e-12)
                 self.assertAlmostEqual(adapter.t, .01)
-                del adapter.solve_snapshot, adapter.state_record
 
     def test_plant_friction_uses_the_urdf_coefficients_and_predictor_friction_a_fixed_tanh_width(self):
         tiago, probe = self.adapter.tiago, live_probe()
@@ -62,8 +67,9 @@ class FrictionTests(unittest.TestCase):
         self.assertEqual(probe["friction"]["viscous_nm_s_per_rad"], list(plant.viscous_nm_s_per_rad))
         self.assertEqual(probe["friction"]["type"], "Friction")
         self.assertNotIn('law', probe['friction'])
-        from tiago_mpc.mpc import TIAGO  # the selected source's predictor default
-        self.assertEqual(probe['defaults']['friction_law'], dict(type='Tanh', width_rad_s=TIAGO.friction_law.width_rad_s))
+        from tiago_mpc import TIAGO, to_dict
+        self.assertEqual(probe['defaults']['friction_law'], to_dict(TIAGO.friction_law))
+        self.assertEqual(probe['defaults']['friction_law']['type'], 'Tanh')
         self.assertIsNone(probe["defaults"]["friction"])
 
     def test_inspection_capability_uses_captured_predictor_variant(self):

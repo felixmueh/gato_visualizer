@@ -4,7 +4,8 @@ import unittest
 import numpy as np
 
 import tiago_mpc as tm
-from execution_session import DEFAULT_EXECUTION, MultirateSession
+from execution_session import DEFAULT_EXECUTION
+from native_session import NativeSession
 from tests.test_execution import FakeAdapter, TIGHT_EFFORT
 
 
@@ -13,7 +14,8 @@ class ExecutionLawTests(unittest.TestCase):
     def test_pd_uses_current_feedback_between_solves(self):
         adapter = FakeAdapter()
         adapter.law = tm.PlanFeedback(kp=2., kd=.5)
-        session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+        self.addCleanup(session.close)
         commands = [r for r in session.advance_interval(.006) if r['type'] == 'control']
         np.testing.assert_allclose(commands[0]['torque_nm'], np.ones(7))
         # Toy plant: after2ms of u=1, q=v=.002; planned q/v remain0.
@@ -26,14 +28,15 @@ class ExecutionLawTests(unittest.TestCase):
         original = adapter.solve_snapshot
         direction = np.array([1, 1, 1, 1, 1, -1, 1])
 
-        def solve(*args):
-            plan = original(*args)
+        def solve(*args, **kwargs):
+            plan = original(*args, **kwargs)
             plan['_states'][:, 7:] = np.arange(adapter.N)[:, None]*.2*direction
             return plan
 
         adapter.solve_snapshot = solve
         adapter.law = tm.FrictionFeedforward(tm.Friction((.5,)*7, (.2,)*7), evaluation=tm.Tanh(.01))
-        session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=.0055))
+        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=.0055))
+        self.addCleanup(session.close)
         records = session.advance_interval(.01)
         first = next(r for r in records if r['type'] == 'control')
         self.assertAlmostEqual(first['sim_time_s'], .006)
@@ -47,8 +50,8 @@ class ExecutionLawTests(unittest.TestCase):
         adapter = FakeAdapter()
         original = adapter.solve_snapshot
 
-        def solve(*args):
-            plan = original(*args)
+        def solve(*args, **kwargs):
+            plan = original(*args, **kwargs)
             plan['_states'][:, 7:] = .1
             return plan
 
@@ -56,22 +59,28 @@ class ExecutionLawTests(unittest.TestCase):
         adapter.law = tm.FrictionFeedforward(tm.Friction((3.,)*7, (0.,)*7), evaluation=tm.Tanh(.01))
         adapter.limit_handling = dict(limits=TIGHT_EFFORT, clip_effort=True,
                                       stop_on_breach=dict(position=True, velocity=True, torque=True))
-        session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+        self.addCleanup(session.close)
         command = next(r for r in session.advance_interval(.002) if r['type'] == 'control')
         self.assertTrue(np.min(command['requested_torque_nm']) > 3.9)
         np.testing.assert_allclose(command['mpc_torque_nm'], np.ones(7))
         np.testing.assert_allclose(command['torque_nm'], np.full(7, 1.5))
 
-    def test_default_law_preserves_final_knot_hold_when_command_grid_skips_it(self):
+    def test_default_law_reports_native_horizon_expiry_without_a_terminal_torque(self):
         adapter = FakeAdapter()
         adapter.law = tm.SampleKnot()
         settings = dict(DEFAULT_EXECUTION, simulation_hz=100., control_hz=25., to_hz=10., solve_latency_s=0.)
-        session = MultirateSession(adapter, settings)
-        commands = [r for r in session.advance_interval(.1) if r['type'] == 'control']
-        np.testing.assert_allclose([r['torque_nm'] for r in commands], [[1]*7, [2]*7, [2]*7])
-        self.assertEqual([r['plan_exhausted'] for r in commands], [False, True, True])
+        session = NativeSession(adapter, settings)
+        self.addCleanup(session.close)
+        records = []
+        while not session.finished and session.progress.t < .1:
+            records.extend(session.advance_interval(.1))
+        commands = [r for r in records if r['type'] == 'control']
+        np.testing.assert_allclose([r['torque_nm'] for r in commands], [[1]*7])
+        self.assertTrue(session.finished)
+        self.assertEqual(session.outcome.reason, 'lease_expired')
 
-    def test_exhausted_law_holds_final_valid_total_without_extrapolation(self):
+    def test_exhausted_law_is_not_called_past_its_valid_horizon(self):
         adapter, calls = FakeAdapter(), []
 
         def law(plan, t, state):
@@ -80,10 +89,14 @@ class ExecutionLawTests(unittest.TestCase):
 
         adapter.law = law
         settings = dict(DEFAULT_EXECUTION, simulation_hz=100., control_hz=25., to_hz=10., solve_latency_s=0.)
-        session = MultirateSession(adapter, settings)
-        commands = [r for r in session.advance_interval(.1) if r['type'] == 'control']
-        np.testing.assert_allclose([r['torque_nm'] for r in commands], [[6]*7, [7]*7, [7]*7])
-        np.testing.assert_allclose(calls, [0., .02])
+        session = NativeSession(adapter, settings)
+        self.addCleanup(session.close)
+        records = []
+        while not session.finished and session.progress.t < .1:
+            records.extend(session.advance_interval(.1))
+        commands = [r for r in records if r['type'] == 'control']
+        np.testing.assert_allclose([r['torque_nm'] for r in commands], [[6]*7])
+        np.testing.assert_allclose(calls, [0.])
 
 
 if __name__ == '__main__':

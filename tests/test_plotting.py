@@ -69,6 +69,38 @@ class StandardPlotNumericTests(unittest.TestCase):
         self.assertEqual(spec['series'][0]['y'], [90., None, 0.])
         self.assertEqual(spec['y']['unit'], 'deg')
         self.assertEqual(self.plot('episode.orientation_error')['kind'], 'unavailable')
+    def test_mpc_frequency_uses_request_spacing_and_requested_to_guide(self):
+        episode = EpisodeView(dict(states=[dict(sim_time_s=10.), dict(sim_time_s=10.01)],
+            plans=[dict(request_time_s=t, sim_time_s=t, plan_origin_time_s=t+.05, stats=dict(step_wall_s=.001))
+                   for t in (10., 10.002, 10.006, 10.01)],
+            segment=dict(settings=dict(execution=dict(to_hz=250.)))))
+        spec = self.plot('episode.mpc_frequency', episode)
+        self.assertEqual(spec['x']['identity'], 'episode_time')
+        self.assertEqual(spec['y']['unit'], 'Hz')
+        self.assertEqual(spec['series'][0]['x'], [10., 10.002, 10.006, 10.01])
+        for actual, expected in zip(spec['series'][0]['y'][:-1], [500., 250., 250.]):
+            self.assertAlmostEqual(actual, expected)
+        self.assertIsNone(spec['series'][0]['y'][-1])
+        self.assertEqual(spec['guides'], [dict(axis='y', value=250., label='Requested TO')])
+        window = EpisodeView(episode.raw, InspectionContext(analysis_range='window', visible_window=(10.001, 10.005)))
+        clipped = self.plot('episode.mpc_frequency', window)['series'][0]
+        self.assertEqual(clipped['x'], [10.001, 10.002, 10.005])
+        self.assertAlmostEqual(clipped['y'][0], 500.)
+        self.assertAlmostEqual(clipped['y'][1], 250.)
+
+    def test_mpc_frequency_excludes_previews_duplicates_and_missing_request_times(self):
+        episode = EpisodeView(dict(states=[dict(sim_time_s=0.), dict(sim_time_s=.01)], plans=[
+            dict(request_time_s=0.), dict(request_time_s=.001, origin='preview'),
+            dict(request_time_s=.002), dict(request_time_s=.002), dict(sim_time_s=.003),
+            dict(request_time_s=float('nan'))], segment=dict(settings=dict(execution=dict(to_hz=0.)))))
+        spec = self.plot('episode.mpc_frequency', episode)
+        self.assertEqual(spec['series'][0]['x'], [0., .002])
+        self.assertEqual(spec['series'][0]['y'], [500., None])
+        self.assertEqual(spec['guides'], [])
+        single = EpisodeView(dict(plans=[dict(request_time_s=0.)]))
+        self.assertEqual(self.plot('episode.mpc_frequency', single)['kind'], 'unavailable')
+        missing = EpisodeView(dict(plans=[dict(sim_time_s=0.), dict(sim_time_s=.01)]))
+        self.assertEqual(self.plot('episode.mpc_frequency', missing)['kind'], 'unavailable')
 
     def test_tracking_error_derivation(self):
         spec = self.plot('episode.tracking_error')

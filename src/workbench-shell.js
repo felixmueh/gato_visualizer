@@ -36,7 +36,11 @@ export function workbenchShell(icon) {
             <label class="execution-mode" title="Each plan waits for its measured solver wall time while the previous command continues."><input id="live-latency-measured" type="checkbox" checked>Measured solve latency</label>
             <label>Declared latency (s)<input id="live-solve-latency" type="text" inputmode="decimal" value="0.005" spellcheck="false" required disabled aria-label="Declared solve latency"></label>
           </div>
-        <label class="parameter-row" title="Solve from the state forecast for command activation, using the simulated plant model and sent commands. Declared latency uses that delay; measured latency uses the previous solve (initially 5 ms). Applies to execution, not an instantaneous preview.">Latency compensation<input id="live-latency-compensation" type="checkbox"></label>
+          <label class="parameter-row" title="Solve from the state forecast for command activation, using the native compensation model and actual command law. Declared latency uses that delay; measured latency uses the previous solve (initially 5 ms). Applies to execution, not an instantaneous preview.">Latency compensation<input id="live-latency-compensation" type="checkbox"></label>
+          <div class="execution-latency-row">
+            <label class="execution-mode" title="Expire a plan this long after its source observation. Disabling this age limit does not extend the plan's finite horizon."><input id="live-plan-age-enabled" type="checkbox">Plan age limit</label>
+            <label>Maximum age (s)<input id="live-max-plan-age" type="text" inputmode="decimal" value="0.1" spellcheck="false" required disabled aria-label="Maximum plan age"></label>
+          </div>
         </details>
         <p class="field-label prediction-horizon-label">PREDICTION HORIZON</p>
         <div id="live-horizon-settings" class="compact-horizon"></div>

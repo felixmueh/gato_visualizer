@@ -1,11 +1,7 @@
-"""Bounded presentation pipeline; no controller or CUDA objects cross threads."""
+"""Detach and render numerical observations without controller or CUDA ownership."""
 from collections.abc import Mapping
 from types import MappingProxyType
-import json
 import math
-import threading
-import time
-import traceback
 
 import numpy as np
 
@@ -32,7 +28,20 @@ def mutable(value):
 
 
 def render_plan(captured, kinematics):
+    from solver_exchange import resolve_record
+    captured = resolve_record(captured)
     event = mutable(captured)
+    if "_controller_restarted" in event:
+        from solver_worker import plan_stats
+        event["stats"] = plan_stats(event["_native_stats"], event.pop("_controller_restarted"))
+        from solver_worker import finite_or_none
+        event['initial_state'] = finite_or_none(event['initial_state'])
+    # Numerical replies retain binary telemetry and native timing for execution.
+    # The HTTP/history owner formats it after it leaves the control path.
+    event.pop("_native_stats", None)
+    if "diagnostics" in event:
+        from solver_worker import finite_or_none
+        event["diagnostics"] = finite_or_none(event["diagnostics"])
     states, torque = np.asarray(event.pop("_states")), np.asarray(event.pop("_torques"))
     q, qd = states[:, :7], states[:, 7:]
     reference = event.pop("_reference")
@@ -71,71 +80,6 @@ def rotation_angle(a, b):
     """The angle in radians between two rotation vectors' rotations, |log(R_aᵀ R_b)|."""
     import pinocchio as pin
     return float(np.linalg.norm(pin.log3(pin.exp3(np.asarray(a, dtype=float)).T @ pin.exp3(np.asarray(b, dtype=float)))))
-
-
-class LatestPresentation:
-    """One in-flight frame and one replaceable pending frame, capped at 60 Hz.
-
-    Command boundaries invalidate an obsolete in-flight frame. During ordinary
-    play we finish the current frame then take the newest snapshot, so a slow
-    presenter cannot starve the display or build an ever-growing queue.
-    """
-    def __init__(self, render, publish, max_hz=60):
-        self.render, self.publish = render, publish
-        self.interval = 1/max_hz
-        self.condition = threading.Condition()
-        self.pending = None
-        self.generation = 0
-        self.closed = False
-        self.thread = threading.Thread(target=self._run, name="live-mpc-presentation", daemon=True)
-        self.thread.start()
-
-    def invalidate(self):
-        with self.condition:
-            self.generation += 1
-            self.pending = None
-            self.condition.notify_all()
-
-    def submit(self, frame, urgent=False):
-        with self.condition:
-            self.pending = (self.generation, frame, urgent)
-            self.condition.notify_all()
-
-    def close(self):
-        with self.condition:
-            self.closed = True
-            self.pending = None
-            self.condition.notify_all()
-        self.thread.join()
-
-    def _run(self):
-        next_frame = 0
-        while True:
-            with self.condition:
-                self.condition.wait_for(lambda: self.closed or self.pending is not None)
-                if self.closed:
-                    return
-                remaining = next_frame-time.monotonic()
-                if remaining > 0 and not self.pending[2]:
-                    self.condition.wait(timeout=remaining)
-                    continue
-                generation, frame, _ = self.pending
-                self.pending = None
-            try:
-                events = self.render(frame)
-                for event in events:
-                    json.dumps(event, allow_nan=False)
-            except Exception as exc:
-                events = [dict(type="error", message=f"Live presentation: {exc}",
-                               detail=traceback.format_exc())]
-            with self.condition:
-                if self.closed:
-                    return
-                if generation == self.generation:
-                    # Publication only appends already validated events. Neither
-                    # JSON/FK nor client socket writes occur under this lock.
-                    self.publish(events)
-            next_frame = time.monotonic()+self.interval
 
 
 class LiveRenderer:

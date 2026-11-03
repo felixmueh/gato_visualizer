@@ -11,6 +11,7 @@ from array import array
 import json
 import math
 import os
+import select
 from pathlib import Path
 import socket
 import struct
@@ -25,6 +26,12 @@ from runtime_files import runtime_directory
 ROOT = Path(__file__).resolve().parent
 MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 ARRAY_FRAME = 1 << 63
+
+
+def _telemetry_path(path):
+    """Undefined recorded telemetry may cross the wire; control inputs may not."""
+    return (len(path) >= 3 and path[:2] == ["result", "plan"]
+            and path[2] in ("diagnostics", "_native_stats"))
 
 
 def _array_dtype(value):
@@ -50,7 +57,7 @@ def _array_message(message):
             total += value.nbytes
             if total > MAX_MESSAGE_BYTES:
                 raise ValueError("Solver RPC message exceeds the transport limit")
-            if dtype.kind == "f" and not np.isfinite(value).all():
+            if dtype.kind == "f" and not _telemetry_path(path) and not np.isfinite(value).all():
                 raise ValueError("Nonfinite solver RPC array")
             descriptors.append(dict(path=path, dtype=dtype.str, shape=list(value.shape), nbytes=value.nbytes))
             buffers.append(value.tobytes(order="C"))
@@ -101,7 +108,7 @@ def _restore_arrays(payload):
         if parent[key] is not None:
             raise ValueError("Solver RPC array path is duplicate or does not replace a placeholder")
         value = np.frombuffer(payload, dtype=dtype, count=size // dtype.itemsize, offset=offset).reshape(shape)
-        if dtype.kind == "f" and not np.isfinite(value).all():
+        if dtype.kind == "f" and not _telemetry_path(path) and not np.isfinite(value).all():
             raise ValueError("Nonfinite solver RPC array")
         parent[key] = value
         offset += size
@@ -110,10 +117,13 @@ def _restore_arrays(payload):
     return message
 
 
-def send_lease(channel, descriptors):
+def send_lease(channel, descriptors, *, payload=b''):
     """Borrow the coordinator's existing flock descriptions, never reacquire."""
     rights = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array("i", descriptors))] if descriptors else []
-    channel.sendmsg([b"L"], rights)
+    frame = b'L'+payload
+    sent = channel.sendmsg([frame], rights)
+    if sent < len(frame):
+        channel.sendall(frame[sent:])
 
 
 def receive_leased_message(channel):
@@ -128,6 +138,15 @@ def receive_leased_message(channel):
     try:
         if marker != b"L" or flags & socket.MSG_CTRUNC:
             raise RuntimeError("Invalid solver GPU lease transport")
+        if channel.recv(1, socket.MSG_PEEK) == b'S':
+            data = bytearray()
+            while len(data) < 9:
+                part = channel.recv(9-len(data))
+                if not part:
+                    raise RuntimeError('Solver process disconnected')
+                data.extend(part)
+            identifier, = struct.unpack('!Q', data[1:])
+            return dict(protocol=1, operation='submit_stream', request_id=identifier), descriptors
         return receive_message(channel), descriptors
     except BaseException:
         for descriptor in descriptors:
@@ -233,6 +252,8 @@ class SolverProcess:
         self.lease_fds = lease_fds
         self.epoch = uuid.uuid4().hex
         self.sequence = 0
+        self.control = self.recording = None
+        self.stream_pending = False
         self.channel, child = socket.socketpair()
         folder = runtime_directory("solver-processes")
         # Bounded: keep the logs of the last KEPT_LOGS children (names sort by start time).
@@ -259,6 +280,8 @@ class SolverProcess:
             child.close()
 
     def request(self, operation, *, timeout=None, **payload):
+        if self.stream_pending:
+            raise RuntimeError('Finish the pending numerical request before a setup operation')
         self.sequence += 1
         identity = dict(protocol=1, epoch=self.epoch, request_id=self.sequence)
         previous_timeout = self.channel.gettimeout()
@@ -282,8 +305,84 @@ class SolverProcess:
             raise ValueError(reply.get("error", "Solver request failed"))
         return reply.get("result")
 
+    def start_stream(self, n, dt, *, recording=True, max_sqp_iters=5):
+        from solver_exchange import ControlArrays, RecordingRing
+        if self.control is not None:
+            raise RuntimeError('A numerical stream is already active')
+        self.control = ControlArrays(n, dt)
+        from solver_exchange import recording_slot_bytes
+        self.recording = RecordingRing(slot_bytes=recording_slot_bytes(max_sqp_iters)) if recording else None
+        try:
+            self.request('start_stream', n=n, dt=dt, control_path=str(self.control.path),
+                         recording_path=str(self.recording.path) if self.recording else None)
+        except BaseException:
+            self.control.close()
+            if self.recording is not None:
+                self.recording.close()
+            self.control = self.recording = None
+            raise
+
+    def submit_stream(self, state, reference):
+        if self.stream_pending or self.control is None:
+            raise RuntimeError('Numerical stream is not ready for a request')
+        self.sequence += 1
+        self.control.write_request(self.sequence, state, reference)
+        send_lease(self.channel, list(self.lease_fds()), payload=b'S'+struct.pack('!Q', self.sequence))
+        self.stream_pending = True
+        return self.sequence
+
+    def wait_stream(self):
+        while not select.select([self.channel], [], [], .05)[0]:
+            if self.process.poll() is not None:
+                raise RuntimeError(f'Solver process disconnected; diagnostics: {self.log_path}')
+
+    def result_stream(self, block=False):
+        if not self.stream_pending:
+            return None
+        if block:
+            self.wait_stream()
+        elif not select.select([self.channel], [], [], 0.)[0]:
+            if self.process.poll() is not None:
+                raise RuntimeError(f'Solver process disconnected; diagnostics: {self.log_path}')
+            return None
+        if self.channel.recv(1, socket.MSG_PEEK) != b'R':
+            self.stream_pending = False
+            reply = receive_message(self.channel)
+            raise ValueError(reply.get('error', 'Invalid numerical response'))
+        data = bytearray()
+        while len(data) < 13:
+            part = self.channel.recv(13-len(data))
+            if not part:
+                raise RuntimeError('Solver process disconnected')
+            data.extend(part)
+        identifier, slot = struct.unpack('!QI', data[1:])
+        self.stream_pending = False
+        if identifier != self.sequence:
+            raise ValueError('Discarded mismatched numerical response')
+        plan = self.control.read_result(identifier)
+        locator = (dict(path=str(self.recording.path), slot=slot, request_id=identifier)
+                   if self.recording is not None else None)
+        return plan, locator
+
+    def end_stream(self):
+        from solver_exchange import take_record
+        try:
+            if self.stream_pending:
+                _, locator = self.result_stream(block=True)
+                if locator is not None:
+                    take_record(locator, discard=True)
+            if self.control is not None and self.process.poll() is None:
+                self.request('end_stream')
+        finally:
+            if self.control is not None:
+                self.control.close()
+            if self.recording is not None:
+                self.recording.close()
+            self.control = self.recording = None
+
     def close(self):
         try:
+            self.end_stream()
             if self.process.poll() is None:
                 try:
                     self.request("close", timeout=5)

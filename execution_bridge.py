@@ -1,8 +1,7 @@
-"""Responsive HTTP bridge and lossless disk-backed history for spawned execution."""
+"""HTTP settings, worker lifecycle and record acceptance for spawned execution."""
 from __future__ import annotations
 from collections import deque
 from copy import deepcopy
-import errno
 import json
 import multiprocessing as mp
 import os
@@ -13,18 +12,13 @@ import time
 import traceback
 
 from execution_session import DEFAULT_EXECUTION, validate_anchor, validate_execution
+from history_store import HistoryGenerationError, HistoryStore, NO_SEGMENT
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
-from runtime_files import ENVIRONMENT as RUNTIME_ENVIRONMENT, ended_owner, owner_tag, runtime_directory
+from runtime_files import runtime_directory
 from solver_lifecycle import run_with_parent
 from execution_worker import estimated_states, MAX_STATES, worker_main
 
 SHUTDOWN_GRACE_SECONDS = 10
-MAX_HISTORY_PAGE_RECORDS = 2048
-NO_SEGMENT = ("Live history has no segment header; histories recorded before the "
-              "2026-10-23 format change cannot be loaded")
-
-class HistoryGenerationError(ValueError):
-    pass
 
 
 class LiveFreezeConflict(ValueError):
@@ -48,214 +42,6 @@ def merge_settings(current, patch):
     return result
 
 
-class HistoryStore:
-    """Append-only JSONL; bounded pages and a compact byte-offset index.
-
-    One file per generation; its first record is the segment header holding the
-    constant context. HTTP never waits for a GPU/native solver call.
-
-    Only the current run is kept (Felix, 2026-10-23): a generation's file is deleted
-    when it stops being current (a new generation, close at shutdown or restart),
-    and files left by earlier server runs (by owner pid) at start. Readers of a
-    replaced generation fail with HistoryGenerationError. `kept` is the hook for
-    runs retained on purpose later (a comparison feature); nothing adds to it yet.
-    """
-    def __init__(self, directory):
-        self.directory = Path(directory)
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self.generation = 0
-        self.lock = threading.RLock()
-        self.stream = None
-        self.path = None
-        self.kept = set()
-        for path in self.directory.glob("history-*.jsonl"):
-            if ended_owner(path.name.split("-")[1]):
-                path.unlink(missing_ok=True)
-        self.reset(0)
-
-    def _discard(self, path):
-        if path is not None and path not in self.kept:
-            path.unlink(missing_ok=True)
-
-    def reset(self, generation):
-        with self.lock:
-            if self.stream:
-                self.stream.close()
-            self._discard(self.path)
-            self.generation = generation
-            self.offsets = []
-            self.plan_offsets = {}
-            self.segment = None
-            self.state_count = 0
-            self.end_time = 0.
-            self.complete = True
-            self.path = self.directory / f"history-{owner_tag()}-{time.time_ns()}-g{generation}.jsonl"
-            self.stream = self.path.open("w+b")
-
-    @staticmethod
-    def plan_identity(record):
-        identifier = str(record.get("id", record.get("seq")))
-        return f"preview:{identifier}" if record.get("origin") == "preview" else identifier
-
-    @staticmethod
-    def encode(records):
-        return [(json.dumps(record, allow_nan=False, separators=(",", ":")).encode()+b"\n",
-                 float(record.get("sim_time_s", record.get("end_time_s", 0))), record.get("type") == "state",
-                 HistoryStore.plan_identity(record) if record.get("type") == "plan" else None,
-                 record if record.get("type") == "segment" else None) for record in records]
-
-    def append(self, records):
-        self.append_encoded(self.encode(records))
-
-    def append_encoded(self, encoded_records):
-        encoded_records = list(encoded_records)
-        if not encoded_records:
-            return
-        # Assemble the packet before taking the store lock. The receiver already
-        # encoded each record outside the Live lock; file I/O is one batch, not
-        # one buffered write/tell pair per physics state.
-        payload = b"".join(record[0] for record in encoded_records)
-        relative_offsets, plans = [], []
-        offset = state_count = 0
-        end_time = 0.
-        segment = next((record[4] for record in encoded_records if record[4] is not None), None)
-        for index, (encoded, timestamp, is_state, plan_id, _) in enumerate(encoded_records):
-            relative_offsets.append(offset)
-            if plan_id is not None:
-                plans.append((plan_id, index, offset, len(encoded)))
-            offset += len(encoded)
-            state_count += is_state
-            end_time = max(end_time, timestamp)
-        with self.lock:
-            start = self.stream.tell()
-            try:
-                self.stream.write(payload)
-                self.stream.flush()
-            except OSError as exc:
-                if exc.errno == errno.ENOSPC:
-                    raise OSError(exc.errno, f"The RAM-backed runtime directory {self.directory.parent} is full; "
-                                  f"Reset, shorten the run or set {RUNTIME_ENVIRONMENT}") from exc
-                raise
-            cursor = len(self.offsets)
-            self.offsets.extend(start + offset for offset in relative_offsets)
-            for identifier, index, offset, size in plans:
-                self.plan_offsets.setdefault(identifier, (cursor + index, start + offset, size))
-            self.end_time = max(self.end_time, end_time)
-            self.state_count += state_count
-            if self.segment is None:
-                self.segment = segment
-
-    def metadata(self):
-        with self.lock:
-            return dict(type="history", generation=self.generation, history_cursor=len(self.offsets),
-                        history_end_s=self.end_time, complete=self.complete)
-
-    def plot_source(self, generation):
-        """Capture only committed storage identity; plotting reads outside locks."""
-        with self.lock:
-            if generation != self.generation:
-                raise HistoryGenerationError(f"History changed; current generation={self.generation}")
-            return dict(kind="live", generation=generation, path=str(self.path),
-                        cursor=len(self.offsets), byte_end=self.stream.tell(),
-                        complete=self.complete)
-
-    def open_committed_prefix(self, generation):
-        """Open under the store lock; decoding/export runs outside it, like pages."""
-        with self.lock:
-            if generation != self.generation:
-                raise HistoryGenerationError(f"History changed; current generation={self.generation}")
-            if self.segment is None:
-                raise ValueError(NO_SEGMENT)
-            if self.state_count < 2:
-                raise ValueError("Freeze needs at least two recorded states")
-            return dict(reader=self.path.open("rb"), byte_end=self.stream.tell(), cursor=len(self.offsets),
-                        complete=self.complete)
-
-    def _page_encoded(self, generation, after, limit):
-        # Snapshot one bounded committed byte window and open it, then read outside
-        # locks. The open file stays readable when a newer generation replaces (and
-        # deletes) it; later appends cannot enter this page.
-        with self.lock:
-            if generation != self.generation:
-                raise HistoryGenerationError(f"History changed; current generation={self.generation}")
-            if (type(after) is not int or type(limit) is not int or
-                    not 0 <= after <= len(self.offsets) or not 1 <= limit <= MAX_HISTORY_PAGE_RECORDS):
-                raise ValueError(f"after must be an existing history cursor; limit must be within [1,{MAX_HISTORY_PAGE_RECORDS}]")
-            stop = min(after+limit, len(self.offsets))
-            offset = self.offsets[after] if stop > after else None
-            end = self.offsets[stop] if stop < len(self.offsets) else self.stream.tell()
-            complete, end_time = self.complete, self.end_time
-            reader = self.path.open("rb") if offset is not None else None
-        records = []
-        if offset is not None:
-            with reader:
-                reader.seek(offset)
-                encoded = reader.read(end-offset)
-            records = encoded.split(b"\n")[:-1]
-            if len(encoded) != end-offset or not encoded.endswith(b"\n") or len(records) != stop-after:
-                raise ValueError("Committed Live history page is incomplete")
-        return dict(generation=generation, next_cursor=stop, complete=complete,
-                    records=records, history_end_s=end_time)
-
-    def page(self, generation, after, limit):
-        page = self._page_encoded(generation, after, limit)
-        page["records"] = [json.loads(record) for record in page["records"]]
-        return page
-
-    def page_json(self, generation, after, limit):
-        """Reuse validated JSONL records without decoding and re-encoding them."""
-        page = self._page_encoded(generation, after, limit)
-        head = {key: page[key] for key in ("generation", "next_cursor", "complete")}
-        encode = lambda value: json.dumps(value, allow_nan=False, separators=(",", ":")).encode()
-        return (encode(head)[:-1] + b',"records":[' + b",".join(page["records"]) + b'],' +
-                encode(dict(history_end_s=page["history_end_s"]))[1:])
-
-    def selected_plan(self, descriptor, identifier):
-        """Read one retained plan with its segment's context, never scanning or
-        decoding unrelated physics states."""
-        if type(identifier) not in (str, int) or not str(identifier):
-            raise ValueError("Select a retained solve id")
-        identifier = str(identifier)
-        with self.lock:
-            if (type(descriptor.get("generation")) is not int or
-                    descriptor["generation"] != self.generation or descriptor.get("path") != str(self.path)):
-                raise HistoryGenerationError(f"History changed; current generation={self.generation}")
-            cursor, byte_end = descriptor.get("cursor"), descriptor.get("byte_end")
-            if (descriptor.get("kind") != "live" or type(cursor) is not int or
-                    not 0 <= cursor <= len(self.offsets) or type(byte_end) is not int):
-                raise ValueError("Invalid committed Live history prefix")
-            expected_end = self.offsets[cursor] if cursor < len(self.offsets) else self.stream.tell()
-            if byte_end != expected_end:
-                raise ValueError("Invalid committed Live history prefix")
-            indexed = self.plan_offsets.get(identifier)
-            if indexed is None or indexed[0] >= cursor or indexed[1] + indexed[2] > byte_end:
-                raise ValueError("Selected solve is not retained in this source")
-            _, offset, size = indexed
-            segment = self.segment
-            if segment is None:
-                raise ValueError(NO_SEGMENT)
-            # Open under the lock: a concurrently replaced (deleted) file stays
-            # readable, like history pages. Disk I/O and JSON decoding stay outside.
-            reader = self.path.open("rb")
-        with reader:
-            reader.seek(offset)
-            encoded = reader.read(size)
-        if len(encoded) != size or not encoded.endswith(b"\n"):
-            raise ValueError("Committed Live history prefix is incomplete")
-        plan = json.loads(encoded)
-        if not isinstance(plan, dict) or plan.get("type") != "plan" or self.plan_identity(plan) != identifier:
-            raise ValueError("Selected retained solve identity changed")
-        return dict(deepcopy(segment["context"]), **plan)
-
-    def close(self):
-        """Close at shutdown or restart: the current run stops being current."""
-        with self.lock:
-            if self.stream:
-                self.stream.close()
-                self.stream = None
-            self._discard(self.path)
-
-
 class ProcessLiveService:
     """One persistent spawn worker, bounded IPC, lossless history, latest SSE.
 
@@ -265,6 +51,8 @@ class ProcessLiveService:
     def __init__(self, mpc_root, adapter_factory=None, schema_factory=None,
                  worker_target=worker_main, render_factory=None, solver_profile=None,
                  report_hz=DEFAULT_PRESENTATION["report_hz"]):
+        from record_ingestion import RecordIngestion, buffer_bytes
+        ingestion_capacity = buffer_bytes()  # Reject invalid budgets before spawning anything.
         self.report_hz = validate_presentation(dict(DEFAULT_PRESENTATION, report_hz=report_hz))["report_hz"]
         self.mpc_root = Path(mpc_root).expanduser().resolve()
         if solver_profile is None:
@@ -305,9 +93,11 @@ class ProcessLiveService:
             if ready.get("kind") != "ready":
                 raise RuntimeError(ready.get("message", "Numerical worker failed during setup"))
             self.schema = ready["schema"]
+            self.schema['live_playback'] = dict(version=1)
             self.schema["compile_selection"] = {key: self.active_profile.get(key)
                 for key in ("mpc_root", "python", "cache", "effective_cache")}
             self.schema["compile_profile_id"] = self.active_profile_id
+            self.ingestion = RecordIngestion(self.context, self.results, capacity=ingestion_capacity)
         except BaseException:
             self.shutdown.set()
             self._process.join(timeout=3)
@@ -395,6 +185,12 @@ class ProcessLiveService:
 
     def history_json(self, generation, after=0, limit=256):
         return self.history_store.page_json(generation, after, limit)
+
+    def playback_json(self, generation, after=0, limit=256):
+        return self.history_store.page_json(generation, after, limit, playback=True)
+
+    def plans_json(self, generation, identifiers):
+        return self.history_store.plans_json(generation, identifiers)
 
     def _check_freeze(self, generation):
         if generation != self.generation:
@@ -657,7 +453,9 @@ class ProcessLiveService:
             # invalidate a manual/automatic job; Cancel is the separate control.
             if kind == "pause" and self.execution["calculation"] != "on_play":
                 return self.next_version
-            if kind != "play":
+            # Pause parks the current native invocation, preserving its pending
+            # plan and controller. Replacement/cancellation permanently ends it.
+            if kind not in ("play", "pause"):
                 with self.revision.get_lock():
                     self.revision.value += 1
             if kind in ("set_settings", "reset", "precalculate"):
@@ -689,15 +487,38 @@ class ProcessLiveService:
             return self.next_version
 
     def _receive(self):
-        while not (self.closed and not self._process.is_alive()):
+        ingestion = getattr(self, 'ingestion', None)
+        ingestion_failed = False
+        while True:
             try:
-                packet = self.results.get(timeout=.1)
+                packet = (ingestion or self.results).get(timeout=.1)
+            except EOFError:
+                if not self.closed:
+                    self.publish(dict(type='error', message='Numerical worker exited; restart the server'))
+                return
             except queue.Empty:
-                if not self._process.is_alive() and not self.closed:
-                    self.publish(dict(type="error", message="Numerical worker exited; restart the server"))
+                if not self._process.is_alive():
+                    if ingestion is not None:
+                        ingestion.finish()
+                        if ingestion.process.is_alive():
+                            continue
+                    if not self.closed:
+                        self.publish(dict(type="error", message="Numerical worker exited; restart the server"))
+                    if ingestion_failed:
+                        self.ingestion.reclaim_abandoned(self._process.pid)
                     return
+                if ingestion is not None and not ingestion.process.is_alive():
+                    if not self.closed:
+                        self.publish(dict(type='error', message='Recording ingestion exited; restart the server'))
+                        self.shutdown.set()
+                    # Once ingestion is dead, this thread owns its input queue.
+                    # Keep draining locators until numerical shutdown completes.
+                    ingestion_failed = True
+                    ingestion = None
                 continue
-            if self.closed:
+            if self.closed or ingestion_failed:
+                from solver_exchange import discard_records
+                discard_records(packet.get('records', ()))
                 continue
             try:
                 kind = packet.get("kind")
@@ -739,6 +560,16 @@ class ProcessLiveService:
                 # history while the activation transaction is in progress.
                 if (self.profile_switch["state"] == "switching" or
                         packet.get("token", -1) < self._profile_revision_floor):
+                    from solver_exchange import discard_records
+                    discard_records(packet.get('records', ()))
+                    continue
+                if kind == "resolved_settings":
+                    with self.condition:
+                        if packet.get("generation") == self.generation and packet.get("token") == self.revision.value:
+                            self.source_settings = deepcopy(packet["source_settings"])
+                            self.effective_settings = deepcopy(packet["effective_settings"])
+                            self.schema["effective_settings"] = deepcopy(self.effective_settings)
+                            self.publish(dict(type="settings", **self.settings_snapshot()))
                     continue
                 if kind == "resolved_settings":
                     with self.condition:
@@ -755,11 +586,25 @@ class ProcessLiveService:
                                               message=packet["message"], detail=packet.get("detail")))
                     continue
                 if packet.get("generation") != self.generation:
+                    from solver_exchange import discard_records
+                    discard_records(packet.get('records', ()))
+                    continue
+                if kind == 'ingestion_failure':
+                    if packet.get('token') == self.revision.value:
+                        raise RuntimeError(packet['message'])
                     continue
                 if kind == "records":
+                    from solver_exchange import resolve_record, discard_records
+                    captured_records = []
+                    try:
+                        for record in packet['records']:
+                            captured_records.append(resolve_record(record))
+                    except BaseException:
+                        discard_records(packet['records'][len(captured_records):])
+                        raise
                     records = []
                     latest_plan = latest_state = segment = None
-                    for record in packet["records"]:
+                    for record in captured_records:
                         if record["type"] == "segment":
                             segment = record
                         elif record["type"] == "plan":
@@ -853,6 +698,7 @@ class ProcessLiveService:
             with self.revision.get_lock():
                 self.revision.value += 1
             self.condition.notify_all()
+        self.ingestion.begin_close()
         # Pause/cancel remain cooperative. Explicit backend shutdown is bounded
         # even if native work is stuck. The child has a parent-death guard and
         # borrowed lease FDs keep GPU locks held until child cleanup completes.
@@ -868,7 +714,10 @@ class ProcessLiveService:
             if self._process.is_alive():
                 self._process.kill()
                 self._process.join(timeout=2)
+        self.ingestion.finish()
         self.thread.join(timeout=2)
+        self.ingestion.close()
+        self.ingestion.reclaim_abandoned(self._process.pid)
         self.history_store.close()
         self.inspection_store.close()
         self.commands.close()

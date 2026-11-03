@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
-from execution_bridge import HistoryStore
+from history_store import HistoryStore
 from gato_visualizer.plotting import InspectionContext, SolveView
 from inspection_artifacts import ReadOnlyIterationTrace, write_artifact
 from inspection_problem import captured_problem, capture_constraint_bounds

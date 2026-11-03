@@ -79,6 +79,33 @@ def episode_iterations(data: EpisodeView):
                  unit='iterations', y_label='Reported count')
 
 
+@plot_episode(id='episode.mpc_frequency', title='MPC update frequency', requires=('plans.request_time_s',),
+              description='Effective TO frequency from recorded request spacing, including command-tick alignment.')
+def episode_mpc_frequency(data: EpisodeView):
+    # Use requests rather than compensated prediction origins or solver durations.
+    # Full retained data supply bracketing requests for a clipped analysis window.
+    times = sorted({p['request_time_s'] for p in data.raw.get('plans', ())
+                    if p.get('origin') != 'preview' and finite(p.get('request_time_s'))})
+    x, y = [], []
+    for start, end in zip(times, times[1:]):
+        rate = 1/(end-start)
+        if data.bounds:
+            start, end = max(start, data.bounds[0]), min(end, data.bounds[1])
+        if end <= start:
+            continue
+        if x and x[-1] == start:
+            x.pop(); y.pop()
+        x.extend((start, end)); y.extend((rate, None))
+    if not x:
+        return unavailable('MPC update frequency', 'Requires two distinct recorded MPC request times spanning the selected range.')
+    execution = data.raw.get('segment', {}).get('settings', {}).get('execution', {})
+    nominal = number(execution.get('to_hz'))
+    guides = [dict(axis='y', value=nominal, label='Requested TO')] if nominal is not None and nominal > 0 else []
+    return lines('MPC update frequency', [series('Achieved TO', x, y, style='step')],
+                 unit='Hz', y_label='MPC updates / simulation second', guides=guides,
+                 notes=['Rate is 1 / elapsed simulation time between MPC requests. Wall-clock throughput is reported separately in Live status.'])
+
+
 @plot_episode(id='episode.tracking_error', title='End-effector tracking error', requires=('states',),
               optional=('states.ee_xyz', 'states.target_xyz', 'states.distance_m'))
 def episode_tracking_error(data: EpisodeView):

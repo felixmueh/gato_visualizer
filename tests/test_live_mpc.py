@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 from live_mpc import (GPULocks, POSITION_TOL_M, SPEED_L1_TOL_RAD_S, build_schema, figure8_reference, mpc_bounds_from_rows,
                       FIGURE8_DEFAULT_TASK, REACH_DEFAULT_TASK, validate_settings)
 from server import make_server
-from live_presentation import LatestPresentation, mutable, render_plan, render_state, snapshot
+from live_presentation import mutable, render_plan, render_state, snapshot
 from solver_adapter import SimulatorAdapter
 from tests.tiago_mpc_source import MPC_ROOT, live_probe, start_pose
 
@@ -468,44 +468,6 @@ class AdapterTelemetryTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             plan["initial_state"]["q"] = "Mutation"
         json.dumps(expected_plan, allow_nan=False)
-
-
-class PresentationTests(unittest.TestCase):
-    def test_slow_frames_coalesce_and_command_boundaries_drop_obsolete_work(self):
-        for invalidate in (False, True):
-            with self.subTest(command_boundary=invalidate):
-                entered, release, finished = (threading.Event() for _ in range(3))
-                rendered, published = [], []
-                def render(frame):
-                    rendered.append(frame)
-                    if frame == 1:
-                        entered.set()
-                        if not release.wait(2):
-                            raise RuntimeError("Test did not release renderer")
-                    return [dict(type="state", sim_time_s=frame, settings_version=int(invalidate))]
-                def publish(events):
-                    published.extend(events)
-                    if events[-1].get("sim_time_s") == 101:
-                        finished.set()
-                pipeline = LatestPresentation(render, publish)
-                try:
-                    pipeline.submit(1)
-                    self.assertTrue(entered.wait(2))
-                    for frame in range(2, 101):
-                        pipeline.submit(frame)
-                    self.assertEqual(pipeline.pending[1], 100)
-                    if invalidate:
-                        pipeline.invalidate()
-                        self.assertIsNone(pipeline.pending)
-                    pipeline.submit(101, urgent=True)
-                    release.set()
-                    self.assertTrue(finished.wait(2))
-                    self.assertEqual(rendered, [1, 101])
-                    self.assertEqual([e["sim_time_s"] for e in published],
-                                     [101] if invalidate else [1, 101])
-                finally:
-                    release.set()
-                    pipeline.close()
 
 
 class FakeLive:

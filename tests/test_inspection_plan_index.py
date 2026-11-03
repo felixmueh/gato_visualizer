@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from execution_bridge import HistoryGenerationError, HistoryStore
+from history_store import HistoryGenerationError, HistoryStore
 from inspection_problem import captured_problem
 from solve_inspections import InspectionService
 from tests.test_solve_inspections import plan, recorded, segment
@@ -48,7 +48,7 @@ class PlanIndexTests(unittest.TestCase):
             self.history.append([dict(first, id=str(8+packet), seq=8+packet)])
         before = self.history.path.read_bytes()
         with patch.object(self.service.reader, 'read', side_effect=AssertionError('Scanned Live stream')), \
-             patch('execution_bridge.json.loads', wraps=json.loads) as decode:
+             patch('history_store.json.loads', wraps=json.loads) as decode:
             for request in (early, self.request('7'), self.request('12')):
                 decode.reset_mock()
                 problem, identifier = self.service._problem(request)

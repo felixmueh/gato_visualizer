@@ -132,6 +132,21 @@ class AdapterTests(unittest.TestCase):
         figure8.configure_task(3, .01, deepcopy(FIGURE8_DEFAULT_TASK))
         self.assertTrue(np.isnan(figure8.task_reference(.4)[:, 3:]).all())
 
+    def test_native_loop_warmup_sends_missing_orientation_as_json_null(self):
+        from unittest.mock import Mock
+        from tiago_mpc.interfaces import State
+        adapter = self.adapter()
+        adapter.configure_task(3, .01, deepcopy(REACH_DEFAULT_TASK))
+        adapter.remote = Mock()
+        state = State(0., adapter.x[:7], adapter.x[7:])
+        adapter.warmup(state, adapter.task_reference())
+        call = adapter.remote.request.call_args
+        self.assertEqual(call.args, ('reset',))
+        self.assertEqual([row[3:] for row in call.kwargs['reference']], [[None] * 3] * 3)
+        json_payload = dict(call.kwargs, state=call.kwargs['state'].tolist())
+        import json
+        json.dumps(json_payload, allow_nan=False)
+
     def test_states_report_the_angle_to_the_segment_goal_and_plans_keep_the_native_rows(self):
         adapter = self.adapter()
         adapter.configure_task(2, .01, {**REACH_DEFAULT_TASK, "orientation_rad": GOAL})

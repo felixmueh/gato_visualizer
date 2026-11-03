@@ -15,8 +15,9 @@ from tests.tiago_mpc_source import MPC_ROOT
 class NativeLoopMpc:
     """Only the MPC is fake; the loop, plant, task and RunRecord are upstream's."""
     def __init__(self):
-        from tiago_mpc import TIAGO, default_cost
-        self.params = replace(TIAGO, N=3, cost=default_cost(3), dt_s=.01, max_sqp_time_s=None)  # an update every 10 ms
+        from tiago_mpc.mpc import TIAGO
+        from native_cost import with_knot_count
+        self.params = replace(with_knot_count(TIAGO, 3), dt_s=.01, max_sqp_time_s=None)
         self.N, self.dt = self.params.N, self.params.dt_s
         self.warmups, self.requests, self.pending = [], [], None
 
@@ -44,11 +45,11 @@ class ConformanceTests(unittest.TestCase):
         from tiago_mpc.clock import VirtualClock
         from tiago_mpc.record import from_dict
         from tiago_mpc.sim import SimConfig
-        for accumulated in (False, True):
-            with self.subTest(accumulated=accumulated), tempfile.TemporaryDirectory() as directory:
+        for _ in range(2):
+            with tempfile.TemporaryDirectory() as directory:
                 mpc = NativeLoopMpc()
                 config = SimConfig(substep=.001)
-                plant = reference_plant(config, accumulated_ticks=accumulated)
+                plant = reference_plant(config)
                 task = Reach(position_tol_m=0.)
                 try:
                     record = run_reference(plant, mpc, task, Path(directory) / 'reference', .02)
@@ -67,6 +68,7 @@ class ConformanceTests(unittest.TestCase):
                     summary = json.loads((record.out / 'summary.json').read_text())
                     self.assertEqual(summary['config']['params']['type'], 'MpcParams')
                     self.assertEqual(from_dict(summary['config']['params']), mpc.params)
+                    self.assertEqual(summary['config']['timing']['type'], 'VirtualTimeSettings')
                     self.assertEqual(summary['config']['timing']['solve_latency_s'], SOLVE_LATENCY_S)
                     self.assertTrue((record.out / 'ticks.npz').is_file())
                     self.assertTrue((record.out / 'plans.npz').is_file())

@@ -72,6 +72,15 @@ previews keep notes inline. The renderer returns a handle with `update`,
 
 ## Plot inputs and definitions
 
+The Episode catalog includes **MPC update frequency** (`episode.mpc_frequency`).
+It plots the reciprocal simulation-time spacing of consecutive recorded MPC
+requests, with a Requested TO guide for fixed-rate runs. As-fast-as-possible TO
+has no requested-rate guide. The full request interval determines its rate even
+when the analysis window clips that interval. Preview solves and duplicate
+timestamps are excluded; missing request times are not reconstructed from
+compensated plan origins or solver durations. Live status separately reports
+achieved updates per wall-clock second.
+
 `@plot_solve` and `@plot_episode` register ordinary callable Python functions.
 Definitions carry stable `id`, `title`, optional description, input schemas, and
 required/optional data as availability hints. They receive broad read-only

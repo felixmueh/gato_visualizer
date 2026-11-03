@@ -14,6 +14,16 @@ from unittest.mock import Mock, patch
 import source_runtime as runtime
 
 
+@dataclass(frozen=True)
+class VirtualTimeSettings:
+    command_period: float = .002
+    update_period: float = .01
+    solve_latency_s: object = "measured"
+    compensation: object = None
+    max_plan_age_s: object = None
+    effort_handling: object = None
+
+
 def checkout(root):
     for name in ("venv-host/bin/python", ".venv/bin/python", ".venv-container/bin/python"):
         path = root / name
@@ -309,6 +319,21 @@ class DisplaySourceTests(unittest.TestCase):
                 torques: object
                 stats: object
             @dataclass(frozen=True)
+            class SolveCompleted:
+                request_time_s: float
+                initial: object
+                reference: object
+                updates: object
+                plan: object
+                wall_s: float
+            @dataclass(frozen=True)
+            class Tick:
+                requested_command: object
+                clipped: bool
+            def run_virtual_time(*, settings, duration, message_callbacks=(), before_tick=None, quiesce_at=None,
+                                 cancelled=None, start_time_s=0, initial_command=None):
+                pass
+            @dataclass(frozen=True)
             class MpcParams:
                 friction_law: object = None
             from tests.tiago_mpc_source import live_probe
@@ -318,6 +343,9 @@ class DisplaySourceTests(unittest.TestCase):
                                   TIAGO=SimpleNamespace(max_sqp_time_s=.01, solver=SolverSettings(), cost=default_cost()),
                                   Mpc=SimpleNamespace(warmup=3, request=4, result=5), find_binary=4, compile_binary=5,
                                   SimPlant=Plant, SimConfig=Config, VirtualClock=object, State=State, Plan=Plan,
+                                  SolveCompleted=SolveCompleted, Tick=Tick, run_virtual_time=run_virtual_time,
+                                  VirtualTimeSettings=VirtualTimeSettings,
+                                  EffortClip=lambda: None, RejectOnEffort=lambda: None,
                                   to_dict=lambda value: value, from_dict=lambda value: value, provenance=lambda: {})
             assets, kinematics = Mock(), Mock()
             with patch('live_mpc.import_tiago', return_value=tiago) as imported, \
@@ -363,6 +391,53 @@ class DisplaySourceTests(unittest.TestCase):
                 del mpc.compile_binary
                 with self.assertRaisesRegex(ValueError, 'lacks compile_binary'):
                     script.load_source(selection)
+
+    def test_shared_loop_probe_rejects_missing_native_hooks_and_messages(self):
+        script = load_script('source_probe_shared_loop_test')
+        @dataclass(frozen=True)
+        class SolveCompleted:
+            request_time_s: float
+            initial: object
+            reference: object
+            updates: object
+            plan: object
+            wall_s: float
+        @dataclass(frozen=True)
+        class Tick:
+            requested_command: object
+            clipped: bool
+        def run_virtual_time(*, settings, duration, message_callbacks=(), before_tick=None, quiesce_at=None,
+                             cancelled=None, start_time_s=0, initial_command=None):
+            pass
+        loops = SimpleNamespace(run_virtual_time=run_virtual_time, VirtualTimeSettings=VirtualTimeSettings)
+        interfaces = SimpleNamespace(SolveCompleted=SolveCompleted, Tick=Tick)
+        laws = SimpleNamespace(EffortClip=lambda: None, RejectOnEffort=lambda: None)
+        script.require_shared_loop(loops, interfaces, laws)
+        with self.assertRaisesRegex(ValueError, 'shared run_virtual_time API'):
+            script.require_shared_loop(SimpleNamespace(run_virtual_time=lambda: None), interfaces, laws)
+        def old_run(*, message_callbacks=(), before_tick=None, quiesce_at=None, cancelled=None,
+                    max_plan_age_s=None, start_time_s=0, effort_handling=None):
+            pass
+        with self.assertRaisesRegex(ValueError, 'settings, duration'):
+            script.require_shared_loop(SimpleNamespace(run_virtual_time=old_run), interfaces, laws)
+        with self.assertRaisesRegex(ValueError, 'loops.VirtualTimeSettings'):
+            script.require_shared_loop(SimpleNamespace(run_virtual_time=run_virtual_time), interfaces, laws)
+        @dataclass(frozen=True)
+        class MissingEffortHandling:
+            command_period: float = .002
+            update_period: float = .01
+            solve_latency_s: object = "measured"
+            compensation: object = None
+            max_plan_age_s: object = None
+        with self.assertRaisesRegex(ValueError, 'plan age and effort handling'):
+            script.require_shared_loop(SimpleNamespace(run_virtual_time=run_virtual_time,
+                                                       VirtualTimeSettings=MissingEffortHandling), interfaces, laws)
+        with self.assertRaisesRegex(ValueError, 'interfaces.SolveCompleted'):
+            script.require_shared_loop(loops, SimpleNamespace(), laws)
+        with self.assertRaisesRegex(ValueError, 'interfaces.Tick command-policy metadata'):
+            script.require_shared_loop(loops, SimpleNamespace(SolveCompleted=SolveCompleted), laws)
+        with self.assertRaisesRegex(ValueError, 'laws.EffortClip and RejectOnEffort'):
+            script.require_shared_loop(loops, interfaces, SimpleNamespace(EffortClip=lambda: None))
 
 
 if __name__ == "__main__":

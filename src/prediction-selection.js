@@ -1,5 +1,6 @@
-// The episode cursor already selects the exact locally retained plan. Async
-// Solve metadata may trail that cursor; it only owns the scene after an explicit
+// The episode view selects the plan: exact when paused, or sampled on its
+// display-time grid while playing. Geometry may arrive through the plan cache.
+// Async Solve metadata may trail that view; it only owns the scene after an explicit
 // pin or SQP selection. Missing iteration trajectories remain unavailable.
 export function livePredictionForView(episodePlan, inspection) {
   if (!episodePlan && !inspection?.pinned) return null;

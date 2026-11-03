@@ -15,7 +15,7 @@ from gato_visualizer.plotting import (
 )
 from gato_visualizer.plotting.comparison import signal_rms
 from gato_visualizer.plotting.fixtures import example_comparison
-from execution_bridge import HistoryStore
+from history_store import HistoryStore
 from plot_service import PlotService
 from plot_sources import SourceReader, comparison_source
 from tests.test_plot_service import fixture_scene

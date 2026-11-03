@@ -28,7 +28,9 @@ def example_episode(*, missing=False, context=None):
                       solve_wall_s=[.02, .06, .01][i], physics_wall_s=[.01, .02, .11][i],
                       total_wall_s=[.04, .09, .12][i]) for i in range(3)]
     plan = dict(example_solve().raw)
+    plan['request_time_s'] = plan['sim_time_s']
     second = dict(plan, id='solve-2', seq=2, sim_time_s=10.2,
+                  request_time_s=10.2,
                   stats=dict(sqp_iters=1, pcg_iters=2, admm_iters=1, solve_time_ms=2.))
     if missing:
         states = [{key: value for key, value in state.items() if key not in ('qd', 'torque_nm', 'ee_xyz', 'target_xyz')} for state in states]

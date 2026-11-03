@@ -37,8 +37,16 @@ terminated by inspection Stop. Inactive profile workers are never kept warm. `Si
 owns simulation, scheduling, exact references and native states; `SolverProcess`
 launches `solver_worker.py` with the selected Python using `subprocess`, which
 works inside the existing daemon coordinator. A private socket carries framed
-JSON metadata and typed binary array buffers for ordinary solve replies, avoiding
-q/v/u JSON lists. Native stdout/stderr go to `solver-processes/` in the
+JSON metadata for setup, previews and inspection. Recurring execution uses
+preallocated shared state/reference/plan arrays with small binary notifications;
+there is one outstanding solve and no per-solve JSON envelope. The coordinator
+integrates physics before waiting at the native loop's activation barrier.
+Diagnostic captures go through a separate lossless recording ring, consumed
+by the HTTP/history process. Array ownership is transferred by copying into a
+native Plan before the control slot is reused; the recording ring's slots are
+freed before expensive presentation work. See the
+[execution contract](execution-api.md#process-and-cancellation-boundaries).
+Native stdout/stderr go to `solver-processes/` in the
 RAM-backed [runtime directory](execution-api.md#runtime-files), which keeps the
 logs of the last 16 children.
 
@@ -138,6 +146,8 @@ attempt once.
 ## Inspection extension boundary
 
 RPC operations are `bootstrap`, `configure`, `reset`, `solve`, `inspect`, and `close`.
+The numerical stream additionally has setup/teardown operations and private
+binary submission/result notifications; these are internal transport details.
 The same request envelope can host inspection work with captured native state,
 exact reference/configuration, explicit cold initialization, a finite SQP cap
 and an optional wall budget. Configuration reports `capabilities.iteration_capture`

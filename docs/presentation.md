@@ -16,7 +16,10 @@ be `20 Hz` or `50 ms`, buffer can be `200 ms` or `0.2 s`, and ghost spacing can
 be `0.5 s` or `2 Hz`. Signed timeline offsets accept time units such as
 `-350 ms`; offsets have no frequency interpretation. Equivalent server echoes
 preserve the typed spelling. Physical angular velocities and friction widths
-remain in their own units.
+remain in their own units. Live's optional **Plan age limit** uses the same time
+parser: its checkbox sends `execution.max_plan_age_s: null` while disabled and
+retains the last positive numeric draft for re-enabling. It changes numerical
+execution and is separate from these presentation preferences.
 
 **Settings dialog (UI tab):** no Save button. Checkboxes apply on change. Numeric fields apply on a committed change (change, blur, Enter) or after 700 ms without typing, never per keystroke. A value outside its range is marked on the field with the reason as tooltip; it is neither applied nor saved and the last valid value stays in effect. Valid changes are saved through the POST above after a 400 ms debounce, so a burst (including `report_hz`, whose backend update happens with the POST) sends only the last value, with at most one request in flight. A failed save marks the section heading ("! not saved", reason in the tooltip) while the setting stays applied; the next change retries.
 
@@ -25,6 +28,26 @@ remain in their own units.
 The report window bounds accumulation by elapsed wall time (at most one second at the minimum reporting frequency, observed at completed numerical boundaries). Existing finite-job state limits and Live pacing remain in force; no extra recording queue or spool is introduced. A slow numerical call can delay a report beyond its target deadline.
 
 `buffer_ms` is a browser presentation target in **simulation-time milliseconds**, not a numerical integration delay or a wall-clock reporting interval. `interpolate` selects display interpolation; the default is sample hold. Both are consumed by the frontend and never change recorded values or plant/control calculations. Available buffered motion comes from received history bounds, not a progress status's computational `history_end_s`, which may lead a pending report.
+
+Live playback downloads compact state/control history and plan summaries rather
+than every full optimizer prediction. It retains the complete state history and
+lightweight solve index; full predictions use a generation-scoped 128-plan LRU
+cache. One independent request fetches at most 32 predictions at a time. While
+playing, prediction display samples at up to 60 updates per playback-wall second
+and prefetches the next 18 display samples already present in motion history.
+Arm motion still follows every recorded state, with the configured interpolation.
+An unavailable prediction hides that overlay until loaded; it never holds up
+motion or substitutes a different solve. Pause/scrub selects the exact applicable
+plan. Replacement generations discard cached and in-flight results, including
+forced same-generation resets. Obsolete speculative downloads are not queued.
+
+Animation export first freezes its scene, history and time range, then retrieves
+the exact predictions needed at its export frame times. This explicit work is
+independent of Live playback and cannot silently omit prediction geometry. Full
+server records remain available to plots, inspection and exports. The eager,
+unused browser metric-history rebuild was removed; explicit metric snapshots
+remain available on demand. Prediction lines reuse their materials and grow
+their geometry buffers only when needed; trace updates reuse existing capacity.
 
 `POST /api/presentation/settings/patch` accepts a partial object of these fields
 and returns the complete saved preferences. It merges and validates atomically;

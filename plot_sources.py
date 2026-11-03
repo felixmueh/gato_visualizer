@@ -120,7 +120,7 @@ class SourceReader:
                     if self.cursor == 0:
                         # The first record holds the segment's constant context.
                         if record.get("type") != "segment":
-                            from execution_bridge import NO_SEGMENT
+                            from history_store import NO_SEGMENT
                             raise ValueError(NO_SEGMENT)
                         self.segment = record["context"]
                     self.records.append(record)

@@ -1,9 +1,9 @@
-"""Persistent simulation coordinator; owns plant clocks and history reporting.
+"""Persistent Live coordinator around the native virtual-time loop.
 
 SimulatorAdapter calls a separate solver child that owns controller/CUDA state.
-This process holds the GPU leases; neither owner runs in the HTTP process.
-Every controller.reset here is a reseed: mpc.warmup in the child (GATO's warm-up
-solve unless MpcParams.warmup is off), never a plan or part of an interval's timing.
+NativeSession publishes bounded batches while its native loop continues;
+ordinary Pause retains it, while cancellation wakes and closes it before any
+replacement. This process holds the GPU leases; neither owner runs in HTTP.
 """
 from __future__ import annotations
 from copy import deepcopy
@@ -12,8 +12,10 @@ import time
 import traceback
 import numpy as np
 
-from execution_session import DEFAULT_EXECUTION, MultirateSession
+from execution_session import DEFAULT_EXECUTION
+from native_session import NativeSession
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
+from solver_exchange import SLOTS
 
 MAX_STATES = 250000
 RECORD_INTERVAL_S = 1 / DEFAULT_PRESENTATION["report_hz"]
@@ -32,23 +34,35 @@ class CompletedRecords:
         self.emit, self.clock = emit, clock
         self.records = []
         self.identity = None
+        self.unreported = False
         self.last_flush = clock()
         self.set_report_hz(report_hz)
 
     def set_report_hz(self, report_hz):
         self.interval = 1 / validate_presentation(dict(DEFAULT_PRESENTATION, report_hz=report_hz))["report_hz"]
 
-    def flush(self, complete=False):
-        if not self.records:
+    def flush(self, complete=False, *, report_end=True):
+        if not self.records and not self.unreported:
             return
         generation, token = self.identity
         records, self.records = self.records, []
-        for offset in range(0, len(records), MAX_PACKET_RECORDS):
+        for offset in range(0, max(1, len(records)), MAX_PACKET_RECORDS):
             last = offset + MAX_PACKET_RECORDS >= len(records)
-            self.emit(dict(kind="records", generation=generation, token=token,
-                           records=records[offset:offset+MAX_PACKET_RECORDS],
-                           report_end=last, complete=complete and last))
-        self.last_flush = self.clock()
+            packet = records[offset:offset+MAX_PACKET_RECORDS]
+            try:
+                accepted = self.emit(dict(kind="records", generation=generation, token=token,
+                                         records=packet, report_end=report_end and last, complete=complete and last))
+            except BaseException:
+                from solver_exchange import discard_records
+                discard_records(records[offset:])
+                self.unreported = False
+                raise
+            if accepted is False:
+                from solver_exchange import discard_records
+                discard_records(packet)
+        self.unreported = not report_end
+        if report_end:
+            self.last_flush = self.clock()
 
     def append(self, records, generation, token, complete=False):
         identity = (generation, token)
@@ -58,10 +72,14 @@ class CompletedRecords:
         self.records.extend(records)
         if complete or self.clock()-self.last_flush >= self.interval:
             self.flush(complete=complete)
+        elif sum('_recording' in record for record in self.records) >= SLOTS//2:
+            # Free producer slots independently of the presentation cadence.
+            # NativeSession bounds each numerical batch to less than SLOTS/4.
+            self.flush(report_end=False)
 
 
 def estimated_states(execution, duration=None):
-    """Recorded states, safely overestimated (MultirateSession's recording rule):
+    """Recorded states, safely overestimated (NativeSession's recording rule):
     every command tick plus the end of every call (TO boundaries, the job end);
     summing the tick counts overestimates when the grids coincide."""
     span = execution["duration_s"] if duration is None else duration
@@ -106,21 +124,22 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             completed.flush()
         if config is None:
             return
-        elapsed = max(0., (adapter.t if adapter else 0.)-initial_time)
-        cost = session.compute_wall if session else 0.
+        progress = session.progress if session else adapter
+        elapsed = max(0., (progress.t if progress else 0.)-initial_time)
+        cost = session.progress.compute_wall if session else 0.
         wall = max(time.monotonic()-job["wall"], 1e-12) if job else 0.
-        job_elapsed = max(0., (adapter.t if adapter else 0.)-job["sim"]) if job else elapsed
+        job_elapsed = max(0., (progress.t if progress else 0.)-job["sim"]) if job else elapsed
         if job and session and wall:
             last_metrics.update(calculation_rtf=job_elapsed/wall,
-                                mpc_hz=(session.solves-job.get("solves", 0))/wall,
-                                control_hz=(session.control_updates-job.get("controls", 0))/wall,
-                                simulation_hz=(session.steps-job.get("steps", 0))/wall)
+                                mpc_hz=(progress.solves-job.get("solves", 0))/wall,
+                                control_hz=(progress.control_updates-job.get("controls", 0))/wall,
+                                simulation_hz=(progress.steps-job.get("steps", 0))/wall)
         job_active_override = extra.pop("job_active_override", job is not None)
         event = dict(type="status", state=state, message=message,
                      generation=generation, settings_version=version, N=config["N"], dt_s=config["dt_s"],
                      bridge_command_epoch=bridge_command_epoch,
                      calculation=execution["calculation"], job_active=job_active_override,
-                     history_end_s=float(adapter.t) if adapter else 0.,
+                     history_end_s=float(progress.t) if progress else 0.,
                      requested_end_s=job["end"] if job else None,
                      progress=(min(1., job_elapsed/max(job["end"]-job["sim"], 1e-12))
                                if job and job["end"] is not None else None),
@@ -130,14 +149,32 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
 
     completed = CompletedRecords(emit, clock=time.monotonic, report_hz=report_hz)
 
-    def apply_anchor(anchor):
+    def pause_session():
+        nonlocal state_count
+        if session is not None:
+            # Publish earlier batches first so waiting for a final solve can
+            # never depend on captures retained by this owner.
+            completed.flush()
+            tail = session.pause()
+            state_count += sum(record['type'] == 'state' for record in tail)
+            completed.append(tail, generation, token)
+            completed.flush()
+
+    def close_session():
+        """Wake and finish the old native invocation before replacing its objects."""
         nonlocal session
+        old, session = session, None
+        if old is not None:
+            old.close()
+        return old
+
+    def apply_anchor(anchor):
+        close_session()
         if anchor is not None:
             adapter.x = np.r_[anchor["q"], anchor["qd"]].astype(float)
             adapter.t = float(anchor["sim_time_s"])
             adapter.applied_torque = None
         adapter.sequence = 0
-        session = None
 
     def ensure_adapter():
         nonlocal adapter, need_config
@@ -147,6 +184,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             if adapter_factory is None:
                 adapter.select_profile(solver_profile, schema)
         if need_config:
+            close_session()
             if initialized_generation != generation and generation_start.get("kind") == "reset":
                 # Configuring seeds the controller from the current state. A
                 # failed run's tip may be beyond the solver's float32 range,
@@ -174,7 +212,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
         adapter.controller.reset(adapter.x)
         history_complete = False
         initial_time = float(adapter.t)
-        session = MultirateSession(adapter, execution, version)
+        session = NativeSession(adapter, execution, version)
         # The segment's constant context, once, before its first state.
         emit(dict(kind="records", generation=generation, token=token,
                   records=[adapter.segment_header(version, execution), session.initial_state()], complete=False), token)
@@ -231,6 +269,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     if incoming_token != revision.value:
                         continue
                     completed.flush()
+                    pause_session()
                     token = incoming_token
                     # HTTP uses this acknowledgement to distinguish an idle
                     # status from before a command already consumed from IPC.
@@ -249,7 +288,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     version = incoming_version
                     if kind == "switch_solver_profile":
                         job = None
-                        session = None
+                        close_session()
                         # Finish the old invocation before replacing its process;
                         # the revision has already cancelled its publication.
                         while not locks.acquire() and current(token):
@@ -281,7 +320,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             # previous history descriptor and bytes untouched.
                             adapter.sequence = 0
                             adapter.controller.reset(adapter.x)
-                            staged_session = MultirateSession(adapter, execution, version)
+                            staged_session = NativeSession(adapter, execution, version)
                             first_records = [adapter.segment_header(version, execution), staged_session.initial_state()]
                             generation = command["target_generation"]
                             initialized_generation = generation
@@ -314,6 +353,11 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         # A completed batch remains committed; private controller
                         # and multirate session remain ready for the next Play.
                         job = None
+                        if session is not None:
+                            interval = session.flush_interval()
+                            if interval is not None:
+                                emit(dict(kind="records", generation=generation, token=token,
+                                          records=[interval], complete=False), token)
                         locks.release()
                         status("paused", "Live calculation paused for solve inspection",
                                inspection_pause_id=command["inspection_id"],
@@ -322,16 +366,20 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     if kind in ("pause", "cancel"):
                         if kind == "cancel" or execution["calculation"] == "on_play":
                             job = None
-                            locks.release()
                             if session is not None:
                                 interval = session.flush_interval()
                                 if interval is not None:
                                     emit(dict(kind="records", generation=generation, token=token,
                                               records=[interval], complete=False), token)
+                            if kind == "cancel":
+                                close_session()
+                                need_config = True
+                            locks.release()
                             status("paused", "Calculation paused; existing history retained",
                                    complete=history_complete and initialized_generation == generation)
                         continue
                     if kind == "set_settings":
+                        close_session()
                         config, task = deepcopy(command["config"]), deepcopy(command["task"])
                         execution = deepcopy(command["execution"])
                         source_settings = deepcopy(command.get("source_settings", source_settings))
@@ -339,8 +387,12 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         initialized_generation = None
                         job = None
                     elif kind in ("reset", "precalculate"):
+                        close_session()
                         initialized_generation = None
                         job = None
+                        need_config = True
+                    elif kind == "preview":
+                        close_session()
                     # Wait for shared GPU locks cooperatively. A newer setting can
                     # supersede this work without ever constructing CUDA buffers.
                     while not locks.acquire() and current(token):
@@ -369,7 +421,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             adapter.x, adapter.t, adapter.applied_torque = saved
                             adapter.controller.reset(adapter.x)
                         job = None
-                        session = None
+                        close_session()
                         if current(token):
                             emit(dict(kind="events", generation=generation, token=token, events=[plan]), token)
                             status("paused", "Prediction inspected at displayed state; history retained")
@@ -384,7 +436,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             history_complete = not (kind == "set_settings" and execution["calculation"] == "automatic")
                         emit(dict(kind="records", generation=generation, token=token,
                                   records=[plan], complete=history_complete), token)
-                        session = None  # Preview is not the controller's first Play step.
+                        close_session()  # Preview is not the controller's first Play step.
                         if kind == "set_settings" and execution["calculation"] == "automatic":
                             job = dict(paced=False, end=adapter.t+execution["duration_s"],
                                        wall=time.monotonic(), sim=adapter.t, solves=0, controls=0, steps=0)
@@ -398,9 +450,13 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             # controller state or the active recording.
                             status("playing" if job["paced"] else "calculating", "Calculation is already running", complete=False)
                             continue
+                        if session is not None and session.finished:
+                            close_session()
+                            need_config = True
+                            ensure_adapter()
                         if session is None:
                             adapter.controller.reset(adapter.x)
-                            session = MultirateSession(adapter, execution, version)
+                            session = NativeSession(adapter, execution, version)
                         paced = kind == "play" and execution["calculation"] == "on_play"
                         job = dict(paced=paced, end=None if paced else adapter.t+execution["duration_s"],
                                    wall=time.monotonic(), sim=adapter.t, solves=0, controls=0, steps=0)
@@ -408,14 +464,15 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         history_complete = False
                         if session is None:
                             adapter.controller.reset(adapter.x)
-                            session = MultirateSession(adapter, execution, version)
+                            session = NativeSession(adapter, execution, version)
                             job["wall"] = time.monotonic()  # the reseed's warm-up is no calculation
-                        job.update(solves=session.solves, controls=session.control_updates, steps=session.steps)
+                        job.update(solves=session.progress.solves, controls=session.progress.control_updates,
+                                   steps=session.progress.steps)
                         status("playing" if job["paced"] else "calculating", "Computing closed-loop MPC motion", complete=False)
                 if job is None or not current(token):
                     continue
                 if job["paced"]:
-                    due = job["wall"]+(adapter.t-job["sim"])
+                    due = job["wall"]+(session.progress.t-job["sim"])
                     # Waits remain interruptible and outside execution timings.
                     remaining = due-time.monotonic()
                     if remaining > 0:
@@ -426,44 +483,60 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         continue
                 # Keep a committed native snapshot: cancellation during a physics
                 # interval must never move the authoritative tip invisibly.
-                committed = (adapter.x.copy(), adapter.t, adapter.sequence,
-                             None if adapter.applied_torque is None else adapter.applied_torque.copy())
-                # Keep numerical batches bounded even for very slow TO rates.
-                # This does not change the nominal TO/control grids.
-                batch_end = min(job["end"] if job["end"] is not None else float("inf"), session.chunk_end(.1))
-                batch = session.advance_interval(batch_end, cancelled=lambda: not current(token),
-                            emit_partial=job["end"] is not None and batch_end >= job["end"]-1e-12)
+                progress = session.progress
+                committed = progress
+                # Stay at most one short window ahead when pacing. If computing
+                # falls behind wall time, catch up without parking each batch.
+                batch_end = (max(session.chunk_end(.01), job['sim']+time.monotonic()-job['wall'])
+                             if job['paced'] else job['end'])
+                batch = session.advance_interval(batch_end, cancelled=lambda expected=token: not current(expected),
+                            emit_partial=not job['paced'])
                 if not current(token):
+                    from solver_exchange import discard_records
+                    discard_records(batch)
                     completed.flush()
-                    adapter.x, adapter.t, adapter.sequence, adapter.applied_torque = committed
-                    interval = session.flush_interval()
+                    session.progress = committed
+                    old_session = close_session()
+                    interval = old_session.flush_interval() if old_session is not None else None
                     if interval is not None:
                         emit(dict(kind="records", generation=generation, token=token,
                                   records=[interval], complete=False))
-                    adapter.controller.reset(adapter.x)
-                    session = None
+                    need_config = True
                     job = None
                     continue
                 state_count += sum(record["type"] == "state" for record in batch)
-                complete = (job["end"] is not None and adapter.t >= job["end"]-1e-12)
+                complete = (job["end"] is not None and session.progress.t >= job["end"]-1e-12)
                 capacity = not job["paced"] and state_count >= MAX_STATES
                 # The numerical interval is committed now. Finish delivering
                 # all bounded chunks even if Pause arrives during IPC; a newer
                 # generation discards them at the receiver. This prevents a
                 # partially published interval from moving the native tip back.
                 completed.append(batch, generation, token, complete=complete)
+                committed = session.progress
                 severity = next((r["severity"] for r in reversed(batch) if r["type"] == "interval"), "none")
                 breach = next((r for r in batch if r["type"] == "breach"), None)
                 if breach is not None:
-                    # Stop on limit breach: the session ended at the breaching tick and
-                    # stays ready, so Play continues from there (Felix, 2026-10-23).
+                    # Detection retains the physics timestamp; queued physics
+                    # events park execution at the next command boundary.
                     history_complete = complete
                     status("paused", breach["message"], complete=complete, severity=severity,
                            breach=dict(sim_time_s=breach["sim_time_s"], breaches=breach["breaches"]),
                            job_active_override=False)
                     job = None
                     locks.release()
+                elif session.finished and session.outcome is not None:
+                    outcome = session.outcome
+                    history_complete = complete
+                    reason = getattr(outcome, "reason", None) or getattr(outcome, "status", "stopped")
+                    status("paused", f"Simulation stopped: {reason}", complete=complete, severity=severity,
+                           termination=dict(status=outcome.status, reason=outcome.reason, sim_time_s=session.progress.t),
+                           job_active_override=False)
+                    job = None
+                    need_config = True
+                    close_session()
+                    locks.release()
                 elif complete or capacity:
+                    pause_session()
                     history_complete = complete
                     status("paused", "History capacity reached; requested duration was not completed" if capacity and not complete else "Precalculation complete",
                            complete=complete, severity=severity, capacity_reached=capacity, job_active_override=False)
@@ -480,11 +553,11 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         next_progress = now + completed.interval
             except Exception as exc:
                 completed.flush()
-                if committed is not None:
-                    adapter.x, adapter.t, adapter.sequence, adapter.applied_torque = committed
+                if session is not None and committed is not None:
+                    session.progress = committed
+                close_session()
                 history_complete = False
                 job = None
-                session = None
                 need_config = True
                 locks.release()
                 emit(dict(kind="failure", generation=generation, token=token,
@@ -496,6 +569,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                   message=str(exc), detail=traceback.format_exc()))
     finally:
         completed.flush()
+        close_session()
         if adapter is not None:
             # Destruction may release CUDA allocations, so it shares the same
             # experiment window as creation/solving.

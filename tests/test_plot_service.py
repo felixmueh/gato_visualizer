@@ -11,7 +11,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from execution_bridge import HistoryStore
+from history_store import HistoryStore
 from plot_service import PlotService, reduce_spec
 from plot_sources import SourceReader, scene_records, inspect_source, solve_iterations
 from server import make_server

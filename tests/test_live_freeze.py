@@ -17,7 +17,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from execution_bridge import HistoryGenerationError, HistoryStore, LiveFreezeConflict, ProcessLiveService
+from execution_bridge import LiveFreezeConflict, ProcessLiveService
+from history_store import HistoryGenerationError, HistoryStore
 from execution_session import DEFAULT_EXECUTION
 from live_freeze import committed_records, export_freeze, freeze_arguments
 from replay_format import JOINT_NAMES, ReplayError, load_replay

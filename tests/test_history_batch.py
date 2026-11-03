@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 
-from execution_bridge import HistoryStore
+from history_store import HistoryStore
 
 
 class StreamCounter:

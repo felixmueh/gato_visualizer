@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from execution_session import DEFAULT_EXECUTION, MultirateSession
+from execution_session import DEFAULT_EXECUTION
+from native_session import NativeSession
 from live_presentation import render_state, snapshot
 from tests import test_live_mpc
 
@@ -58,7 +59,7 @@ class StateRecordTests(unittest.TestCase):
                 return super().copy(*args, **kwargs)
         adapter = self.adapter()
         adapter.x = adapter.x.view(CountCopies)
-        session = MultirateSession(adapter, DEFAULT_EXECUTION, version=4)
+        session = NativeSession(adapter, DEFAULT_EXECUTION, version=4)
         with patch.object(adapter, 'state_snapshot', side_effect=AssertionError('Intermediate snapshot')), \
              patch('live_presentation.mutable', side_effect=AssertionError('Repeated mutable conversion')):
             record = session.initial_state()
@@ -70,8 +71,9 @@ class StateRecordTests(unittest.TestCase):
 
     def test_snapshot_only_adapter_fallback_detaches(self):
         source = dict(_x=np.arange(14.), context=dict(values=[1, 2]))
-        other = SimpleNamespace(t=0., state_snapshot=lambda *args: snapshot(source), new_plant=lambda substep: None)
-        fallback = MultirateSession(other, DEFAULT_EXECUTION).initial_state()
+        other = SimpleNamespace(t=0., x=np.arange(14.), u=np.zeros(7), sequence=0, applied_torque=None,
+                                state_snapshot=lambda *args: snapshot(source), new_plant=lambda substep: None)
+        fallback = NativeSession(other, DEFAULT_EXECUTION).initial_state()
         source['_x'][:] = -1
         source['context']['values'][0] = -1
         np.testing.assert_array_equal(fallback['_x'], np.arange(14.))

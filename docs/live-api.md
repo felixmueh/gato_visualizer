@@ -66,11 +66,23 @@ fixed-rate field is active. Disabled fields retain their last numeric drafts.
 Back-to-back TO starts another request at the next control tick after the
 previous request finishes. It does not overlap solves or bypass measured delay.
 
+**Plan age limit** enables `execution.max_plan_age_s`, a positive finite duration
+in seconds since the plan's source observation. It defaults to `null` (disabled).
+The numeric field accepts the shared time units and retains its draft while the
+checkbox is off. This limit is independent of solve latency and prediction
+horizon; disabling it does not define a command beyond the finite plan.
+
 **Latency compensation** sends `execution.latency_compensation: true` (default
-false). It forecasts the execution initial condition using the plant model and
-actual command policy. Declared delay is fixed; measured mode forecasts only the
-previous solve's latency, initially 5 ms. No additional tuning fields are exposed.
+false). It forecasts the execution initial condition using the native compensation
+model and actual command law followed by the same effort handling. The compensation
+model is configured independently of the simulated plant and optimizer model.
+Declared delay is fixed; measured mode forecasts only the previous solve's latency,
+initially 5 ms. No additional tuning fields are exposed.
 The execution/history timestamp contract is in [execution](execution-api.md).
+Source checks require the native shared loop's message, cancellation and plan-age
+API plus the separate effort-handling parameter and policies. Sources missing
+those capabilities fail compatibility checks explicitly; Live does not select
+an older execution loop.
 
 Task setup sits below the task selector. Execution timing is separate from
 Prediction horizon. Plant dynamics/controller choices and predictor dynamics
@@ -107,9 +119,10 @@ parameter formats.
   default), `friction_width_rad_s` (0.03, the tanh law's width),
   `clip_effort` (true: commands clipped to ± the raw URDF effort limit before
   the plant) and `stop_on_breach: {"position": true, "velocity": true,
-  "torque": true}` (Live pauses where a simulated value breaches its raw URDF
-  limit). See [limit handling](execution-api.md#limit-handling); Felix,
-  2026-10-23. `start_pose_rad`: the start pose, seven native joint positions
+  "torque": true}` (breaches are detected at physics endpoints and handled
+  before the next command; the event retains its detection time and state).
+  See [limit handling](execution-api.md#limit-handling).
+  `start_pose_rad`: the start pose, seven native joint positions
   the simulated arm starts from at t = 0 (velocities zero) and Reset returns
   to; the default is the simulator source's `tiago.Q_START`, and each value must
   lie within the raw URDF position limits. Changing it starts a new run at t = 0
@@ -268,9 +281,8 @@ adds modules, which the solver child finds with `find_binary` at its next
 configure. A Build for another selection, or after the source identity
 changed, still needs Apply and its restart.
 
-**Warm-up at every reseed (Felix, 2026-10-23).** Each time the solver child's
-controller is reseeded from a state (configuring, Reset, an anchor, a preview,
-rollback after a cancellation, resuming Play after a preview), it calls
+**Warm-up at every reseed.** Each time a fresh numerical run is initialized from
+a state (configuring, Reset, an anchor, a preview or Play after a preview), it calls
 `tiago_mpc`'s `Mpc.warmup(state, reference)` with the task reference a request
 at that time gets (the figure-eight window from the state's time). With
 `warmup` on, that resets the controller and runs GATO's warm-up solve, as
@@ -279,6 +291,13 @@ reset. A reseed repeating the previous one with no solve in between is skipped.
 The warm-up is no plan: it creates no record and is not part of an interval's
 timing. Like a solve, the call has no deadline. The solver log
 (`solver-processes/` in the [runtime directory](execution-api.md#runtime-files)) has one line per warm-up.
+
+Ordinary Pause parks the shared loop at a command boundary, preserving its pending
+plan, forecast history and controller warm state. Play continues that run without
+another warm-up. Cancel and replacement settings invalidate the run, wake a parked
+callback, and let any current solve finish before teardown; its result cannot
+advance the replacement plant or overwrite its history. Reset constructs a fresh
+plant, clock, controller and forecast from the configured start pose.
 
 Before constructing, resetting, solving or disposing native solver state, the
 coordinator acquires the canonical experiment locks nonblockingly. While another

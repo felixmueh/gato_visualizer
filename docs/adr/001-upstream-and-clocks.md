@@ -1,53 +1,59 @@
-# ADR 001: Reuse upstream numerics and own execution clocks
+# ADR 001: Share the native execution loop
 
-Status: accepted; records the 2026-10-21 timing decision.
+Status: accepted, 2026-11-03. Supersedes the 2026-10-21 independent scheduler
+and the 2026-10-27 Schedule-only reuse decision.
 
-The visualizer needs responsive previews, precalculation and recorded playback,
-while `tiago_mpc` has self-contained experiments and robot timing requirements.
-Import its model preparation, complete configuration loader, controller and
-`reach_sim.rk4` unchanged. Keep the visualizer's episode loop and independent
-simulation/control/TO clocks here; do not require a shared upstream timing engine.
-Prediction knot spacing remains separate and upstream warm-start heuristics stay
-intact. Slow numerical work reduces wall-clock progress, not simulated duration.
+Live and experiments use `tiago_mpc.loops.run_virtual_time` with a required native
+`VirtualTimeSettings` object. It owns command/update periods, solve latency,
+compensation, maximum plan age and effort handling. Duration is a separate
+required invocation argument; Live uses `None` for its retained callback-gated
+run. Scheduling,
+pending-plan activation, command evaluation, horizon/age validity, plant
+integration and latency prediction have one implementation. The predictor
+uses the same command law and effort handling as actual execution, with private
+state for hypothetical commands. It remains in the numerical path because its
+output is the next solve's input.
 
-This leaves a small application scheduling adapter to maintain and verify. The
-synchronous adapter conformance check covers upstream reuse; scheduler and solver
-boundary tests cover production composition. Neither is a general convergence or
-performance certificate. The simulator stays fixed across compatible solver
-profile changes. At the original decision, it used the loss-free plant.
+The native loop offers small typed callbacks: Tick, SolveCompleted and Event,
+plus a before-command boundary callback and a cancellation predicate. A
+SolveCompleted observation exists for every returned plan, even if it never
+commands. The simulated plant observes physics endpoints and queues breach
+events until the next command boundary. This requires no event broker.
 
-Amendment, 2026-10-22: simulator and predictor friction are independently
-configurable numerical settings. New UI defaults enable both, with hard-sign
-Coulomb plus viscous friction in the simulator and smooth tanh Coulomb plus
-viscous friction in the predictor (0.03 rad/s smoothing). The simulator reuses
-upstream `joint_dynamics.plant_rk4` when friction is enabled; loss-free settings
-retain `reach_sim.rk4`. Configuration changes start a new history segment through
-the existing settings transaction. These defaults are not a numerical or physical
-qualification. See the [friction contract](../friction.md) for legacy settings,
-source provenance and explicit binary preparation.
+`NativeSession` runs one invocation on a retained coordinator thread. Its
+callback parks to pause or report bounded batches. Ordinary resume preserves
+pending plans and warm state. Cancel sets a flag, wakes the callback and joins
+the invocation; reset/reconfiguration builds fresh execution and controller
+state. On Play pacing and wall-time-anchor rebasing remain visualizer concerns.
+No special pause memory management is introduced.
 
-Amendment, 2026-10-22 (migration to `tiago_mpc` main; supersedes the imports
-named above and the friction defaults of the first amendment): `tiago_mpc` no
-longer has `reach_sim.py`, JSON configurations or their loader. The visualizer
-now reuses its package API unchanged: `MpcParams` (the Live settings are
-`to_dict(MpcParams)` plus the visualizer's `plant` group), `find_binary` and
-`Mpc(params, binary)`, which only loads, in the solver child, and `SimPlant` on a
-simulation clock in the coordinator, replaced by a fresh plant on Reset, anchor
-or rollback. The visualizer keeps its own multirate clocks and zero-order hold.
-Plant and predictor are loss-free by default; plant friction uses `SimPlant`'s
-own integrator and Coulomb law options (amended 2026-10-23: RK4 or semi-implicit
-Euler; tanh, sign or constraint Coulomb), and predictor friction is a compiled
-variant with a fixed 0.03 rad/s tanh width. Conformance compares this Live loop with
-`tiago_mpc`'s `run_virtual_time` with a `Reach` task in-process.
+Virtual plans are validated for shape and finite values. Command laws return
+torque arrays, and `VirtualTimeSettings.effort_handling` defaults to
+`EffortClip`. Live passes the watched limits to `EffortClip` when clipping is
+enabled and `None` otherwise; experiments may select `RejectOnEffort` or another
+effort-handling callable. The physical robot keeps its stricter safety policy.
+Live disables optional age expiry by default (`max_plan_age_s`
+null), while the finite plan horizon still applies. The old implicit hold of
+the final command is removed.
 
-Implementation and exact timing semantics: [execution-api.md](../execution-api.md).
-Source ownership and verification: [architecture.md](../architecture.md).
+The numerical coordinator and persistent solver remain separate processes for
+all profiles, including matching sources. The co-location draft was removed.
+The shared loop submits requests without waiting and integrates the plant under
+the existing plan up to the first possible activation boundary. It then waits
+for the result if necessary. Measured latency uses the next possible command
+tick as a conservative barrier; declared zero latency waits immediately.
+Observers can request `quiesce_at` before a blocking report/pause callback.
 
-Amendment, 2026-10-27: match the package's virtual-time request and pending-plan
-timing through Live settings. Reuse `tiago_mpc.loops.Schedule`; measured native
-solver wall latency is the default, declared seconds optional, TO Hz zero means
-back-to-back. Commands continue from the old plan until tick-quantized activation.
-The session coordinator remains here because it owns pause/cancel, chunked
-history, continuation and Live's diagnostic clipping/breach/final-command hold.
-Directly running the blocking package loop would replace those contracts and
-introduce its finite-run lifecycle, global STOP and physical plan lease.
+Recurring control uses preallocated shared arrays and small socket notifications.
+A separate bounded RAM recording ring carries complete numerical captures to
+the history process; it applies backpressure and retains slots until consumed,
+including across run retirement. Statistics conversion, FK and JSON run there.
+The current forecast is unchanged. Native resource costs and physics overlap,
+so total active wall time is measured directly rather than summed.
+
+The [handoff](../handoff-live-500hz-throughput.md) links measurements of the
+intermediate synchronous path and the asynchronous trial. None establishes
+universal throughput parity or real-time operation for every solver configuration.
+
+Contract: [execution-api.md](../execution-api.md).
+Ownership and verification: [architecture.md](../architecture.md).

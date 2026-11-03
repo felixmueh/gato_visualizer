@@ -531,7 +531,8 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
 
         def freeze_live(self):
             from datetime import datetime, timezone
-            from execution_bridge import HistoryGenerationError, LiveFreezeConflict
+            from execution_bridge import LiveFreezeConflict
+            from history_store import HistoryGenerationError
             from live_freeze import export_freeze
             origin = self.headers.get("Origin")
             if origin is not None and urlsplit(origin).netloc != self.headers.get("Host"):
@@ -709,6 +710,11 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                               "application/json; charset=utf-8", status)
 
         def live_events(self):
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            if query not in ({}, {'compact': ['1']}):
+                self.send_json_error(400, 'Live events accept only compact=1')
+                return
+            compact = bool(query)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -723,6 +729,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 while not live.closed:
                     if events:
                         for event in events:
+                            if compact and event.get('type') == 'plan' and event.get('origin') != 'preview':
+                                from history_store import playback_record
+                                event = playback_record(event)
                             self.wfile.write(b"data: " + json.dumps(event, allow_nan=False,
                                              separators=(",", ":")).encode() + b"\n\n")
                     else:
@@ -897,13 +906,13 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
             elif path == "/api/live/settings" and live is not None:
                 self.send_payload(json.dumps(live.settings_snapshot(), allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
-            elif path == "/api/live/history" and live is not None:
-                from execution_bridge import HistoryGenerationError
+            elif path in ("/api/live/history", "/api/live/playback") and live is not None:
+                from history_store import HistoryGenerationError
                 try:
-                    query = parse_qs(urlsplit(self.path).query)
+                    query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
                     if "generation" not in query or not set(query) <= {"generation", "after", "limit"} or any(len(values) != 1 for values in query.values()):
                         raise ValueError("History requires one generation and optional after/limit")
-                    read_page = getattr(live, "history_json", live.history)
+                    read_page = live.playback_json if path.endswith('/playback') else getattr(live, "history_json", live.history)
                     payload = read_page(int(query["generation"][0]),
                                         int(query.get("after", ["0"])[0]),
                                         int(query.get("limit", ["256"])[0]))
@@ -913,6 +922,18 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                     payload = dict(error=str(exc), generation=live.generation)
                 self.send_payload(payload if isinstance(payload, bytes) else json.dumps(payload, allow_nan=False, separators=(",", ":")).encode(),
                                   "application/json; charset=utf-8", status, compress=True)
+            elif path == '/api/live/plans' and live is not None:
+                from history_store import HistoryGenerationError
+                try:
+                    query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                    if set(query) != {'generation', 'ids'} or any(len(values) != 1 for values in query.values()):
+                        raise ValueError('Plans require one generation and comma-separated ids')
+                    payload = live.plans_json(int(query['generation'][0]), query['ids'][0].split(','))
+                    status = 200
+                except (ValueError, TypeError) as exc:
+                    status = 409 if isinstance(exc, HistoryGenerationError) else 400
+                    payload = json.dumps(dict(error=str(exc), generation=live.generation)).encode()
+                self.send_payload(payload, 'application/json; charset=utf-8', status, compress=True)
             elif path == "/api/live/events" and live is not None:
                 self.live_events()
             elif path == "/assets/robot.urdf":

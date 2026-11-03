@@ -5,7 +5,8 @@ import unittest
 
 import numpy as np
 
-from execution_session import DEFAULT_EXECUTION, MultirateSession, validate_execution
+from execution_session import DEFAULT_EXECUTION, validate_execution
+from native_session import NativeSession
 from live_mpc import import_tiago
 from tests.tiago_mpc_source import MPC_ROOT
 
@@ -31,9 +32,18 @@ class ProjectionAdapter:
         plant.start(self.tm.VirtualClock(self.t))
         return plant
 
-    def solve_snapshot(self, origin, version, initial=None):
+    def task_reference(self, time_s=None):
+        return np.zeros((self.N, 6), dtype=np.float32)
+
+    def warmup(self, state, reference):
+        pass
+
+    def target_world_at(self, time_s):
+        return np.zeros(3)
+
+    def solve_snapshot(self, origin, version, initial=None, reference=None):
         at = self.t if initial is None else initial.t
-        measured = self.t if initial is None else initial.measured_t
+        measured = self.t if initial is None else getattr(initial, 'measured_t', initial.t)
         x = self.x.copy() if initial is None else np.r_[initial.q, initial.qd]
         self.requests.append(dict(t=self.t, at=at, measured=measured, x=x.copy()))
         delay = self.delays[min(self.sequence, len(self.delays)-1)]
@@ -51,14 +61,21 @@ class ProjectionAdapter:
 
 
 def run_projection(adapter, *, latency=.0055, end=.06):
-    session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=latency,
+    session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=latency,
                                              latency_compensation=True))
+    # Matching propagation is an explicit test configuration, not a Live invariant.
+    session.settings = replace(session.settings, compensation=replace(session.settings.compensation,
+        friction=adapter.config.friction, friction_law=adapter.config.friction_law,
+        armature=adapter.config.armature, substep=adapter.config.substep))
     records = [session.initial_state()]
-    while adapter.t < end-1e-12:
-        before = adapter.t
+    while session.progress.t < end-1e-12:
+        before = session.progress.t
         records.extend(session.advance_interval(end))
-        if adapter.t <= before:
+        if session.progress.t <= before and not session.finished:
             raise AssertionError("projection session did not advance")
+        if session.finished:
+            break
+    session.close()
     return session, records
 
 
@@ -113,24 +130,14 @@ class LatencyCompensationTests(unittest.TestCase):
         self.assertAlmostEqual(applied[0]["sim_time_s"], .032)
         self.assertAlmostEqual(applied[0]["plan_elapsed_s"], 0.)
 
-    def test_expired_plan_forecast_holds_total_command_without_mutating_real_hold_or_plant(self):
+    def test_forecast_past_finite_plan_reports_unavailable_without_final_hold(self):
         import_tiago(MPC_ROOT)
         import tiago_mpc as tm
         adapter = ProjectionAdapter(tm.PlanFeedback(), n=2, dt=.002)
         session, _ = run_projection(adapter, end=.01)
-        self.assertTrue(session.horizon_exhausted)
-        before = (adapter.x.copy(), session.plant.q.copy(), session.plant.qd.copy(),
-                  session.law_command.copy(), session.law_sample_time, deepcopy(session.watch.armed))
-        predicted = session._forecast_initial_state()
-        reference = adapter.new_plant(.001)
-        reference.apply(adapter.u.copy())
-        reference.advance(predicted.t)
-        np.testing.assert_allclose(np.r_[predicted.q, predicted.qd], np.r_[reference.q, reference.qd])
-        for old, current in zip(before[:4], (adapter.x, session.plant.q, session.plant.qd, session.law_command)):
-            np.testing.assert_array_equal(old, current)
-        self.assertEqual(before[4], session.law_sample_time)
-        for key, value in before[5].items():
-            np.testing.assert_array_equal(value, session.watch.armed[key])
+        self.assertTrue(session.finished)
+        self.assertEqual(session.outcome.reason, 'lease_expired')
+        self.assertFalse(hasattr(session, '_forecast_initial_state'))
 
 
 if __name__ == "__main__":

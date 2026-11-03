@@ -18,7 +18,8 @@ from urllib.error import HTTPError
 import numpy as np
 
 from execution_bridge import ProcessLiveService
-from execution_session import DEFAULT_EXECUTION, MultirateSession
+from execution_session import DEFAULT_EXECUTION
+from native_session import NativeSession
 from live_mpc import PLANT_DEFAULTS, import_tiago
 from solver_process import SolverProcess, validate_contract, send_lease, receive_leased_message
 from solver_adapter import SimulatorAdapter, RemoteController
@@ -438,7 +439,14 @@ child.request('block')
                         return True
                 wait_until(child_stopped)
                 with lock_path.open("a") as contender:
-                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    def released():
+                        try:
+                            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            return True
+                        except BlockingIOError:
+                            return False
+                    # Kernel final file release may finish after zombie state.
+                    wait_until(released)
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -485,9 +493,10 @@ with socket.socket(fileno=fd) as channel:
         torques = np.zeros((2, 7)); torques[:, 5] = 3.
         plan = dict(_states=np.zeros((3, 14)), _torques=torques, N=3, dt_s=.02,
                     seq=1, stats=dict(solve_time_ms=0.,step_wall_s=0.), sim_time_s=0., type="plan")
-        adapter.solve_snapshot = lambda origin, version: deepcopy(plan)
-        session = MultirateSession(adapter, dict(DEFAULT_EXECUTION,
+        adapter.solve_snapshot = lambda origin, version, **kwargs: deepcopy(plan)
+        session = NativeSession(adapter, dict(DEFAULT_EXECUTION,
             simulation_hz=100., control_hz=100., to_hz=100.))
+        self.addCleanup(session.close)
         records = session.advance_interval(.01)
         control = next(record for record in records if record["type"] == "control")
         self.assertEqual(control["torque_nm"][5], 3.)

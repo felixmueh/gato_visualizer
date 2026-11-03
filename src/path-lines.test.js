@@ -24,7 +24,7 @@ test('empty/single/stationary traces remain hidden with finite bounds and update
   }
   let disposed=false;line.geometry.addEventListener('dispose',()=>{disposed=true;});
   setPathPoints(line,[[4,5,6],[4.1,5,6]]);
-  assert.equal(disposed,true);assert.equal(line.visible,true);assert.equal(line.geometry.instanceCount,1);
+  assert.equal(disposed,false);assert.equal(line.visible,true);assert.equal(line.geometry.instanceCount,1);
   setPathPoints(line,[]);assert.equal(line.visible,false);
   assert.throws(()=>setPathPoints(line,[[NaN,0,0]]),/finite/);
   line.geometry.dispose();line.material.dispose();
@@ -39,4 +39,18 @@ test('dashed reference resolution follows CSS viewport updates in the installed 
     assert.deepEqual(line.material.resolution.toArray(),[width,height]);
   }
   line.geometry.dispose();line.material.dispose();
+});
+
+test('prediction and growing trace updates reuse capacity and clear old bounds', () => {
+  const line = createPathLine([[0,0,0],[1,0,0],[2,0,0]], {color:0xffffff});
+  const geometry = line.geometry, data = geometry.attributes.instanceStart.data;
+  setPathPoints(line, [[3,0,0],[4,0,0]]);
+  assert.equal(line.geometry, geometry); assert.equal(line.geometry.attributes.instanceStart.data, data);
+  assert.equal(line.geometry.instanceCount, 1);
+  assert.equal(line.geometry.boundingBox.min.x, 3); assert.equal(line.geometry.boundingBox.max.x, 4);
+  let disposed = false; geometry.addEventListener('dispose', () => { disposed = true; });
+  setPathPoints(line, [[0,0,0],[1,0,0],[2,0,0],[3,0,0]]);
+  assert(disposed); assert.notEqual(line.geometry, geometry);
+  assert.equal(line.geometry.instanceCount, 3);
+  line.geometry.dispose(); line.material.dispose();
 });
