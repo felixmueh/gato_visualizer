@@ -67,6 +67,30 @@ class SettingsTests(unittest.TestCase):
         schema["end_effector"]["xyz"][2] += 1.
         self.assertNotEqual(schema["end_effector"]["xyz"], grasp["xyz"])
 
+    def test_gato_default_is_valid_even_when_the_tiago_preset_is_explicit(self):
+        from live_mpc import mpc_params
+        from tiago_mpc.record import from_dict
+        # Null means follow GATO, independently of TIAGO's explicit rho_u preset.
+        # Schema generation must describe that capability, not just its initial value.
+        self.assertEqual(self.config["admm"]["rho_u"], .0005)
+        for spec in self.schema["parameters"]:
+            if not spec.get("gato_default") or spec["kind"] not in ("float", "int"):
+                continue
+            with self.subTest(path=spec["path"]):
+                self.assertTrue(spec["nullable"])
+                config = deepcopy(self.config)
+                keys = spec["path"].split(".")
+                parent = config
+                for key in keys[:-1]:
+                    parent = parent[key]
+                parent[keys[-1]] = None
+                valid, _ = validate_settings(config, self.task, self.schema)
+                native = from_dict(mpc_params(valid))
+                for key in keys:
+                    native = getattr(native, key)
+                self.assertIsNone(native)
+        self.assertEqual(self.schema["defaults"]["config"]["admm"]["rho_u"], .0005)
+
     def test_schema_is_mpc_params_plus_the_simulated_plant(self):
         config, task = validate_settings(self.config, self.task, self.schema)
         self.assertEqual(config, self.config)

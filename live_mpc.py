@@ -175,7 +175,7 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
             else:
                 spec["kind"] = "int" if isinstance(item, int) or name in INTEGER_PATHS else "float"
                 lo, hi = RANGES.get(name, (0, 1e5) if key.endswith("cost") or name.startswith("cost_weights.") else (1e-8, 1e4))
-                spec.update(min=lo, max=hi, nullable=item is None or name in NULLABLE)
+                spec.update(min=lo, max=hi, nullable=item is None or name in NULLABLE or name in GATO_DEFAULT_PATHS)
                 if lo > 0 and hi / lo >= 1000:
                     spec["scale"] = "log"
             specs.append(spec)
