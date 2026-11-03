@@ -22,22 +22,55 @@ SELECTION = dict(mpc_root='/prepared/source', python=sys.executable, cache='/pre
 
 
 class SourceSettingsTests(unittest.TestCase):
+    def test_model_check_passes_frozen_exact_values_without_accepting_or_building(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'viewer.json'; path.write_text('{}')
+            probe = Mock(return_value=dict(compatible=True, compilation=dict(ready=False, N=24)))
+            service = SourceSettings(SELECTION, path, Mock(), probe=probe)
+            service.current = dict(accepted='old catalog')
+            body = dict(selection=SELECTION, params=dict(type='MpcParams', N=24),
+                        source_settings=dict(armature_on=True),
+                        source_settings_module=dict(path='/visualizer/adapters/friction.py', sha256='frozen'))
+            with patch('source_settings.selection_from_request', return_value=SELECTION):
+                result = service.model(body)
+            self.assertFalse(result['compilation']['ready'])
+            probe.assert_called_once_with(SELECTION, operation='model', params=body['params'],
+                source_settings=body['source_settings'], source_settings_module=body['source_settings_module'])
+            self.assertIsNot(probe.call_args.kwargs['params'], body['params'])
+            self.assertIsNone(service.job)
+            self.assertEqual(service.current, dict(accepted='old catalog'))
+            self.assertEqual(path.read_text(), '{}')
+
+    def test_model_check_rejects_incomplete_or_nonfinite_drafts_before_probe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service = SourceSettings(SELECTION, Path(folder)/'viewer.json', Mock(), probe=Mock())
+            valid = dict(selection=SELECTION, params=dict(N=32), source_settings={}, source_settings_module=None)
+            for bad in ({}, {**valid, 'unexpected': 1}, {**valid, 'params': []},
+                        {**valid, 'params': {'N': float('nan')}}, {**valid, 'source_settings_module': 'wrong'}):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    service.model(bad)
+            service.probe.assert_not_called()
+
     def test_checkout_defaults_follow_resolution_order_and_reject_malformed_requests(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             service = SourceSettings(SELECTION, root / 'config.json', Mock(), probe=lambda _: dict(compatible=True))
-            (root / '.venv/bin').mkdir(parents=True); (root / '.venv/bin/python').symlink_to(sys.executable)
+            for folder in ('.venv', '.venv-container'):
+                (root / folder / 'bin').mkdir(parents=True); (root / folder / 'bin/python').symlink_to(sys.executable)
             resolved = lambda name: str(root.resolve() / name)
             defaults = service.defaults(dict(mpc_root=str(root)))
+            from source_runtime import default_interpreter_template
+            expected = default_interpreter_template(root)
             # Without tiago_mpc in the checkout, its default cache is unknown and marked so.
             self.assertEqual({key: defaults[key] for key in ('mpc_root', 'python', 'cache', 'resolved')},
-                             dict(mpc_root=str(root.resolve()), python='<checkout>/.venv/bin/python', cache=None,
-                                  resolved=dict(python=resolved('.venv/bin/python'), cache=None)))
+                             dict(mpc_root=str(root.resolve()), python=expected, cache=None,
+                                  resolved=dict(python=expected.replace('<checkout>', str(root.resolve())), cache=None)))
             self.assertIn("tiago_mpc's default is unknown", defaults['entered']['cache']['error'])
             (root / 'venv-host/bin').mkdir(parents=True); (root / 'venv-host/bin/python').symlink_to(sys.executable)
-            host = service.defaults(dict(mpc_root=str(root)))
-            self.assertEqual(host['python'], '<checkout>/venv-host/bin/python')
-            self.assertEqual(host['resolved']['python'], resolved('venv-host/bin/python'))
+            with patch('source_runtime.in_container', return_value=False):
+                host = service.defaults(dict(mpc_root=str(root)))
+                self.assertEqual(host['python'], '<checkout>/.venv/bin/python')
+                self.assertEqual(host['resolved']['python'], resolved('.venv/bin/python'))
             # The entered templates resolve against the checkout; unknown tokens and bad paths report why.
             entered = service.defaults(dict(mpc_root=str(root), python='<checkout>/.venv/bin/python', cache='<home>/c'))['entered']
             self.assertEqual(entered['python'], dict(path=resolved('.venv/bin/python')))
@@ -198,6 +231,7 @@ class SourceHTTPTests(unittest.TestCase):
             self.events.append(('apply', body)); return dict(accepted=True)
         self.sources = SimpleNamespace(status=lambda: dict(current=dict(compatible=True, available_N=[48])),
             inspect=lambda body: dict(compatible=False, error='wrong grasp frame'),
+            model=lambda body: dict(compatible=True, compilation=dict(ready=False, N=body['params']['N'])),
             build=lambda body: dict(state='running', N=body['N']), apply=apply,
             defaults=lambda body: dict(mpc_root=body['mpc_root'], python=f"{body['mpc_root']}/venv-host/bin/python", cache=f"{body['mpc_root']}/.cache/gato"),
             finish_apply=lambda: self.events.append(('restart', None)))
@@ -230,6 +264,16 @@ class SourceHTTPTests(unittest.TestCase):
     def test_foreign_browser_cannot_select_or_build(self):
         with self.assertRaises(HTTPError) as caught:
             self.request('/api/source/build', dict(N=[96]), origin='http://unrelated.example')
+        self.assertEqual(caught.exception.code, 403)
+
+    def test_model_lookup_route_is_read_only_and_same_origin(self):
+        body = dict(selection=SELECTION, params=dict(N=24), source_settings={}, source_settings_module=None)
+        result = self.request('/api/source/model', body)
+        self.assertFalse(result['compilation']['ready'])
+        self.assertEqual(result['compilation']['N'], 24)
+        self.assertEqual(self.events, [])
+        with self.assertRaises(HTTPError) as caught:
+            self.request('/api/source/model', body, origin='http://unrelated.example')
         self.assertEqual(caught.exception.code, 403)
 
 

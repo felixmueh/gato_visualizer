@@ -1,7 +1,7 @@
 /** Inspection state is presentation only; it never mutates execution settings. */
 export function createPlotState(saved = {}, persist = () => {}) {
   let sequence = 0;
-  const instances = (saved.instances || []).filter(item => item.id && item.plot_id && ['episode', 'solve'].includes(item.context)).map(item => ({ ...item, parameters: { ...item.parameters } }));
+  const instances = (saved.instances || []).filter(item => item.id && item.plot_id && ['episode', 'solve', 'comparison'].includes(item.context)).map(item => ({ ...item, parameters: { ...item.parameters } }));
   let sourceKey, pinned = null, selected = null, iteration = null;
   const save = () => persist({ instances });
   const find = id => instances.find(item => item.id === id);

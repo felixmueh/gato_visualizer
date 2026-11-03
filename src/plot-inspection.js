@@ -6,6 +6,7 @@ import { sourceRequest } from './source-settings.js';
 import { setupSolveRun } from './solve-run.js';
 import { stripRoom, fitStripHeights, resizeStrip, resizeStripCard, STRIP_CARD_CHROME, STRIP_PLOT_DEFAULT } from './timeline-strip.js';
 import { createIterationPathCache, iterationPredictionForView } from './prediction-selection.js';
+import { canonicalTimeUnit, configureTimeInput, readTimeInput } from './time-input.js';
 
 /** One host for both inspectors. Only the episode timeline owns a playback clock. */
 export function setupPlotInspection({ episodeContainer, solveContainer, bottomContainer, getSource, getView, getSolverProfile = () => null, getLimitUse = () => null, onSeek, onPrediction = () => {}, onInspectionStart = () => {}, onClearAggregate = () => {}, request = sourceRequest, storage = globalThis.localStorage, viewport = null, stripHandle = null, window: win = globalThis.window } = {}) {
@@ -174,7 +175,11 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
         for (const choice of choices || []) { const value = typeof choice === 'object' ? choice.value : choice, option = el('option', typeof choice === 'object' ? choice.label : String(choice)); option.value = String(value); input.append(option); }
         input.value = String(item.parameters[name] ?? schema.default);
       } else if (schema.type === 'boolean') { input.type = 'checkbox'; input.checked = item.parameters[name] ?? schema.default; }
-      else { input.type = 'number'; input.step = 'any'; if (schema.min != null) input.min = schema.min; if (schema.max != null) input.max = schema.max; input.value = item.parameters[name] ?? schema.default; input.required = true; }
+      else {
+        const unit = canonicalTimeUnit({ ...schema, path: name });
+        if (unit) configureTimeInput(input, { unit }); else { input.type = 'number'; input.step = 'any'; if (schema.min != null) input.min = schema.min; if (schema.max != null) input.max = schema.max; }
+        input.value = item.parameters[name] ?? schema.default; input.required = true;
+      }
       label.append(input); if (schema.description) label.append(el('small', schema.description)); body.append(label); fields.push({ name, schema, input });
     }
     // An option excluded by another input's value is disabled; its tooltip
@@ -202,9 +207,20 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       display = () => displayLimits({ min: bottom.input.value, max: top.input.value, clipOutliers: clipInput.checked });
     }
     if (!fields.length && !display) body.append(el('p', 'This plot has no configurable inputs.'));
-    const apply = el('button', 'Apply'); apply.type = 'submit'; body.append(apply);
+    const warning = el('p', '', 'plot-message'), apply = el('button', 'Apply'); apply.type = 'submit'; body.append(warning, apply);
     const dialog = createFloatingDialog({ id: `config-${item.id}`, title: definition?.title || item.plot_id, content: body, onClose: () => { dialog.destroy(); if (activeConfig === dialog) activeConfig = null; } }); activeConfig = dialog;
-    body.addEventListener('submit', event => { event.preventDefault(); const parameters = {}; for (const { name, schema, input } of fields) parameters[name] = schema.type === 'boolean' ? input.checked : schema.type === 'number' ? Number(input.value) : input.value; state.configure(item.id, parameters, display?.()); dialog.close(); invalidate(); }); dialog.open();
+    body.addEventListener('submit', event => {
+      event.preventDefault();
+      try {
+        const parameters = {};
+        for (const { name, schema, input } of fields) {
+          const unit = canonicalTimeUnit({ ...schema, path: name });
+          parameters[name] = schema.type === 'boolean' ? input.checked : schema.type === 'number' ? unit
+            ? readTimeInput(input, { ...schema, unit }) : Number(input.value) : input.value;
+        }
+        state.configure(item.id, parameters, display?.()); dialog.close(); invalidate();
+      } catch (error) { warning.textContent = error.message; }
+    }); dialog.open();
   }
   function renderCards(immediate = true) {
     if (!immediate && Date.now() - lastCardsAt < 200) { cardsPending = true; return; }
@@ -453,7 +469,12 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       for (const presentation of presentations.values()) presentation.cancelScrub?.();
       presentations.clear();
       lastSourceKey = episodeSourceKey;
-      if (!solveOverride) { runAgain.invalidateAdoption(); state.pin(false); pinnedSource = null; }
+      // Changing the episode presentation (for example Live to Replay mode)
+      // does not replace the recorded solve pinned in the inspector. A replaced
+      // Live generation is different: its historical source has been discarded.
+      const replacedLive = current?.source?.kind === 'live' && pinnedSource?.kind === 'live'
+        && current.source.generation !== pinnedSource.generation;
+      if (!solveOverride && (!state.pinned || replacedLive)) { runAgain.invalidateAdoption(); state.pin(false); pinnedSource = null; }
       for (const item of state.instances) if (item.context === 'episode') specs.delete(item.id);
       metadata.episode = {}; evaluatedKeys.episode = undefined; receivedData = false; revision++;
       syncSolveSource();

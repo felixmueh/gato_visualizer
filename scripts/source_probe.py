@@ -7,12 +7,14 @@ tiago_mpc's cache_root() default), which modules find_binary finds (KNOT_COUNTS,
 friction), the MpcParams defaults and the coordinate contract. It never compiles.
 build runs compile_binary per requested N (CPU only), streams JSON progress and
 finishes with a {event: result, result: <probe>} line.
+model resolves one predictor draft and checks find_binary for the offered N,
+without importing native modules for capture discovery or constructing a solver.
 """
 from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stdout
-from dataclasses import asdict, replace
+from dataclasses import fields, is_dataclass, replace
 import hashlib
 import importlib
 import importlib.util
@@ -39,7 +41,7 @@ def load_source(selection):
         os.environ.pop("GATO_CACHE_DIR", None)
     os.environ["PATH"] = str(Path(selection["python"]).parent) + os.pathsep + os.environ.get("PATH", "")
     root = Path(selection["mpc_root"])
-    from live_mpc import PREDICTOR_SMOOTHING_RAD_S, import_tiago
+    from live_mpc import import_tiago
     tiago = import_tiago(root)
     mpc = importlib.import_module("tiago_mpc.mpc")
     for name in ("MpcParams", "TIAGO", "Mpc", "find_binary", "compile_binary"):
@@ -48,9 +50,29 @@ def load_source(selection):
     if not hasattr(mpc.Mpc, "warmup") or not hasattr(mpc.TIAGO, "max_sqp_time_s"):
         raise ValueError("tiago_mpc.mpc lacks Mpc.warmup or MpcParams.max_sqp_time_s; "
                          "the visualizer needs tiago_mpc 31c405a or later (steps 15 and 16)")
-    if not {"integrator", "coulomb_law"} <= set(inspect.signature(importlib.import_module("tiago_mpc.sim").SimPlant).parameters):
-        raise ValueError("tiago_mpc.sim.SimPlant lacks integrator or coulomb_law; the visualizer needs "
-                         "tiago_mpc's plant options (2026-10-23)")
+    if not all(hasattr(mpc.Mpc, name) for name in ("request", "result")):
+        raise ValueError("tiago_mpc.mpc lacks Mpc.request or Mpc.result; the visualizer needs the request/result MPC API")
+    sim = importlib.import_module("tiago_mpc.sim")
+    plant, config = sim.SimPlant, getattr(sim, "SimConfig", None)
+    if (not is_dataclass(config) or not {"q", "qd", "substep", "integrator", "friction", "friction_law"} <=
+            {field.name for field in fields(config)} or not callable(getattr(config, "build", None)) or
+            "config" not in inspect.signature(plant).parameters):
+        raise ValueError("The visualizer needs tiago_mpc.sim.SimConfig(..., friction_law=...).build() and SimPlant(config)")
+    if not is_dataclass(mpc.MpcParams) or "friction_law" not in {field.name for field in fields(mpc.MpcParams)}:
+        raise ValueError("The visualizer needs MpcParams.friction_law (coefficient-only friction API)")
+    start = getattr(plant, "start", None)
+    if (not callable(getattr(importlib.import_module("tiago_mpc.clock"), "VirtualClock", None)) or
+            not callable(start) or "clock" not in inspect.signature(start).parameters):
+        raise ValueError("The visualizer needs tiago_mpc.clock.VirtualClock and SimPlant.start(clock)")
+    interfaces = importlib.import_module("tiago_mpc.interfaces")
+    required_fields = {"State": {"t", "q", "qd"}, "Plan": {"t0", "dt", "states", "torques", "stats"}}
+    if not all(is_dataclass(getattr(interfaces, name, None)) and required <=
+               {field.name for field in fields(getattr(interfaces, name))}
+               for name, required in required_fields.items()):
+        raise ValueError("The visualizer needs tiago_mpc.interfaces.State and Plan")
+    record = importlib.import_module("tiago_mpc.record")
+    if not all(callable(getattr(record, name, None)) for name in ("to_dict", "from_dict", "provenance")):
+        raise ValueError("The visualizer needs tiago_mpc.record.to_dict, from_dict and provenance")
     if not hasattr(tiago, "arm_urdf"):
         raise ValueError("tiago_mpc.tiago lacks arm_urdf; the visualizer needs tiago_mpc's derived arm (2026-10-23)")
     # An importable solver alone cannot make a checkout displayable. Check the same
@@ -58,36 +80,101 @@ def load_source(selection):
     from server import RobotKinematics, canonical_model_assets
     canonical_model_assets(root)
     kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.arm_urdf())
-    return tiago, mpc, kinematics, tiago.urdf_friction(PREDICTOR_SMOOTHING_RAD_S)
+    return tiago, mpc, kinematics, tiago.urdf_friction()
 
 
 def variant(mpc, n, friction):
     return replace(mpc.TIAGO, N=n, friction=friction)
 
 
-def probe(selection, tiago, mpc, kinematics, friction):
+_UNPINNED_SETTINGS = object()
+
+def requested_params(selection, mpc, params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
+    """Resolve a draft, or retain already captured native params without current hooks."""
+    from tiago_mpc.record import from_dict, to_dict
+    from worktree_settings import describe_settings, resolve_predictor, validate_description
+    base = mpc.TIAGO if params is None else from_dict(params)
+    if not isinstance(base, mpc.MpcParams):
+        raise ValueError("params must be the selected package's serialized MpcParams")
+    if params is not None and source_settings is None:
+        # Historical inspection/build supplies already-resolved native params.
+        # Even importing a current provider would make history depend on its code.
+        description = validate_description({})
+        description["module"] = None
+        return base, dict(values=None, effective=to_dict(base), module=None), description
+    description = describe_settings(selection["mpc_root"])
+    values = description["predictor"]["defaults"] if source_settings is None else source_settings
+    expected = description["module"] if source_settings_module is _UNPINNED_SETTINGS else source_settings_module
+    actual, captured = resolve_predictor(selection["mpc_root"], values, base, to_dict, expected_module=expected)
+    return actual, captured, description
+
+
+def probe(selection, tiago, mpc, kinematics, friction, params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
     from solver_process import model_contract
+    from tiago_mpc.record import provenance, to_dict
+    actual, captured, description = requested_params(selection, mpc, params, source_settings, source_settings_module)
+    source_provenance = provenance()  # before native capability imports can alter package metadata
+    from worktree_settings import has_predictor_settings
+    exact = (params is not None or source_settings is not None
+             or source_settings_module is not _UNPINNED_SETTINGS or has_predictor_settings(description))
     python_capture = "capture_iterations" in inspect.signature(importlib.import_module("gato").BSQP.solve).parameters
     available, modules, captures = dict(off=[], on=[]), [], dict(off={}, on={})
-    for mode, losses in (("off", None), ("on", friction)):
+    variants = [("on" if actual.friction is not None else "off", actual)] if exact else [
+        ("off", replace(actual, friction=None)), ("on", replace(actual, friction=friction))]
+    for mode, model_params in variants:
         for n in KNOT_COUNTS:
-            path = mpc.find_binary(variant(mpc, n, losses))
+            path = mpc.find_binary(replace(model_params, N=n))
             modules.append(dict(N=n, friction=mode == "on", status="compatible" if path else "missing",
                                 path=None if path is None else str(path)))
             if path is not None:
                 available[mode].append(n)
                 captures[mode][str(n)] = python_capture and module_captures(path)
     digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
-    return dict(compatible=True, available_N=sorted(set(available["off"]) | set(available["on"])),
-                available_N_by_friction=available, modules=modules,
-                defaults=json.loads(json.dumps(asdict(mpc.TIAGO))), friction=json.loads(json.dumps(asdict(friction))),
+    roles = {role: dict(description[role], module=description["module"]) for role in ("simulation", "predictor")}
+    return dict(compatible=True, supported_N=list(KNOT_COUNTS),
+                available_N=sorted(set(available["off"]) | set(available["on"])),
+                available_N_by_friction=available, modules=modules, exact_availability=exact,
+                defaults=to_dict(mpc.TIAGO), friction=to_dict(friction), source_settings=roles,
+                effective_settings=dict(params=to_dict(actual), modules=dict(predictor=captured["module"])),
+                requested_source_settings=captured["values"],
                 contract=model_contract(kinematics, tiago),
-                model_identity=dict(full_urdf_sha256=digest(tiago.FULL_URDF), native_urdf_sha256=digest(tiago.arm_urdf())),
+                model_identity=dict(full_urdf_sha256=digest(tiago.FULL_URDF), native_urdf_sha256=digest(tiago.arm_urdf()),
+                                    armature=list(getattr(actual, "armature", (0.,)*7)), friction=to_dict(actual.friction)),
                 capabilities=dict(iteration_capture_by_friction=captures, python_iteration_capture=python_capture,
                                   exact_resume=False),
                 selection=dict(selection, effective_cache=str(importlib.import_module("tiago_mpc.util").cache_root())),
-                source=source_identity(selection["mpc_root"]),
+                source=dict(source_identity(selection["mpc_root"]), gato=source_provenance["gato"]),
                 python=dict(executable=sys.executable, version=sys.version, prefix=sys.prefix))
+
+
+def model(selection, tiago, mpc, kinematics, friction, params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
+    """Read-only native availability for one resolved draft; no guessed cache identity.
+
+    The full effective MpcParams goes to find_binary, so the selected package owns
+    which settings affect compilation. Missing modules are a valid draft status.
+    """
+    from tiago_mpc.record import to_dict
+    from tiago_mpc.util import cache_root
+    actual, captured, description = requested_params(selection, mpc, params, source_settings, source_settings_module)
+    if type(actual.N) is not int or actual.N not in KNOT_COUNTS:
+        raise ValueError(f"Requested N must be among {', '.join(map(str, KNOT_COUNTS))}")
+    available, binary = [], None
+    for n in KNOT_COUNTS:
+        path = mpc.find_binary(replace(actual, N=n))
+        if path is not None:
+            available.append(n)
+            if n == actual.N:
+                binary = str(path)
+    by_mode = dict(off=[], on=[])
+    by_mode["on" if actual.friction is not None else "off"] = available
+    roles = {role: dict(description[role], module=description["module"]) for role in ("simulation", "predictor")}
+    return dict(compatible=True, selection=dict(selection, effective_cache=str(cache_root())),
+                exact_availability=True, supported_N=list(KNOT_COUNTS), available_N=available,
+                available_N_by_friction=by_mode, source_settings=roles,
+                requested_source_settings=captured["values"],
+                effective_settings=dict(params=to_dict(actual), modules=dict(predictor=captured["module"])),
+                compilation=dict(ready=binary is not None, N=actual.N, supported_N=list(KNOT_COUNTS),
+                                 available_N=available, binary_path=binary))
 
 
 def module_captures(path):
@@ -101,12 +188,20 @@ def module_captures(path):
     return bool(getattr(module, "ITERATION_CAPTURE_AVAILABLE", False))
 
 
-def build(selection, loaded, ns, emit, rebuild=False, prediction_friction=False):
+def build(selection, loaded, ns, emit, rebuild=False, prediction_friction=False, params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
     """compile_binary per N: CPU only, a no-op when cached unless rebuild, which
     unlinks the old module (processes that loaded it keep their mapping)."""
     tiago, mpc, kinematics, friction = loaded
+    from worktree_settings import describe_settings, has_predictor_settings
+    extension = (has_predictor_settings(describe_settings(selection["mpc_root"]))
+                 if params is None and selection.get("mpc_root") else False)
+    exact = (params is not None or extension or source_settings is not None
+             or source_settings_module is not _UNPINNED_SETTINGS)
+    actual = (requested_params(selection, mpc, params, source_settings, source_settings_module)[0] if exact else
+              replace(mpc.TIAGO, friction=friction if prediction_friction else None))
     jobs = build_jobs()
-    emit(dict(event="progress", stage="starting", jobs=jobs, N=ns, prediction_friction=prediction_friction))
+    emit(dict(event="progress", stage="starting", jobs=jobs, N=ns, prediction_friction=prediction_friction,
+              exact_availability=exact))
     for n in ns:
         emit(dict(event="progress", stage="building", N=n, jobs=jobs))
         stop = threading.Event()
@@ -116,24 +211,29 @@ def build(selection, loaded, ns, emit, rebuild=False, prediction_friction=False)
         thread = threading.Thread(target=report, daemon=True)
         thread.start()
         try:
-            path = mpc.compile_binary(variant(mpc, n, friction if prediction_friction else None),
+            path = mpc.compile_binary(replace(actual, N=n),
                                       use_cache=not rebuild, jobs=jobs)
         finally:
             stop.set()
             thread.join()
         emit(dict(event="progress", stage="built", N=n, path=str(path)))
-    return probe(selection, *loaded)
+    return probe(selection, *loaded, params=params, source_settings=source_settings,
+                 source_settings_module=source_settings_module)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("probe", "build"))
+    parser.add_argument("operation", choices=("probe", "model", "build"))
     parser.add_argument("--mpc-root", required=True)
     parser.add_argument("--python")
     parser.add_argument("--cache")
     parser.add_argument("--N", nargs="+", type=int, default=[])
     parser.add_argument("--prediction-friction", action="store_true", help="Build the predictor-friction variant")
     parser.add_argument("--rebuild", action="store_true", help="Rebuild requested modules even when cached")
+    parser.add_argument("--params-json", help="Exact native MpcParams; without source settings these are already resolved")
+    parser.add_argument("--source-settings-json", help="Predictor adapter values for the requested native base params")
+    parser.add_argument("--source-settings-module-json", default=argparse.SUPPRESS,
+                        help="Expected settings module identity; explicit null pins absence")
     args = parser.parse_args(argv)
     output = sys.stdout
     lock = threading.Lock()
@@ -150,12 +250,21 @@ def main(argv=None):
         # Source helpers/codegen may print: keep stdout a strict JSON protocol.
         with redirect_stdout(sys.stderr):
             loaded = load_source(selection)
+            params = json.loads(args.params_json) if args.params_json is not None else None
+            source_settings = json.loads(args.source_settings_json) if args.source_settings_json is not None else None
+            source_settings_module = (json.loads(args.source_settings_module_json)
+                                      if hasattr(args, "source_settings_module_json") else _UNPINNED_SETTINGS)
             if args.operation == "build":
-                result = build(selection, loaded, sorted(set(args.N)), emit, args.rebuild, args.prediction_friction)
-                if not set(args.N) <= set(result["available_N_by_friction"]["on" if args.prediction_friction else "off"]):
+                result = build(selection, loaded, sorted(set(args.N)), emit, args.rebuild, args.prediction_friction, params, source_settings, source_settings_module)
+                if not set(args.N) <= set(result["available_N"] if result.get("exact_availability") else
+                                          result["available_N_by_friction"]["on" if args.prediction_friction else "off"]):
                     raise RuntimeError("Build finished, but find_binary does not find every requested module")
+            elif args.operation == "model":
+                result = model(selection, *loaded, params=params, source_settings=source_settings,
+                               source_settings_module=source_settings_module)
             else:
-                result = probe(selection, *loaded)
+                result = probe(selection, *loaded, params=params, source_settings=source_settings,
+                 source_settings_module=source_settings_module)
         emit(dict(event="result", result=result) if args.operation == "build" else result)
         return 0
     except Exception as exc:

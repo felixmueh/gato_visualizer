@@ -46,7 +46,7 @@ class ReplayTests(unittest.TestCase):
 
     def export(self, path, **overrides):
         arguments = dict(time_s=self.time, q=self.q, joint_names=JOINT_NAMES,
-                         model_urdf=MODEL, time_basis="simulation")
+                         model_urdf=MODEL, time_basis="simulation", end_effector_frame=tools.FLANGE_FRAME)
         arguments.update(overrides)
         return tools.save_replay(path, **arguments)
 
@@ -65,6 +65,31 @@ class ReplayTests(unittest.TestCase):
         return ReplayLibrary(ingest_directory=self.folder / "ingest", upload_directory=self.folder / "uploads",
                              model_urdf=MODEL, default_scene=self.base_scene,
                              scene_builder=lambda replay, path: replay_scene(replay, path, MPC_ROOT, self.base_scene))
+
+    def test_current_run_record_export_preserves_native_typed_params(self):
+        from dataclasses import replace
+        from live_mpc import import_tiago
+        import_tiago(MPC_ROOT)
+        import tiago_mpc as tm
+        from experiments.reach import Reach
+        params = replace(tm.TIAGO, N=3, friction=tm.urdf_friction(), friction_law=tm.Tanh(.03))
+        record = tm.RunRecord(self.folder / 'native-run', params=params, task=Reach(),
+                              plant=tm.SimConfig(), timing=tm.VirtualTime.ideal(), law=tm.SampleKnot())
+        states = np.repeat(np.r_[tm.Q_START, np.zeros(7)][None, :], 3, axis=0)
+        prediction = tm.Plan(0., params.dt_s, states, np.zeros((2, 7)), measured_t=0.)
+        for i, t in enumerate([0., .002]):
+            record(tm.Tick(t, tm.State(t, tm.Q_START, np.zeros(7)), np.zeros(7), prediction,
+                           i == 0, i == 0, (), None, plan_request_t=0. if i == 0 else None))
+        path = tools.export_replay(record)
+        replay = load_replay(path, model_urdf=MODEL)
+        serialized = replay.metadata['provenance']['params']
+        self.assertEqual(serialized, tm.to_dict(params))
+        self.assertNotIn('law', serialized['friction'])
+        self.assertEqual(serialized['friction_law']['type'], 'Tanh')
+        self.assertEqual(tm.from_dict(serialized), params)
+        self.assertEqual(len(replay.predictions), 1)
+        scene = replay_scene(replay, path, MPC_ROOT, self.base_scene)
+        self.assertEqual(scene['mpc_bounds']['limit_bounds']['joint_margin_rad'], params.joint_margin_rad)
 
     def test_export_roundtrip_ordering_predictions_and_producer_has_no_viewer_dependency(self):
         q = self.q[:, ::-1]

@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from . import Registry
-from .fixtures import example_episode, example_solve
+from .fixtures import example_episode, example_solve, example_comparison
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,7 +47,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('path', nargs='?', type=Path, help='Additional plot .py file or directory (bundled plots always loaded)')
     parser.add_argument('--plot', help='Select definition id; defaults to all compatible plots')
-    parser.add_argument('--fixture', choices=('episode', 'solve', 'episode-missing', 'solve-missing'), default='episode')
+    parser.add_argument('--fixture', choices=('episode', 'solve', 'comparison', 'episode-missing', 'solve-missing', 'comparison-missing'), default='episode')
     parser.add_argument('--inputs', default='{}', help='Plot user inputs as a JSON object')
     parser.add_argument('--expect', action='append', default=[], help='Numerical/content assertion, e.g. series.0.y.0=20')
     parser.add_argument('--output', type=Path, default=ROOT / '_expr_data' / 'plot-check')
@@ -69,7 +69,9 @@ def main(argv=None):
     iteration = 'seed' if args.iteration == 'seed' else int(args.iteration) if args.iteration is not None else None
     context = InspectionContext(sqp_iteration=iteration)
     scope = args.fixture.split('-')[0]
-    view = (example_episode if scope == 'episode' else example_solve)(missing=args.fixture.endswith('-missing'), context=context)
+    if scope == 'comparison':
+        context = InspectionContext(clock='session:fixture')
+    view = {'episode': example_episode, 'solve': example_solve, 'comparison': example_comparison}[scope](missing=args.fixture.endswith('-missing'), context=context)
     try:
         inputs = json.loads(args.inputs)
         if not isinstance(inputs, dict):

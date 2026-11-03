@@ -100,6 +100,23 @@ class SourceTests(unittest.TestCase):
         self.assertNotIn("merit", selected["iterations"][1]["stats"])
         self.assertTrue(all(not i["has_prediction"] for i in selected["iterations"]))
 
+    def test_pending_live_plans_do_not_associate_until_commanded_and_freeze_uses_activation(self):
+        first=dict(seq=1,sim_time_s=0.,available_time_s=.0055,q=[[0]*7])
+        second=dict(seq=2,sim_time_s=.01,available_time_s=.0155,q=[[1]*7])
+        raw=dict(states=[dict(sim_time_s=0.,control_updates=0),dict(sim_time_s=.01,plan_seq=1,control_updates=2)],
+                 plans=[first,second],controls=[dict(sim_time_s=.006,plan_seq=1),dict(sim_time_s=.016,plan_seq=2)])
+        self.assertIsNone(inspect_source(raw,{},dict(cursor_s=.004))[0])
+        self.assertEqual(inspect_source(raw,{},dict(cursor_s=.014))[0]['seq'],1)
+        self.assertEqual(inspect_source(raw,{},dict(cursor_s=.016))[0]['seq'],2)
+        self.assertEqual(inspect_source(raw,dict(solve_id='2'),dict(cursor_s=.014))[0]['seq'],2)
+        scene=fixture_scene()
+        scene['trajectories'][1]['metadata']['stats']['activation_time_s']=21.2
+        replay=scene_records(scene)
+        self.assertEqual(replay['plans'][0]['sim_time_s'],1.)
+        self.assertAlmostEqual(replay['plans'][0]['activation_time_s'],1.2)
+        self.assertIsNone(inspect_source(replay,{},dict(cursor_s=1.1))[0])
+        self.assertEqual(inspect_source(replay,{},dict(cursor_s=1.3))[0]['id'],'saved-plan')
+
     def test_reduction_preserves_extrema_and_null_gap(self):
         values = [0.]*10000
         values[3001], values[3002], values[4000] = 500., -99., None

@@ -46,7 +46,8 @@ class SolverProfiles:
             return dict(profiles=deepcopy(list(self.profiles.values())),
                 active_profile_id=self.live.active_profile_id,
                 simulator_source=self.selection, switch=deepcopy(self.live.profile_switch),
-                generation=self.live.generation)
+                generation=self.live.generation,
+                switch_revision=getattr(self.live, "_profile_revision_floor", 0))
 
     def save(self, body):
         if not isinstance(body, dict) or set(body) != {"profile"}:

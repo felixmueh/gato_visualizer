@@ -52,12 +52,19 @@ class Choice:
     disabled_when: Mapping = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class Channel:
+    """A recorded numeric channel, offered dynamically by ComparisonView."""
+    default: str = ''
+    label: str = 'Recorded channel'
+
+
 def _decorate(scope, *, id=None, title=None, description='', requires=(), optional=(), inputs=None):
     def apply(function):
         controls = dict(inputs or {})
         # Typed defaults are a convenient author shorthand; the wrapper is never replaced.
         for name, param in inspect.signature(function).parameters.items():
-            if isinstance(param.default, (Number, Joint, Boolean, Choice)):
+            if isinstance(param.default, (Number, Joint, Boolean, Choice, Channel)):
                 controls.setdefault(name, param.default)
         function.__plot_definition__ = dict(id=id or function.__name__, title=title or function.__name__.replace('_', ' ').title(),
                                             description=description, scope=scope, requires=tuple(requires), optional=tuple(optional), inputs=controls)
@@ -75,6 +82,25 @@ def plot_solve(function=None, **metadata):
     """Annotate a Solve plot. Requirements are availability hints, not permissions."""
     decorate = _decorate('solve', **metadata)
     return decorate(function) if function is not None else decorate
+
+
+def plot_comparison(function=None, **metadata):
+    """Annotate a plot of labelled, read-only episodes on session time."""
+    decorate = _decorate('comparison', **metadata)
+    return decorate(function) if function is not None else decorate
+
+
+def _controls(definition, view=None):
+    result = {}
+    for name, control in definition['inputs'].items():
+        if isinstance(control, Channel):
+            channels = getattr(view, 'channels', ())
+            choices = tuple(item['value'] for item in channels)
+            default = control.default if control.default in choices else ('states.q.0' if 'states.q.0' in choices else next(iter(choices), ''))
+            control = Choice(choices or ('',), default, control.label,
+                             labels=tuple(item['label'] for item in channels) or ('No recorded numeric channels',))
+        result[name] = control
+    return result
 
 
 def _input_dict(control):
@@ -125,7 +151,7 @@ class Registry:
     def register(self, function: Callable, source='local'):
         metadata = dict(getattr(function, '__plot_definition__', {}))
         if not metadata:
-            raise ValueError('function has no @plot_episode/@plot_solve metadata')
+            raise ValueError('function has no plotting decorator metadata')
         identity = metadata['id']
         if identity in self.definitions:
             raise ValueError(f'duplicate plot id {identity!r}; existing source {self.definitions[identity]["source"]}')
@@ -171,7 +197,7 @@ class Registry:
             if metadata['scope'] != scope:
                 continue
             item = {key: value for key, value in metadata.items() if key not in ('function', 'inputs')}
-            item['inputs'] = {key: _input_dict(value) for key, value in metadata['inputs'].items()}
+            item['inputs'] = {key: _input_dict(value) for key, value in _controls(metadata, view).items()}
             item['missing'] = [path for path in metadata['requires'] if view is not None and not view.has(path)]
             item['available'] = not item['missing']
             result.append(item)
@@ -180,11 +206,12 @@ class Registry:
     def evaluate(self, plot_id: str, view, parameters: Mapping | None = None) -> dict:
         from .spec import validate_spec
         from .views import EpisodeView, SolveView
+        from .comparison import ComparisonView
         definition = self.definitions[plot_id]
-        expected = EpisodeView if definition['scope'] == 'episode' else SolveView
+        expected = {'episode': EpisodeView, 'solve': SolveView, 'comparison': ComparisonView}[definition['scope']]
         if not isinstance(view, expected):
             raise ValueError(f'{plot_id} requires {definition["scope"]} context')
-        controls, supplied = definition['inputs'], dict(parameters or {})
+        controls, supplied = _controls(definition, view), dict(parameters or {})
         unknown = supplied.keys() - controls.keys()
         if unknown:
             raise ValueError(f'unknown inputs: {", ".join(sorted(unknown))}')
@@ -195,6 +222,6 @@ class Registry:
                     raise ValueError(f'{name}={values[name]!r} is unavailable with {other[0]}={other[1]!r}')
         result = definition['function'](view, **values)
         result = validate_spec(result)
-        if result.get('x', {}).get('identity') == 'episode_time':
+        if result.get('x', {}).get('identity') in ('episode_time', 'session_time'):
             result['x']['clock'] = view.context.clock
         return result

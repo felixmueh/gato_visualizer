@@ -143,6 +143,40 @@ test('pinned actual SQP iteration persists while episode advances; ranges and so
   } finally { globalThis.document = original; }
 });
 
+test('Replay presentation retains a pinned Live solve and iteration until Follow cursor', async () => {
+  const { document, find } = plotDOM(), original = globalThis.document; globalThis.document = document;
+  const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');
+  let source = { source: { kind: 'live', generation: 4 } };
+  const view = { window: [0, 10], cursor: 2, inspectSolve: true }, requests = [];
+  const request = async (path, body) => {
+    requests.push({ path, body: structuredClone(body) });
+    if (path.endsWith('/capability')) return { available: false };
+    const id = body.source.kind === 'live' ? 'live-solve' : 'replay-solve';
+    return { state: 'complete', catalog: [], context: { selected_solve: { id, seq: id,
+      iterations: [{ index: 1 }, { index: 3 }], final_prediction: { ee_xyz: [[1, 2, 3]] } } }, results: [] };
+  };
+  const ui = setupPlotInspection({ episodeContainer: episode, solveContainer: solve, bottomContainer: bottom,
+    getSource: () => source, getView: () => view, request, storage: null });
+  try {
+    ui.update(); await flush();
+    await find(solve, 'button', 'Pin solve').emit('click');
+    const slider = solve.querySelector('input'); slider.value = '1'; await slider.emit('input');
+    assert.equal(ui.snapshot.iteration, 3);
+    source = { source: { kind: 'replay', id: 'comparison', revision: 'recorded' } };
+    ui.update(); await ui.refresh();
+    assert.equal(ui.snapshot.pinned, true);
+    assert.equal(ui.snapshot.selectedSolve.id, 'live-solve');
+    assert.equal(ui.snapshot.iteration, 3);
+    assert.deepEqual(ui.snapshot.solveSource, { kind: 'live', generation: 4 });
+    assert(requests.some(({ body }) => body.context === 'episode' && body.source.kind === 'replay'));
+    assert(requests.some(({ body }) => body.context === 'solve' && body.source.kind === 'live' && body.selection.solve_seq === 'live-solve'));
+    await find(solve, 'button', 'Follow cursor').emit('click'); ui.update(); await ui.refresh();
+    assert.equal(ui.snapshot.pinned, false);
+    assert.equal(ui.snapshot.selectedSolve.id, 'replay-solve');
+    assert.deepEqual(ui.snapshot.solveSource, source.source);
+  } finally { ui.destroy(); globalThis.document = original; }
+});
+
 test('Live reset clears pinned inspection; zoom and cursor never rerun Python aggregates, a window change does', async () => {
   const { document, find } = plotDOM(), original = { document: globalThis.document, now: Date.now }; globalThis.document = document;
   const episode = document.createElement('section'), solve = document.createElement('section'), bottom = document.createElement('section');

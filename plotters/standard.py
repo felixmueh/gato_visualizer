@@ -54,7 +54,7 @@ def episode_timing(data: EpisodeView, component='all'):
     """Recorded host wall times against each interval's actual nominal budget."""
     definitions = {
         'mpc': [('MPC wall', lambda i: scaled(i.get('solve_wall_s', i.get('mpc_wall_s')))),
-                ('TO budget', lambda i: scaled(i.get('to_budget_s', i.get('budget_s'))))],
+                ('TO deadline', lambda i: None if i.get('to_back_to_back') else scaled(i.get('to_budget_s', i.get('budget_s'))))],
         'physics': [('Physics wall', lambda i: scaled(i.get('physics_wall_s', i.get('simulation_wall_s')))),
                     ('Interval budget', lambda i: scaled(i['end_time_s']-i['start_time_s']))],
         'combined': [('Combined wall', lambda i: scaled(i.get('total_wall_s'))),
@@ -63,7 +63,7 @@ def episode_timing(data: EpisodeView, component='all'):
     selected = list(definitions) if component == 'all' else [component]
     curves = [interval_series(data, label, getter) for key in selected for label, getter in definitions[key]]
     return lines('Timing and budgets', curves, unit='ms', y_label='Measured wall time / budget',
-                 notes=['Wall time is distinct from episode time. Combined-only overload is not a physics-only overrun.'])
+                 notes=['Wall time is distinct from episode time. Back-to-back TO has no deadline; its deadline curve is absent. Combined-only overload is not a physics-only overrun.'])
 
 
 @plot_episode(id='episode.iterations', title='Solver iteration counts', requires=('plans',))

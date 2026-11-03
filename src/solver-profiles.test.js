@@ -5,17 +5,17 @@ import { plotDOM } from './plot-dom-test-helper.js';
 
 const profile = (id, name = id) => ({ id, name, mpc_root: `/solvers/${id}`, python: null, cache: null });
 const initialCatalog = () => ({ profiles: [profile('main', 'Main'), profile('candidate', 'Candidate')], active_profile_id: 'main', simulator_source: { mpc_root: '/simulator', python: '/simulator/bin/python', cache: '/simulator/cache' }, switch: { state: 'idle' }, generation: 4 });
-const fixture = ({ beforeActivate = () => undefined, onSettled = () => {}, activate } = {}) => {
+const fixture = ({ beforeActivate = () => undefined, onSettled = () => {}, activate, read, intervalMs = 0 } = {}) => {
   const { document } = plotDOM(), liveContainer = document.createElement('section'), editorContainer = document.createElement('section'), requests = [], timers = new Map(); let nextTimer = 0, catalog = initialCatalog();
   const request = async (path, body) => {
     requests.push({ path, body: structuredClone(body) });
     if (path === '/api/solver-profiles' && body) { catalog.profiles = [...catalog.profiles.filter(item => item.id !== body.profile.id), body.profile]; return structuredClone(catalog); }
-    if (path === '/api/solver-profiles') return structuredClone(catalog);
+    if (path === '/api/solver-profiles') return read ? read(catalog) : structuredClone(catalog);
     if (path === '/api/source/defaults') return { mpc_root: body.mpc_root, python: '<checkout>/venv-host/bin/python', cache: '/main/.cache/gato', cache_label: "tiago_mpc's default", resolved: { python: `${body.mpc_root}/venv-host/bin/python`, cache: '/main/.cache/gato' }, entered: {} };
     if (path === '/api/solver-profiles/activate') { catalog.switch = { state: 'switching', profile_id: body.profile_id }; return activate ? activate(body) : { state: 'switching' }; }
     throw new Error(`Unexpected request ${path}`);
   };
-  const ui = setupSolverProfiles({ liveContainer, editorContainer, beforeActivate, onSettled, request, schedule: fn => { timers.set(++nextTimer, fn); return nextTimer; }, unschedule: id => timers.delete(id) });
+  const ui = setupSolverProfiles({ liveContainer, editorContainer, beforeActivate, onSettled, request, intervalMs, schedule: fn => { timers.set(++nextTimer, fn); return nextTimer; }, unschedule: id => timers.delete(id) });
   return { ui, requests, timers, get catalog() { return catalog; }, liveContainer, editorContainer };
 };
 
@@ -68,4 +68,115 @@ test('preflight failure reports the retained active solver to Live controls', as
   await h.ui.handleEvent({ state: 'failed', profile_id: 'candidate', error: 'N unavailable' });
   assert.equal(events[0].active_profile_id, 'main'); assert.equal(h.ui.select.value, 'main'); assert.equal(h.ui.select.disabled, false);
   h.ui.destroy();
+});
+
+test('background catalog polling adds external profiles and preserves an edited profile draft', async () => {
+  const h = fixture({ intervalMs: 1000 });
+  await h.ui.refresh(); await new Promise(resolve => setImmediate(resolve));
+  h.ui.fields.name.value = 'Unsaved draft'; await h.ui.fields.name.emit('input');
+  h.catalog.profiles.push(profile('external', 'Agent profile'));
+  await [...h.timers.values()][0]();
+  assert(h.ui.select.children.some(option => option.value === 'external'));
+  assert.equal(h.ui.fields.name.value, 'Unsaved draft');
+  assert.equal(h.ui.activateButton.disabled, true);
+  assert.equal(h.timers.size, 1);
+  h.ui.dispose(); assert.equal(h.timers.size, 0);
+});
+
+test('external activation completed between polls pauses and settles once, then ignores duplicate SSE', async () => {
+  let pauses = 0; const events = [];
+  const h = fixture({ intervalMs: 1000, beforeActivate: () => { pauses++; }, onSettled: item => events.push(item) });
+  await h.ui.refresh();
+  h.catalog.active_profile_id = 'candidate'; h.catalog.generation = 5;
+  await [...h.timers.values()][0]();
+  assert.equal(pauses, 1); assert.equal(events.length, 1); assert.equal(h.ui.select.value, 'candidate');
+  await h.ui.handleEvent({ type: 'solver_profile', state: 'active', profile_id: 'candidate', generation: 5 });
+  await [...h.timers.values()][0]();
+  assert.equal(events.length, 1); assert.equal(pauses, 1);
+  h.catalog.generation = 6; await [...h.timers.values()][0]();
+  assert.equal(events.length, 1, 'ordinary settings generation changes are not profile activation');
+  h.ui.dispose();
+});
+
+test('external switching and failure are observed without an SSE subscription', async () => {
+  let pauses = 0; const events = [];
+  const h = fixture({ intervalMs: 1000, beforeActivate: () => { pauses++; }, onSettled: item => events.push(item) });
+  await h.ui.refresh();
+  h.catalog.switch = { state: 'switching', profile_id: 'candidate' };
+  await [...h.timers.values()][0]();
+  assert.equal(pauses, 1); assert.equal(h.ui.snapshot.switching, true);
+  await [...h.timers.values()][0](); assert.equal(pauses, 1);
+  h.catalog.switch = { state: 'failed', profile_id: 'candidate', error: 'Unavailable module' };
+  await [...h.timers.values()][0]();
+  assert.equal(events.length, 1); assert.equal(events[0].state, 'failed'); assert.equal(events[0].active_profile_id, 'main');
+  await h.ui.handleEvent({ state: 'failed', profile_id: 'candidate', active_profile_id: 'main', generation: 4, error: 'Unavailable module' });
+  assert.equal(events.length, 1); assert.equal(pauses, 1);
+  h.ui.dispose();
+});
+
+test('catalog reads are serial and a read from before activation cannot restore the old selection', async () => {
+  let resolveRead, delayed = false, activeReads = 0, maxReads = 0;
+  const h = fixture({ intervalMs: 1000, read: async catalog => {
+    activeReads++; maxReads = Math.max(maxReads, activeReads); const value = structuredClone(catalog);
+    if (delayed) { delayed = false; await new Promise(resolve => { resolveRead = resolve; }); }
+    activeReads--; return value;
+  } });
+  await h.ui.refresh(); delayed = true;
+  const oldRead = h.ui.refresh(); await new Promise(resolve => setImmediate(resolve));
+  await h.ui.activate('candidate');
+  h.catalog.active_profile_id = 'candidate'; h.catalog.switch = { state: 'idle' }; h.catalog.generation = 5;
+  const completion = h.ui.handleEvent({ state: 'active', profile_id: 'candidate', generation: 5 });
+  resolveRead(); await Promise.all([oldRead, completion]);
+  assert.equal(maxReads, 1); assert.equal(h.ui.select.value, 'candidate');
+  h.ui.dispose();
+});
+
+test('switch revision detects same-profile activation between polls and ignores ordinary settings generations', async () => {
+  const events = []; let pauses = 0;
+  const h = fixture({ intervalMs: 1000, beforeActivate: () => { pauses++; }, onSettled: item => events.push(item) });
+  h.catalog.switch_revision = 0; await h.ui.refresh();
+  h.catalog.switch_revision = 10; h.catalog.generation = 5;
+  await [...h.timers.values()][0]();
+  assert.equal(events.length, 1); assert.equal(events[0].switch_revision, 10); assert.equal(pauses, 1);
+  await h.ui.handleEvent({ type: 'solver_profile', state: 'active', profile_id: 'main', generation: 5, switch_revision: 10 });
+  assert.equal(events.length, 1, 'SSE and polling share one completion identity');
+  h.catalog.generation = 6; await [...h.timers.values()][0]();
+  assert.equal(events.length, 1);
+  h.catalog.switch_revision = 20; h.catalog.generation = 7;
+  await [...h.timers.values()][0]();
+  assert.equal(events.length, 2); assert.equal(pauses, 2);
+  await h.ui.handleEvent({ type: 'solver_profile', state: 'active', profile_id: 'main', generation: 5, switch_revision: 10 });
+  assert.equal(events.length, 2, 'late completion from a replaced solver stays obsolete');
+  h.ui.dispose();
+});
+
+test('identical failed external retries settle once each even without a generation change', async () => {
+  const events = [], h = fixture({ intervalMs: 1000, onSettled: item => events.push(item) });
+  h.catalog.switch_revision = 0; await h.ui.refresh();
+  h.catalog.switch = { state: 'failed', profile_id: 'candidate', error: 'Unavailable module' };
+  h.catalog.switch_revision = 10;
+  await [...h.timers.values()][0]();
+  assert.equal(events.length, 1); assert.equal(events[0].generation, 4);
+  h.catalog.switch_revision = 20;
+  await [...h.timers.values()][0]();
+  assert.equal(events.length, 2); assert.equal(events[1].generation, 4);
+  await h.ui.handleEvent({ state: 'failed', profile_id: 'candidate', generation: 4, active_profile_id: 'main', switch_revision: 20, error: 'Unavailable module' });
+  assert.equal(events.length, 2);
+  h.ui.dispose();
+});
+
+test('a catalog refresh cannot settle an activation whose HTTP request is still pending', async () => {
+  let resolveActivation, settles = 0;
+  const h = fixture({ activate: () => new Promise(resolve => { resolveActivation = resolve; }), onSettled: () => { settles++; } });
+  await h.ui.refresh();
+  const activation = h.ui.activate('candidate'); await new Promise(resolve => setImmediate(resolve));
+  // Simulate a concurrent GET which was served before the POST was accepted.
+  h.catalog.switch = { state: 'idle' };
+  await h.ui.refresh();
+  assert.equal(settles, 0); assert.equal(h.ui.snapshot.switching, true);
+  h.catalog.active_profile_id = 'candidate'; h.catalog.generation = 5;
+  await h.ui.handleEvent({ state: 'active', profile_id: 'candidate', generation: 5 });
+  resolveActivation({ state: 'switching' }); await activation;
+  assert.equal(settles, 1); assert.equal(h.ui.select.value, 'candidate');
+  h.ui.dispose();
 });

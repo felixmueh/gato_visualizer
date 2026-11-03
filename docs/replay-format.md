@@ -9,15 +9,15 @@ that snapshot. Use Reload to load a changed recording.
 ## Export from tiago_mpc
 
 The single exporter lives in **`tiago_mpc/experiments/replay.py`**, on the
-producer side. It needs only NumPy and Python's standard library (the TIAGo
-names come from `tiago_mpc.tiago`, which loads only NumPy). An experiment
+producer side. Run it in the prepared uv environment; its package imports
+include Pinocchio and GATO's Python package, without ROS or a compiled CUDA solver. An experiment
 run writes `<run>/replay.npz` with `export_replay(record)`: execution-time
 states and commands, the task reference and every plan, with
-`provenance={"params": asdict(MpcParams)}`. Other producers call
+`provenance={"params": to_dict(MpcParams)}`. Other producers call
 `save_replay` directly from the `tiago_mpc` checkout:
 
 ```python
-from dataclasses import asdict
+from tiago_mpc.record import to_dict
 from pathlib import Path
 import numpy as np
 from experiments.replay import save_replay
@@ -36,7 +36,7 @@ save_replay(
     end_effector_frame=GRASP_FRAME,       # arm_right_grasp_joint, between the fingers
     reference_xyz_m=target_xyz,            # optional static position
     reference_frame=ROOT_FRAME,           # torso_lift_link, frame of target_xyz
-    provenance={"params": asdict(params)}, # optional; MpcParams give the MPC bounds
+    provenance={"params": to_dict(params)}, # optional; MpcParams give the MPC bounds
 )
 ```
 
@@ -54,7 +54,7 @@ Exporting does not alter the experiment or existing recordings.
 
 `end_effector_frame` identifies the point followed by recorded paths and
 references: `arm_right_grasp_joint` (`GRASP_FRAME`, the grasp center that
-`export_replay` records from `MpcParams.ee_frame`) or `arm_right_tool_joint`
+`export_replay` always records at this frame) or `arm_right_tool_joint`
 (`FLANGE_FRAME`, the flange). `save_replay` and the viewer default to the flange,
 so recordings without the field keep it.
 The viewer reads application-only fixed TCP offsets from the selected
@@ -214,6 +214,14 @@ Direct links: `/?replay=<name>` selects the catalog item whose `name` (the
 relative path without `.npz`) matches, preferring ingest over an upload with
 the same name; `uploads/<name>` addresses an upload explicitly. Resolution is
 client-side against `GET /api/replays`, so no filesystem path is interpreted.
+Repeat the parameter (`/?replay=study/stock&replay=study/feedback`) to add
+several recordings to one Replay-mode session. Available entries load in URL
+order, once each; repeated paths are ignored. Multi-recording links place each
+track at offset zero and name it from the recording label (catalog basename
+if absent). Missing or unreadable entries remain pending for catalog updates;
+tracks already added retain their loaded copies. Encode each value separately,
+including `%2B` for a literal plus sign. These links describe the recordings to
+open, not subsequent visibility, names or offset edits to the browser session.
 
 API:
 

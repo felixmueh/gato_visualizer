@@ -119,3 +119,59 @@ explicit local numerical prototypes, with shape `(K+1, 1, 21*N-7)`. Prefer the
 ordinary selected-iteration accessors for plots. The host keeps this handle
 local to the CPU plot process and never materializes it through `freeze()` or
 HTTP. Its metadata records the original solve and actual inspection source.
+
+## Comparative plot authorship
+
+Use `@plot_comparison`, `ComparisonView` and the same typed input/spec helpers.
+`Channel()` offers genuinely recorded numeric fields as ordinary choices:
+
+```python
+from gato_visualizer.plotting import (
+    Channel, ComparisonView, lines, plot_comparison, series,
+)
+
+@plot_comparison(id='example.compare_channel', title='Recorded channel',
+                 requires=('runs',), inputs={'channel': Channel()})
+def compare_channel(data: ComparisonView, channel=''):
+    curves = []
+    for run in data.available_runs:
+        bounds = data.run_bounds(run)
+        points = [(t, y) for t, y in run.channel(channel)
+                  if bounds is not None and bounds[0] <= t <= bounds[1]]
+        curves.append(series(run.label, [t for t, _ in points],
+                             [y for _, y in points], color=run.color))
+    return lines('Recorded channel', curves, identity='session_time',
+                 x_label='Session time')
+```
+
+Each run retains its broad immutable `EpisodeView` and source metadata. Apply
+`run_bounds(run)` or `common_bounds` deliberately when deriving metrics, preserve
+null gaps and early termination, and never extrapolate outside recorded support.
+The bundled `plotters/comparison.py` demonstrates time-weighted tracking error,
+command variation and derivatives of recorded velocity. See the complete
+[comparison contract](plot-api.md#comparison-plots).
+
+```bash
+python -m gato_visualizer.plotting.check --fixture comparison \
+  --plot comparison.channel --inputs '{"channel":"states.q.0"}' \
+  --expect 'series.0.x=[0,0.5,1,2]' --expect 'series.1.y=[0,0.5,1,1.5,2]'
+python -m gato_visualizer.plotting.check --fixture comparison-missing
+```
+
+The comparison fixture has different recording origins/sample rates and an
+early-stopped second run, aligned to session zero. On their common [0,1] s,
+tracking-error RMS is 1/√3 m and 2/√3 m; acceleration RMS is 1 and 2 rad/s²;
+command variation per duration is 1 and 2 Nm/s. `comparison-missing` removes the
+second run's velocity, torque and reference. The same offline checker and exact
+browser renderer generate JSON/standalone HTML without a server or GPU.
+
+The bundled `comparison.control_effort` is another extensible comparison
+function. It integrates the squared native applied-torque norm using the recorded
+command hold intervals, with explicit missing-data gaps and coverage. In the
+same comparison fixture the shared [0,1] s totals are 0.125 and 0.875 Nm²·s:
+
+```bash
+python -m gato_visualizer.plotting.check --fixture comparison \
+  --plot comparison.control_effort --inputs '{"view":"total"}' \
+  --expect 'series.0.y.0=0.125' --expect 'series.1.y.0=0.875'
+```

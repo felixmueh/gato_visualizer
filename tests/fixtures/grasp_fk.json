@@ -1,7 +1,7 @@
 {
-  "tiago_mpc_commit": "9dbde7f5d04d02097363b875dfd4b6c76267b144",
-  "full_urdf_sha256": "42a2a655248204973edb2572bed50c537ae6a5c9b6a1e92fc562d2b14bd63dab",
-  "reduced_urdf_sha256": "d510d84021e0034b811350b8dc3db59f5c0424458acdf823827d3e77a06815f1",
+  "tiago_mpc_commit": "7fa9c75bf3e836d436488b601b38aff14b32fd1d",
+  "full_urdf_sha256": "0e3f43718ad0985f90a8d6f5e73e0205c7268e463db47ce8492832b28236b5eb",
+  "reduced_urdf_sha256": "20d77a33e206c715871a654604e19e7e290b61e976e5084221d68512828782b3",
   "frame": "arm_right_grasp_joint",
   "root_frame": "torso_lift_link",
   "joint_names": [

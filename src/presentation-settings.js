@@ -1,5 +1,6 @@
 import { sourceRequest } from './source-settings.js';
 import { DEFAULT_LIMIT_USE, LIMIT_USE_RANGES } from './limit-use.js';
+import { parseTimeValue, configureTimeInput, setTimeInputValue } from './time-input.js';
 
 export const DEFAULT_PRESENTATION = { report_hz: 20, buffer_ms: 200, interpolate: false, limit_tint: true, ghost_start_opacity_percent: 55, ghost_end_opacity_percent: 25, ...DEFAULT_LIMIT_USE };
 const LIMIT_MESSAGES = {
@@ -47,18 +48,23 @@ const FIELD_RULES = {
   ghost_end_opacity_percent: { number: true },
   ...Object.fromEntries(Object.keys(LIMIT_MESSAGES).map(name => [name, { number: true }])),
 };
+const TIME_FIELDS = { report_hz: { unit: 'Hz', label: 'Reporting rate' },
+  buffer_ms: { unit: 'ms', label: 'Playback buffer' } };
 
 // Parses one field; returns { value } or { error } with the reason for a tooltip.
 export function parsePresentationField(name, raw) {
-  const value = FIELD_RULES[name]?.number ? (String(raw).trim() === '' ? NaN : Number(raw)) : raw;
-  try { return { value: validatePresentation({ [name]: value })[name] }; } catch (error) { return { error: error.message }; }
+  try {
+    const value = TIME_FIELDS[name] ? parseTimeValue(raw, TIME_FIELDS[name]) : FIELD_RULES[name]?.number ? (String(raw).trim() === '' ? NaN : Number(raw)) : raw;
+    return { value: validatePresentation({ [name]: value })[name] };
+  } catch (error) { return { error: error.message }; }
 }
 
 // Presentation preferences have their own endpoint: they never submit MPC
 // settings, replace a history generation, or request a preview. Every valid
 // change applies at once (`onChange`) and is saved after a short debounce; the
-// last value wins and at most one save is in flight.
-export function setupPresentationSettings({ container, onChange = () => {}, request = sourceRequest, inputDelayMs = 700, saveDelayMs = 400 } = {}) {
+// only edited fields are saved and at most one save is in flight. Polling also
+// runs in Replay, where the Live event stream is intentionally disconnected.
+export function setupPresentationSettings({ container, onChange = () => {}, request = sourceRequest, inputDelayMs = 700, saveDelayMs = 400, pollDelayMs = 1000 } = {}) {
   const content = document.createElement('section'); content.className = 'source-settings-form presentation-settings';
   const tips = {
     report_hz: 'Batches per wall-clock second. Each batch retains every simulation sample; simulation, control and replanning rates stay independent. Range 1 to 120.',
@@ -86,45 +92,81 @@ export function setupPresentationSettings({ container, onChange = () => {}, requ
   const field = name => content.querySelector(`[name="${name}"]`);
   const title = content.querySelector('.presentation-title');
   const numeric = ['report_hz', 'buffer_ms', 'ghost_start_opacity_percent', 'ghost_end_opacity_percent', ...Object.keys(LIMIT_MESSAGES)], names = [...numeric, 'interpolate', 'limit_tint'];
-  for (const name of numeric) field(name).title = tips[name];
-  let settings = { ...DEFAULT_PRESENTATION }, loaded = false;
-  function populate() { for (const name of names) { if (name === 'interpolate' || name === 'limit_tint') field(name).checked = settings[name]; else field(name).value = settings[name]; } }
+  for (const name of numeric) { field(name).title = tips[name]; if (TIME_FIELDS[name]) configureTimeInput(field(name), TIME_FIELDS[name]); }
+  let settings = { ...DEFAULT_PRESENTATION }, loaded = false, disposed = false;
+  const drafts = new Set();
+  function populate(selected = names) { for (const name of selected) { if (name === 'interpolate' || name === 'limit_tint') field(name).checked = settings[name]; else if (TIME_FIELDS[name]) setTimeInputValue(field(name), settings[name], TIME_FIELDS[name]); else field(name).value = settings[name]; } }
   function markInvalid(name, error) {
     const input = field(name);
     if (error) { input.dataset.invalid = 'true'; input.title = error; input.setAttribute?.('aria-invalid', 'true'); }
-    else { delete input.dataset.invalid; input.title = tips[name]; input.removeAttribute?.('aria-invalid'); }
+    else { delete input.dataset.invalid; input.title = tips[name]; input.removeAttribute?.('aria-invalid'); if (TIME_FIELDS[name]) configureTimeInput(input, TIME_FIELDS[name]); }
   }
   function markSaveFailed(error) {
     if (error) { title.dataset.saveFailed = 'true'; title.title = `Not saved: ${error.message || error}. The setting is applied for this session; the next change retries.`; }
     else { delete title.dataset.saveFailed; title.title = ''; }
   }
 
-  let saveTimer = null, saving = false, dirty = false;
+  let saveTimer = null, pollTimer = null, saving = false, pending = {}, saveAgain = false, requestEpoch = 0, refreshing = false;
+  function accept(value) {
+    if (disposed) return;
+    const next = { ...validatePresentation(value), ...pending };
+    const changed = names.filter(name => next[name] !== settings[name]);
+    settings = next;
+    for (const name of changed) if (!drafts.has(name)) { populate([name]); markInvalid(name, null); }
+    if (changed.length) onChange({ ...settings });
+  }
   function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(flush, saveDelayMs); }
   async function flush() {
     saveTimer = null;
-    if (saving) { dirty = true; return; }
-    saving = true; dirty = false;
-    try { await request('/api/presentation/settings', { ...settings }); markSaveFailed(null); }
-    catch (error) { markSaveFailed(error); }
-    finally { saving = false; if (dirty) scheduleSave(); }
+    if (disposed || !Object.keys(pending).length) return;
+    if (saving) { saveAgain = true; return; }
+    const sent = pending; pending = {};
+    saving = true; saveAgain = false; ++requestEpoch;
+    let retry = false, succeeded = false;
+    try {
+      const value = await request('/api/presentation/settings/patch', sent);
+      if (!disposed) { accept(value); markSaveFailed(null); succeeded = true; }
+    } catch (error) {
+      retry = Object.keys(pending).length > 0;
+      pending = { ...sent, ...pending };
+      if (!disposed) markSaveFailed(error);
+    } finally {
+      saving = false; ++requestEpoch;
+      if (!disposed && (retry || saveAgain || (succeeded && Object.keys(pending).length))) scheduleSave();
+    }
+  }
+  async function refresh() {
+    if (disposed || saving || refreshing) return;
+    const epoch = requestEpoch; refreshing = true;
+    try {
+      const value = await request('/api/presentation/settings');
+      if (!disposed && !saving && epoch === requestEpoch) accept(value);
+    } catch { /* A transient disconnect keeps the last displayed preferences. */ }
+    finally { refreshing = false; }
+  }
+  function schedulePoll() {
+    if (disposed || !(pollDelayMs > 0)) return;
+    pollTimer = setTimeout(async () => { await refresh(); schedulePoll(); }, pollDelayMs);
+    pollTimer?.unref?.();
   }
 
   function commit(name) {
-    if (!loaded) return;
+    if (!loaded || disposed) return;
     clearTimeout(timers[name]);
+    drafts.delete(name);
     const input = field(name);
     const parsed = numeric.includes(name) ? parsePresentationField(name, input.value) : { value: input.checked };
     markInvalid(name, parsed.error);
     if (parsed.error || parsed.value === settings[name]) return;
     settings = { ...settings, [name]: parsed.value };
+    pending[name] = parsed.value;
     onChange({ ...settings }); scheduleSave();
   }
   const timers = {};
   for (const name of names) {
     const input = field(name);
     if (numeric.includes(name)) {
-      input.addEventListener('input', () => { clearTimeout(timers[name]); markInvalid(name, parsePresentationField(name, input.value).error); timers[name] = setTimeout(() => commit(name), inputDelayMs); });
+      input.addEventListener('input', () => { drafts.add(name); clearTimeout(timers[name]); markInvalid(name, parsePresentationField(name, input.value).error); timers[name] = setTimeout(() => commit(name), inputDelayMs); });
       input.addEventListener('change', () => commit(name));
       input.addEventListener('keydown', event => { if (event.key === 'Enter') commit(name); });
     } else input.addEventListener('change', () => commit(name));
@@ -132,8 +174,14 @@ export function setupPresentationSettings({ container, onChange = () => {}, requ
 
   populate(); for (const name of names) field(name).disabled = true;
   const ready = request('/api/presentation/settings').then(value => {
+    if (disposed) return { ...settings };
     settings = validatePresentation(value); populate(); onChange({ ...settings }); return { ...settings };
   }).catch(error => { markSaveFailed(error); return { ...settings }; })
-    .finally(() => { loaded = true; for (const name of names) field(name).disabled = false; });
-  return { ready, get settings() { return { ...settings }; } };
+    .finally(() => { if (!disposed) { loaded = true; for (const name of names) field(name).disabled = false; schedulePoll(); } });
+  function dispose() {
+    disposed = true; ++requestEpoch;
+    clearTimeout(saveTimer); clearTimeout(pollTimer);
+    for (const timer of Object.values(timers)) clearTimeout(timer);
+  }
+  return { ready, refresh, dispose, get settings() { return { ...settings }; } };
 }

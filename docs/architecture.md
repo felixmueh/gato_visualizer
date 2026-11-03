@@ -9,6 +9,24 @@ project constraints and [the glossary](../UBIQUITOUS_LANGUAGE.md) for domain ter
 [README.md](../README.md) contains startup, prepared-environment/source selection,
 cache/build policy and user workflows.
 
+The [solver capabilities plan](solver-capabilities-plan.md) describes the work
+needed to expose the remaining controller/dynamics options and migrate to
+GATO's cost menu, including the upstream gaps for exact cost curvature and
+optimizer inspection/continuation. It is a proposal, not the current contract.
+
+This experimental branch also supports [visualizer-owned settings adapters](source-settings.md):
+`adapters/tiago.py` owns standard display metadata, with an optional ignored
+checkout-local override for extra controls and native plant/law/predictor builders.
+The friction adapter and its tests live in this repository. Main's execution
+timing remains an independent feature.
+
+The shared Live compilation UI uses a read-only selected-interpreter model check
+before accepting a draft. Supported N choices are independent of cached N.
+The native `find_binary` result is authoritative; the browser never duplicates
+cache-key rules. Explicit Compile freezes the complete draft, then rechecks the
+latest draft and source/profile/cache identity after completion. See
+[the compilation contract](source-settings.md#compiled-models-and-explicit-build).
+
 ## Process ownership
 
 ```mermaid
@@ -42,6 +60,7 @@ one GPU computation runs at a time. Live's private controller remains idle.
 | Area | Main source files | Contract |
 | --- | --- | --- |
 | HTTP, scene/model/FK, service wiring | [server.py](../server.py) | [Live payloads](live-api.md) |
+| Agent CLI and shared-settings controls | [scripts/control.py](../scripts/control.py), [src/backend-watch.js](../src/backend-watch.js) | [Agent API](agent-api.md) |
 | History, generations, SSE publication | [execution_bridge.py](../execution_bridge.py), [execution_worker.py](../execution_worker.py) | [Execution/history](execution-api.md), [reporting](presentation.md) |
 | Simulation clocks, held torque, interval costs | [execution_session.py](../execution_session.py), [solver_adapter.py](../solver_adapter.py) | [Execution](execution-api.md) |
 | `tiago_mpc` import, settings schema and validation, reference geometry, GPU locks | [live_mpc.py](../live_mpc.py) | [Live settings/tasks](live-api.md) |
@@ -61,17 +80,51 @@ one GPU computation runs at a time. Live's private controller remains idle.
 
 Production Live uses `SimulatorAdapter`, the solver child and
 `MultirateSession`; `scripts/check_conformance.py` compares exactly that path
-with `tiago_mpc`'s `experiments.reach.reach`. `LatestPresentation` and `src/live-playout.js` retain older
+with `tiago_mpc`'s `run_virtual_time` with a `Reach` task. `LatestPresentation` and `src/live-playout.js` retain older
 presentation helpers; the current motion clock is `createHistoryClock` in
 `src/live-execution.js`, driven by fetched history over the browser session span,
 with the main track owning Live tip decisions. Do not infer production
 ownership or playback timing from an old helper alone.
 
-The visible application has a single Live session. Startup awaits
-`live.ready` before `enterLive()` so both available and offline sources enter
-the same workspace. Library links use `onLinkedItem` to add an immutable
-track. Hidden legacy Replay DOM/adapters remain for compatibility with the
-existing inspection and recording code; they expose no second UI transport.
+The adapter builds `SimConfig(q=..., qd=..., substep=..., integrator=...,
+friction=..., friction_law=...).build()` from the native state and starts the plant with
+`VirtualClock(sim_time_s)`. Reset and rollback get fresh clocks; numerical time never
+moves backward in a plant instance. The source probe checks this lifecycle and
+the MPC's `request`/`result` interface before a source can be selected. The
+session reuses upstream `Schedule` with pending activation at command ticks;
+measured solve latency is the normal default. The conformance reference uses
+upstream `run_virtual_time` with a declared 5.5 ms latency on both sides, including
+activation between request slots. Live retains its simulation-only limit policy
+and final-command hold; it does not adopt the package's robot-plan lease.
+
+The visible application has a single session workspace. Startup awaits
+`live.ready` before entering it so both available and offline sources share
+the same transport. Replay mode is the session's independent `replayOnly` flag;
+it does not switch to the hidden legacy Replay workspace. `activeTracks` omits
+the retained Live track in this mode, and the session span, lanes and playback
+bounds use those active tracks. Add track and library links (`onLinkedItem`)
+enter Replay mode; Freeze for comparison stays in Live. Initial `?replay=`
+startup skips Live's event subscription and automatic preview.
+
+Entering Replay mode cancels ongoing Live calculation (ordinary Pause does not
+cancel Manual/Automatic jobs), clears queued settings submission and blocks new
+simulation/preview/settings commands. Live's controls remain visible but inert;
+the scene omits its arm, paths and temporal ghosts. The first visible replay
+supplies Joints, Episode and follow-cursor Solve; pinned inspection retains its
+own source. The stored main track remains Live, with no general focus selector.
+The top-centre return button and bottom-bar toggle restore the retained Live
+track and all recordings, paused. Replay Reset rewinds the recorded clock.
+Hidden legacy Replay DOM/adapters remain for compatibility with existing
+inspection and recording code; they expose no second UI transport.
+
+The HTTP parent owns the current accepted Live settings. Agents read them without
+subscribing and patch them under the same lock as browser commands. Settings
+events hydrate browser fields; version guards prevent stale writes, and partial
+browser edits preserve unrelated remote changes. Replay viewers poll settings
+without subscribing or computing. Presentation preferences have independent
+partial updates and polling. Backend identity changes reload source-bound browser
+objects; profile polling follows external solver switches without a page reload.
+See [agent controls](agent-api.md) for the CLI and acceptance semantics.
 
 ## Invariants to preserve
 
@@ -93,8 +146,9 @@ deadline interval is retained, as is every command and the state at every
 command tick and TO update ([recording](execution-api.md#recording)); recording
 never changes the simulation. Each generation's history starts with a segment
 header holding its constant context; records name it by generation and every
-reader takes the context from it ([segment header](execution-api.md#segment-header)). A slow solve
-slows wall-clock progress; it does not advance plant time. Live defaults to
+reader takes the context from it ([segment header](execution-api.md#segment-header)). The configured solve latency advances virtual plant time under the previous
+plan; measured solver-step time supplies that latency by default. Calculation
+and presentation overhead can also slow wall-clock progress. Live defaults to
 20 Hz reports, a 200 ms simulation-time playback buffer and sample hold.
 Changing these presentation preferences does not reset settings, generation or
 controller state. See [presentation.md](presentation.md) for packet/page limits.
@@ -109,7 +163,8 @@ frame derived from the URDF. The plant group selects `SimPlant`'s integrator
 (`plant.integrator`) and URDF friction with its Coulomb law (`plant.friction`,
 `plant.coulomb_law`, `plant.friction_width_rad_s`); predictor/profile changes do
 not change the plant. Predictor friction (`friction` in `MpcParams`) selects a
-compiled variant with a fixed tanh width. Both default to loss-free. See
+compiled variant with a fixed tanh width. The plant defaults to Euler with
+constraint friction; the predictor defaults to loss-free. See
 [friction](friction.md). The session clips
 commands to the raw effort limit and stops on simulated limit breaches at full
 rate, as `plant.clip_effort` and `plant.stop_on_breach` select
@@ -161,11 +216,11 @@ python_bin="$(python3 scripts/launch_python.py)"
 | Browser logic and bundle | `npm test`; `npm run build` (or `node --test src/live-execution.test.js src/presentation-settings.test.js` for focused playback checks) |
 
 The full CPU suite is `"$python_bin" -m unittest discover -s tests -v`. Tests
-that need `tiago_mpc` take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc`) and
+that need `tiago_mpc` take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc-visualizer-base`) and
 need no compiled module; fake adapters exercise process/scheduler behavior
 without proving native solver numerics. The opt-in
 [GPU conformance command](../README.md#development) compares the production Live
-loop with `tiago_mpc`'s own reach for the default loss-free reach only. Native/profile qualifications are bounded by the
+loop with `tiago_mpc`'s own reach for the explicit loss-free RK4 reach case only. Native/profile qualifications are bounded by the
 actual source, model and horizon checked; no CPU suite establishes all-horizon
 GPU equivalence or performance. Retain new native evidence under `_expr_data/`
 and coordinate an idle GPU window when such work is authorized and relevant.

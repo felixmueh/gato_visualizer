@@ -77,7 +77,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
     generation = version = 0
     token = 0
     bridge_command_epoch = 0
-    config = task = execution = None
+    config = task = execution = source_settings = None
     job = None
     need_config = True
     initialized_generation = None
@@ -153,7 +153,13 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                 # so Reset discards it before, not after, reconfiguring, and
                 # seeds from the configured start pose.
                 adapter.reset_state(config["plant"]["start_pose_rad"])
-            adapter.configure(config, task)
+            if adapter_factory is None:
+                adapter.configure(config, task, source_settings, execution)
+                emit(dict(kind="resolved_settings", token=token, generation=generation,
+                          source_settings=deepcopy(adapter.source_settings),
+                          effective_settings=deepcopy(adapter.effective_settings)), token)
+            else:
+                adapter.configure(config, task)
             need_config = False
 
     def initialize_history():
@@ -183,11 +189,16 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             # Binary loading/ABI discovery stays in an independent interpreter.
             from source_runtime import probe_selection
             # The start pose belongs to the plant: its default comes from the simulator source.
+            from worktree_settings import describe_settings
+            simulator_tiago = import_tiago(mpc_root)
+            simulation_description = describe_settings(mpc_root)
+            simulation_scope = dict(simulation_description["simulation"], module=simulation_description["module"])
             schema = build_schema(probe_selection({key: solver_profile[key] for key in ("mpc_root", "python", "cache")}),
-                                  mpc_root, start_pose_spec(import_tiago(mpc_root)))
+                                  mpc_root, start_pose_spec(simulator_tiago), simulation_settings=simulation_scope)
         config = deepcopy(schema["defaults"]["config"])
         task = deepcopy(schema["defaults"]["task"])
         execution = deepcopy(schema["defaults"].get("execution", DEFAULT_EXECUTION))
+        source_settings = deepcopy(schema["defaults"].get("source_settings", dict(simulation={}, predictor={})))
         emit(dict(kind="ready", schema=schema))
         pending = None
         while not shutdown.is_set():
@@ -203,7 +214,8 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     if kind == "refresh_compiled":
                         # A Build added modules for the active solver: no revision,
                         # job, lock or controller change (ProcessLiveService.refresh_compiled).
-                        available = {key: command[key] for key in ("available_N", "available_N_by_friction")}
+                        available = {key: command[key] for key in ("available_N", "available_N_by_friction", "exact_availability")
+                                     if key in command}
                         if adapter is None:  # the startup profile, selected with schema later
                             schema.update(deepcopy(available))
                         elif getattr(adapter, "profile_schema", None) is not None:
@@ -232,6 +244,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     if incoming_version != version and "config" in command:
                         config, task = deepcopy(command["config"]), deepcopy(command["task"])
                         execution = deepcopy(command["execution"])
+                        source_settings = deepcopy(command.get("source_settings", source_settings))
                         need_config = True
                     version = incoming_version
                     if kind == "switch_solver_profile":
@@ -244,13 +257,17 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                         if not current(token):
                             continue
                         saved_state = None
+                        previous_source_settings = deepcopy(source_settings)
                         replaced_child = False
                         try:
                             if adapter is None:
                                 adapter = (adapter_factory or SimulatorAdapter)(mpc_root)
                             adapter.gpu_locks = locks
                             saved_state = (adapter.x.copy(), adapter.t, adapter.applied_torque, adapter.sequence)
-                            profile_schema = adapter.preflight_profile(command["profile"], config, task)
+                            profile_schema = (adapter.preflight_profile(command["profile"], config, task, source_settings)
+                                              if adapter_factory is None else
+                                              adapter.preflight_profile(command["profile"], config, task))
+                            source_settings = deepcopy(profile_schema.get("requested_source_settings", source_settings))
                             anchor = command.get("anchor")
                             if anchor is not None:
                                 apply_anchor(anchor)
@@ -273,7 +290,9 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             initial_time, state_count = float(adapter.t), 1
                             history_complete = False
                             emit(dict(kind="profile_activated", token=token, generation=generation,
-                                profile=command["profile"], schema=adapter.profile_schema), token)
+                                profile=command["profile"], schema=adapter.profile_schema,
+                                source_settings=deepcopy(source_settings),
+                                effective_settings=deepcopy(getattr(adapter, "effective_settings", {}))), token)
                             emit(dict(kind="records", generation=generation, token=token,
                                 records=first_records, complete=False), token)
                             status("paused", "Solver profile selected; simulator state retained", complete=False)
@@ -315,6 +334,7 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                     if kind == "set_settings":
                         config, task = deepcopy(command["config"]), deepcopy(command["task"])
                         execution = deepcopy(command["execution"])
+                        source_settings = deepcopy(command.get("source_settings", source_settings))
                         need_config = True
                         initialized_generation = None
                         job = None

@@ -2,7 +2,6 @@
 replaceable, isolated solver child. Imports tiago_mpc's tiago/sim/clock only."""
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import asdict
 import hashlib
 from pathlib import Path
 
@@ -44,7 +43,8 @@ class SimulatorAdapter:
         self.simulator_identity = dict(deepcopy(self.model_identity), joint_names=list(tiago.RIGHT_ARM_JOINTS),
             lower_position_rad=limits.lower.tolist(), upper_position_rad=limits.upper.tolist(),
             velocity_rad_s=limits.velocity.tolist(), effort_nm=limits.effort.tolist(),
-            plant="tiago_mpc.sim.SimPlant", integrator="rk4", friction=None, coulomb_law=None)
+            plant="tiago_mpc.sim.SimPlant", integrator="rk4", friction=None, friction_law=None,
+            armature=[0.] * 7, coulomb_law=None)
         self.default_target = tiago.fk(tiago.Q_REACH, tiago.GRASP_FRAME)
         # Task geometry stays tied to Q_START, as tiago_mpc's Figure8.start_m: the
         # configurable start pose moves the arm, not the figure-eight anchor.
@@ -52,7 +52,13 @@ class SimulatorAdapter:
         self.task_anchors = snapshot(dict(reach=self.kinematics.target_to_world(self.default_target).tolist(),
                                           figure8=self.figure8_start_world.tolist()))
         self.task = deepcopy(REACH_DEFAULT_TASK)
-        self.plant_options = dict(integrator="rk4", friction=None, coulomb_law="constraint")  # SimPlant's
+        self.plant_options = dict(integrator="rk4", friction=None)  # SimPlant's
+        from worktree_settings import describe_settings, default_values
+        from tiago_mpc.laws import SampleKnot
+        self.source_description = describe_settings(self.mpc_root)
+        self.source_settings = default_values(self.source_description)
+        self.effective_settings = dict(modules=dict(simulation=self.source_description["module"], predictor=None))
+        self.law = SampleKnot()
         self.limit_handling = None
         self.joint_limits = self.mpc_bounds = None
         self.remote = self.profile = self.profile_identity = self.profile_schema = None
@@ -72,13 +78,20 @@ class SimulatorAdapter:
         self.sequence = 0
         self.applied_torque = None
 
-    def preflight_profile(self, profile, config, task):
+    def preflight_profile(self, profile, config, task, source_settings=None):
         """CPU-only probe of the profile's interpreter; returns its Live schema."""
         from live_mpc import build_schema, validate_settings
         from source_runtime import probe_selection
-        checked = probe_selection({key: profile[key] for key in ("mpc_root", "python", "cache")})
-        schema = build_schema(checked, profile["mpc_root"], start_pose_spec(self.tiago),
-                              end_effector=end_effector_spec(self.tiago))
+        selection = {key: profile[key] for key in ("mpc_root", "python", "cache")}
+        checked = probe_selection(selection)
+        predictor_values = checked.get("source_settings", {}).get("predictor", {}).get("defaults", {})
+        checked = probe_selection(selection, params=mpc_params(config), source_settings=predictor_values)
+        simulation = dict(self.source_description["simulation"], module=self.source_description["module"])
+        schema = build_schema(checked, self.mpc_root, start_pose_spec(self.tiago),
+                              end_effector=end_effector_spec(self.tiago), simulation_settings=simulation)
+        schema["requested_source_settings"] = dict(
+            simulation=deepcopy((source_settings or self.source_settings)["simulation"]),
+            predictor=deepcopy(predictor_values))
         validate_contract(self.contract, checked.get("contract", {}))
         validate_settings(config, task, schema)
         return schema
@@ -94,21 +107,31 @@ class SimulatorAdapter:
             raise
         self.remote, self.profile, self.profile_schema = remote, deepcopy(profile), schema
 
-    def configure(self, config, task):
+    def configure(self, config, task, source_settings=None, execution=None):
         if self.remote is None:
             raise ValueError("No active solver profile; select a compatible profile")
         params = mpc_params(config)
         mode = "on" if params["friction"] is not None else "off"
-        if params["N"] not in self.profile_schema["available_N_by_friction"][mode]:
+        if (not self.profile_schema.get("exact_availability")
+                and params["N"] not in self.profile_schema["available_N_by_friction"][mode]):
             raise ValueError(f"Not compiled: N={params['N']} {'with' if mode == 'on' else 'without'} predictor "
                              "friction. Build it in Settings › Backend (Build selected N).")
-        if params["ee_frame"] != self.kinematics.end_effector_frame:
-            raise ValueError(f"The simulator tracks {self.kinematics.end_effector_frame}, not {params['ee_frame']}")
-        predictor = self.remote.request("configure", timeout=120, params=params)
+        from live_mpc import validate_source_settings
+        values = validate_source_settings(self.profile_schema, source_settings)
+        role = self.profile_schema.get("source_settings", {}).get("predictor", {})
+        predictor = self.remote.request("configure", timeout=120, params=params,
+                                        source_settings=values["predictor"], settings_module=role.get("module"))
+        self.source_settings = values
+        self.effective_settings.update(params=deepcopy(predictor["resolved"]))  # the values GATO resolved
+        self.effective_settings["modules"]["predictor"] = predictor.get("settings_resolution", {}).get("module")
+        self.execution = deepcopy(execution or {})
         plant = config["plant"]
-        friction = (self.tiago.urdf_friction(plant["friction_width_rad_s"] if plant["coulomb_law"] == "tanh" else None)
-                    if plant["friction"] else None)
-        self.plant_options = dict(integrator=plant["integrator"], friction=friction, coulomb_law=plant["coulomb_law"])
+        from tiago_mpc.dynamics import Tanh, Sign, StickSlip
+        from tiago_mpc.record import to_dict
+        law = (Tanh(plant["friction_width_rad_s"]) if plant["coulomb_law"] == "tanh" else
+               Sign() if plant["coulomb_law"] == "sign" else StickSlip())
+        friction = self.tiago.urdf_friction() if plant["friction"] else None
+        self.plant_options = dict(integrator=plant["integrator"], friction=friction, friction_law=law)
         # The next Reset starts here; anchors and the current state are unaffected.
         self.start_pose = np.asarray(config["plant"]["start_pose_rad"], dtype=float)
         raw = self.tiago.limits()
@@ -116,12 +139,12 @@ class SimulatorAdapter:
                                    clip_effort=config["plant"]["clip_effort"],
                                    stop_on_breach=dict(config["plant"]["stop_on_breach"]))
         self.simulator_identity = dict(self.simulator_identity, integrator=plant["integrator"],
-                                       friction=friction and asdict(friction),
+                                       friction=to_dict(friction), friction_law=to_dict(law),
                                        coulomb_law=plant["coulomb_law"] if friction else None,
                                        clip_effort=plant["clip_effort"])
         self.problem_configuration = deepcopy(predictor["configuration"])
-        self.settings = dict(config=deepcopy(config), task=deepcopy(task))
-        self.configure_task(params["N"], params["dt_s"], task)
+        self.settings = dict(config=deepcopy(config), task=deepcopy(task), source_settings=deepcopy(values))
+        self.configure_task(predictor["configuration"]["N"], predictor["configuration"]["dt_s"], task)
         self.joint_limits, self.mpc_bounds = predictor["joint_limits"], predictor["mpc_bounds"]
         self.profile_identity = dict(profile=deepcopy(self.profile), process_epoch=self.remote.epoch,
             predictor=predictor, simulator=self.simulator_identity, coordinate_contract=self.contract,
@@ -139,6 +162,7 @@ class SimulatorAdapter:
             simulator_identity=self.simulator_identity, solver_profile=self.profile_identity,
             position_tol_m=POSITION_TOL_M, speed_l1_tol_rad_s=SPEED_L1_TOL_RAD_S,
             source=self.model_identity["source"]))
+        self._resolved_plant(1/self.execution.get("simulation_hz", 1000.))
         self.controller.reset(self.x)
 
     def configure_task(self, n, dt, task):
@@ -160,25 +184,58 @@ class SimulatorAdapter:
             return figure8_reference([timestamp], self.figure8_start_world, self.task)[0]
         return self.kinematics.target_to_world(self.target)
 
-    def update_tracking_reference(self):
-        world = figure8_reference(self.t+np.arange(self.N)*self.dt, self.figure8_start_world, self.task)
+    def update_tracking_reference(self, time_s=None):
+        world = figure8_reference((self.t if time_s is None else time_s)+np.arange(self.N)*self.dt,
+                                 self.figure8_start_world, self.task)
         self.reference[:, :3] = np.asarray([self.kinematics.world_from_torso.actInv(point) for point in world])
 
     def new_plant(self, substep):
         """tiago_mpc's SimPlant at the current state and time. Its simulation clock
         never moves backward, so every anchor, reset or rollback takes a new one."""
-        from tiago_mpc.clock import Clock
-        from tiago_mpc.sim import SimPlant
-        plant = SimPlant(self.x[:7], self.x[7:], substep=substep, **self.plant_options,
-                         clock=Clock.simulation(self.t))
-        plant.start()
+        from tiago_mpc.clock import VirtualClock
+        from tiago_mpc.sim import SimConfig
+        plant = self._resolved_plant(substep).build()
+        plant.start(VirtualClock(self.t))
         return plant
 
-    def task_reference(self):
+    def _resolved_plant(self, substep):
+        from tiago_mpc.sim import SimConfig
+        from tiago_mpc.laws import FrictionFeedforward, SampleKnot
+        from tiago_mpc.record import to_dict
+        from worktree_settings import resolve_simulation
+        base = SimConfig(q=self.x[:7], qd=self.x[7:], substep=substep, **self.plant_options)
+        config, law, captured = resolve_simulation(self.mpc_root, self.source_settings["simulation"],
+                                                  base, SampleKnot(), to_dict,
+                                                  expected_module=self.source_description["module"])
+        if isinstance(law, FrictionFeedforward):
+            if isinstance(law.base_law, FrictionFeedforward):
+                raise ValueError("Friction feedforward cannot wrap another friction feedforward law")
+            if self.effective_settings.get("params", {}).get("friction") is not None:
+                raise ValueError("Friction feedforward requires predictor friction=None to avoid double compensation")
+        self.law = law
+        self.effective_settings.update(plant=captured["effective"]["plant"], law=captured["effective"]["law"])
+        self.effective_settings["modules"]["simulation"] = captured["module"]
+        self.simulator_identity = dict(self.simulator_identity, friction=to_dict(config.friction),
+                                       friction_law=to_dict(config.friction_law),
+                                       armature=list(getattr(config, "armature", (0.,)*7)))
+        if self.profile_identity is not None:
+            predictor = self.profile_identity["predictor"]
+            friction_differs = (self.simulator_identity["friction"] != predictor["prediction_friction"]
+                                or config.friction is not None and predictor["prediction_friction"] is not None
+                                and to_dict(config.friction_law) != predictor["configuration"]["friction_law"])
+            armature_differs = self.simulator_identity["armature"] != predictor["configuration"].get("armature", [0.]*7)
+            self.profile_identity = dict(self.profile_identity, simulator=deepcopy(self.simulator_identity),
+                                         friction_differs=friction_differs, armature_differs=armature_differs,
+                                         physical_model_differs=friction_differs or armature_differs or any(
+                                             predictor["model_identity"].get(key) != self.model_identity[key]
+                                             for key in ("full_urdf_sha256", "native_urdf_sha256")))
+        return config
+
+    def task_reference(self, time_s=None):
         """The reference for a request at the current time: the figure-eight window from
         self.t, else the fixed target."""
         if self.task["kind"] == "figure8":
-            self.update_tracking_reference()
+            self.update_tracking_reference(time_s)
         return self.reference
 
     def segment_header(self, settings_version, execution):
@@ -187,17 +244,22 @@ class SimulatorAdapter:
         including the complete effective settings (config with its plant group,
         task, execution) and the source identity."""
         context = dict(mutable(self._segment_context),
-                       settings=dict(deepcopy(self.settings), execution=deepcopy(execution)))
+                       settings=dict(deepcopy(self.settings), execution=deepcopy(execution)),
+                       simulator_identity=deepcopy(self.simulator_identity), solver_profile=deepcopy(self.profile_identity),
+                       effective_settings=deepcopy(self.effective_settings))
         return dict(type="segment", sim_time_s=float(self.t), settings_version=settings_version, context=context)
 
-    def solve_snapshot(self, origin, settings_version):
-        self.task_reference()
-        response = self.remote.request("solve", state=self.x, time_s=self.t,
-            reference=self.reference, origin=origin, settings_version=settings_version)
+    def solve_snapshot(self, origin, settings_version, initial=None):
+        # History records the request time; the trajectory has its own origin.
+        at = float(self.t if initial is None else initial.t)
+        state = self.x if initial is None else np.r_[initial.q, initial.qd]
+        self.task_reference(at)
+        predicted = {} if initial is None else dict(measured_time_s=float(initial.measured_t))
+        response = self.remote.request("solve", state=state, time_s=at,
+            reference=self.reference, origin=origin, settings_version=settings_version, **predicted)
         self.sequence += 1
-        # Target/anchors are simulator-owned; the child's model never moves them.
-        event = dict(response["plan"], seq=self.sequence, _reference=self.reference.copy(),
-                     target_xyz=self.target_world_at(self.t).tolist())
+        event = dict(response["plan"], seq=self.sequence, sim_time_s=float(self.t),
+                     _reference=self.reference.copy(), target_xyz=self.target_world_at(at).tolist())
         return snapshot(event)
 
     def _state_fields(self, settings_version=0):

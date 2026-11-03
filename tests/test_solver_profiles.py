@@ -111,7 +111,7 @@ class CompiledRefreshTests(unittest.TestCase):
             self.assertTrue(live.refresh_compiled(live.active_profile, probe))
             self.assertEqual(live.schema["available_N_by_friction"], dict(off=[16, 32], on=[]))
             self.assertEqual(next(s for s in live.schema["parameters"] if s["path"] == "N")["choices"], [16, 32])
-            self.assertIn(dict(type="compiled_modules", available_N=[16, 32], available_N_by_friction=dict(off=[16, 32], on=[])),
+            self.assertIn(dict(type="compiled_modules", available_N=[16, 32], available_N_by_friction=dict(off=[16, 32], on=[]), exact_availability=False),
                           live.read_events(cursor, timeout=0)[1])
             live.command(settings)  # the coordinator's adapter now lists N=32 too
             wait_until(lambda: live.latest.get("status", {}).get("N") == 32 and
@@ -132,6 +132,25 @@ class SwitchTests(unittest.TestCase):
     def tearDown(self):
         self.live.close()
 
+    def test_switch_revision_distinguishes_reactivation_and_repeated_failure(self):
+        live = self.live
+        selection = {key: value for key, value in live.active_profile.items() if key not in ("id", "name")}
+        profiles = SolverProfiles(live, selection, None)
+        self.assertEqual(profiles.status()["switch_revision"], 0)
+        revisions = []
+        for identifier, outcome in (("simulator", "idle"), ("simulator", "idle"),
+                                    ("unsupported_n", "failed"), ("unsupported_n", "failed")):
+            live.switch_solver_profile(dict(id=identifier))
+            wait_until(lambda: live.profile_switch["state"] == outcome)
+            catalog = profiles.status()
+            event = next(event for _, event in reversed(live.events) if event["type"] == "solver_profile")
+            self.assertEqual(catalog["switch_revision"], event["switch_revision"])
+            revisions.append(catalog["switch_revision"])
+        self.assertTrue(all(right > left for left, right in zip([0, *revisions], revisions)))
+        before = profiles.status()["switch_revision"]
+        live.command(dict(type="patch_settings", patch={"config": {"solver": {"max_sqp_iters": 3}}}))
+        self.assertEqual(profiles.status()["switch_revision"], before)
+
     def test_switch_retains_native_anchor_and_plant_and_replaces_the_run(self):
         live = self.live
         old_path = live.history_store.path
@@ -149,6 +168,9 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(live.latest["state"]["q"], [.25]*7)
         self.assertEqual(live.latest["state"]["qd"], [-.4]*7)
         self.assertEqual(live.active_profile_id, "second")
+        self.assertEqual(live.schema["compile_profile_id"], "second")
+        self.assertEqual(live.schema["compile_selection"],
+                         dict(mpc_root=None, python=None, cache=None, effective_cache=None))
         self.assertEqual(live.schema["available_N_by_friction"], dict(off=[16], on=[32]))
         self.assertEqual(live.schema["friction"]["source"]["predictor"], "second")
         self.assertFalse(old_path.exists())  # only the current run is kept
@@ -211,7 +233,8 @@ class SwitchTests(unittest.TestCase):
         wait_until(lambda: live.latest["state"].get("torque_nm") is not None)
         live.switch_solver_profile(dict(id="second"))
         wait_until(lambda: live.active_profile_id == "second" and "state" in live.latest)
-        self.assertIsNone(live.latest["state"]["torque_nm"])
+        self.assertEqual(live.latest["state"]["torque_nm"],[0.]*7)
+        self.assertEqual(live.latest["state"]["startup_command_source"],"zero_effort_moving_anchor")
         self.assertNotIn("plan_seq", live.latest["state"])
 
     def test_http_profile_save_activate_keeps_simulator_source_and_other_settings(self):
@@ -288,6 +311,10 @@ class TransportTests(unittest.TestCase):
     def test_preflight_rejects_changed_parameter_shape_before_replacing_solver(self):
         adapter = SimulatorAdapter.__new__(SimulatorAdapter)
         adapter.tiago = import_tiago(MPC_ROOT)
+        adapter.mpc_root = MPC_ROOT
+        from worktree_settings import describe_settings, default_values
+        adapter.source_description = describe_settings(MPC_ROOT)
+        adapter.source_settings = default_values(adapter.source_description)
         adapter.contract = dict(joint_names=[str(i) for i in range(7)], nq=7, nv=7,
             coordinate_units="rad,rad/s,Nm", torque_semantics="actuator_joint_torque",
             reference_frame="torso", end_effector_frame="tcp",
@@ -456,7 +483,7 @@ with socket.socket(fileno=fd) as channel:
         adapter = FakeAdapter()
         torques = np.zeros((2, 7)); torques[:, 5] = 3.
         plan = dict(_states=np.zeros((3, 14)), _torques=torques, N=3, dt_s=.02,
-                    seq=1, stats=dict(solve_time_ms=0.), sim_time_s=0., type="plan")
+                    seq=1, stats=dict(solve_time_ms=0.,step_wall_s=0.), sim_time_s=0., type="plan")
         adapter.solve_snapshot = lambda origin, version: deepcopy(plan)
         session = MultirateSession(adapter, dict(DEFAULT_EXECUTION,
             simulation_hz=100., control_hz=100., to_hz=100.))

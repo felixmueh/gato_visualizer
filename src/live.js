@@ -8,6 +8,10 @@ import { DEFAULT_PRESENTATION, validatePresentation } from './presentation-setti
 import { createLiveHistory } from './live-history.js';
 import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
 import { sessionSpan } from './session.js';
+import { settingsPatch, rebaseSettings } from './shared-settings.js';
+import { createVectorField, createWorktreeFields, restoreWorktreeSettings, fieldValue, resolvedValueText, validateField, parameterTooltip } from './worktree-fields.js';
+import { createModelCompilation, createModelCompilePrompt, modelCheckInputs } from './model-compilation.js';
+import { canonicalTimeUnit, parseTimeValue, configureTimeInput, readTimeInput, setTimeInputValue } from './time-input.js';
 const HISTORY_PAGE_SIZE = 1024;
 
 export function cloneSettings(value) {
@@ -27,36 +31,52 @@ export function writePath(value, path, next) {
 
 // config.friction is the predictor friction of MpcParams: null when loss-free.
 export function availableKnotCounts(schema, config) {
+  if (schema.exact_availability) return schema.available_N;
   const mode = config?.friction ? 'on' : 'off';
   return schema.available_N_by_friction?.[mode] ?? schema.available_N;
 }
 
+export const supportedKnotCounts = schema => schema.supported_N ?? schema.available_N;
+
 export function initialLiveSettings(schema) {
-  if (!Array.isArray(schema.available_N) || !schema.available_N.length) {
+  const supported = supportedKnotCounts(schema);
+  if (!Array.isArray(supported) || !supported.length) {
     throw new Error('No knot counts are ready. Open Settings › Backend to select a compatible cache or build them. Replay is available.');
   }
-  if (!schema.available_N.every((value) => Number.isInteger(value) && value > 1)) {
+  if (!supported.every((value) => Number.isInteger(value) && value > 1)) {
     throw new Error('The live knot-count list is invalid. Restart the visualizer server and reload this page.');
   }
   const settings = cloneSettings(schema.defaults);
   if (!settings?.config || typeof settings.config !== 'object') throw new Error('The live settings could not load.');
-  if (!schema.available_N.includes(settings.config.N)) settings.config.N = schema.available_N[0];
+  if (!supported.includes(settings.config.N)) settings.config.N = supported[0];
   return settings;
 }
 
 export function restoreCompatibleSettings(schema, saved) {
   const settings = initialLiveSettings(schema);
   if (!saved || typeof saved !== 'object') return settings;
+  const previousFriction = saved.config?.friction;
+  if (previousFriction && Object.hasOwn(previousFriction, 'law') && settings.config.friction_law) {
+    const { law, ...coefficients } = previousFriction;
+    const choices = schema.parameters?.find(parameter => parameter.path.replace(/^config\./, '') === 'friction')?.choices || [];
+    if (!settingValuesEqual(law, settings.config.friction_law) ||
+        !choices.some(choice => settingValuesEqual(choiceValue(choice), coefficients))) {
+      throw new Error('Saved predictor friction cannot be restored with the current coefficients and fixed tanh width. Reload to use current defaults.');
+    }
+    saved = { ...saved, config: { ...saved.config, friction: coefficients } };
+  }
   for (const parameter of schema.parameters || []) {
     const path = parameter.path.replace(/^config\./, ''), value = readPath(saved.config, path);
     if (value === undefined) continue;
     try {
       if (parameter.kind === 'choice') {
-        const choices = path === 'N' ? schema.available_N : parameter.choices;
+        const choices = path === 'N' ? supportedKnotCounts(schema) : parameter.choices;
         if (!choices.some(choice => settingValuesEqual(choiceValue(choice), value))) continue;
       } else if (parameter.kind === 'joints') {
         if (!Array.isArray(value) || value.length !== parameter.lower.length ||
             !value.every((x, i) => Number.isFinite(x) && x >= parameter.lower[i] && x <= parameter.upper[i])) continue;
+      } else if (parameter.kind === 'vector') {
+        validateField(parameter, value);
       } else if (parameter.kind === 'bool') {
         if (typeof value !== 'boolean') continue;
       } else if (value === null) {
@@ -85,6 +105,7 @@ export function restoreCompatibleSettings(schema, saved) {
     if (orientation && task.kind === 'figure8') settings.task.orientation_xyzw = orientation;
   }
   try { settings.execution = validateExecution(saved.execution); } catch {}
+  if (schema.source_settings) settings.source_settings = restoreWorktreeSettings(schema, saved.source_settings);
   return settings;
 }
 
@@ -112,11 +133,14 @@ export function parseParameter(parameter, input) {
     if (value === undefined) throw new Error(`${parameter.label || parameter.path || 'Setting'} needs an available choice.`);
     return value;
   }
+  if (parameter.gato_default && input.dataset?.gatoValue && input.value === input.dataset.gatoValue) return null;  // still GATO's
   if (input.value.trim() === '') {
     if (parameter.nullable) return null;
     throw new Error(`${parameter.label} needs a value.`);
   }
-  const value = Number(input.value);
+  const timeUnit = canonicalTimeUnit(parameter);
+  const value = timeUnit ? parseTimeValue(input.value, { ...parameter, unit: timeUnit }) : Number(input.value);
+  if (timeUnit && value === null) return null;
   if (!Number.isFinite(value) || (parameter.kind === 'int' && !Number.isInteger(value))) {
     throw new Error(`${parameter.label} needs a finite ${parameter.kind === 'int' ? 'integer' : 'number'}.`);
   }
@@ -153,7 +177,7 @@ export function validPoints(points) {
     Array.isArray(point) && point.length === 3 && point.every(Number.isFinite));
 }
 
-export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {}, onFreeze = async () => {} }) {
+export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayOnly = false, onReplayMode = () => {}, onMode, onPlan, onState, onReset, onReference = () => {}, onSolverProfile = () => {}, onFreeze = async () => {}, settingsPollMs = typeof window === 'undefined' ? 0 : 1000 }) {
   const $ = id => document.getElementById(id);
   let schema, settings, defaultSettings, submittedSettings, source, state, plan, presentedState, renderedPlan;
   let mode = 'replay', status = 'idle', liveReady = false, pending = false, dirty = false;
@@ -171,6 +195,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   let precomputedRevision = -1, precomputedPoints;
   // The start pose shown while a position gauge is dragged: scene only, no settings change.
   let poseDraft = null, acceptedStartPose;
+  let acceptedSettings, serverSettingsVersion, settingsPoll, disposed = false, settingsEpoch = 0;
+  const settingsRequests = [];
   const latestServerEvents = new Map();
   // Each history segment's constant context (task, limits, identities), sent once
   // in its `segment` record; plans and states name their segment by generation.
@@ -180,20 +206,50 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   const resetIndicators = createSettingResets();
   let presentation = validatePresentation(presentationSettings);
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock({ bufferMs: presentation.buffer_ms }), inputs = [];
+  let sourceFields = null, nativeVectors = [], resolvedFields = [], effectiveSettings = null;
+  // Fields whose empty value (None) follows GATO's default look as if GATO's value were chosen.
+  // The configured solver reports that value (effective_settings) while the accepted settings
+  // follow GATO; before any solver reports it they read "GATO default".
+  let gatoDefaultFields = [];
+  const gatoValues = new Map();  // path -> GATO's value, kept once a solver reported it
+  function refreshGatoDefaults() {
+    for (const field of gatoDefaultFields) {
+      const reported = fieldValue(effectiveSettings || schema?.effective_settings, `params.${field.path}`);
+      if (readPath(acceptedSettings?.config, field.path) == null && reported != null) gatoValues.set(field.path, reported);
+      const value = gatoValues.get(field.path);
+      if (field.option) {
+        // GATO's option takes the label of the choice equal to GATO's value, which is hidden.
+        const options = [...field.input.children].filter(option => option !== field.option);
+        const twin = value == null ? null : options.find(option =>
+          settingValuesEqual(choiceValue(field.parameter.choices[Number(option.value)]), value));
+        for (const option of options) option.hidden = option === twin;
+        field.option.textContent = twin ? twin.textContent : 'GATO default';
+      } else {
+        // The number shows GATO's value; parseParameter reads it back as None while unchanged.
+        const shown = value == null ? '' : String(value);
+        if (field.input.value === '' || field.input.value === field.input.dataset.gatoValue) field.input.value = shown;
+        field.input.dataset.gatoValue = shown; field.input.placeholder = 'GATO default';
+      }
+    }
+  }
+  let modelCompilation, modelPrompt, modelState = { phase: 'idle' };
+  let declaredLatencyDraft = .005, fixedToDraft = DEFAULT_EXECUTION.to_hz;
+  const compilationEnabled = () => Array.isArray(schema?.supported_N) && Boolean(schema.compile_selection);
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
-  const transportConnected = () => liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && !needsInitialPreview;
+  const transportConnected = () => !replayOnly && liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && !needsInitialPreview;
   const connected = () => transportConnected() && !profileNError;
   const continueAtEnd = () => connected() && (calculateWhilePlaying || Boolean(settings?.execution.continue_at_end));
   // Completion metadata can precede later history pages. Do not drain a short
   // final tail until the local download is caught up.
-  const growingHistory = () => Boolean((connected() && (job.job_active || extensionPending)) || fetching || fetchAgain);
-  const sessionBounds = () => session ? sessionSpan(session.tracks.map(track => track.kind === 'live' ? { ...track, span: history.bounds, empty: !history.length } : track)) : history.bounds;
-  const presentationBounds = () => session ? sessionSpan(session.tracks.map(track => track.kind === 'live' ? { ...track, span: clock.presentationBounds(history.bounds), empty: !history.length } : track)) : clock.presentationBounds(history.bounds);
+  const growingHistory = () => !replayOnly && Boolean((connected() && (job.job_active || extensionPending)) || fetching || fetchAgain);
+  const activeTracks = () => session?.activeTracks || [];
+  const sessionBounds = () => session ? sessionSpan(activeTracks().map(track => track.kind === 'live' ? { ...track, span: history.bounds, empty: !history.length } : track)) : replayOnly ? [0, 0] : history.bounds;
+  const presentationBounds = () => session ? sessionSpan(activeTracks().map(track => track.kind === 'live' ? { ...track, span: clock.presentationBounds(history.bounds), empty: !history.length } : track)) : replayOnly ? [0, 0] : clock.presentationBounds(history.bounds);
   const hasComparison = () => Boolean(session?.tracks.some(track => track.kind === 'replay' && track.visible !== false && track.span?.[1] > track.span?.[0]));
   const anyPlayableSessionSpan = () => {
     const [start, end] = sessionBounds();
-    return end > start && (history.length >= 2 || hasComparison());
+    return end > start && ((!replayOnly && history.length >= 2) || hasComparison());
   };
   const playbackDisabled = () => !connected() && (!anyPlayableSessionSpan() || (dirty && profileNError && !hasComparison()));
   function historySnapshot() { return { length: history.length, bounds: history.bounds, sessionBounds: sessionBounds(), presentationBounds: presentationBounds(), following: clock.following, buffering: clock.buffering, playing: clock.playing, growing: growingHistory(), selectedTime: clock.time, limits: history.limits, generation, cursor, complete: historyComplete, intervals: history.intervals, breaches: history.breaches }; }
@@ -206,7 +262,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (!session) return;
     const segment = segments.get(generation), context = segment?.context;
     session.updateMain({ source: { kind: 'live', generation }, span: history.bounds, empty: !history.length, segment, context,
-      settings: context?.settings || null, endEffectorFrame: context?.end_effector_frame || context?.settings?.config?.ee_frame || schema?.defaults?.config?.ee_frame || session.focused.endEffectorFrame,
+      settings: context?.settings || null, endEffectorFrame: context?.end_effector_frame || session.track('live').endEffectorFrame,
       state, displayedState: shownState, plan: shownPlan, reference: desiredReference, limits: history.limits,
       metricHistory: history.metricSnapshot, historyRevision, history: historySnapshot(),
       precomputedPath: precomputedPath(),
@@ -224,6 +280,61 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     acceptTaskAnchors(record.context); renderDirty = true;
     syncSession();
   }
+  function acceptSettings(item, { initial = false } = {}) {
+    if (!schema || !item?.config || !item.task || !item.execution || !Number.isInteger(item.settings_version)) return;
+    if (serverSettingsVersion != null && item.settings_version < serverSettingsVersion) return;
+    if (item.effective_settings) {
+      effectiveSettings = cloneSettings(item.effective_settings);
+      for (const { output, path } of resolvedFields) output.textContent = resolvedValueText(fieldValue(effectiveSettings, path));
+      refreshGatoDefaults();
+    }
+    if (Array.isArray(item.available_N)) {
+      schema.available_N = [...item.available_N];
+      if (item.available_N_by_friction) schema.available_N_by_friction = cloneSettings(item.available_N_by_friction);
+      if (item.exact_availability != null) schema.exact_availability = item.exact_availability;
+      const spec = schema.parameters?.find(parameter => parameter.path.replace(/^config\./, '') === 'N');
+      if (spec) spec.choices = [...supportedKnotCounts(schema)];
+    }
+    const remote = cloneSettings({ config: item.config, task: item.task, execution: item.execution,
+      ...(item.source_settings ? { source_settings: item.source_settings } : {}) });
+    if (serverSettingsVersion === item.settings_version && settingValuesEqual(acceptedSettings, remote)) return;
+    const numericalChange = serverSettingsVersion != null && item.settings_version !== serverSettingsVersion;
+    const ownRequest = settingsRequests.find(request => request.version === item.settings_version && settingValuesEqual(request.settings, remote));
+    const before = ownRequest?.settings || acceptedSettings || submittedSettings || defaultSettings;
+    const next = initial && item.settings_version > 0 ? cloneSettings(remote) : rebaseSettings(before, settings, remote);
+    acceptedSettings = remote; serverSettingsVersion = item.settings_version; refreshGatoDefaults();
+    settingsVersion = item.settings_version;
+    // Version zero is the unconfigured backend. Its first viewer still chooses
+    // the initial zero-time state, including controls retained across Apply.
+    if (item.settings_version === 0 && initial) return;
+    clearTimeout(settingsTimer);
+    if (numericalChange && !initial) pausePlayback();
+    settings = next; submittedSettings = cloneSettings(remote);
+    expectedVersion = item.settings_version;
+    dirty = !settingValuesEqual(settings, remote);
+    acceptedStartPose = startPoseValue(remote.config); poseDraft = null;
+    initialResetPending = false; needsInitialPreview = false;
+    pending = !replayOnly && (!plan || plan.settings_version < expectedVersion);
+    if (initial && item.settings_version > 0) suppressInitialPreview = true;
+    taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
+    populate(); renderDirty = true;
+    if (!replayOnly && item.generation != null) useGeneration(item.generation);
+    if (dirty && (connected() || compilationEnabled())) settingsTimer = setTimeout(submitSettings, 350);
+    controlsEnabled(); refreshPlanLabel();
+  }
+  async function refreshSettings({ initial = false } = {}) {
+    if (disposed || profileSwitching || profileUnavailable) return;
+    const epoch = settingsEpoch;
+    try {
+      const response = await fetch('/api/live/settings'), item = await response.json();
+      if (response.ok && !disposed && !profileSwitching && epoch === settingsEpoch) acceptSettings(item, { initial });
+    } catch { /* The event stream or next poll recovers transient disconnects. */ }
+  }
+  function scheduleSettingsRefresh() {
+    clearTimeout(settingsPoll);
+    if (disposed || !settingsPollMs) return;
+    settingsPoll = setTimeout(async () => { await refreshSettings(); scheduleSettingsRefresh(); }, settingsPollMs);
+  }
   const atRunStart = item => Math.abs(item?.sim_time_s ?? 0) < 1e-9;
   const displayedAnchor = () => {
     const value = presentedState || history.at(clock.time)?.state || state;
@@ -231,17 +342,23 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       ? { sim_time_s: value.sim_time_s, q: [...value.q], qd: [...value.qd] } : undefined;
   };
   async function send(command) {
+    if (replayOnly && !['pause', 'cancel'].includes(command.type)) return false;
     if ((profileSwitching || profileUnavailable || profileNError) && !['pause', 'cancel'].includes(command.type)) return false;
     try {
       const response = await fetch('/api/live/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) });
       const result = await response.json();
+      if (response.status === 409 && result.settings) {
+        acceptSettings(result.settings);
+        message('Settings changed elsewhere · synchronized with the current values.');
+        return { conflict: true };
+      }
       if (!response.ok || !result.accepted) throw new Error(result.error || `HTTP ${response.status}`);
       return result;
     } catch (error) { if (!profileSwitching) message(`Command failed: ${error.message}`, true); return false; }
   }
   function calculationControls() {
     const stop = $('live-stop-at-end');
-    stop.disabled = false;
+    stop.disabled = replayOnly;
     stop.title = 'Stop at the session end when replaying recorded motion; uncheck to continue simulation';
     stop.closest('label')?.setAttribute('title', stop.title);
     $('live-duration').title = 'Precalculation duration; Live Play continues until paused.';
@@ -250,24 +367,44 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const unavailable = !connected();
     $('live-play').disabled = playbackDisabled();
     $('live-preview').disabled = unavailable;
-    $('live-reset').disabled = unavailable;
+    $('live-reset').disabled = replayOnly ? !anyPlayableSessionSpan() : unavailable;
     $('live-precalculate').disabled = unavailable;
     $('live-cancel').disabled = !transportConnected() || (!job.job_active && !pending);
     if ($('live-freeze')) $('live-freeze').disabled = unavailable || history.length < 2 || Boolean(job.job_active) || dirty || pending || freezing;
     $('live-play').textContent = clock.playing ? 'Pause' : 'Play';
-    $('live-play').setAttribute('aria-label', clock.playing ? 'Pause live history' : 'Play live history');
+    $('live-play').setAttribute('aria-label', clock.playing ? 'Pause session' : 'Play session');
+    $('live-reset').setAttribute('aria-label', replayOnly ? 'Rewind replay' : 'Reset state');
+    $('live-reset').title = replayOnly ? 'Rewind replay' : 'Reset state';
+    $('live-panel').inert = replayOnly;
+    sourceFields?.setDisabled(replayOnly);
+    $('mode-label').textContent = replayOnly || mode !== 'live' ? 'TRAJECTORY REPLAY' : 'LIVE MPC · SIMULATION';
+    $('live-calculation').disabled = replayOnly;
+    $('live-latency-compensation').disabled = replayOnly;
+    $('live-duration').disabled = replayOnly;
+    $('live-to-asap').disabled = replayOnly;
+    $('live-latency-measured').disabled = replayOnly;
+    $('live-to-hz').disabled = replayOnly || $('live-to-asap').checked;
+    $('live-solve-latency').disabled = replayOnly || $('live-latency-measured').checked;
+    if ($('session-replay-mode')) {
+      $('session-replay-mode').setAttribute('aria-pressed', String(replayOnly));
+      $('session-replay-mode').title = replayOnly ? 'Return to Live; keep recording tracks' : 'Replay recordings without simulation';
+    }
     calculationControls();
     refreshHistoryControls();
+    modelPrompt?.update(modelState, { visible: compilationEnabled() && mode === 'live' && !replayOnly && !profileSwitching && !profileUnavailable });
   }
-  function readSettings(reportErrors = false) {
+  function readSettings(reportErrors = false, { allowUncompiled = false } = {}) {
     const next = cloneSettings(settings);
     try {
       for (const { parameter, input } of inputs) {
         input.setCustomValidity('');
+        if (allowUncompiled && parameter.path === 'N' && input.value === '-1' && Number.isInteger(next.config.N)) continue;
         try { writePath(next.config, parameter.path, parseParameter(parameter, input)); }
         catch (error) { input.setCustomValidity(error.message); if (reportErrors) input.reportValidity(); throw error; }
       }
-      if (!schema.available_N.includes(next.config.N)) throw new Error('Choose an available knot count.');
+      for (const { parameter, widget } of nativeVectors) writePath(next.config, parameter.path, widget.read());
+      if (schema.source_settings) next.source_settings = sourceFields?.read() || restoreWorktreeSettings(schema, next.source_settings);
+      if (!allowUncompiled && !(compilationEnabled() ? supportedKnotCounts(schema) : schema.available_N).includes(next.config.N)) throw new Error('Choose an available knot count.');
       const kind = $('live-task').value, descriptor = schema.tasks?.find(task => task.kind === kind);
       next.task = { ...(descriptor?.defaults || { kind: 'reach' }), ...(settings.task.kind === kind ? settings.task : {}), kind };
       for (const parameter of descriptor?.parameters || []) {
@@ -286,11 +423,16 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         return value;
       });
       const execution = { ...DEFAULT_EXECUTION, ...next.execution };
-      for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration']]) {
-        if ($(id).value === '') throw new Error(`${key.replaceAll('_', ' ')} needs a value.`);
-        execution[key] = Number($(id).value);
+      for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['duration_s', 'live-duration']]) {
+        execution[key] = readTimeInput($(id), { unit: key.endsWith('_hz') ? 'Hz' : 's', min: 0, minExclusive: true, label: key.replaceAll('_', ' ') });
       }
+      execution.to_hz = $('live-to-asap').checked ? 0 : readTimeInput($('live-to-hz'), { unit: 'Hz', min: 0, minExclusive: true, label: 'TO rate' });
       execution.calculation = $('live-calculation').value || execution.calculation;
+      const latencyInput = $('live-solve-latency');
+      latencyInput.setCustomValidity('');
+      try { execution.solve_latency_s = $('live-latency-measured').checked ? 'measured' : readTimeInput(latencyInput, { unit: 's', min: 0, label: 'Solve latency' }); }
+      catch (error) { latencyInput.setCustomValidity(error.message); if (reportErrors) latencyInput.reportValidity(); throw error; }
+      execution.latency_compensation = Boolean($('live-latency-compensation').checked);
       execution.continue_at_end = Boolean($('live-continue').checked);
       next.execution = validateExecution(execution);
     } catch (error) { if (reportErrors) message(error.message, true); return null; }
@@ -298,20 +440,41 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   }
   async function submitSettings() {
     clearTimeout(settingsTimer);
-    if (mode !== 'live' || !liveReady || profileSwitching || profileUnavailable || profileNError) return false;
-    const next = readSettings(true);
+    if (mode !== 'live' || replayOnly || !liveReady || profileSwitching || profileUnavailable || (!compilationEnabled() && profileNError)) return false;
+    const request = ++submission;
+    let next = readSettings(true);
     if (!next) return false;
+    if (compilationEnabled()) {
+      const checked = await modelCompilation.check();
+      if (!checked?.compilation.ready || request !== submission || profileSwitching || profileUnavailable || replayOnly || mode !== 'live') return false;
+      // Runtime/task edits may arrive while the native lookup is in flight.
+      // Never submit the older local snapshot after that asynchronous boundary.
+      next = readSettings(true);
+      if (!next) return false;
+    }
+    const patch = acceptedSettings ? settingsPatch(acceptedSettings, next) : null;
+    if (patch && !initialResetPending && Object.keys(patch).length === 0) {
+      settings = next; submittedSettings = cloneSettings(acceptedSettings); dirty = false;
+      resetIndicators.update(); controlsEnabled(); refreshPlanLabel();
+      return true;
+    }
     settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); submittedSettings = cloneSettings(next); pending = true; dirty = false; inspectingPreview = false;
     const previousExpectedVersion = expectedVersion;
     expectedVersion = Math.max(expectedVersion ?? 0, settingsVersion ?? 0) + 1;
-    const request = ++submission;
     // A new start pose starts a new run at t = 0 from it, as Reset.
     const resetting = initialResetPending || !settingValuesEqual(startPoseValue(next.config), acceptedStartPose);
     const anchor = resetting ? undefined : frozenAnchor || displayedAnchor();
     pausePlayback(); controlsEnabled(); refreshPlanLabel();
     message(next.execution.calculation === 'automatic' ? 'Replacing calculation from the displayed starting state…' : 'Updating one-horizon preview…');
-    const accepted = await send({ type: 'set_settings', ...next, ...(resetting ? { reset: true } : anchor ? { anchor } : {}) });
+    const transaction = patch && !initialResetPending ? { type: 'patch_settings', patch } : { type: 'set_settings', ...next };
+    if (serverSettingsVersion != null) transaction.expected_settings_version = serverSettingsVersion;
+    const trackedRequest = { version: expectedVersion, settings: cloneSettings(next) };
+    settingsRequests.push(trackedRequest); if (settingsRequests.length > 16) settingsRequests.shift();
+    const accepted = await send({ ...transaction, ...(resetting ? { reset: true } : anchor ? { anchor } : {}) });
+    if (Number.isInteger(accepted?.settings_version)) trackedRequest.version = accepted.settings_version;
     if (request !== submission) return Boolean(accepted);
+    if (accepted?.conflict) return false;
+    if (accepted && serverSettingsVersion != null && accepted.settings_version < serverSettingsVersion) return false;
     if (!accepted) { pending = false; dirty = true; expectedVersion = previousExpectedVersion; }
     else {
       if (resetting) { initialResetPending = false; onReset(); }
@@ -331,6 +494,26 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     controlsEnabled(); refreshPlanLabel(); return Boolean(accepted);
   }
   function refreshFrictionAvailability() {
+    if (compilationEnabled()) {
+      const available = modelState.probe?.compilation.available_N ?? (modelState.phase === 'idle' ? schema.available_N : null);
+      profileNError = modelState.phase === 'ready' ? false : modelState.phase === 'idle' ? !schema.available_N.includes(settings.config.N) : true;
+      const missing = modelState.phase === 'missing';
+      const knot = inputs.find(item => item.parameter.path === 'N');
+      if (knot) {
+        for (const option of knot.input.children) {
+          const n = knot.parameter.choices[Number(option.value)], absent = n != null && available != null && !available.includes(n);
+          option.disabled = n == null; option.className = absent ? 'model-uncompiled' : '';
+          if (n != null) option.textContent = `${n}${absent ? ' · not compiled' : ''}`;
+        }
+        knot.input.classList.toggle('model-uncompiled', missing);
+      }
+      sourceFields?.setModelMissing(missing);
+      for (const { parameter, input } of inputs) if (parameter.effect === 'compiled_model') input.closest('label')?.classList.toggle('model-uncompiled', missing);
+      for (const { parameter, row } of resolvedFields) row.classList.toggle('model-uncompiled', missing && parameter.effect === 'compiled_model');
+      $('live-source').textContent = available ? `${modelState.phase === 'ready' ? 'Model ready · ' : ''}compiled N for this predictor: ${available.join(', ') || 'none'}` : 'Checking the exact predictor model…';
+      $('live-source').title = modelState.probe?.compilation.binary_path || '';
+      return;
+    }
     const available = availableKnotCounts(schema, settings.config);
     profileNError = !available.includes(settings.config.N);
     const knot = inputs.find(item => item.parameter.path === 'N');
@@ -340,15 +523,18 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       if (value != null) option.textContent = `${value}${option.disabled ? ' · unavailable' : ''}`;
     }
     const commit = schema.source?.mpc_commit;
-    $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · compiled N${schema.available_N_by_friction ? settings.config.friction ? ' (predictor friction)' : ' (loss-free predictor)' : ''}: ${available.join(', ') || 'none'}`;
+    $('live-source').textContent = `tiago_mpc ${commit ? String(commit).slice(0, 8) : 'local'} · compiled N${schema.exact_availability ? ' (current predictor)' : schema.available_N_by_friction ? settings.config.friction ? ' (predictor friction)' : ' (loss-free predictor)' : ''}: ${available.join(', ') || 'none'}`;
   }
   // A Build into the active solver's checkout adds modules without a backend
   // restart: list them, and calculate a draft whose N just became available.
   function acceptCompiledModules(item) {
     if (!schema || !Array.isArray(item.available_N) || !item.available_N_by_friction) return;
+    if (item.settings_version != null && settingsVersion != null && item.settings_version < settingsVersion) return;
     schema.available_N = [...item.available_N]; schema.available_N_by_friction = structuredClone(item.available_N_by_friction);
+    if (item.exact_availability != null) schema.exact_availability = item.exact_availability;
     const spec = schema.parameters?.find(parameter => parameter.path.replace(/^config\./, '') === 'N');
-    if (spec) spec.choices = schema.available_N;
+    if (spec) spec.choices = supportedKnotCounts(schema);
+    if (compilationEnabled()) { refreshFrictionAvailability(); controlsEnabled(); return; }
     const knot = inputs.find(entry => entry.parameter.path === 'N');
     if (!knot) return;
     const value = settings.config.N, wasUnavailable = profileNError;
@@ -369,35 +555,58 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const rk4 = parseParameter(integrator.parameter, integrator.input) === 'rk4';
     if (rk4) friction.input.checked = false;
     friction.input.disabled = rk4;
-    friction.input.title = rk4 ? 'RK4 is loss-free: choose semi-implicit Euler for plant friction' : friction.parameter.description || '';
-    if (law) { law.input.disabled = !friction.input.checked; law.input.title = law.input.disabled ? 'Plant friction is off' : law.parameter.description || ''; }
+    friction.input.title = rk4 ? 'RK4 is loss-free: choose semi-implicit Euler for plant friction' : parameterTooltip(friction.parameter);
+    if (law) { law.input.disabled = !friction.input.checked; law.input.title = law.input.disabled ? 'Plant friction is off' : parameterTooltip(law.parameter); }
     if (width) {
       const host = width.input.closest('label'); if (host?.parentElement) host.parentElement.hidden = !law || parseParameter(law.parameter, law.input) !== 'tanh';
       width.input.disabled = !friction.input.checked;
     }
   }
-  const unavailableFrictionMessage = () => `N=${settings.config.N} is not compiled for this predictor. Choose a compiled N or build it in Settings › Backend (Build selected N, with Predictor friction modules when Predictor friction is on).`;
+  const unavailableFrictionMessage = () => compilationEnabled() ? 'This predictor model is not compiled. Use Compile above the viewport; the active settings are unchanged.' : `N=${settings.config.N} is not compiled for this predictor. Choose a compiled N or build the current predictor in Settings › Backend.`;
   function change() {
+    if (replayOnly) return;
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
     if (!dirty && !pending) frozenAnchor = displayedAnchor();
     syncPlantFriction();
     const next = readSettings();
-    if (next) { settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); refreshFrictionAvailability(); }
+    const sourceChanged = next && !settingValuesEqual(next.source_settings, acceptedSettings?.source_settings);
+    if (next) {
+      settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task));
+      if (next.execution.to_hz > 0) fixedToDraft = next.execution.to_hz;
+      if (typeof next.execution.solve_latency_s === 'number') declaredLatencyDraft = next.execution.solve_latency_s;
+    }
+    if (compilationEnabled()) modelCompilation?.invalidate();
+    if (compilationEnabled() && !next) modelCompilation?.check();
+    refreshFrictionAvailability();
     calculationControls();
     resetIndicators.update();
     dirty = true; renderDirty = true; pausePlayback(); refreshPlanLabel();
     controlsEnabled();
-    message(profileSwitching ? 'Solver switching · settings draft retained.' : profileUnavailable ? 'No solver is active · settings draft retained.' : profileNError ? unavailableFrictionMessage() : 'Settings changed · replacing obsolete calculation…', profileNError);
+    const missingModel = profileNError && (!compilationEnabled() || modelState.phase === 'missing');
+    message(profileSwitching ? 'Solver switching · settings draft retained.' : profileUnavailable ? 'No solver is active · settings draft retained.' : missingModel ? unavailableFrictionMessage() : 'Settings changed · replacing obsolete calculation…', missingModel);
     // An unsupported draft cannot reach set_settings, which normally stops
     // obsolete numerical work. Cancel it now; keep the frozen edit anchor and
     // let authoritative status report completion rather than a late HTTP reply.
     if (wasCompatible && profileNError && obsoleteWork && mode === 'live' && transportConnected()) send({ type: 'cancel' });
+    else if (sourceChanged && obsoleteWork && mode === 'live' && transportConnected()) send({ type: 'cancel' });
     clearTimeout(settingsTimer); if (!profileSwitching && !profileUnavailable) settingsTimer = setTimeout(submitSettings, 350);
   }
   function populate() {
+    const groupsOpen = new Map([...($('live-settings').querySelectorAll?.('details') || [])].map(group => [group.querySelector('summary')?.textContent, group.open]));
+    const timeDrafts = new Map(inputs.filter(({ parameter }) => canonicalTimeUnit(parameter)).map(({ parameter, input }) => [parameter.path, input.value]));
+    const horizonDraft = document.querySelector('[data-horizon="seconds"]')?.value;
+    const taskTimeDrafts = new Map((schema.tasks || []).flatMap(task => (task.parameters || []).filter(canonicalTimeUnit)
+      .map(parameter => [parameter.path, document.querySelector(`[data-task-path="${parameter.path}"]`)?.value])).filter(([, value]) => value != null));
+    const focusPath = document.activeElement?.dataset?.path;
+    const focusSource = { ...document.activeElement?.dataset };
+    sourceFields?.destroy(); sourceFields = null;
+    nativeVectors.forEach(({ widget }) => widget.destroy()); nativeVectors = [];
+    resolvedFields = []; gatoDefaultFields = [];
     populationBindings.forEach(([input, type, callback]) => input.removeEventListener?.(type, callback)); populationBindings = [];
     resetIndicators.clear(); inputs.length = 0;
     $('live-settings').replaceChildren(); $('live-horizon-settings')?.replaceChildren();
+    const sourceHost = document.createElement('div'); sourceHost.className = 'worktree-settings-host';
+    if (schema.source_settings) $('live-settings').append(sourceHost);
     const listen = (input, type, callback) => { input.addEventListener(type, callback); populationBindings.push([input, type, callback]); };
     const resetInput = (input, value, parameter = {}) => {
       input.setCustomValidity('');
@@ -431,6 +640,12 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         const input = document.createElement('input'); input.type = 'number'; input.step = 'any'; input.required = true;
         input.dataset.taskPath = parameter.path; input.min = parameter.min; input.max = parameter.max;
         input.value = settings.task.kind === descriptor.kind ? settings.task[parameter.path] : descriptor.defaults[parameter.path];
+        if (canonicalTimeUnit(parameter)) {
+          const canonical = input.value, unit = canonicalTimeUnit(parameter);
+          configureTimeInput(input, { unit });
+          if (taskTimeDrafts.has(parameter.path)) input.value = taskTimeDrafts.get(parameter.path);
+          setTimeInputValue(input, canonical, { ...parameter, unit });
+        }
         listen(input, 'input', change); label.append(caption, input); $('live-task-parameters').append(label);
         bindReset(input, { ...parameter, kind: parameter.kind || 'float' }, () => activeTaskDefaults()[parameter.path], { key: `task.${parameter.path}`, group: 'task-parameters' });
       }
@@ -467,6 +682,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     resetIndicators.bind({ key: 'task.kind', name: 'task', input: $('live-task'), host: $('live-task').parentElement,
       getValue: () => $('live-task').value, getDefault: () => defaultSettings.task.kind,
       reset: value => { $('live-task').value = value; $('live-task').dispatchEvent(new Event('change', { bubbles: true })); } });
+    if (schema.source_settings) sourceFields = createWorktreeFields({ container: sourceHost, schema,
+      values: settings.source_settings, groupsOpen, onChange: change, onResetBinding: options => resetIndicators.bind(options) });
     const groups = new Map(), rows = new Map();
     const horizonRow = document.createElement('div'); horizonRow.className = 'horizon-row';
     ($('live-horizon-settings') || $('live-settings')).append(horizonRow);
@@ -475,22 +692,34 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       const n = inputs.find(item => item.parameter.path === 'N');
       const dt = inputs.find(item => item.parameter.path === 'dt_s');
       if (!n || !dt || !horizonInput) return;
-      const count = parseParameter(n.parameter, n.input), seconds = Number(dt.input.value);
+      const count = parseParameter(n.parameter, n.input);
+      let seconds;
+      try { seconds = parseParameter(dt.parameter, dt.input); } catch { seconds = NaN; }
       horizonInput.min = (count - 1) * dt.parameter.min; horizonInput.max = (count - 1) * dt.parameter.max;
-      horizonInput.value = dt.input.value.trim() && Number.isFinite(seconds) ? String(Number(((count - 1) * seconds).toPrecision(12))) : '';
+      if (Number.isFinite(seconds)) setTimeInputValue(horizonInput, Number(((count - 1) * seconds).toPrecision(12)), { unit: 's' });
+      else horizonInput.value = '';
       horizonInput.setCustomValidity('');
     };
+    const customFriction = ['simulation', 'predictor'].some(role =>
+      schema.source_settings?.[role]?.controls?.some(path => path === 'friction' || path.startsWith('friction.')));
     for (const supplied of schema.parameters) {
       const parameter = { ...supplied, path: supplied.path.replace(/^config\./, '') };
-      if (parameter.path === 'N') { parameter.kind = 'choice'; parameter.choices = schema.available_N; }
+      if (parameter.path === 'N') { parameter.kind = 'choice'; parameter.choices = supportedKnotCounts(schema); }
       if (parameter.kind === 'joints') continue;  // the start pose: edited in the Joints tab
-      const name = parameter.group || 'Settings';
+      const name = parameter.path.startsWith('plant.') ? parameter.group === 'Limit handling' ? 'Plant limit handling' : 'Plant dynamics'
+        : ['friction', 'armature'].includes(parameter.path) ? 'Predictor dynamics'
+        : parameter.group === 'Limits' ? 'MPC bounds' : parameter.group || 'Settings';
       const isHorizon = ['N', 'dt_s'].includes(parameter.path);
+      if (!groups.has(name)) {
+        const role = name === 'Plant dynamics' ? 'simulation' : name === 'Predictor dynamics' ? 'predictor' : null;
+        const existing = role && sourceFields?.groupFields(role, name);
+        if (existing) groups.set(name, existing);
+      }
       if (!isHorizon && !groups.has(name)) {
-        const details = document.createElement('details'); details.className = 'settings-group'; details.open = groups.size === 0 || name === 'Friction' || name === 'Limit handling';
+        const details = document.createElement('details'); details.className = 'settings-group'; details.open = groupsOpen.get(name) ?? (groups.size === 0 || ['Plant dynamics', 'Predictor dynamics', 'Plant limit handling'].includes(name));
         const summary = document.createElement('summary'); summary.textContent = name;
         const fields = document.createElement('div'); fields.className = 'settings-fields'; details.append(summary);
-        if (name === 'Friction') {
+        if (name === 'Plant dynamics' && !customFriction) {
           const coefficients = schema.friction?.coefficients;
           for (const [key, unit] of [['coulomb_nm', 'Coulomb (Nm)'], ['viscous_nm_s_per_rad', 'Viscous (Nm s/rad)']]) {
             if (!Array.isArray(coefficients?.[key])) continue;
@@ -501,16 +730,35 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         }
         details.append(fields); $('live-settings').append(details); groups.set(name, fields);
       }
-      const label = document.createElement('label'); label.className = 'parameter-row';
+      const label = document.createElement(parameter.kind === 'vector' ? 'div' : 'label'); label.className = 'parameter-row';
       const text = document.createElement('span'); text.textContent = parameter.label || parameter.path;
+      text.title = parameterTooltip(parameter);
+      if (parameter.controlled_by_source) {
+        const output = document.createElement('output'); output.className = 'resolved-native-setting';
+        const effective = fieldValue(effectiveSettings || schema.effective_settings, parameter.effective_path || `params.${parameter.path}`);
+        output.textContent = resolvedValueText(effective); output.title = parameterTooltip(parameter);
+        resolvedFields.push({ output, path: parameter.effective_path || `params.${parameter.path}`, row: label, parameter });
+        label.classList.add('resolved-row'); label.append(text, output); groups.get(name).append(label);
+        continue;
+      }
+      if (parameter.kind === 'vector') {
+        const widget = createVectorField(parameter, readPath(settings.config, parameter.path), change);
+        label.className = 'parameter-row vector-row'; label.append(text, widget.element); groups.get(name).append(label);
+        widget.disable(Boolean(parameter.disabled)); nativeVectors.push({ parameter, widget });
+        resetIndicators.bind({ key: `config.${parameter.path}`, name: parameter.label || parameter.path,
+          input: widget.focus, host: label, getValue: widget.read, getDefault: () => readPath(defaultSettings.config, parameter.path),
+          reset: value => { widget.set(value); change(); } });
+        continue;
+      }
       const input = document.createElement(parameter.kind === 'choice' ? 'select' : 'input'); input.dataset.path = parameter.path; input.name = parameter.path;
       const value = readPath(settings.config, parameter.path);
       if (parameter.kind === 'choice') {
         for (const [i, choice] of parameter.choices.entries()) {
           const item = document.createElement('option'), object = choice && typeof choice === 'object', typedValue = choiceValue(choice);
           item.value = String(i); item.textContent = object ? choice.label || String(typedValue ?? 'Default') : String(choice ?? 'Default'); item.selected = settingValuesEqual(typedValue, value); input.append(item);
+          if (parameter.gato_default && typedValue === null) gatoDefaultFields.push({ path: parameter.path, option: item, input, parameter });
         }
-        if (parameter.path === 'N' && !schema.available_N.includes(value)) {
+        if (parameter.path === 'N' && !supportedKnotCounts(schema).includes(value)) {
           const unavailable = document.createElement('option'); unavailable.value = '-1'; unavailable.textContent = `${value} · unavailable`; unavailable.disabled = true; unavailable.selected = true; input.append(unavailable); input.value = '-1';
         }
       } else if (parameter.kind === 'bool') { input.type = 'checkbox'; input.checked = Boolean(value); }
@@ -518,14 +766,21 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
         input.type = 'number'; input.step = parameter.kind === 'int' ? '1' : 'any'; if (parameter.min != null) input.min = parameter.min; if (parameter.max != null) input.max = parameter.max;
         input.value = value == null ? '' : value; input.required = !parameter.nullable;
         if (parameter.nullable) input.placeholder = 'none';
+        if (parameter.gato_default) gatoDefaultFields.push({ path: parameter.path, input, parameter });
       }
-      input.disabled = Boolean(parameter.disabled); input.title = parameter.description || parameter.path; listen(input, 'input', () => {
+      input.disabled = Boolean(parameter.disabled); input.title = parameterTooltip(parameter); listen(input, 'input', () => {
         if (isHorizon) {
           if (parameter.path === 'N' && input.value !== '-1') profileNError = false;
           if (!profileNError) { if (horizonInput) horizonInput.disabled = false; syncHorizon(); }
         }
         change();
       });
+      const timeUnit = canonicalTimeUnit(parameter);
+      if (timeUnit) {
+        configureTimeInput(input, { unit: timeUnit });
+        if (timeDrafts.has(parameter.path)) input.value = timeDrafts.get(parameter.path);
+        setTimeInputValue(input, value, { ...parameter, unit: timeUnit });
+      }
       if (isHorizon) { label.className = 'horizon-field'; text.textContent = parameter.path === 'N' ? 'N' : 'Δt (s)'; }
       let host = isHorizon ? horizonRow : groups.get(name);
       if (parameter.row) {
@@ -542,22 +797,31 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       host.append(label); inputs.push({ parameter, input });
       bindReset(input, parameter, () => readPath(defaultSettings.config, parameter.path), { key: `config.${parameter.path}` });
     }
+    const groupOrder = ['Plant dynamics', 'Plant limit handling', 'Execution controller', 'Execution law', 'Predictor dynamics', 'MPC bounds', 'Costs', 'Solver', 'ADMM'];
+    const groupContainer = schema.source_settings ? sourceHost : $('live-settings');
+    const details = [...sourceHost.children, ...$('live-settings').children].filter(node => node.tagName?.toLowerCase() === 'details');
+    const order = node => { const index = groupOrder.indexOf(node.children[0]?.textContent); return index < 0 ? groupOrder.length : index; };
+    details.sort((a, b) => order(a) - order(b)).forEach(node => groupContainer.append(node));
+    refreshGatoDefaults();
     if (inputs.some(item => item.parameter.path === 'dt_s')) {
       const label = document.createElement('label'); label.className = 'horizon-field';
       const text = document.createElement('span'); text.textContent = 'Horizon (s)';
       horizonInput = document.createElement('input'); horizonInput.type = 'number'; horizonInput.step = 'any'; horizonInput.required = true;
       horizonInput.disabled = profileNError;
       horizonInput.dataset.horizon = 'seconds'; horizonInput.title = 'Horizon = (N − 1) × Δt';
+      configureTimeInput(horizonInput, { unit: 's' });
+      if (horizonDraft != null) horizonInput.value = horizonDraft;
       listen(horizonInput, 'input', () => {
         const n = inputs.find(item => item.parameter.path === 'N'), dt = inputs.find(item => item.parameter.path === 'dt_s');
         const count = parseParameter(n.parameter, n.input);
-        dt.input.value = horizonInput.value.trim() ? String(Number((Number(horizonInput.value) / (count - 1)).toPrecision(12))) : '';
+        try { dt.input.value = String(Number((readTimeInput(horizonInput, { unit: 's', min: Number(horizonInput.min), max: Number(horizonInput.max) }) / (count - 1)).toPrecision(12))); }
+        catch { dt.input.value = ''; }
         change();
         horizonInput.setCustomValidity(dt.input.validationMessage || '');
       });
       label.append(text, horizonInput); horizonRow.append(label); if (!profileNError) syncHorizon();
       resetIndicators.bind({ key: 'config.horizon_s', name: 'horizon', input: horizonInput,
-        getValue: () => parseParameter({ kind: 'float', label: 'Horizon', min: Number(horizonInput.min), max: Number(horizonInput.max) }, horizonInput),
+        getValue: () => readTimeInput(horizonInput, { unit: 's', label: 'Horizon', min: Number(horizonInput.min), max: Number(horizonInput.max) }),
         getDefault: () => (parseParameter(inputs.find(item => item.parameter.path === 'N').parameter, inputs.find(item => item.parameter.path === 'N').input) - 1) * defaultSettings.config.dt_s,
         reset: () => { resetInput(inputs.find(item => item.parameter.path === 'dt_s').input, defaultSettings.config.dt_s); },
       });
@@ -567,20 +831,82 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       bindReset(input, { kind: 'float', path: `target_offset_m.${i}`, label: `target ${['X', 'Y', 'Z'][i]}`, min: -1, max: 1 }, () => activeTaskDefaults().target_offset_m[i], { key: `task.target_offset_m.${i}` });
     });
     settings.execution = validateExecution({ ...DEFAULT_EXECUTION, ...(settings.execution || schema.defaults.execution || {}) });
+    $('live-to-asap').checked = settings.execution.to_hz === 0;
+    if (settings.execution.to_hz > 0) fixedToDraft = settings.execution.to_hz;
     for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration'], ['calculation', 'live-calculation']]) {
-      const input = $(id); input.value = settings.execution[key]; listen(input, 'input', change);
+      const input = $(id), unit = key.endsWith('_hz') ? 'Hz' : 's';
+      if (key === 'calculation') input.value = settings.execution[key];
+      else { configureTimeInput(input, { unit }); setTimeInputValue(input, key === 'to_hz' ? fixedToDraft : settings.execution[key], { unit }); }
+      listen(input, 'input', change);
       const baseline = { ...DEFAULT_EXECUTION, ...defaultSettings.execution };
       if (key === 'calculation') resetIndicators.bind({ key: `execution.${key}`, name: 'calculation mode', input,
         getValue: () => input.value, getDefault: () => baseline[key], reset: value => resetInput(input, value) });
-      else bindReset(input, { kind: 'float', path: key, label: key.replaceAll('_', ' '), min: Number.MIN_VALUE }, () => baseline[key], { key: `execution.${key}` });
+      else if (key === 'to_hz') resetIndicators.bind({ key: 'execution.to_hz', name: 'TO rate', input,
+        getValue: () => $('live-to-asap').checked ? 0 : readTimeInput(input, { unit: 'Hz', min: 0, minExclusive: true }),
+        getDefault: () => baseline.to_hz,
+        reset: value => { $('live-to-asap').checked = value === 0; if (value > 0) { fixedToDraft = value; setTimeInputValue(input, value, { unit: 'Hz', force: true }); } change(); } });
+      else bindReset(input, { kind: 'float', path: key, unit, label: key.replaceAll('_', ' '), min: Number.MIN_VALUE }, () => baseline[key], { key: `execution.${key}` });
     }
+    listen($('live-to-asap'), 'change', change);
+    const latencyInput = $('live-solve-latency');
+    const measured = $('live-latency-measured');
+    measured.checked = settings.execution.solve_latency_s === 'measured';
+    if (!measured.checked) declaredLatencyDraft = settings.execution.solve_latency_s;
+    configureTimeInput(latencyInput, { unit: 's' });
+    setTimeInputValue(latencyInput, declaredLatencyDraft, { unit: 's', min: 0 });
+    listen(latencyInput, 'input', change);
+    listen(measured, 'change', change);
+    resetIndicators.bind({ key: 'execution.solve_latency_s', name: 'solve latency', input: latencyInput,
+      getValue: () => measured.checked ? 'measured' : readTimeInput(latencyInput, { unit: 's', min: 0 }), getDefault: () => defaultSettings.execution?.solve_latency_s ?? DEFAULT_EXECUTION.solve_latency_s,
+      reset: value => { measured.checked = value === 'measured'; if (!measured.checked) { declaredLatencyDraft = value; setTimeInputValue(latencyInput, value, { unit: 's', min: 0, force: true }); } change(); } });
+    const compensationInput = $('live-latency-compensation');
+    compensationInput.checked = settings.execution.latency_compensation;
+    listen(compensationInput, 'change', change);
+    resetIndicators.bind({ key: 'execution.latency_compensation', name: 'latency compensation', input: compensationInput,
+      getValue: () => compensationInput.checked, getDefault: () => defaultSettings.execution?.latency_compensation ?? false,
+      reset: value => { compensationInput.checked = value; change(); } });
     $('live-continue').checked = settings.execution.continue_at_end;
-    listen($('live-continue'), 'change', () => { settings.execution.continue_at_end = $('live-continue').checked; });
+    listen($('live-continue'), 'change', () => {
+      settings.execution.continue_at_end = $('live-continue').checked;
+      // This changes playback intent only: keep the simulation and clock intact.
+      if (serverSettingsVersion != null && !replayOnly) {
+        ++settingsEpoch;
+        send({ type: 'patch_settings', patch: { execution: { continue_at_end: settings.execution.continue_at_end } } });
+      }
+    });
+    ensureModelCompilation();
     refreshFrictionAvailability();
     syncPlantFriction();
     resetIndicators.update();
     controlsEnabled();
-    $('live-mode').disabled = false; message(profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', profileNError);
+    $('live-mode').disabled = false; message(replayOnly ? '' : profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', !replayOnly && profileNError);
+    if (focusPath) inputs.find(item => item.parameter.path === focusPath)?.input.focus?.();
+    if (focusSource.sourcePath) [...document.querySelectorAll('[data-source-path]')].find(input =>
+      input.dataset.sourceRole === focusSource.sourceRole && input.dataset.sourcePath === focusSource.sourcePath &&
+      input.dataset.vectorIndex === focusSource.vectorIndex && ['INPUT', 'SELECT'].includes(input.tagName))?.focus?.();
+    if (compilationEnabled() && mode === 'live' && !replayOnly && !profileSwitching && !profileUnavailable) modelCompilation.check();
+  }
+
+  function compileDraft() {
+    if (!compilationEnabled() || profileSwitching || profileUnavailable || disposed) throw new Error('The solver profile is unavailable.');
+    // change() retains the latest valid values. Partial runtime/task input must
+    // not invalidate an otherwise known model or abort an in-flight lookup.
+    const draft = settings;
+    const selection = schema.compile_selection, params = cloneSettings(draft.config); delete params.plant;
+    const request = { selection: { mpc_root: selection.mpc_root, python: selection.python, cache: selection.cache ?? null }, params,
+      source_settings: cloneSettings(draft.source_settings?.predictor || {}),
+      source_settings_module: schema.source_settings?.predictor?.module || null };
+    return { scope: { epoch: schemaReload, profile: schema.compile_profile_id, selection,
+      source: schema.source, module: schema.source_settings?.predictor?.module || null },
+      request, modelInputs: modelCheckInputs(request, schema) };
+  }
+  const compileCurrentModel = () => readSettings(true) ? modelCompilation?.compile() : false;
+  function ensureModelCompilation() {
+    if (!compilationEnabled() || modelCompilation) return;
+    modelCompilation = createModelCompilation({ getDraft: compileDraft,
+      onState: next => { modelState = next; refreshFrictionAvailability(); controlsEnabled(); },
+      onReady: () => mode === 'live' && !replayOnly && (dirty || initialResetPending) ? submitSettings() : false });
+    modelPrompt = createModelCompilePrompt({ container: $('viewport'), onCompile: compileCurrentModel });
   }
   function useGeneration(next, force = false) {
     if (!force && generation != null && next < generation) return false;
@@ -596,15 +922,16 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     return true;
   }
   async function fetchHistory() {
-    if (generation == null || mode !== 'live') return;
+    if (generation == null || mode !== 'live' || replayOnly) return;
     if (fetching) { fetchAgain = true; return; }
     fetching = true;
     try {
       let more = true;
-      while (more && mode === 'live') {
+      while (more && mode === 'live' && !replayOnly) {
         const requestedGeneration = generation, requestedCursor = cursor, requestedEpoch = historyEpoch;
         const response = await fetch(`/api/live/history?generation=${encodeURIComponent(generation)}&after=${cursor}&limit=${HISTORY_PAGE_SIZE}`);
         const batch = await response.json();
+        if (replayOnly) break;
         if (requestedGeneration !== generation || requestedEpoch !== historyEpoch) continue;
         if (response.status === 409) { if (batch.generation != null) useGeneration(batch.generation); break; }
         if (!response.ok) throw new Error(batch.error || 'History unavailable');
@@ -659,6 +986,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   function receiveItem(item) {
     if (item.type === 'solver_profile') { Promise.resolve(onSolverProfile(item)).catch(error => message(`Solver setup: ${error.message}`, true)); return; }
     if (profileSwitching) return;
+    if (item.type === 'settings') { ++settingsEpoch; acceptSettings(item); return; }
     if (item.type === 'compiled_modules') { acceptCompiledModules(item); return; }
     if (!needsInitialPreview && generation != null && item.generation != null && item.generation < generation) return;
     if (!needsInitialPreview && item.type === 'status' && expectedVersion != null && item.settings_version < expectedVersion) return;
@@ -739,7 +1067,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     timeline.style.setProperty('--progress', `${end > start ? 100 * (time - start) / (end - start) : 0}%`);
     $('live-history-latest').disabled = !history.length || Math.abs(time - recordedEnd) < 1e-8;
     $('live-history-position').textContent = history.length || end > start ? clock.buffering ? `${number(time, 2)} s · Buffering` : clock.following ? `${number(time, 2)} s · Live` : `${number(time, 2)} / ${number(end, 2)} s` : 'No state history yet';
-    const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time) || history.intervals.at(-1);
+    const interval = replayOnly ? null : history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time) || history.intervals.at(-1);
     if (!timeline.matches?.(':hover')) timeline.title = interval ? intervalDescription(interval) : 'Recorded simulation time';
     timeline.setAttribute('aria-valuetext', `${number(time, 3)} seconds${interval ? ` · ${intervalDescription(interval)}` : ''}`);
     $('live-history-window').textContent = `Recorded ${number(mainStart, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
@@ -751,6 +1079,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     // to the presented end without rebuilding interval DOM on animation frames.
     const span = recordedEnd - mainStart, visibleSpan = end - start;
     const intervals = $('live-history-intervals');
+    intervals.hidden = replayOnly;
     intervals.style.left = `${visibleSpan > 0 ? 100 * (mainStart - start) / visibleSpan : 0}%`;
     intervals.style.width = `${visibleSpan > 0 ? 100 * span / visibleSpan : 100}%`;
     intervals.style.clipPath = `inset(0 ${span > 0 ? Math.max(0, 100 * (recordedEnd - end) / span) : 0}% 0 0)`;
@@ -759,7 +1088,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     const selected = presentation.interpolate ? history.interpolateAt(clock.time, { trace: false }) : history.at(clock.time, { trace: false });
     if (traceRevision !== historyRevision) { displayPath = history.displayPath(); traceRevision = historyRevision; }
     let shownState = selected?.state || state;
-    const shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || plan;
+    const shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || (plan && !('available_time_s' in plan) ? plan : null);
     const historical = clock.time != null && clock.time < history.bounds[1] - 1e-7;
     const editing = dirty || pending || Boolean(poseDraft);
     // At the run start the arm shows the start pose being dragged or not yet run.
@@ -800,7 +1129,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     // pose eligibility, so publish this frame before notifying any observer.
     if (mode === 'live' && shownState) presentedState = shownState;
     syncSession(shownState, editing ? null : shownPlan || null);
-    if (mode === 'live') {
+    if (mode === 'live' && !replayOnly) {
       // An old optimizer output must not look like a prediction of the edited
       // task. Desired geometry still redraws while its replacement is pending.
       const currentPlan = editing ? null : shownPlan || null;
@@ -839,7 +1168,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       const before = clock.time;
       const tick = clock.tick(timestamp, sessionBounds(), { followBounds: history.bounds, followAtEnd: continueAtEnd(), growing: growingHistory() });
       // Playback stops at a recorded limit breach; Play continues from it.
-      const breach = before != null && history.breachCrossed(before, tick.time);
+      const breach = !replayOnly && before != null && history.breachCrossed(before, tick.time);
       if (breach) { clock.seek(breach.sim_time_s); pausePlayback(); message(breach.message, true); controlsEnabled(); }
       else if (tick.atEnd && ((!job.job_active && !fetching) || !connected())) {
         // A calculation stopped by a breach never extends past it: playback stops at
@@ -858,6 +1187,50 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     controlsEnabled(); renderView();
   }
   function showLatest() { inspectingPreview = false; clock.seek(history.bounds[1]); if (clock.playing && continueAtEnd()) clock.follow(); renderView(); }
+  function connectLive() {
+    if (replayOnly || !liveReady || source) return;
+    needsInitialPreview = !suppressInitialPreview && !profileSwitching && !profileUnavailable && (serverSettingsVersion == null || serverSettingsVersion === 0 || dirty); suppressInitialPreview = false;
+    const connection = new EventSource('/api/live/events'); source = connection;
+    connection.onmessage = event => { if (source === connection && mode === 'live' && !replayOnly) receive(event); };
+    connection.onopen = () => {
+      latestServerEvents.clear(); controlsEnabled(); message('Connected · waiting for solver status…');
+      if (!needsInitialPreview && generation != null) fetchHistory();
+      if (compilationEnabled()) modelCompilation.check();
+    };
+    connection.onerror = () => { controlsEnabled(); message('Live stream disconnected · reconnecting. Playback remains local.', true); };
+  }
+  let replayTransition = Promise.resolve();
+  async function setReplayOnly(value) {
+    value = Boolean(value);
+    if (value === replayOnly) return replayTransition;
+    clearTimeout(settingsTimer); ++submission; pausePlayback();
+    replayOnly = value;
+    // Disconnect before rendering: no initial preview or stale event may enqueue
+    // numerical work while the session is showing recordings only.
+    if (value) {
+      const connection = source; source = null; connection?.close();
+      needsInitialPreview = false; pending = false;
+      job = { ...job, job_active: false };
+      // Pause deliberately leaves Manual/Automatic jobs running; cancel stops
+      // every calculation kind without resetting Live's retained history.
+      if (connection) replayTransition = send({ type: 'cancel' });
+    } else if (submittedSettings) {
+      // The retained run is already configured. Reconnecting must not repeat a
+      // cancelled preview (or restart Automatic calculation); Play applies any draft.
+      suppressInitialPreview = true;
+      await refreshSettings();
+    }
+    session?.setReplayOnly(value);
+    document.body.classList.toggle('session-replay-mode', value);
+    if ($('replay-mode-exit')) $('replay-mode-exit').hidden = !value;
+    $('live-message').textContent = '';
+    onReplayMode(value);
+    const [start, end] = sessionBounds();
+    clock.seek(Math.max(start, Math.min(end, clock.time ?? start)));
+    controlsEnabled(); renderView();
+    await replayTransition;
+    if (!replayOnly && mode === 'live') { connectLive(); controlsEnabled(); }
+  }
   async function switchMode(next) {
     if (next === mode) return;
     clearTimeout(settingsTimer); submission++; mode = next; pausePlayback();
@@ -868,11 +1241,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     $('mode-label').textContent = mode === 'live' ? 'LIVE MPC · SIMULATION' : 'TRAJECTORY REPLAY'; onMode(mode);
     if (mode === 'live') {
       if (!liveReady) { needsInitialPreview = false; controlsEnabled(); refreshPlanLabel(); renderView(); return; }
-      needsInitialPreview = !suppressInitialPreview && !profileSwitching && !profileUnavailable; suppressInitialPreview = false;
-      const connection = new EventSource('/api/live/events'); source = connection; controlsEnabled(); refreshPlanLabel();
-      connection.onmessage = event => { if (source === connection && mode === 'live') receive(event); };
-      connection.onopen = () => { latestServerEvents.clear(); controlsEnabled(); message('Connected · waiting for solver status…'); if (!needsInitialPreview && generation != null) fetchHistory(); };
-      connection.onerror = () => { controlsEnabled(); message('Live stream disconnected · reconnecting. Playback remains local.', true); };
+      connectLive(); controlsEnabled(); refreshPlanLabel();
       renderView();
     } else if (source) {
       const shouldPause = transportConnected() && (connected() || job.job_active || pending);
@@ -882,7 +1251,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   }
   $('replay-mode').addEventListener('click', () => switchMode('replay'));
   $('live-mode').addEventListener('click', () => switchMode('live'));
+  $('session-replay-mode')?.addEventListener('click', () => setReplayOnly(!replayOnly));
+  $('replay-mode-exit')?.addEventListener('click', () => setReplayOnly(false));
   $('live-preview').addEventListener('click', async () => {
+    if (replayOnly) return;
     pausePlayback();
     const anchor = displayedAnchor();
     if (dirty && !await submitSettings()) return;
@@ -892,6 +1264,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     controlsEnabled(); renderView();
   });
   $('live-precalculate').addEventListener('click', async () => {
+    if (replayOnly) return;
     pausePlayback(); if (dirty && !await submitSettings()) return;
     const anchor = frozenAnchor || displayedAnchor();
     const result = await send({ type: 'precalculate', ...(anchor ? { anchor } : {}) });
@@ -926,6 +1299,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     }
   });
   $('live-play').addEventListener('click', async () => {
+    if (playbackDisabled()) return;
     inspectingPreview = false;
     clearTimeout(settingsTimer);
     if (clock.playing) {
@@ -947,7 +1321,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (clock.time == null) clock.seek(sessionBounds()[0]);
     // A calculation stopped by a limit breach continues from its tip on Play, in every mode.
     const atTip = Math.abs(clock.time - history.bounds[1]) < 1e-7;
-    const breachResume = !noMotion && atTip && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7;
+    const breachResume = !replayOnly && !noMotion && atTip && history.breaches.at(-1)?.sim_time_s >= history.bounds[1] - 1e-7;
     // Starting a new On Play run follows its calculation. Replaying an idle
     // recording respects Stop, even when that recording was made On Play.
     // Capture the intent before incoming states can make an empty run nonempty.
@@ -964,6 +1338,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     if (shouldExtend && !await extendHistory(intent) && intent === playbackIntent) { pausePlayback(); controlsEnabled(); renderView(); }
   });
   $('live-reset').addEventListener('click', async () => {
+    if (replayOnly) { seek(sessionBounds()[0]); return; }
     clearTimeout(settingsTimer); pausePlayback(); frozenAnchor = undefined;
     if (dirty && !await submitSettings()) return;
     history.clear(); historyRevision++; plan = null; state = undefined; presentedState = undefined; clock.seek(null); onReset();
@@ -973,15 +1348,16 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
   $('live-history').addEventListener('pointermove', event => {
     const bounds = event.target.getBoundingClientRect(), [start, end] = presentationBounds();
     const time = start + Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * (end - start);
-    const interval = history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time);
-    const breach = history.breaches.find(item => Math.abs(item.sim_time_s - time) <= .01 * (end - start));
-    event.target.title = `${number(time, 3)} s · ${breach ? `${breach.message} · ` : ''}${interval ? intervalDescription(interval) : 'Recorded simulation time'}`;
+    const interval = !replayOnly && history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time);
+    const breach = !replayOnly && history.breaches.find(item => Math.abs(item.sim_time_s - time) <= .01 * (end - start));
+    event.target.title = `${number(time, 3)} s · ${breach ? `${breach.message} · ` : ''}${interval ? intervalDescription(interval) : replayOnly ? 'Recorded session time' : 'Recorded simulation time'}`;
   });
   $('live-history-latest').addEventListener('click', showLatest);
   function beginSolverProfileSwitch() {
     const anchor = displayedAnchor();
     clearTimeout(settingsTimer); ++submission; ++schemaReload;
     pausePlayback(); profileSwitching = true; pending = false; extensionPending = false; needsInitialPreview = false;
+    modelCompilation?.invalidate();
     expectedVersion = settingsVersion;
     job = { ...job, job_active: false };
     $('live-status').textContent = 'SWITCHING SOLVER';
@@ -1005,7 +1381,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       if (!response.ok) throw new Error(nextSchema.error || 'Live settings unavailable for the selected solver.');
       const nextSettings = solverProfileSettings(nextSchema, settings);
       const retainedDrafts = [...taskDrafts];
-      schema = nextSchema; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = nextSettings;
+      schema = nextSchema; effectiveSettings = schema.effective_settings || null;
+      modelCompilation?.invalidate();
+      acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = nextSettings;
       taskDrafts.clear();
       for (const [kind, draft] of retainedDrafts) if (schema.tasks?.some(task => task.kind === kind)) taskDrafts.set(kind, restoreCompatibleSettings(schema, { ...settings, task: draft }).task);
       profileNError = !availableKnotCounts(schema, settings.config).includes(settings.config.N);
@@ -1028,7 +1406,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       message(`Solver setup: ${error.message}`, true);
       throw error;
     } finally {
-      if (reload === schemaReload) { profileSwitching = false; controlsEnabled(); renderDirty = true; }
+      if (reload === schemaReload) {
+        profileSwitching = false; controlsEnabled(); renderDirty = true;
+        if (compilationEnabled() && !profileUnavailable && mode === 'live' && !replayOnly) modelCompilation.check();
+      }
     }
   }
   // The notice stays short: the reason is its tooltip and the fix is one click away.
@@ -1045,14 +1426,20 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
       const retained = sessionStorage.getItem('source-restart-live-settings');
       sessionStorage.removeItem('source-restart-live-settings');
       if (retained) { settings = restoreCompatibleSettings(schema, JSON.parse(retained)); dirty = !settingValuesEqual(settings, defaultSettings); }
-    } catch {}
-    liveReady = true; populate(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = false; $('live-mode').title = error.message; showSetupNotice(error.message); });
+    } catch (error) { if (error.message?.startsWith('Saved predictor friction')) throw error; }
+    liveReady = true; populate(); await refreshSettings({ initial: true }); scheduleSettingsRefresh(); }).catch(error => { if (initialSchemaRequest !== schemaReload) return; liveReady = false; controlsEnabled(); $('live-mode').disabled = false; $('live-mode').title = error.message; showSetupNotice(error.message); });
   return {
     ready,
+    refreshSettings,
     refreshView: () => renderView(),
+    dispose() { disposed = true; clearTimeout(settingsPoll); clearTimeout(settingsTimer); modelCompilation?.dispose(); modelPrompt?.dispose(); source?.close(); unsubscribeSession?.(); },
     async enterLive() { await ready; await switchMode('live'); },
+    setReplayOnly,
+    get replayOnly() { return replayOnly; },
     setSession(value) {
-      unsubscribeSession?.(); session = value; clock.setRate(session.rate);
+      unsubscribeSession?.(); session = value; session.setReplayOnly(replayOnly); clock.setRate(session.rate);
+      document.body.classList.toggle('session-replay-mode', replayOnly);
+      if ($('replay-mode-exit')) $('replay-mode-exit').hidden = !replayOnly;
       unsubscribeSession = session.subscribe(() => {
         clock.setRate(session.rate); renderDirty = true;
         const disabled = playbackDisabled();
@@ -1071,7 +1458,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
       const kind = $('live-task').value, base = kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
-      const available = mode === 'live' && !clock.playing && (clock.time == null || clock.time >= history.bounds[1] - 1e-7) && connected() && Boolean(base) && settings.task.kind === kind && Boolean(readSettings()) && status !== 'gpu_busy' && status !== 'error';
+      const available = mode === 'live' && !replayOnly && !clock.playing && (clock.time == null || clock.time >= history.bounds[1] - 1e-7) && liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && Boolean(base) && settings.task.kind === kind && Boolean(readSettings()) && status !== 'gpu_busy' && status !== 'error';
       return { available, kind, position_world: base ? targetWorldPosition(base, offset) : null,
         quaternion_xyzw: settings?.task.orientation_xyzw || [0, 0, 0, 1],
         size_m: kind === 'figure8' ? [settings?.task.width_m, settings?.task.height_m] : null,
@@ -1097,7 +1484,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     // Editable in Live at the run start (t = 0), where the Joints tab shows the start
     // pose; the Joints lock decides whether it is edited. null outside Live.
     get startPose() {
-      if (mode !== 'live' || !schema || !settings) return null;
+      if (mode !== 'live' || replayOnly || !schema || !settings) return null;
       const pose = startPoseOf(schema, settings, defaultSettings);
       if (!pose) return null;
       if (poseDraft) pose.value = [...poseDraft];
@@ -1147,6 +1534,31 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, onMode,
     segmentOf,
     get precomputedPath() { return precomputedPath(); },
     get settings() { return settings ? cloneSettings(settings) : null; }, get status() { return status; },
+    buildSettingsFor(root) {
+      const normalized = value => String(value || '').replace(/\/+$/, '');
+      if (!schema || normalized(root) !== normalized(schema.source?.mpc_root)) return null;
+      const draft = readSettings(true, { allowUncompiled: true });
+      if (!draft) throw new Error('Complete the predictor settings before building.');
+      const params = cloneSettings(draft.config); delete params.plant;
+      return { params, source_settings: cloneSettings(draft.source_settings?.predictor || {}),
+        source_settings_module: schema.source_settings?.predictor?.module || null };
+    },
+    async retryBuiltSettings(build) {
+      if (compilationEnabled()) return modelCompilation.builtExternally(build);
+      if (!build?.result || !build.live_refreshed || !build.params || !dirty || replayOnly) return false;
+      const current = this.buildSettingsFor(build.selection?.mpc_root);
+      if (!current || !settingValuesEqual(current.params, build.params) ||
+          !settingValuesEqual(current.source_settings, build.source_settings || {}) ||
+          !settingValuesEqual(current.source_settings_module, build.source_settings_module ?? null)) return false;
+      acceptCompiledModules(build.result);
+      if (profileNError) { message(unavailableFrictionMessage(), true); return false; }
+      return submitSettings();
+    },
+    get compilation() { return modelCompilation?.snapshot ?? null; },
+    // Numerical work/preview intent, independent of retained-history playback.
+    get computing() { return mode === 'live' && !replayOnly && !profileUnavailable
+      && Boolean(profileSwitching || job.job_active || extensionPending || (pending && source?.readyState === EventSource.OPEN)); },
+    compileModel: compileCurrentModel,
     get pending() { return profileSwitching || pending || (mode === 'live' && !connected()); }, get playing() { return clock.playing; },
     holdForInspection() {
       // The inspection endpoint owns cooperative numerical pausing. This only

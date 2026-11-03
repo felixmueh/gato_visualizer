@@ -61,7 +61,7 @@ def interval_severity(interval):
     physics = interval.get('physics_wall_s', interval.get('simulation_wall_s'))
     total = interval.get('total_wall_s')
     span = interval.get('end_time_s', 0) - interval.get('start_time_s', 0)
-    if finite(mpc) and finite(budget) and mpc > budget:
+    if not interval.get('to_back_to_back') and finite(mpc) and finite(budget) and mpc > budget:
         return 'mpc'
     if finite(physics) and physics > span:
         return 'physics'

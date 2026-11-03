@@ -1,10 +1,11 @@
-"""The tiago_mpc checkout the replay tests read: TIAGO_MPC_ROOT, default ../tiago_mpc."""
+"""The tiago_mpc checkout the tests read: TIAGO_MPC_ROOT or the visualizer's stable base."""
 import importlib.util
 import os
 from pathlib import Path
 import sys
+from visualizer_config import DEFAULT_MPC_ROOT
 
-MPC_ROOT = Path(os.environ.get("TIAGO_MPC_ROOT") or Path(__file__).resolve().parents[2] / "tiago_mpc").resolve()
+MPC_ROOT = Path(os.environ.get("TIAGO_MPC_ROOT") or DEFAULT_MPC_ROOT).resolve()
 MODEL = MPC_ROOT / "models/tiago_pro/tiago_pro.urdf"
 REPLAY_EXPORTER = MPC_ROOT / "experiments/replay.py"
 
@@ -41,18 +42,22 @@ def live_probe():
     the MpcParams defaults, the predictor friction and the coordinate contract."""
     global _PROBE
     if _PROBE is None:
-        from dataclasses import asdict
-        import json
-        from live_mpc import PREDICTOR_SMOOTHING_RAD_S, import_tiago
+        from live_mpc import import_tiago
         from server import RobotKinematics
         from solver_process import model_contract
         tiago = import_tiago(MPC_ROOT)
         mpc = importlib.import_module("tiago_mpc.mpc")
         kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.arm_urdf())
-        plain = lambda value: json.loads(json.dumps(value))
+        from tiago_mpc.record import to_dict
+        from worktree_settings import describe_settings, resolve_predictor
+        description = describe_settings(MPC_ROOT)
+        effective, captured = resolve_predictor(MPC_ROOT, description["predictor"]["defaults"], mpc.TIAGO, to_dict)
         _PROBE = dict(compatible=True, available_N=[], available_N_by_friction=dict(off=[], on=[]), modules=[],
-                      defaults=plain(asdict(mpc.TIAGO)),
-                      friction=plain(asdict(tiago.urdf_friction(PREDICTOR_SMOOTHING_RAD_S))),
+                      source_settings={role: dict(description[role], module=description["module"])
+                                       for role in ("simulation", "predictor")},
+                      effective_settings=dict(params=to_dict(effective), modules=dict(predictor=captured["module"])),
+                      defaults=to_dict(mpc.TIAGO),
+                      friction=to_dict(tiago.urdf_friction()),
                       contract=model_contract(kinematics, tiago),
                       capabilities=dict(iteration_capture_by_friction=dict(off={}, on={}), exact_resume=False))
     from copy import deepcopy

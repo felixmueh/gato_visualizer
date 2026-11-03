@@ -4,15 +4,56 @@ A local browser application for live reaching/tracking MPC and saved trajectory 
 Orbit, pan and zoom around the full canonical TIAGo; change solver settings,
 inspect its predicted tool path, then play the simulated closed-loop motion.
 
+Agents can read and patch the current settings through
+[`scripts/control.py`](scripts/control.py); open browsers reflect shared Live
+and presentation changes. See the [agent API guide](docs/agent-api.md).
+
+This experimental branch keeps settings integration in visualizer-owned
+`adapters/`, with an optional locally ignored checkout override. No tracked
+visualizer hook is required in `tiago_mpc`. See [settings adapters](docs/source-settings.md).
+
+Live can select uncompiled knot counts and predictor models. Missing combinations
+are shaded and use one centered **Compile** action for the exact current draft;
+cached models apply directly. Per-joint friction and armature coefficients stay
+in the adapter's native presets, with toggles exposed in the form.
+
+Runtime/task edits reuse model readiness; moving a goal never starts another
+model lookup. Background model checks leave task handles editable. Timing
+inputs accept `50 Hz`, `20 ms` or `0.02 s` with canonical numeric API values;
+measured solve latency and as-fast-as-possible TO use separate checkboxes.
+See [Live timing controls](docs/live-api.md#settings-object).
+
+Loading several recorded runs enables **Comparison**, with tracking,
+smoothness and arbitrary recorded-channel plots. Its separate extensible
+Python catalog uses `@plot_comparison`; see
+[the comparison API](docs/plot-api.md#comparison-plots).
+
 ## Run
 
-Use a prepared sibling `../tiago_mpc` checkout with canonical models, fetched
-LFS meshes and GATO dependencies (select another checkout with `--mpc-root`,
+Use the prepared sibling `../tiago_mpc-visualizer-base` worktree (branch
+`visualizer/base`) with canonical models, fetched LFS meshes and GATO dependencies
+(select another checkout with `--mpc-root`,
 `TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the start pose,
 in one Live workspace, ready to calculate or add recordings as tracks.
-The launcher uses `../tiago_mpc/venv-host` on the desktop. `TIAGO_PYTHON` can
-select another prepared interpreter; inside the existing container the launcher
-falls back to the checkout's `.venv`. It does not install Python packages there.
+The launcher uses the selected checkout's uv environment: `.venv` on the desktop,
+`.venv-container` inside Docker or Podman. It never falls back to the other
+platform's environment. `TIAGO_PYTHON` can select another prepared interpreter;
+the launcher does not install Python packages and unsets inherited `PYTHONPATH`.
+
+The stable source stays at its selected commit while development continues in
+`tiago_mpc` main. To accept a new chunk, first check that the base has no local
+changes, then fast-forward it explicitly:
+
+```bash
+git -C ../tiago_mpc-visualizer-base status --short
+git -C ../tiago_mpc-visualizer-base merge --ff-only main
+```
+
+Sync the base's own environment with `uv sync --locked` from that worktree
+(in the container set `UV_PROJECT_ENVIRONMENT=.venv-container` and unset
+`PYTHONPATH`), then use **Apply and restart backend** for that source. This also
+reloads changed source code when the selected path stays the same. The launcher
+never advances the base automatically. Each platform prepares its own environment.
 
 The viewer uses the GATO modules that `tiago_mpc` compiled into its default
 cache: the main checkout's `.cache/gato`, also when the selected checkout is a
@@ -33,11 +74,19 @@ Omit `--host 0.0.0.0` to listen only on the desktop itself. No cloud service,
 laptop Python environment, or internet connection is needed after setup.
 
 **Direct replay links:** `http://192.168.178.82:8090/?replay=reaching/study/run_017`
-adds that library recording as a track in the Live workspace (the path omits
-`.npz`; uploads use an `uploads/` prefix). The linked URL remains shareable.
+adds that library recording as a track and opens **Replay mode** (the path
+omits `.npz`; uploads use an `uploads/` prefix). It starts without subscribing
+to Live events or requesting an automatic preview. The linked URL remains shareable.
 A missing or unreadable path shows the library's usual message
 and error list, and the link opens the recording once it appears (for example
 when its export finishes). Links match library entries only, never file paths.
+Repeat `replay` to open several recordings together, for example
+`/?replay=study/stock&replay=study/feedback`. Each comparison track starts at
+offset zero and uses its recording label as its editable lane name; the first
+visible recording supplies the inspectors. Encode spaces as `%20` and literal
+plus signs as `%2B`. Catalog updates add any newly available linked recordings
+without replacing tracks already loaded. Single-recording links keep the usual
+start alignment and A/B/C names.
 
 The launcher installs locked frontend dependencies if absent, builds the
 frontend, and serves the application, robot assets and API from one process.
@@ -68,8 +117,9 @@ stands for the selected checkout and is substituted when the path is used, so a
 saved template such as `<checkout>/.venv/bin/python` stays valid when the checkout
 changes (`~` is expanded too; absolute paths without the token keep working;
 any other `<…>` token is an error). The interpreter defaults to
-`<checkout>/venv-host/bin/python` when that interpreter exists, else
-`<checkout>/.venv/bin/python`. The cache defaults to `tiago_mpc`'s own default,
+`<checkout>/.venv/bin/python` on the host and `<checkout>/.venv-container/bin/python`
+in Docker or Podman. Explicit interpreter overrides remain available.
+The cache defaults to `tiago_mpc`'s own default,
 which the field shows as its resolved path (tooltip "tiago_mpc's default"); a
 cache override is any other template or path. The resolved
 absolute path is the field's tooltip; a template that cannot be resolved is marked
@@ -103,7 +153,7 @@ saved replays; the Live history starts afresh. Restart may wait for an active so
 window to release the GPU safely.
 
 Startup source precedence is `--mpc-root` > `TIAGO_MPC_ROOT` > saved selection >
-`../tiago_mpc`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
+`../tiago_mpc-visualizer-base`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
 Selecting another source with CLI/environment chooses that project's default
 environment and `tiago_mpc`'s default cache unless explicitly overridden. Apply replaces those launch-time
 overrides for its restart. No packages are installed in the selected environment.
@@ -123,7 +173,7 @@ see the [format and export cookbook](docs/replay-format.md).
 
 ## Workspace
 
-The application opens directly into one Live workspace, with no mode tabs.
+The application opens directly into one session workspace, with no mode tabs.
 The viewport fills the window above a single compact playback bar. Use its top
 left and top right buttons to hide or restore either sidebar. The right sidebar
 has **Views** (synchronized Top and Right cameras), **Episode** (recorded motion
@@ -137,7 +187,7 @@ the viewport at least 360 px); double-click the edge to restore the default
 width. Widths are remembered per browser. Below 960 px the sidebars are
 overlays and keep their fixed width.
 
-The playback bar contains Play/Pause, Reset, the timeline and **Stop**. Checked
+The playback bar contains Play/Pause, Reset, the timeline, **Replay** and **Stop**. In Live, checked
 Stop ends recorded playback at the session end. With Live calculation,
 unchecking it continues simulation from the tip. On Play runs continuously
 from an empty run until paused. The transport also
@@ -146,7 +196,7 @@ hover/focus panel above it,
 **Freeze for comparison**, and a playback speed (forced to 1× while following
 a growing Live tip).
 
-Live is always a session with main track **Live**. Expand the timeline and use
+The session retains a main track **Live**. Expand the timeline and use
 **Add track** to compare saved recordings, or **Freeze for comparison** to
 export the idle current run into RAM, add it at offset zero, and rewind to its
 start. A subsequent settings edit starts from that displayed starting state.
@@ -163,7 +213,19 @@ Freezes appear under Temporary in Add track. Eight
 are retained per server run; removing a track does not delete its freeze.
 Page reload retains the freeze catalog but clears the browser's tracks;
 server shutdown deletes its freezes. See [session defaults](docs/presentation.md#session-and-tracks).
-The ruler sits above Live; aggregate start/end barriers and shading extend
+
+Opening a recording through **Add track** or a direct link enters **Replay
+mode**. It cancels Live calculation and hides Live's lane, arm, paths and ghost
+images; Play, scrubbing and playback speed use only visible replay tracks.
+Reset rewinds playback to their start. Live settings remain visible and
+disabled. Joints, Episode and the unpinned Solve inspector read the first
+visible replay; a pinned Solve retains its source. A subtle amber viewport
+outline and the top-centre **Replay mode · Return to Live** button mark the
+mode. Click that button or the bottom-bar **Replay** toggle to restore Live,
+paused, alongside all retained recordings. **Freeze for comparison** stays in
+Live. Removing the last recording leaves Replay mode selected until you return.
+
+The ruler sits above the track rows; aggregate start/end barriers and shading extend
 across all track rows. Live's row repeats the Freeze action. Hover the ghost
 button to set spacing and the maximum number of arms; click it to cycle off,
 Live only, or all tracks. **Settings → UI** sets start and end ghost opacity
@@ -220,7 +282,8 @@ plots fit the window; docked plots retain the timeline zoom window and cursor. D
 new values arrive. The Solve inspector follows the recorded
 plan association. **Pin solve** retains its identity and SQP selection with a
 muted red indicator. Its separate SQP strip selects recorded iterations without
-moving the episode clock. **Run again** offers a finite SQP cap and optional
+moving the episode clock. **Run again**, available with capture-capable solver
+profiles (official `gato-mpc` 0.1.5 does not provide iteration capture), offers a finite SQP cap and optional
 wall budget, creates a separate pinned result with genuine iteration snapshots,
 and preserves the original episode. The result lasts as long as its Live run or
 loaded replay stays current. Initialization is explicitly cold; **Stop**
@@ -251,11 +314,13 @@ coordinates and compiled modules for the chosen knot count. See
 ## Live MPC
 
 The **Friction** group sets the simulated plant and the predictor
-independently, both loss-free by default, with the selected source’s URDF joint
-coefficients. The plant integrator is RK4 (loss-free) or semi-implicit Euler,
-which also simulates plant friction with a tanh, sign or constraint Coulomb law
-(default constraint). Predictor friction is a compiled variant with a fixed tanh
-width of 0.03 rad/s. See [friction](docs/friction.md).
+independently. The simulated plant defaults to semi-implicit Euler with the
+selected source's URDF friction and the constraint Coulomb law; the predictor
+defaults to loss-free. Euler also simulates plant friction with a tanh, sign or constraint Coulomb law
+(default constraint). Predictor friction and its separate `friction_law` select
+a compiled variant. The standard control fixes tanh width at 0.03 rad/s; the
+experimental friction adapter exposes its configured width and independent
+armature toggles. See [friction](docs/friction.md).
 
 **Limit handling** (Felix, 2026-10-23): **Clip effort** (on by default) clips
 each command to ± the URDF effort limit before it reaches the simulated plant;
@@ -271,8 +336,11 @@ Adjust the target offset and settings, and inspect the prediction.
 The prediction computes one optimized horizon from the displayed state. It
 does not advance the simulated plant. **Reset state** returns to the start
 pose, clears recorded motion, and restarts the episode's plan count.
-Adding recording tracks never replaces the Live configuration. The first connection after loading
-the application starts a fresh episode at the start pose and time zero.
+Adding recording tracks never replaces the Live configuration. The first viewer
+of an unconfigured backend starts an episode at the start pose and time zero.
+Later viewers read its current settings and history; opening a direct replay
+link leaves Live idle until you return to it. Agent changes update open controls
+through the [shared settings API](docs/agent-api.md).
 
 **Start pose** (Felix, 2026-10-23): the seven joint positions the simulated arm
 starts from at t = 0, velocities zero; the default is `tiago_mpc`'s `Q_START`
@@ -330,9 +398,15 @@ At a growing recording's end, playback waits for new samples.
 
 Set **Simulation Hz ≥ Control Hz ≥ TO / replanning Hz** (defaults 1000, 500 and
 100). Simulation Hz sets the plant's integration step, Control Hz samples the active plan's
-torque, and TO Hz requests new plans. The prediction knot interval is separate.
+torque, and TO Hz sets replanning slots. **TO Hz 0** requests back-to-back.
+**Solve latency (s)** defaults to `measured`, the solver's host wall time; enter
+nonnegative seconds to declare a latency instead. Requests start at control
+ticks when no solve is pending, using `tiago_mpc`'s `Schedule`; missed slots are
+skipped. The old plan continues until the first control tick at or after the
+new plan becomes available. Its age still starts at the state used for the
+solve, so latency may skip its first knots. The prediction knot interval is separate.
 The history records every command, plan and timing interval and the state at
-every command tick and TO update (every 2 ms at the defaults); the physics steps
+every command tick (every 2 ms at the defaults); the physics steps
 between them are simulated, not recorded. The warm-start policy is
 the `MpcParams` setting `warm_start` (shift or hold); there is no exact time
 alignment of the warm start. Large SQP/PCG budgets
@@ -491,7 +565,7 @@ python_bin="$(python3 scripts/launch_python.py)"
 
 The resolver above uses the same prepared interpreter as startup; it installs
 no Python packages. Tests that need `tiago_mpc` (its model, `experiments/replay.py`
-or `MpcParams` defaults) take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc`);
+or `MpcParams` defaults) take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc-visualizer-base`);
 none of them needs a compiled module or the GPU. Run the opt-in GPU conformance
 check only when the experiment locks are free:
 
@@ -499,27 +573,34 @@ check only when the experiment locks are free:
 "$python_bin" scripts/check_conformance.py --mpc-root /absolute/path/to/tiago_mpc
 ```
 
-It runs `tiago_mpc`'s `experiments.reach.reach` with `SimPlant` (1 ms
+It runs `tiago_mpc`'s `run_virtual_time` with a `Reach` task with `SimPlant` (1 ms
 substeps) and `Mpc` in this process, then the visualizer's adapter, solver child
 and multirate session with the same `MpcParams` (Live's defaults: `TIAGO`
 without the SQP time limit, warm-up on), start, target and rates: commands
 every 2 ms (500 Hz, the reach's default), a control update every 10 ms knot,
-physics on a 1 ms grid. `run()` warms up from the start state before its first
+physics on a 1 ms grid. This diagnostic explicitly selects a loss-free RK4 plant
+on both sides, independently of the interactive constraint-friction default.
+Both sides use a declared 5.5 ms latency (first activation at 6 ms), so the
+comparison exercises old-plan execution and delayed activation; ordinary Live
+keeps its measured-latency default.
+`run_virtual_time()` warms up from the start state before its first
 tick; the session's configure reseeds with the same `Mpc.warmup`. The session
 records as Live does, the state at every command tick. It compares
 the states at every command tick, the commands and the plans (`--atol`, default
-1e-9) over `--steps` knot intervals (default 300, that is 3 s). The reference
+1e-3) over `--steps` knot intervals (default 300, that is 3 s). The reference
 reach gets a zero position tolerance, so it never arrives and runs the whole
 duration; the default reach would otherwise arrive early. By default the
-reference plant steps on the session's 1 ms grid, and the comparison is bit for
-bit (passed against `tiago_mpc` 31c405a, 2026-10-23). `--accumulated-ticks`
-keeps `run()`'s accumulated tick times instead: their last-bit differences in
+reference plant steps on the session's 1 ms grid. The earlier zero-latency
+comparison was bit for bit against `tiago_mpc` 56db0fd (2026-10-26); that saved
+result does not qualify the new delayed timing. `--accumulated-ticks`
+keeps `run_virtual_time()`'s accumulated tick times instead: their last-bit differences in
 the substep lengths grow through GATO's float32 solves until the plans diverge
 (after about 1 s with 10 ms commands, 2026-10-22), which is round-off, not a
 scheduling difference. It needs the default loss-free N module and covers the default reach, not
 every profile, friction or inspection path. Run it with the selected checkout's
 interpreter and pass the source explicitly (`--mpc-root`, else `TIAGO_MPC_ROOT`,
-else `../tiago_mpc`); it does not read the saved source selection. Both raw
-outputs are retained below `_expr_data/conformance/`. Timing is excluded.
+else `../tiago_mpc-visualizer-base`); it does not read the saved source selection. Both raw
+outputs are retained below `_expr_data/conformance/`. The declared solve delay is included;
+this is a numerical comparison, not a wall-clock benchmark.
 Mesh ownership and model provenance remain with the selected MPC checkout;
 see its `models/README.md` and license files.

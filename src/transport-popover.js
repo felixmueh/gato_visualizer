@@ -1,4 +1,6 @@
 import { DEFAULT_GHOST_SETTINGS as GHOST_DEFAULTS, validateGhostSettings as validateRenderSettings } from './onion-skin.js';
+import { configureTimeInput, readTimeInput, setTimeInputValue } from './time-input.js';
+const SPACING_TIME = { unit: 's', min: .01, max: 3600, label: 'Ghost spacing' };
 
 // Hover and keyboard access share the same small settings panel. Keeping the
 // panel inside its control makes the upward pointer path continuous.
@@ -41,10 +43,16 @@ export function setupGhostControls({ onChange, doc = document, storage }) {
   const fields = ['live', 'replay'].flatMap(mode => ['spacingEnabled', 'interval_s', 'maxCount'].map(name => ({
     name, input: doc.getElementById(`${mode}-ghost-${name}`),
   })));
-  function populate() { for (const { name, input } of fields) { if (name === 'spacingEnabled') input.checked = settings[name]; else input.value = settings[name]; if (name === 'interval_s') input.disabled = !settings.spacingEnabled; input.removeAttribute('aria-invalid'); input.title = input.dataset.tip; } }
+  function populate() { for (const { name, input } of fields) {
+    if (name === 'spacingEnabled') input.checked = settings[name];
+    else if (name === 'interval_s') setTimeInputValue(input, settings[name], SPACING_TIME);
+    else input.value = settings[name];
+    input.removeAttribute('aria-invalid'); input.title = input.dataset.tip;
+    if (name === 'interval_s') { input.disabled = !settings.spacingEnabled; configureTimeInput(input, SPACING_TIME); }
+  } }
   function commit({ name, input }) {
-    const value = name === 'spacingEnabled' ? input.checked : input.value.trim() === '' ? NaN : Number(input.value);
     try {
+      const value = name === 'spacingEnabled' ? input.checked : name === 'interval_s' ? readTimeInput(input, SPACING_TIME) : input.value.trim() === '' ? NaN : Number(input.value);
       const next = validateGhostSettings({ ...settings, [name]: value });
       input.removeAttribute('aria-invalid'); input.title = input.dataset.tip;
       settings = next; populate();

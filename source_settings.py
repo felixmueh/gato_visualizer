@@ -88,6 +88,31 @@ class SourceSettings:
         # `entered` resolves the current field templates, so the UI can show paths and errors.
         return dict(checkout_defaults(root), entered=resolve_templates(root, body.get("python"), body.get("cache")))
 
+    def model(self, body):
+        """Read-only availability of one complete draft in its selected interpreter.
+
+        This never accepts Live settings, updates the active catalog or compiles.
+        The same native params and adapter pin are passed to explicit Build.
+        """
+        expected = {"selection", "params", "source_settings", "source_settings_module"}
+        if not isinstance(body, dict) or set(body) != expected:
+            raise ValueError("Model check requires selection, params, predictor values and adapter identity")
+        from worktree_settings import plain
+        frozen = plain(body)
+        if not isinstance(frozen["params"], dict) or not isinstance(frozen["source_settings"], dict):
+            raise ValueError("params and source_settings must be objects")
+        if frozen["source_settings_module"] is not None and not isinstance(frozen["source_settings_module"], dict):
+            raise ValueError("source_settings_module must be an adapter identity or null")
+        selection = selection_from_request(frozen["selection"])
+        with self.lock:
+            if self.closed or self.restarting:
+                raise ValueError("Backend restart is already in progress")
+        result = self.probe(selection, operation="model", params=frozen["params"],
+                            source_settings=frozen["source_settings"],
+                            source_settings_module=frozen["source_settings_module"])
+        result.setdefault("selection", selection)
+        return result
+
     def status(self):
         with self.lock:
             current = self.current
@@ -111,9 +136,16 @@ class SourceSettings:
         return snapshot
 
     def build(self, body):
-        if not isinstance(body, dict) or set(body) - {"selection", "N", "rebuild", "prediction_friction"}:
+        if not isinstance(body, dict) or set(body) - {"selection", "N", "rebuild", "prediction_friction", "params", "source_settings", "source_settings_module"}:
             raise ValueError("Build requires selection, N and optional rebuild")
         selection = selection_from_request(body.get("selection"))
+        from worktree_settings import plain
+        params = plain(body["params"]) if "params" in body else None
+        source_settings = plain(body["source_settings"]) if "source_settings" in body else None
+        if params is not None and not isinstance(params, dict) or source_settings is not None and not isinstance(source_settings, dict):
+            raise ValueError("params and source_settings must be objects")
+        settings_pin = ({"source_settings_module": plain(body["source_settings_module"])}
+                        if "source_settings_module" in body else {})
         prediction_friction = body.get("prediction_friction", False)
         if type(prediction_friction) is not bool:
             raise ValueError("prediction_friction must be a boolean")
@@ -132,14 +164,16 @@ class SourceSettings:
             # Live command belongs here. Numerical work retains its own locks.
             from source_runtime import build_command
             command, environment = build_command(selection, sorted(set(counts)),
-                                                  rebuild=body.get("rebuild", False), prediction_friction=prediction_friction)
+                                                  rebuild=body.get("rebuild", False), prediction_friction=prediction_friction,
+                                                  params=params, source_settings=source_settings, **settings_pin)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
             folder = ROOT / "_expr_data/source-builds" / stamp
             folder.mkdir(parents=True)
             log_path = folder / "build.log"
             self.job = dict(id=uuid.uuid4().hex, state="running", N=sorted(set(counts)),
                             started_at=stamp, log_path=str(log_path), selection=selection,
-                            rebuild=body.get("rebuild", False), prediction_friction=prediction_friction)
+                            rebuild=body.get("rebuild", False), prediction_friction=prediction_friction,
+                                                  params=params, source_settings=source_settings, **settings_pin)
             (folder / "request.json").write_text(json.dumps(self.job, indent=2) + "\n")
             thread = threading.Thread(target=self._build, args=(self.job, command, environment, log_path),
                                       name="source-binary-build", daemon=True)
@@ -158,8 +192,11 @@ class SourceSettings:
                                          stderr=subprocess.STDOUT, start_new_session=True)
                     job["process"] = process
                 code = process.wait()
-            result = self.probe(job["selection"])
-            final.update(state="complete" if code == 0 else "failed", returncode=code, result=result)
+            exact = {key: job[key] for key in ("params", "source_settings", "source_settings_module")
+                     if key in job and (job[key] is not None or key == "source_settings_module")}
+            result = self.probe(job["selection"], **exact)
+            final.update(state="complete" if code == 0 and result.get("compatible") else "failed",
+                         returncode=code, result=result)
             if code == 0 and self.on_built is not None:
                 try:
                     final["live_refreshed"] = bool(self.on_built(job["selection"], result))

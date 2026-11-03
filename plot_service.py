@@ -9,16 +9,18 @@ import multiprocessing as mp
 import os
 from pathlib import Path
 import queue
+import re
 import threading
 import time
 import uuid
 
-from plot_sources import SourceReader, inspect_source
+from plot_sources import SourceReader, inspect_source, comparison_source
 from solver_lifecycle import run_with_parent
 
 ROOT = Path(__file__).resolve().parent
 MAX_RESULT_BYTES = 8*1024*1024
 MAX_CACHE_BYTES = 32*1024*1024
+MAX_COMPARISON_RUNS = 16
 
 
 def reduce_spec(spec, pixels=1200):
@@ -72,7 +74,7 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
         registry = Registry()
         for directory in directories:
             registry.load_directory(directory)
-        catalog = [*registry.catalog("episode"), *registry.catalog("solve")]
+        catalog = [*registry.catalog("episode"), *registry.catalog("solve"), *registry.catalog("comparison")]
         results.put(dict(type="ready", catalog=catalog, errors=registry.errors))
         reader = SourceReader(mpc_root, default_scene)
         cache = OrderedDict()
@@ -90,48 +92,55 @@ def _worker_main(commands, results, directories, mpc_root, default_scene):
                     payload, payload_bytes = cache[key]
                     cache.move_to_end(key)
                 else:
-                    raw = reader.read(descriptor)
-                    selection = dict(request.get("selection") or {})
-                    if "solve_seq" in selection and selection["solve_seq"] is not None:
-                        selection["solve_id"] = selection["solve_seq"]
-                    if "trajectory_index" in request["source"]:
-                        selection.setdefault("trajectory_index", request["source"]["trajectory_index"])
-                    analysis = request.get("range") or {}
-                    selected, inspection = inspect_source(raw, selection, analysis)
-                    iteration = selection.get("iteration", selection.get("iteration_index"))
-                    source = request["source"]
-                    clock = (f"live:{source['generation']}" if source["kind"] == "live" else
-                             f"inspection:{source['id']}" if source["kind"] == "inspection" else
-                             f"replay:{source.get('id', 'default')}:{source.get('trajectory_index', 0)}")
-                    context = InspectionContext(episode_cursor_s=analysis.get("cursor_s"),
-                        analysis_range=analysis.get("mode", "entire"),
-                        visible_window=((analysis.get("start_s"), analysis.get("end_s"))
-                                        if analysis.get("mode") in ("visible", "window") else None),
-                        selected_solve_id=None if selected is None else selected.get("seq", selected["id"]), sqp_iteration=iteration,
-                        clock=clock)
                     scope = request["context"]
-                    # Part of the request, hence of the cache key; never cached in the source.
-                    thresholds = request.get("limit_settings") or {}
-                    view = (EpisodeView({**raw, "limit_settings": thresholds}, context=context) if scope == "episode" else
-                            SolveView({**(selected or {}), "limit_settings": thresholds} if selected else {}, context=context))
-                    if inspection["selected_solve"] is not None:
-                        solve = inspection["selected_solve"]
-                        solve.update(seq=solve["id"], sim_time_s=solve.get("time_s"),
-                                     has_prediction=bool(solve.get("selected_prediction") or solve["final_prediction"]), can_continue=False,
-                                     reason=solve["capabilities"]["continue_reason"])
-                    states = raw.get("states", [])
-                    wanted = selection.get("iteration_paths")
-                    trace = None if selected is None else selected.get("iteration_trace")
-                    paths = None if wanted is None or trace is None else trace.path_chunk(wanted)
-                    payload = dict(catalog=registry.catalog(scope, view), errors=registry.errors,
-                        inspection=inspection, context=dict(inspection,
-                            clock=clock, time_origin_s=raw.get("time_origin_s", 0),
-                            joint_names=list(raw.get("joint_names", [f"arm_right_{i}_joint" for i in range(1, 8)])),
-                            bounds=([states[0]["sim_time_s"], states[-1]["sim_time_s"]] if states else None)),
-                        results=[])
-                    if paths is not None:
-                        # Top level: the context and inspection share selected_solve.
-                        payload["iteration_paths"] = paths
+                    selected = None
+                    if scope == "comparison":
+                        view, details = comparison_source(reader, descriptor, request)
+                        payload = dict(catalog=registry.catalog(scope, view), errors=registry.errors,
+                                       inspection={}, context=details, results=[])
+                    else:
+                        raw = reader.read(descriptor)
+                        selection = dict(request.get("selection") or {})
+                        if "solve_seq" in selection and selection["solve_seq"] is not None:
+                            selection["solve_id"] = selection["solve_seq"]
+                        if "trajectory_index" in request["source"]:
+                            selection.setdefault("trajectory_index", request["source"]["trajectory_index"])
+                        analysis = request.get("range") or {}
+                        selected, inspection = inspect_source(raw, selection, analysis)
+                        iteration = selection.get("iteration", selection.get("iteration_index"))
+                        source = request["source"]
+                        clock = (f"live:{source['generation']}" if source["kind"] == "live" else
+                                 f"inspection:{source['id']}" if source["kind"] == "inspection" else
+                                 f"replay:{source.get('id', 'default')}:{source.get('trajectory_index', 0)}")
+                        context = InspectionContext(episode_cursor_s=analysis.get("cursor_s"),
+                            analysis_range=analysis.get("mode", "entire"),
+                            visible_window=((analysis.get("start_s"), analysis.get("end_s"))
+                                            if analysis.get("mode") in ("visible", "window") else None),
+                            selected_solve_id=None if selected is None else selected.get("seq", selected["id"]), sqp_iteration=iteration,
+                            clock=clock)
+                        scope = request["context"]
+                        # Part of the request, hence of the cache key; never cached in the source.
+                        thresholds = request.get("limit_settings") or {}
+                        view = (EpisodeView({**raw, "limit_settings": thresholds}, context=context) if scope == "episode" else
+                                SolveView({**(selected or {}), "limit_settings": thresholds} if selected else {}, context=context))
+                        if inspection["selected_solve"] is not None:
+                            solve = inspection["selected_solve"]
+                            solve.update(seq=solve["id"], sim_time_s=solve.get("time_s"),
+                                         has_prediction=bool(solve.get("selected_prediction") or solve["final_prediction"]), can_continue=False,
+                                         reason=solve["capabilities"]["continue_reason"])
+                        states = raw.get("states", [])
+                        wanted = selection.get("iteration_paths")
+                        trace = None if selected is None else selected.get("iteration_trace")
+                        paths = None if wanted is None or trace is None else trace.path_chunk(wanted)
+                        payload = dict(catalog=registry.catalog(scope, view), errors=registry.errors,
+                            inspection=inspection, context=dict(inspection,
+                                clock=clock, time_origin_s=raw.get("time_origin_s", 0),
+                                joint_names=list(raw.get("joint_names", [f"arm_right_{i}_joint" for i in range(1, 8)])),
+                                bounds=([states[0]["sim_time_s"], states[-1]["sim_time_s"]] if states else None)),
+                            results=[])
+                        if paths is not None:
+                            # Top level: the context and inspection share selected_solve.
+                            payload["iteration_paths"] = paths
                     for plot in request.get("plots", []):
                         try:
                             spec = registry.evaluate(plot["plot_id"], view, plot.get("inputs", {}))
@@ -301,13 +310,16 @@ class PlotService:
             return dict(kind="replay", id=identifier, path=str(path), signature=list(signature), revision=item["revision"])
 
     def submit(self, body, *, catalog=False):
-        if not isinstance(body, dict) or body.get("context") not in ("episode", "solve"):
-            raise ValueError("Plot context must be episode or solve")
-        if not isinstance(body.get("source"), dict):
+        if not isinstance(body, dict) or body.get("context") not in ("episode", "solve", "comparison"):
+            raise ValueError("Plot context must be episode, solve or comparison")
+        comparison = body["context"] == "comparison"
+        if not comparison and not isinstance(body.get("source"), dict):
             raise ValueError("A source selector is required; browser history uploads are not accepted")
         request = deepcopy(body)
-        if set(request)-{"context", "source", "selection", "range", "plots", "pixels", "client_id", "plot_id", "parameters", "instance_id", "limit_settings"}:
+        if set(request)-{"context", "source", "sources", "alignment", "selection", "range", "plots", "pixels", "client_id", "plot_id", "parameters", "instance_id", "limit_settings"}:
             raise ValueError("Unknown plot request fields")
+        if not comparison and ("sources" in request or "alignment" in request):
+            raise ValueError("Multiple sources and alignment require comparison context")
         # The browser's current limit-state presentation settings (near band,
         # at-tolerances). Plotters read them through limit_settings(raw).
         from gato_visualizer.plotting.limit_use import validate_limit_settings
@@ -343,7 +355,7 @@ class PlotService:
         for plot in request["plots"]:
             if not isinstance(plot, dict) or not isinstance(plot.get("plot_id"), str) or not isinstance(plot.get("instance_id"), str) or not isinstance(plot.get("inputs", {}), dict):
                 raise ValueError("Each plot requires instance_id, plot_id and inputs")
-        descriptor = self._descriptor(request["source"])
+        descriptor = self._comparison_descriptor(request) if comparison else self._descriptor(request["source"])
         channel = str(request.get("client_id", "browser"))+":"+request["context"]+":"+("catalog" if catalog else "evaluate")
         with self.lock:
             if self.closed:
@@ -375,9 +387,48 @@ class PlotService:
             job = self.jobs.get(identifier)
             if job is None:
                 raise KeyError("Plot job expired or was not found")
-            if job["descriptor"]["kind"] == "live" and self.live is not None and job["descriptor"]["generation"] != self.live.generation:
+            if self._stale_live(job["descriptor"]):
                 job["state"] = "superseded"
             return deepcopy({key: value for key, value in job.items() if key not in ("channel", "request", "descriptor", "started_at", "payload_bytes")})
+
+    def _comparison_descriptor(self, request):
+        """Only catalog selectors enter the CPU worker; never browser data/paths."""
+        import math
+        if 'source' in request:
+            raise ValueError('Comparison uses sources, not one source')
+        if request.get('alignment', {'mode': 'session_time'}) != {'mode': 'session_time'}:
+            raise ValueError('Comparison alignment must be session_time')
+        entries = request.get('sources')
+        if not isinstance(entries, list) or len(entries) > MAX_COMPARISON_RUNS:
+            raise ValueError(f'Choose at most {MAX_COMPARISON_RUNS} recorded comparison sources')
+        keys, runs = set(), []
+        for item in entries:
+            if not isinstance(item, dict) or set(item) != {'key', 'label', 'color', 'offset_s', 'source'}:
+                raise ValueError('Each comparison run requires key, label, color, offset_s and source')
+            if not isinstance(item['key'], str) or not 0 < len(item['key']) <= 256 or item['key'] in keys:
+                raise ValueError('Comparison run keys must be unique nonempty strings')
+            keys.add(item['key'])
+            if not isinstance(item['label'], str) or not 0 < len(item['label']) <= 256:
+                raise ValueError('Comparison labels must be nonempty text under 257 characters')
+            if not isinstance(item['color'], str) or re.fullmatch(r'#[0-9a-fA-F]{6}', item['color']) is None:
+                raise ValueError('Comparison color must be #rrggbb')
+            if isinstance(item['offset_s'], bool) or not isinstance(item['offset_s'], (int, float)) or not math.isfinite(item['offset_s']):
+                raise ValueError('Comparison offsets must be finite seconds')
+            source = item['source']
+            if not isinstance(source, dict) or source.get('kind') not in ('live', 'replay') or set(source)-{'kind', 'id', 'revision', 'trajectory_index', 'generation'}:
+                raise ValueError('Comparison requires recorded Live or Replay source selectors')
+            index = source.get('trajectory_index')
+            if index is not None and (type(index) is not int or index < 0):
+                raise ValueError('trajectory_index must be a nonnegative integer')
+            descriptor = self._descriptor(source)
+            descriptor['comparison'] = True
+            runs.append(dict(item, descriptor=descriptor))
+        return dict(kind='comparison', runs=runs)
+
+    def _stale_live(self, descriptor):
+        if descriptor['kind'] == 'comparison':
+            return any(self._stale_live(run['descriptor']) for run in descriptor['runs'])
+        return descriptor['kind'] == 'live' and self.live is not None and descriptor['generation'] != self.live.generation
 
     def _pump(self):
         while True:
@@ -404,7 +455,9 @@ class PlotService:
                     elif packet["type"] == "result":
                         job = self.jobs.get(packet["job_id"])
                         if job and job["state"] == "running":
-                            if "error" in packet:
+                            if self._stale_live(job['descriptor']):
+                                job.update(state='superseded')
+                            elif "error" in packet:
                                 job.update(state="failed", error=packet["error"])
                             else:
                                 job.update(state="complete", payload_bytes=packet.get("payload_bytes", 0), **packet["payload"])

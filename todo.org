@@ -1,0 +1,45 @@
+#+title: Todo
+
+* Random Ideas
+- Have a way to change tiago pose / save / restore poses.
+
+* MPC Controller
+** TODO (controller). Move the end of the arm in between the original grippers. <-- Probably in extracted URFD?
+
+* Bugs?
+** TODO even with 1SQP iteration I still get intermittend red bars I.e. MPC time fails. This seems like it is a bug? Or is admm or something actually doing heavy work?
+** TODO Remove file writes of history. --> Write to ram backed files instead.
+** TODO _visualizer folder that is untracked IN tiago_mpc doesn't work great. We should probably have a default folder we use (if the worktree does not have its own.)
+
+* Genral
+** TODO SQP iter display re-use warm start?
+(should have option): /cold-start/ [x]
+(optionally) --> otherwise we always start from a cold-start.
+** TODO Check that simulator timesteps are sensible.
+--> Perhaps also introduce sub-steps --> more simulation for less data.
+** TODO (deferred) Increase plot frequency so plots are actually realtime.
+Plot data comes from Python jobs capped at 5 Hz (requests at most every 200 ms,
+job polling every 80 ms), and each job re-evaluates the whole history. So Live plot
+data is about 200–400 ms old, more than the default 200 ms playback buffer.
+The render-side reveal (2026-10-22) hides this when the data is fast enough and
+otherwise lets plots lag smoothly; this todo is for real realtime plots, e.g.
+incremental evaluation or requesting on each history arrival.
+** TODO Make every default chosen in the configurator visible to the user.
+Rule in AGENTS.md ("Defaults are never hidden", 2026-10-22). Deferred until the
+solver rewrite: Live still builds the controller from unresolved controller
+options (see SESSION.md). Idea: let the core expose a schema of its changeable
+parameters (name, resolved default, range) and generate the settings panel from
+it, so the displayed settings adapt to whatever the solver supports.
+** TODO Fix "Run again" in sqp replay.
+1. Does not work currently (unhashable type 'dict')
+2. Optionally use warmstart if part of an mpc episode.
+3. Does not seem to animate while scrubbing.
+4. I need a way to zoom into those plots as well. (They kinda need their own bounds).
+** TODO Export Video function.
+
+* UX
+** TODO (low priority) Better plot hover information, depending on what the mouse is over.
+E.g. "Joint limit use" with Joint = All lists all seven joints on one line; show the
+hovered line (or nearest line) prominently instead of every series. (Felix, 2026-10-22)
+** TODO Color-legends on trajectory:
+- Any scalar derivation. E.g. max torque max vel ee vel.

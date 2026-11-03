@@ -13,15 +13,22 @@ service and browser session running.
 
 The simulator checkout supplies `tiago_mpc.tiago` (model, assets, initial
 posture, limits, friction coefficients), `SimPlant` and the task geometry. The
-plant settings choose `SimPlant`'s integrator and friction; plant and predictor
-default to loss-free. Profile selection never changes the plant. See [friction](friction.md).
+plant settings choose `SimPlant`'s integrator and friction. The plant defaults
+to Euler with constraint friction; the predictor defaults to loss-free.
+Profile selection never changes the plant. See [friction](friction.md).
 
 Named solver profiles identify a TIAGo checkout/worktree, Python interpreter
 and compiled-module cache. The interpreter and cache are saved as templates in
 which the literal `<checkout>` stands for the profile's checkout (for example
 `<checkout>/.venv/bin/python`); the backend substitutes it, expands `~` and
 rejects other `<…>` tokens. The default cache is `tiago_mpc`'s own (see
-below). Defaults are not saved, so they keep following the checkout; absolute paths still work. Profile status carries both the resolved
+below). The default interpreter is `<checkout>/.venv/bin/python` on the host,
+`<checkout>/.venv-container/bin/python` in Docker or Podman; a missing default
+is an error, with no cross-platform fallback. Selected subprocesses remove
+inherited `PYTHONPATH` and use that environment's installed `gato-mpc`, including
+an explicitly installed editable fork. Provenance comes from `tiago_mpc.record.provenance()["gato"]`
+(version, distribution URL and installed file; editable source commit/status).
+Defaults are not saved, so they keep following the checkout; absolute paths still work. Profile status carries both the resolved
 paths and the stored `templates`. Exactly one persistent Live solver child exists.
 An explicit inspection may temporarily start a separate child while Live is
 paused/idle, under the same canonical GPU lease. Only one GPU job runs at a
@@ -102,7 +109,7 @@ controls carry the profile/process identity and exact plan sequence association.
 ## HTTP and local settings
 
 - `GET /api/solver-profiles` returns `profiles`, `active_profile_id`,
-  `simulator_source`, `switch` and `generation`.
+  `simulator_source`, `switch`, `switch_revision` and `generation`.
 - `POST /api/solver-profiles` accepts `{profile: {id, name, mpc_root, python?,
   cache?}}` and saves it in `visualizer.json.solver_profiles`. The reserved
   `simulator` profile follows Source / Build. Without a cache override the
@@ -114,12 +121,19 @@ controls carry the profile/process identity and exact plan sequence association.
   HTTP 202 `{state: "switching", profile_id}`. The optional anchor contains
   native `q`, `qd`, and `sim_time_s`; omission uses the committed simulation tip.
 - SSE `solver_profile` events contain `state: "active" | "failed"`, `profile_id`,
-  `generation`, optional `error`, and on failure `active_profile_id` (retained
+  `generation`, `switch_revision`, optional `error`, and on failure `active_profile_id` (retained
   previous profile after preflight rejection, null after replacement failure). Success refreshes `/api/live/schema` for
   compatible knot counts and preserves current Live settings. An unavailable
   current N fails explicitly; there is no automatic N substitution.
 - Catalog `switch.state` is `idle`, `switching` or `failed`. `idle` with the
   requested `active_profile_id` confirms success when SSE is unavailable.
+
+Open browsers poll the catalog every second, including Replay mode, and follow
+external activations through the same pause/schema-refresh path as local ones.
+Unsaved profile edits survive catalog updates. `switch_revision` identifies
+each activation attempt independently of settings/history generations, including
+same-profile reactivation and repeated failures; SSE and polling settle an
+attempt once.
 
 ## Inspection extension boundary
 
@@ -129,6 +143,9 @@ exact reference/configuration, explicit cold initialization, a finite SQP cap
 and an optional wall budget. Configuration reports `capabilities.iteration_capture`
 only when both Python and native APIs support it; `exact_resume` is false.
 Capture support is checked against the actual selected Python/native module.
+Official `gato-mpc` 0.1.5 has no iteration-capture API, so its Run again action
+is unavailable. Installed and editable GATO sources and distribution metadata
+are included in capability-cache invalidation.
 The implemented orchestration and cold-start limits are in [inspection.md](inspection.md).
 
 An inspection operation must retain full trajectory traces as binary artifacts

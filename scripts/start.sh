@@ -2,6 +2,7 @@
 set -euo pipefail
 visualizer_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$visualizer_root"
+unset PYTHONPATH  # uv's selected environment owns GATO; no inherited source-tree override.
 # Resolve saved selection before importing numpy/pinocchio. CLI/environment
 # overrides retain precedence; Source / Build Apply saves its own new selection.
 if [[ "${1:-}" == "--prebuild" ]]; then

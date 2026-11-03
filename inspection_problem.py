@@ -21,10 +21,15 @@ def captured_problem(plan):
     if missing:
         raise ValueError("Run again unavailable: selected solve lacks captured " + ", ".join(missing))
     config = detached(dict(plan["problem_configuration"]))
-    if "solver_params" in config or "controller" in config:
+    if config.get("type") != "MpcParams" or "solver_params" in config or "controller" in config:
         raise ValueError("Run again unavailable: pre-migration recording")
-    if not isinstance(config.get("solver"), dict) or not isinstance(config.get("admm"), dict):
+    if (not isinstance(config.get("solver"), dict) or config["solver"].get("type") != "SolverParams"
+            or not isinstance(config.get("admm"), dict) or config["admm"].get("type") != "AdmmLimits"):
         raise ValueError("Run again unavailable: captured MpcParams are incomplete")
+    if ("friction_law" not in config or
+            isinstance(config.get("friction"), dict) and "law" in config["friction"]):
+        raise ValueError("Run again unavailable: recording uses the previous friction API; "
+                         "view its recorded motion or use its original tiago_mpc checkout")
     n, dt = config.get("N"), config.get("dt_s")
     if type(n) is not int or n < 2 or isinstance(dt, bool) or not isinstance(dt, (int, float)) or not math.isfinite(dt) or dt <= 0:
         raise ValueError("Run again unavailable: captured horizon settings are incomplete")
@@ -34,6 +39,10 @@ def captured_problem(plan):
         raise ValueError("Run again unavailable: captured native initial state requires q and qd")
     if isinstance(initial.get("time_s"), bool) or not isinstance(initial.get("time_s"), (int, float)) or not math.isfinite(initial["time_s"]):
         raise ValueError("Run again unavailable: captured task time is missing")
+    measured = initial.get("measured_time_s", initial["time_s"])
+    if (isinstance(measured, bool) or not isinstance(measured, (int, float))
+            or not math.isfinite(measured) or measured > initial["time_s"]):
+        raise ValueError("Run again unavailable: invalid captured observation time")
     reference = np.asarray(plan["reference_native"], dtype=float)
     if reference.shape != (n, 6) or not np.isfinite(reference).all():
         raise ValueError("Run again unavailable: exact native reference is missing or incompatible")

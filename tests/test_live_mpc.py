@@ -29,6 +29,19 @@ class SettingsTests(unittest.TestCase):
         self.config = deepcopy(self.schema["defaults"]["config"])
         self.task = deepcopy(REACH_DEFAULT_TASK)
 
+    def test_new_predictor_fields_are_checked_until_runtime_effect_is_explicit(self):
+        from live_mpc import parameter_specs
+        config = dict(dt_s=.02, N=32, future_model_feature=True,
+                      solver=dict(mu=10., future_solver_feature=True),
+                      plant=dict(future_cpu_setting=True))
+        effects = {field['path']: field['effect'] for field in parameter_specs(config, [32], self.friction, {})}
+        self.assertEqual(effects['dt_s'], 'runtime')
+        self.assertEqual(effects['solver.mu'], 'runtime')
+        self.assertEqual(effects['N'], 'compiled_model')
+        self.assertEqual(effects['future_model_feature'], 'compiled_model')
+        self.assertEqual(effects['solver.future_solver_feature'], 'compiled_model')
+        self.assertEqual(effects['plant.future_cpu_setting'], 'runtime')
+
     def test_schema_serves_the_simulator_grasp_origin(self):
         from live_mpc import end_effector_spec, import_tiago
         tiago = import_tiago(MPC_ROOT)
@@ -63,27 +76,41 @@ class SettingsTests(unittest.TestCase):
                          dict(live_probe()["defaults"], max_sqp_time_s=None))
         self.assertIsNotNone(live_probe()["defaults"]["max_sqp_time_s"])
         self.assertIs(config["warmup"], True)
-        # Loss-free RK4 plant; friction on defaults to constraint Coulomb; effort clipped, stop on
-        # every limit breach; the start pose is the simulator source's Q_START (Felix, 2026-10-23).
-        self.assertEqual(config["plant"], dict(integrator="rk4", friction=False, coulomb_law="constraint",
+        # Euler with constraint Coulomb friction is the simulated-plant default;
+        # effort clipped, stop on every limit breach, and Q_START at rest.
+        self.assertEqual(config["plant"], dict(integrator="euler", friction=True, coulomb_law="constraint",
                                                friction_width_rad_s=.03, clip_effort=True,
                                                stop_on_breach=dict(position=True, velocity=True, torque=True),
                                                start_pose_rad=start_pose()["default"]))
-        self.assertIsNone(config["friction"])  # loss-free predictor and plant by default
+        self.assertIsNone(config["friction"])  # predictor has its own independent default
         specs = {s["path"]: s for s in self.schema["parameters"]}
-        self.assertEqual(set(specs), {"N", "dt_s", "ee_frame", "warm_start", "reset_rho_each_step", "admm_linsys",
-            "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "warmup", "max_sqp_time_s",
+        self.assertNotIn("ee_frame", config)
+        self.assertEqual(set(specs), {"N", "dt_s", "warm_start", "reset_rho_each_step", "admm_linsys",
+            "admm_threshold", "linsys", "bdsv_threshold", "reseed_threshold", "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "friction_law", "warmup", "max_sqp_time_s",
+            *(["armature"] if "armature" in config else []),
             "plant.integrator", "plant.friction", "plant.coulomb_law", "plant.friction_width_rad_s", "plant.clip_effort", "plant.stop_on_breach.position", "plant.stop_on_breach.velocity",
-            "plant.stop_on_breach.torque", "plant.start_pose_rad", *(f"solver.{key}" for key in config["solver"]), *(f"admm.{key}" for key in config["admm"])})
-        self.assertEqual(specs["warm_start"]["choices"], ["shift", "hold"])
-        self.assertEqual(specs["admm_linsys"]["choices"], ["pcg", "bdsv_factor", "auto"])
-        for fixed in ("solver.exact_hessian", "solver.linsys", "ee_frame"):
+            "plant.stop_on_breach.torque", "plant.start_pose_rad", *(f"solver.{key}" for key in config["solver"] if key != "type"), *(f"admm.{key}" for key in config["admm"] if key != "type")})
+        gato_default = dict(value=None, label="GATO default")  # MpcParams' None follows GATO
+        self.assertEqual(specs["warm_start"]["choices"], [gato_default, "shift", "hold"])
+        self.assertEqual(specs["admm_linsys"]["choices"], [gato_default, "pcg", "bdsv_factor", "auto"])
+        self.assertEqual(specs["reset_rho_each_step"]["choices"], [gato_default, True, False])
+        self.assertEqual((specs["admm.iters"]["kind"], specs["admm.iters"]["nullable"]), ("int", True))
+        self.assertTrue(specs["warm_start"]["gato_default"] and specs["admm.rho_u"]["gato_default"])
+        self.assertNotIn("gato_default", specs["max_sqp_time_s"])  # its None is "no limit", not GATO's
+        for fixed in ("solver.exact_hessian", "solver.cost_curvature", "solver.linsys"):
             self.assertTrue(specs[fixed]["disabled"], fixed)
         self.assertEqual(specs["N"]["choices"], [16, 32])
         self.assertNotIn("disabled", specs["N"])
         self.assertEqual(specs["friction"]["choices"], [dict(value=None, label="Loss-free"), dict(
-            value=self.friction, label="URDF, tanh 0.03 rad/s")])
-        self.assertEqual(self.friction["width_rad_s"], .03)
+            value=self.friction, label="URDF coefficients")])
+        self.assertNotIn("law", self.friction)
+        width = config["friction_law"]["width_rad_s"]  # the source's predictor default
+        self.assertEqual(config["friction_law"], dict(type="Tanh", width_rad_s=width))
+        self.assertEqual(specs["friction_law"]["choices"], [dict(value=config["friction_law"], label=f"tanh {width:g} rad/s")])
+        self.assertEqual(specs["friction_law"]["effect"], "compiled_model")
+        self.assertTrue(specs["friction_law"]["disabled"])
+        self.assertEqual(specs["solver.defect_exit"]["min"], 0.)
+        self.assertEqual(config["solver"]["defect_exit"], 0.)
         self.assertEqual({key: specs["max_sqp_time_s"][key] for key in ("kind", "nullable", "min", "max")},
                          dict(kind="float", nullable=True, min=1e-4, max=10))
         self.assertEqual(specs["warmup"]["kind"], "bool")
@@ -102,15 +129,54 @@ class SettingsTests(unittest.TestCase):
                          {"Stop on breach"})
         validate_settings(dict(self.config, max_sqp_time_s=.05, warmup=False, friction=self.friction), self.task, self.schema)
 
+    def test_native_config_roundtrips_with_hidden_fixed_type_metadata(self):
+        from live_mpc import mpc_params
+        from tiago_mpc.mpc import MpcParams
+        from tiago_mpc.record import from_dict, to_dict
+        from tiago_mpc.dynamics import Tanh
+        paths = {spec["path"] for spec in self.schema["parameters"]}
+        self.assertFalse(any(path == "type" or path.endswith(".type") for path in paths))
+        self.assertEqual(self.config["type"], "MpcParams")
+        self.assertEqual(self.config["solver"]["type"], "SolverParams")
+        self.assertEqual(self.config["admm"]["type"], "AdmmLimits")
+        for friction in (None, self.friction):
+            config = dict(self.config, friction=friction)
+            valid, _ = validate_settings(config, self.task, self.schema)
+            decoded = from_dict(mpc_params(valid))
+            self.assertIsInstance(decoded, MpcParams)
+            self.assertEqual(to_dict(decoded), mpc_params(config))
+            if friction is not None:
+                self.assertIsInstance(decoded.friction_law, Tanh)
+                self.assertIsInstance(decoded.friction.coulomb_nm, tuple)
+
+    def test_config_type_metadata_cannot_be_removed_changed_or_injected(self):
+        for path in ("type", "solver.type", "admm.type"):
+            for replacement in (None, "OtherType", True, {}):
+                config = deepcopy(self.config)
+                parent = config
+                for key in path.split(".")[:-1]:
+                    parent = parent[key]
+                key = path.split(".")[-1]
+                if replacement is None:
+                    del parent[key]
+                else:
+                    parent[key] = replacement
+                with self.subTest(path=path, replacement=replacement), self.assertRaises(ValueError):
+                    validate_settings(config, self.task, self.schema)
+        config = deepcopy(self.config)
+        config["plant"]["type"] = "SimConfig"
+        with self.assertRaisesRegex(ValueError, "unknown"):
+            validate_settings(config, self.task, self.schema)
+
     def test_plant_friction_needs_euler_and_takes_any_coulomb_law(self):
         def plant(**values):
             return dict(self.config, plant=dict(self.config["plant"], **values))
         for law in ("tanh", "sign", "constraint"):
             validate_settings(plant(integrator="euler", friction=True, coulomb_law=law), self.task, self.schema)
-        validate_settings(plant(integrator="euler"), self.task, self.schema)  # loss-free Euler
-        validate_settings(plant(coulomb_law="tanh", friction_width_rad_s=.001), self.task, self.schema)  # unused
+        validate_settings(plant(integrator="euler", friction=False), self.task, self.schema)  # loss-free Euler
+        validate_settings(plant(friction=False, coulomb_law="tanh", friction_width_rad_s=.001), self.task, self.schema)  # unused
         with self.assertRaisesRegex(ValueError, "Plant friction needs the semi-implicit Euler integrator"):
-            validate_settings(plant(friction=True), self.task, self.schema)
+            validate_settings(plant(integrator="rk4", friction=True), self.task, self.schema)
         for values in (dict(integrator="implicit"), dict(coulomb_law="viscous"), dict(friction_width_rad_s=0),
                        dict(friction_width_rad_s=None)):
             with self.subTest(**values), self.assertRaises(ValueError):

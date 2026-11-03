@@ -152,7 +152,7 @@ export function setupOnionSkin({ robot, scene, camera, element, onSeek }) {
     const displayed = enabled() && normalVisible ? visible.map(pose => ({ ...pose, color: pose.displayColor, opacity: onionOpacity(pose.time, pose.cursor, pose.range, { ...settings, hideCursor: pose.hideCursor }) })) : [];
     ghosts.set(displayed); ghosts.update(camera); repaintTicks(visible);
     const count = displayed.filter(pose => pose.opacity > 0).length, mode = effectiveMode();
-    const title = `Ghost arms · ${mode === 'off' ? 'off' : mode === 'all' ? 'all tracks' : next.mode === 'live' ? 'Live only' : 'on'} · ${count}/${settings.maxCount}${settings.spacingEnabled && primarySelection.step ? ` · every ${Number(primarySelection.step.toPrecision(6))} s` : settings.spacingEnabled ? '' : ' · evenly distributed'} (O)`;
+    const title = `Ghost arms · ${mode === 'off' ? 'off' : mode === 'all' ? 'all tracks' : next.primaryLabel || (next.mode === 'live' ? 'Live only' : 'on')} · ${count}/${settings.maxCount}${settings.spacingEnabled && primarySelection.step ? ` · every ${Number(primarySelection.step.toPrecision(6))} s` : settings.spacingEnabled ? '' : ' · evenly distributed'} (O)`;
     buttons.forEach(button => {
       button.setAttribute('aria-pressed', String(enabled())); button.setAttribute('data-ghost-mode', mode); button.title = title;
     });

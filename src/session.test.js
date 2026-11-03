@@ -15,6 +15,55 @@ test('Live is always the focused main track; session span includes hidden main b
   assert.equal(session.removeTrack(replay.id), true); assert.deepEqual(session.span, [5, 6]);
 });
 
+test('replay mode excludes Live without changing the retained tracks or session presentation', () => {
+  const session = createSession();
+  session.updateMain({ source: { kind: 'live', generation: 7 }, span: [-5, 30], empty: false });
+  session.setDisplay('live', 'hidden');
+  const replay = session.addTrack({ motion: { id: 'recording', time_s: [10, 14], q: [[1], [2]] }, offset_s: -8 });
+  session.setName(replay.id, 'Saved reach');
+  session.setCursor(3); session.setRate(2); session.setAggregate({ start: 2, end: 4 });
+  const retained = [...session.tracks];
+  let notices = 0;
+  session.subscribe(() => notices++);
+
+  session.setReplayOnly(true);
+  assert.equal(session.replayOnly, true);
+  assert.deepEqual(session.activeTracks, [replay]);
+  assert.deepEqual(session.span, [2, 6]);
+  assert.deepEqual(sessionSpan(session), [2, 6]);
+  assert.deepEqual(session.tracks, retained);
+  assert.equal(session.focusedId, 'live');
+  assert.equal(session.cursor, 3); assert.equal(session.rate, 2);
+  assert.deepEqual(session.aggregate, { start: 2, end: 4 });
+  session.setReplayOnly(true); assert.equal(notices, 1);
+
+  session.updateMain({ span: [-5, 60], empty: false });
+  assert.deepEqual(session.span, [2, 6]);
+  session.setReplayOnly(false);
+  assert.equal(session.replayOnly, false);
+  assert.deepEqual(session.activeTracks, retained);
+  assert.deepEqual(session.span, [-5, 60]);
+  assert.equal(session.focused.display, 'hidden');
+  assert.equal(replay.displayName, 'Saved reach'); assert.equal(replay.offset_s, -8);
+  assert.deepEqual(replay.motion.time_s, [10, 14]);
+});
+
+test('replay mode stays selected when its visible recordings are hidden or removed', () => {
+  const session = createSession();
+  session.updateMain({ span: [0, 100], empty: false });
+  const first = session.addTrack({ span: [0, 2], offset_s: 1 });
+  const second = session.addTrack({ span: [0, 4], offset_s: 5 });
+  session.setReplayOnly(true);
+  assert.deepEqual(session.span, [1, 9]);
+  session.setVisible(second.id, false); assert.deepEqual(session.span, [1, 3]);
+  session.removeTrack(first.id); assert.deepEqual(session.span, [0, 0]);
+  assert.equal(session.replayOnly, true);
+  session.setVisible(second.id, true); assert.deepEqual(session.span, [5, 9]);
+  session.removeTrack(second.id); assert.deepEqual(session.activeTracks, []);
+  assert.deepEqual(session.span, [0, 0]); assert.equal(session.replayOnly, true);
+  session.setReplayOnly(false); assert.deepEqual(session.span, [0, 100]);
+});
+
 test('default offsets align library starts and retain simulation time for freezes without altering samples', () => {
   const session = createSession(), motion = { id: 'f', time_s: [3, 5], q: [[1], [2]], provenance: { live: { settings: { config: { N: 32 } } } } };
   const replay = session.addTrack({ motion: { ...motion, id: 'experiment' } });

@@ -1,6 +1,6 @@
 """Live settings, task geometry and GPU locks around tiago_mpc's MPC.
 
-The settings are asdict(MpcParams) plus the visualizer's simulated-plant group;
+The settings are record.to_dict(MpcParams) plus the visualizer's simulated-plant group;
 their defaults are TIAGO's with no SQP wall-time limit (the simulation clock).
 The parameter specs and defaults come from the selected interpreter's source
 probe; this module imports no tiago_mpc solver code and no GATO module.
@@ -17,20 +17,22 @@ import sys
 
 import numpy as np
 
+from adapters.tiago import LABELS, DESCRIPTIONS, GATO_DEFAULT_PATHS, RANGES, PARAMETER_EFFECTS
+
 ROOT = Path(__file__).resolve().parent
 # The reach task's tolerances (values of tiago_mpc experiments/reach.py:Reach).
 POSITION_TOL_M, SPEED_L1_TOL_RAD_S = .05, 1.
 # Predictor friction is a compiled variant; its tanh width is fixed (Felix, 2026-10-22).
 PREDICTOR_SMOOTHING_RAD_S = .03
-# The simulated plant: loss-free RK4 by default; plant friction (URDF coefficients) needs
-# semi-implicit Euler and then defaults to tiago_mpc's constraint Coulomb law, with the
+# The simulated plant defaults to URDF friction with the constraint Coulomb law
+# and semi-implicit Euler (Felix, 2026-10-26), with the
 # width used only by the tanh law (Felix, 2026-10-23). Commands are clipped to the raw
 # URDF effort limit; Live stops where a simulated position, velocity or applied torque
 # breaches its raw URDF limit (Felix, 2026-10-23). Simulation settings only:
 # tiago_mpc's robot path never clips.
-PLANT_DEFAULTS = dict(integrator="rk4", friction=False, coulomb_law="constraint", friction_width_rad_s=.03,
+PLANT_DEFAULTS = dict(integrator="euler", friction=True, coulomb_law="constraint", friction_width_rad_s=.03,
                       clip_effort=True, stop_on_breach=dict(position=True, velocity=True, torque=True))
-FRICTION_PATHS = ("friction", "plant.integrator", "plant.friction", "plant.coulomb_law", "plant.friction_width_rad_s")
+FRICTION_PATHS = ("friction", "friction_law", "plant.integrator", "plant.friction", "plant.coulomb_law", "plant.friction_width_rad_s")
 # The start pose (plant.start_pose_rad) is the seven native joint positions the
 # simulated arm starts from at t = 0, velocities zero; Reset returns to it. Its
 # default is the simulator source's tiago.Q_START, so it is not a constant here
@@ -38,73 +40,48 @@ FRICTION_PATHS = ("friction", "plant.integrator", "plant.friction", "plant.coulo
 
 
 def import_tiago(mpc_root):
-    """tiago_mpc.tiago from the selected checkout, with its own external/gato first."""
+    """tiago_mpc from the selected checkout; GATO comes from its selected uv environment."""
     mpc_root = Path(mpc_root).expanduser().resolve()
-    for location in (mpc_root / "external/gato/python", mpc_root):
-        if str(location) not in sys.path:
-            sys.path.insert(0, str(location))
+    if str(mpc_root) not in sys.path:
+        sys.path.insert(0, str(mpc_root))
     tiago = importlib.import_module("tiago_mpc.tiago")
     if tiago.ROOT.resolve() != mpc_root:
         raise ValueError(f"tiago_mpc imports from {tiago.ROOT}, not the selected checkout {mpc_root}")
-    gato = importlib.import_module("gato")
-    if not Path(gato.__file__).resolve().is_relative_to(mpc_root / "external/gato"):
-        raise ValueError(f"GATO imports from {gato.__file__}, outside the selected tiago_mpc checkout")
     return tiago
 
 
 def source_identity(mpc_root):
-    def git(path, *args):
-        try:
-            return subprocess.check_output(["git", "-C", str(path), *args], text=True,
-                                           stderr=subprocess.DEVNULL, timeout=5).strip()
-        except (OSError, subprocess.SubprocessError):
-            return None
-    return dict(mpc_root=str(mpc_root), mpc_commit=git(mpc_root, "rev-parse", "HEAD"),
-                mpc_dirty=bool(git(mpc_root, "status", "--porcelain")),
-                gato_commit=git(mpc_root / "external/gato", "rev-parse", "HEAD"))
+    from source_runtime import source_identity as checkout_identity
+    from tiago_mpc.record import provenance
+    return dict(checkout_identity(mpc_root), mpc_root=str(mpc_root), gato=provenance()["gato"])
 
 
 def mpc_params(config):
-    """The asdict(MpcParams) part of a Live config: everything but the plant group."""
+    """The native serialized MpcParams, including its fixed type metadata."""
     return {key: deepcopy(value) for key, value in config.items() if key != "plant"}
 
 
-LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "q_cost": "Tool position cost",
-          "qd_cost": "Joint speed cost", "u_cost": "Control cost", "N_cost": "Terminal position cost",
-          "friction": "Predictor friction", "plant.integrator": "Plant integrator",
-          "plant.friction": "Plant friction", "plant.coulomb_law": "Coulomb law",
-          "plant.friction_width_rad_s": "tanh width (rad/s)",
-          "ee_frame": "End-effector frame", "warmup": "Warm-up solve", "max_sqp_time_s": "SQP time limit (s)",
-          "plant.clip_effort": "Clip effort", "plant.stop_on_breach.position": "Joint limits",
-          "plant.stop_on_breach.velocity": "Velocity", "plant.stop_on_breach.torque": "Torque",
-          "plant.start_pose_rad": "Start pose"}
-DESCRIPTIONS = {
-    "friction": "The predictor's dynamics: loss-free, or the URDF Coulomb and viscous coefficients with "
-                "tanh Coulomb of a fixed width (a compiled GATO variant)",
-    "plant.integrator": "RK4 is loss-free; semi-implicit Euler (damping implicit) also simulates plant friction",
-    "plant.friction": "The URDF Coulomb and viscous coefficients in the simulated plant",
-    "plant.coulomb_law": "constraint: a joint sticks while the needed friction is within ±c and slips at c; "
-                         "sign: c·sign(v), can chatter near zero; tanh: c·tanh(v/width), creeps below breakaway. "
-                         "sign and tanh use the previous step's velocity",
-    "plant.friction_width_rad_s": "Velocity scale of the plant's tanh Coulomb law",
-    "plant.clip_effort": "Clip each command to ± the URDF effort limit before it reaches the simulated plant "
-                         "(simulation only; the robot path never clips)",
-    "plant.stop_on_breach.position": "Pause where a simulated joint position leaves its URDF limits",
-    "plant.stop_on_breach.velocity": "Pause where a simulated joint speed exceeds its URDF velocity limit",
-    "plant.stop_on_breach.torque": "Pause where the torque applied to the simulated plant (after clipping) "
-                                   "exceeds its URDF effort limit",
-    "plant.start_pose_rad": "Native joint positions the simulated arm starts from at t = 0, velocities zero; "
-                            "within the URDF position limits"}
-RANGES = {"dt_s": (.001, .1), "solver.max_sqp_iters": (1, 100000), "solver.max_pcg_iters": (1, 1000000),
-          "solver.pcg_tol": (1e-8, 1), "solver.solve_ratio": (.001, 1), "solver.mu": (1e-6, 1e5),
-          "solver.rho": (1e-8, 1e4), "admm.iters": (1, 200), "admm.eps_rel": (1e-8, 1),
-          "joint_margin_rad": (0, .5), "velocity_fraction": (.01, 1), "effort_fraction": (.01, 1),
-          "max_sqp_time_s": (1e-4, 10), "plant.friction_width_rad_s": (1e-4, 1)}
 LIMIT_KEYS = ("joint_margin_rad", "velocity_fraction", "effort_fraction")
 NULLABLE = ("max_sqp_time_s",)  # None: no wall-time limit, within solver.max_sqp_iters
+# A None default follows GATO's own default (MpcParams); these follow it as integers.
+INTEGER_PATHS = ("admm.iters", "admm.check_every")
+GATO_DEFAULT = dict(value=None, label="GATO default")
 # Live and precalculation run on the simulation clock, so Live's default has no
 # wall-time limit for the SQP iterations; the user can still set one (Felix, 2026-10-23).
 SIMULATION_CLOCK_DEFAULTS = dict(max_sqp_time_s=None)
+
+
+def validate_source_settings(schema, values=None):
+    """The two independent source/profile value scopes; no source import here."""
+    from worktree_settings import ROLES, validate_values
+    sections = schema.get("source_settings", {})
+    empty = dict(defaults={}, parameters=[], controls=[], module=None)
+    description = {role: sections.get(role, empty) for role in ROLES}
+    supplied = ({role: deepcopy(description[role]["defaults"]) for role in ROLES}
+                if values is None else values)
+    if not isinstance(supplied, dict) or set(supplied) != set(ROLES):
+        raise ValueError("source_settings requires simulation and predictor objects")
+    return {role: validate_values(description, role, supplied[role]) for role in ROLES}
 
 
 def start_pose_spec(tiago):
@@ -125,28 +102,38 @@ def end_effector_spec(tiago):
 def parameter_specs(config, available_n, predictor_friction, start_pose):
     """One entry per leaf of the Live config; predictor friction is one choice and
     the start pose one entry of kind joints, edited in the Joints tab."""
-    friction_label = f"URDF, tanh {predictor_friction['width_rad_s']:g} rad/s"
+    friction_label = "URDF coefficients"
     choices = {"N": list(available_n), "solver.linsys": [None], "solver.exact_hessian": [False],
-               "ee_frame": [config["ee_frame"]], "warm_start": ["shift", "hold"],
-               "admm_linsys": ["pcg", "bdsv_factor", "auto"],
+               "solver.cost_curvature": [False],
+               "warm_start": [GATO_DEFAULT, "shift", "hold"],
+               "reset_rho_each_step": [GATO_DEFAULT, True, False],
+               "admm_linsys": [GATO_DEFAULT, "pcg", "bdsv_factor", "auto"],
+               "linsys": [GATO_DEFAULT, "pcg", "bdsv", "bdsv_first", "auto"],
                "friction": [dict(value=None, label="Loss-free"),
                             dict(value=deepcopy(predictor_friction), label=friction_label)],
                "plant.integrator": [dict(value="rk4", label="RK4"), dict(value="euler", label="Euler")],
                "plant.coulomb_law": ["tanh", "sign", "constraint"]}
+    if "friction_law" in config:
+        choices["friction_law"] = [dict(value=deepcopy(config["friction_law"]),
+                                        label=f"tanh {config['friction_law']['width_rad_s']:g} rad/s")]
     specs = []
     def visit(value, path=""):
         for key, item in value.items():
+            if key == "type":
+                continue  # native serialization metadata, not a user parameter
             name = f"{path}.{key}" if path else key
-            if isinstance(item, dict) and name != "friction":
+            if isinstance(item, dict) and name not in ("friction", "friction_law"):
                 visit(item, name)
                 continue
             spec = dict(path=name, label=LABELS.get(name, LABELS.get(key, key.replace("_", " ").capitalize())),
                         group="Friction" if name in FRICTION_PATHS else "Costs" if key.endswith("cost") else (
                             "Limit handling" if name.startswith(("plant.clip_effort", "plant.stop_on_breach.")) else
                             "ADMM" if name.startswith("admm.") else "Limits" if name in LIMIT_KEYS else "Solver"),
-                        scale="linear")
+                        scale="linear", effect="runtime" if name.startswith("plant.") else PARAMETER_EFFECTS.get(name, "compiled_model"))
             if name in DESCRIPTIONS:
                 spec["description"] = DESCRIPTIONS[name]
+            if name in GATO_DEFAULT_PATHS:
+                spec["gato_default"] = True  # None follows GATO; the panel shows its resolved value
             if name == "plant.start_pose_rad":
                 spec.update(kind="joints", group="Start pose", lower=list(start_pose["lower"]),
                             upper=list(start_pose["upper"]))
@@ -158,12 +145,14 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
                 spec.update(kind="choice", choices=choices[name])
                 if len(choices[name]) == 1 and name != "N":
                     spec.update(disabled=True, label=spec["label"] + " (fixed)")
+            elif isinstance(item, (list, tuple)):
+                spec.update(kind="vector", length=len(item), min=0., max=1e5)
             elif isinstance(item, bool):
                 spec["kind"] = "bool"
             elif isinstance(item, str):  # a new text field: shown, fixed at its default
                 spec.update(kind="choice", choices=[item], disabled=True, label=spec["label"] + " (fixed)")
             else:
-                spec["kind"] = "int" if isinstance(item, int) else "float"
+                spec["kind"] = "int" if isinstance(item, int) or name in INTEGER_PATHS else "float"
                 lo, hi = RANGES.get(name, (0, 1e5) if key.endswith("cost") else (1e-8, 1e4))
                 spec.update(min=lo, max=hi, nullable=item is None or name in NULLABLE)
                 if lo > 0 and hi / lo >= 1000:
@@ -209,11 +198,20 @@ def choice_value(choice):
     return choice["value"] if isinstance(choice, dict) and set(choice) == {"value", "label"} else choice
 
 
-def validate_settings(config, task, schema):
+def validate_settings(config, task, schema, *, check_available=True):
     """Reject malformed, missing or extra fields before handing work to CUDA."""
     if not isinstance(config, dict) or not isinstance(task, dict):
         raise ValueError("config and task must be JSON objects")
     expected = {s["path"]: s for s in schema["parameters"]}
+    fixed_types = {}
+    def collect_types(value, prefix=""):
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if key == "type":
+                fixed_types[path] = item
+            elif isinstance(item, dict) and path not in expected:
+                collect_types(item, path)
+    collect_types(schema["defaults"]["config"])
     def flatten(value, prefix=""):
         result = {}
         for key, item in value.items():
@@ -226,24 +224,31 @@ def validate_settings(config, task, schema):
                 result[path] = item
         return result
     values = flatten(config)
-    if set(values) != set(expected):
-        raise ValueError(f"Complete config required; missing={sorted(set(expected)-set(values))}, "
-                         f"unknown={sorted(set(values)-set(expected))}")
+    required = set(expected) | set(fixed_types)
+    if set(values) != required:
+        raise ValueError(f"Complete config required; missing={sorted(required-set(values))}, "
+                         f"unknown={sorted(set(values)-required)}")
+    for path, tag in fixed_types.items():
+        if type(values[path]) is not str or values[path] != tag:
+            raise ValueError(f"Invalid fixed configuration type {path}: {values[path]!r}")
     for path, spec in expected.items():
         value = values[path]
         kind = spec["kind"]
-        if kind == "joints":
-            valid = (isinstance(value, list) and len(value) == len(spec["lower"]) and all(
+        if kind in ("joints", "vector"):
+            valid = (isinstance(value, list) and len(value) == (spec["length"] if kind == "vector" else len(spec["lower"])) and all(
                 not isinstance(x, bool) and isinstance(x, (int, float)) and math.isfinite(x) and lo <= x <= hi
-                for x, lo, hi in zip(value, spec["lower"], spec["upper"])))
+                for x, lo, hi in zip(value,
+                    [spec.get("min", -math.inf)]*spec["length"] if kind == "vector" else spec["lower"],
+                    [spec.get("max", math.inf)]*spec["length"] if kind == "vector" else spec["upper"])))
             if not valid:
-                raise ValueError(f"Invalid {path}: {len(spec['lower'])} finite native joint positions "
-                                 "within the URDF position limits required")
+                raise ValueError(f"Invalid {path}: finite vector with the declared length and bounds required")
             continue
         if kind == "bool":
             valid = isinstance(value, bool)
         elif path == "N" and "available_N_by_friction" in schema:
-            valid = type(value) is int  # whether it is compiled is checked below, by mode
+            offered = schema.get("supported_N")
+            valid = type(value) is int and (offered is None or value in offered)
+            # Legacy schemas only publish cached choices; those are not the supported-N domain.
         elif kind == "choice":
             valid = any(type(value) is type(choice) and value == choice
                         for choice in map(choice_value, spec["choices"]))
@@ -260,8 +265,9 @@ def validate_settings(config, task, schema):
     if plant.get("friction") and plant.get("integrator") == "rk4":
         raise ValueError("Plant friction needs the semi-implicit Euler integrator; RK4 is loss-free")
     mode = "on" if config.get("friction") is not None else "off"
-    available = schema.get("available_N_by_friction", {}).get(mode)
-    if available is not None and config["N"] not in available:
+    available = (schema.get("available_N") if schema.get("exact_availability") else
+                 schema.get("available_N_by_friction", {}).get(mode))
+    if check_available and available is not None and config["N"] not in available:
         raise ValueError(f"Not compiled: N={config['N']} {'with' if mode == 'on' else 'without'} predictor "
                          "friction. Build it in Settings › Backend (Build selected N).")
     task_kind = task.get("kind")
@@ -357,10 +363,12 @@ def mpc_bounds_from_rows(rows, limit_bounds):
 def available_modules(probe):
     """The compiled N a source probe found: per predictor-friction mode and their union."""
     by_mode = {mode: list(probe["available_N_by_friction"][mode]) for mode in ("off", "on")}
-    return dict(available_N=sorted(set(by_mode["off"]) | set(by_mode["on"])), available_N_by_friction=by_mode)
+    return dict(available_N=(list(probe["available_N"]) if probe.get("exact_availability") else
+                             sorted(set(by_mode["off"]) | set(by_mode["on"]))),
+                available_N_by_friction=by_mode, exact_availability=bool(probe.get("exact_availability")))
 
 
-def build_schema(probe, mpc_root, start_pose, *, end_effector=None):
+def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_settings=None):
     """The Live schema from a selected-interpreter source probe (scripts/source_probe.py)
     and simulator model metadata. A separate solver profile supplies its own
     probe/root but retains the simulator's start pose and grasp-frame origin."""
@@ -374,17 +382,40 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None):
     predictor = probe["friction"]
     friction = dict(coefficients={key: predictor[key] for key in ("coulomb_nm", "viscous_nm_s_per_rad")},
                     predictor=deepcopy(predictor), source="reduced right-arm URDF (tiago.urdf_friction)")
+    from worktree_settings import ROLES
+    empty = dict(defaults={}, parameters=[], controls=[], module=None)
+    role_settings = {role: deepcopy(probe.get("source_settings", {}).get(role, empty)) for role in ROLES}
+    if simulation_settings is not None:
+        role_settings["simulation"] = deepcopy(simulation_settings)
+    source_values = {role: deepcopy(role_settings[role]["defaults"]) for role in ROLES}
+    offered = list(probe.get("supported_N", available))
+    specs = parameter_specs(defaults, offered, predictor, start_pose)
+    for spec in specs:
+        path = spec["path"]
+        role = "simulation" if path.startswith("plant.") else "predictor"
+        native = path.removeprefix("plant.")
+        native = {"start_pose_rad": "q", "coulomb_law": "friction_law",
+                  "friction_width_rad_s": "friction_law.width_rad_s"}.get(native, native)
+        if any(native == owner or native.startswith(owner + ".") for owner in role_settings[role]["controls"]):
+            spec.update(controlled_by_source=True, source_role=role,
+                        effective_path=("plant." if role == "simulation" else "params.") + native)
     grasp = end_effector if end_effector is not None else end_effector_spec(import_tiago(mpc_root))
     return dict(available_N_by_friction=by_mode, available_N=available, friction=friction,
+                **({"supported_N": offered} if "supported_N" in probe else {}),
+                exact_availability=modules["exact_availability"], source_settings=role_settings,
+                effective_settings=deepcopy(probe.get("effective_settings", {})),
                 end_effector=deepcopy(grasp),
-                defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK), execution=deepcopy(DEFAULT_EXECUTION)),
-                parameters=parameter_specs(defaults, available, predictor, start_pose),
+                defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK), execution=deepcopy(DEFAULT_EXECUTION),
+                              source_settings=source_values),
+                parameters=specs,
                 tasks=[dict(kind="reach", label="Reach", defaults=deepcopy(REACH_DEFAULT_TASK)),
                        dict(kind="figure8", label="Figure eight", defaults=deepcopy(FIGURE8_DEFAULT_TASK),
                             parameters=[dict(path="width_m", label="Width (m)", min=.01, max=.6),
                                         dict(path="height_m", label="Height (m)", min=.01, max=.6),
                                         dict(path="period_s", label="Period (s)", min=1., max=120.)])],
-                source=source_identity(Path(mpc_root).expanduser().resolve()))
+                source=dict(deepcopy(probe["source"] if "source" in probe else
+                                     source_identity(Path(mpc_root).expanduser().resolve())),
+                            mpc_root=str(probe.get("selection", {}).get("mpc_root", mpc_root))))
 
 
 # Process/transport/history policy belongs to the visualizer bridge and never

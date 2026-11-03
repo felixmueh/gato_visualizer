@@ -1,13 +1,15 @@
 # Plant and predictor friction
 
 The **Friction** group sets the dynamics of the simulated plant and of the MPC
-predictor independently. Both default to loss-free (Felix, 2026-10-22, matching
-`tiago_mpc`'s friction opt-in). This is a dynamics choice, separate from costs,
+predictor independently. The plant defaults to semi-implicit Euler with URDF
+friction and the constraint Coulomb law (Felix, 2026-10-26); the predictor
+defaults to loss-free. This is a dynamics choice, separate from costs,
 torque penalties and ADMM bounds.
 
 ```json
 "friction": null,
-"plant": {"integrator": "rk4", "friction": false, "coulomb_law": "constraint",
+"friction_law": {"type": "Tanh", "width_rad_s": 0.03},
+"plant": {"integrator": "euler", "friction": true, "coulomb_law": "constraint",
           "friction_width_rad_s": 0.03, ...}
 ```
 
@@ -15,10 +17,10 @@ torque penalties and ADMM bounds.
 
 `config.plant` selects how `tiago_mpc`'s `SimPlant` integrates (Felix, 2026-10-23):
 
-- **Plant integrator** (`integrator`): `rk4` (default), GATO's loss-free RK4, or
-  `euler`, a semi-implicit Euler step with implicit viscous damping. Without
+- **Plant integrator** (`integrator`): `euler` (default), a semi-implicit Euler
+  step with implicit viscous damping, or `rk4`, GATO's loss-free RK4. Without
   plant friction Euler is loss-free too.
-- **Plant friction** (`friction`, default off): the URDF Coulomb and viscous
+- **Plant friction** (`friction`, default on): the URDF Coulomb and viscous
   coefficients (`tiago.urdf_friction`). It needs Euler: the browser disables it
   under RK4 and switches it off when RK4 is chosen; the backend rejects the
   combination.
@@ -32,29 +34,50 @@ torque penalties and ADMM bounds.
     law; creeps below breakaway. **tanh width** (`friction_width_rad_s`,
     default 0.03 rad/s) is shown only for this law.
 
-The coordinator constructs `SimPlant(q, qd, substep=1/simulation_hz,
-integrator=..., friction=..., coulomb_law=...)`, with the width in the
-`Friction` only for `tanh`. Simulation Hz (default 1000) sets the step.
+The coordinator builds `SimConfig(q=q, qd=qd, substep=1/simulation_hz,
+integrator=..., friction=..., friction_law=...).build()` and starts it on a
+`VirtualClock`. The UI's `tanh`, `sign` and `constraint` choices map to the
+separate `SimConfig.friction_law` objects `Tanh(width)`, `Sign()` and
+`StickSlip()`. `Friction` stores only Coulomb and viscous coefficients.
+Native serialization records the separate law's `type` (`Tanh`, `Sign` or
+`StickSlip`), with `width_rad_s` inside a tanh law.
+Simulation Hz (default 1000) sets the step. The visualizer retains its Euler-only
+friction setting; the upstream plant also supports RK4 with Tanh or Sign.
 
 ## Predictor
 
 **Predictor friction** is `MpcParams.friction`: `null` (loss-free) or the URDF
-coefficients with tanh Coulomb of width **0.03 rad/s**
-(`live_mpc.PREDICTOR_SMOOTHING_RAD_S`). The width is fixed: each width is its
-own compiled GATO plant (Felix, 2026-10-22).
+coefficients, evaluated with the separate `MpcParams.friction_law` tanh law.
+The ordinary native control fixes its width at **0.03 rad/s**. This checkout's
+experimental adapter instead exposes the predictor width, initially **0.2
+rad/s**, and independent armature enablement; it records the exact effective
+values. Each active width is its own compiled GATO model.
 
 ## Both models
 
-Passive torque is applied once in each model; armature is not modelled. The
-group lists the coefficients, which are questionable (see `AGENTS.md`).
+Passive torque is applied once in each model. The experimental adapter enables
+supplied armature independently in plant and predictor and uses the retained
+friction prior in the plant and external feedforward; the predictor uses the
+nominal URDF coefficients. Coefficients and PD gains stay in code (see
+[adapter ownership](../adapters/README.md)).
 Editing any of these settings starts a new history segment from the displayed
 native q/qd and task time; use Reset when comparisons need the same initial
 state. With plant friction `tanh` at 0.03 rad/s, plant and predictor share the
 friction law; the integrators still differ. The segment header records the
-settings and the simulator identity (`integrator`, `friction`, `coulomb_law`);
+settings and the simulator identity (`integrator`, `friction`, `friction_law`,
+`armature`, `coulomb_law`);
 plans record the `MpcParams` they used. Run again rebuilds the captured
-`MpcParams`, not the current UI values. These are simulation comparisons, not
+`MpcParams`, not the current UI values. Earlier nested-friction API recordings
+remain viewable; their native Run again requires the original checkout and is
+unavailable here. External feedforward plus internal predictor friction is
+rejected before the plant starts. These are simulation comparisons, not
 physical-robot qualification.
+
+Portable recordings using the older embedded `Friction.law` format remain
+viewable as recorded motion; Run again reports that their native configuration
+format is unavailable. Across a source restart, saved browser settings with the
+known URDF coefficients and fixed tanh width retain predictor friction. Other
+old coefficient/law combinations are rejected visibly rather than guessed.
 
 ## Compiled variants
 
@@ -105,7 +128,8 @@ Simulation diagnostics, not reaching qualification.
   damping and 0.07 ms with the tanh slope at 0.03 rad/s, against 10 ms knots,
   set by joint 7's link-only inertia (0.00077 kg m²). With the supplied
   right-arm armature added to M these bounds become 122 ms and 14 ms. Armature
-  stays inactive; enabling it is a model decision for Felix.
+  was inactive in those historical diagnostics. The later experimental adapter
+  enables the supplied armature by default with explicit independent toggles.
 
 After a blow-up, Reset and the solver child discard the nonfinite state
 instead of seeding GATO with it; a settings change then anchors at the

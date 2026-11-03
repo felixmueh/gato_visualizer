@@ -5,7 +5,7 @@ defines task/settings payloads and events. The visualizer owns execution timing
 and uses `tiago_mpc` unchanged: its model, `MpcParams` and `Mpc` (in the solver
 child) and `SimPlant` (in the coordinator). No upstream warm-start policy is
 changed. `scripts/check_conformance.py` compares this loop with `tiago_mpc`'s
-`experiments.reach.reach`.
+`run_virtual_time` with a `Reach` task.
 
 ## Settings and commands
 
@@ -16,16 +16,36 @@ changed. `scripts/check_conformance.py` compares this loop with `tiago_mpc`'s
   "simulation_hz": 1000,
   "control_hz": 500,
   "to_hz": 100,
+  "solve_latency_s": "measured",
+  "latency_compensation": false,
   "calculation": "on_play",
   "duration_s": 10,
   "continue_at_end": false
 }
 ```
 
-Rates are positive and obey `simulation_hz >= control_hz >= to_hz`. Commands
+Simulation and command rates are positive and obey `simulation_hz >= control_hz >= to_hz`.
+`to_hz=0` means back-to-back requests; a positive TO rate sets request slots.
+`solve_latency_s` is `"measured"` (default) or finite nonnegative seconds.
+Measured latency is native `Plan.stats["wall_s"]`, exposed by the solver child as
+`stats.step_wall_s`, not CUDA-event time or the whole solver RPC. Numeric latency
+is declared simulation time; it does not shorten a real computation. Commands
 default to 500 Hz, as `tiago_mpc`'s experiments (Felix, 2026-10-23); simulation
 stays at 1000 Hz and TO at 100 Hz. What is recorded follows the control events,
 not a setting; see [Recording](#recording).
+
+**Latency compensation** is one optional checkbox, off by default. When enabled,
+execution solves from the state forecast for its next command activation tick.
+The forecast uses the simulated plant's configured physics, friction and armature,
+and the same selected law, effort clipping and final total-command hold as execution.
+Declared latency forecasts that delay; measured latency uses the previous completed
+solve's native wall time, initially the package's 5 ms estimate. It never uses the
+current solve's duration to predict its own input. Actual availability still charges
+the declared/current measured delay. An early result waits for its predicted origin;
+a late result keeps that origin and its resulting age. Reset, anchors and settings
+changes start a fresh forecast. An instantaneous preview remains a solve from the
+displayed measured state, without an execution delay. Prediction runs in the CPU
+simulation coordinator and does not change the physical-robot lease policy.
 `config.dt_s` is the independent prediction knot interval. The backend validates
 all settings before acceptance. Static previews accept large positive SQP/PCG
 budgets within the native integer range; the prior small MVP caps no longer
@@ -39,7 +59,7 @@ IPC chunks remain bounded and no recorded samples are silently dropped.
 `POST /api/live/command` retains its accepted/settings-version response.
 
 - `set_settings`: existing complete `config` and `task`, plus `execution` and
-  optional `anchor`. The first browser Live session sends `reset: true` instead
+  optional `anchor`. The first viewer of an unconfigured backend sends `reset: true` instead
   of an anchor: settings and the zero-time state at the start pose are applied
   atomically before preview or Automatic calculation. Later mode switches and
   reconnects preserve the session. `reset` must be boolean; a true reset cannot
@@ -47,6 +67,14 @@ IPC chunks remain bounded and no recorded samples are silently dropped.
   from the current one always starts a new run at t = 0 from the new start
   pose, as Reset; the browser sends `reset: true` with it, and an anchor sent
   with it is not used (Felix, 2026-10-23).
+- `patch_settings`: `patch` holds any subset of `config`, `task`, `execution`;
+  nested objects merge atomically, arrays replace and null stays null. A task
+  kind change starts from the new task's defaults. Validation and numerical
+  behavior match `set_settings`. Both support `expected_settings_version` and
+  reject stale writes with HTTP 409 plus current `settings`. A patch changing
+  only `execution.continue_at_end`, without anchor/reset, shares that playback
+  preference without changing generation/version, history or numerical work.
+  [Agent controls](agent-api.md) documents current-settings reads and examples.
 - `precalculate`: generate `duration_s` of closed-loop motion without pacing;
   optional `anchor` chooses its initial state.
 - `preview`: compute one prediction at the optional displayed-state `anchor`
@@ -159,7 +187,8 @@ constant context. A state has `sim_time_s`, native `q`, `qd`, the applied
 `torque_nm`, `ee_xyz`, `target_xyz`, `distance_m`, `arrived`, `plan_seq`,
 `control_updates` and `horizon_exhausted`/`plan_exhausted`. A control update has
 `type: "control"`, `sim_time_s`, native
-`torque_nm`, `plan_seq`, `plan_elapsed_s`, and `horizon_exhausted` (also exposed
+`torque_nm`, `plan_seq`, `plan_elapsed_s`, `plan_activated` on the first command
+from a new plan, and `horizon_exhausted` (also exposed
 as `plan_exhausted`). Control timestamps distinguish when the held command
 changed from endpoint state torques, which record the input producing that state.
 History includes the initial state, every solved plan, every command, every
@@ -189,9 +218,9 @@ recording supplies playback, scrubbing, executed path and trajectory fitting.
 
 Felix, 2026-10-23 (replaces the `record_every` setting): Live records at the
 control events, not at physics steps. `MultirateSession` records every command,
-every plan and every interval, and the simulated state at every command tick and
-every control (TO) update: the union of both time sets, which need not coincide at
-noncommensurate rates. It also records the state at the end of each call (job end,
+every requested plan and every interval, and the simulated state at every command tick.
+TO requests are quantized to command ticks, including at noncommensurate rates.
+It also records the state at the end of each call (job end,
 pause, a bounded chunk, which ends on a command tick) and at a breaching tick.
 Physics still integrates at `simulation_hz`; the steps between two recorded states
 are simulated but not recorded. Nothing the session computes depends on what is
@@ -200,11 +229,11 @@ the step/command/solve counters see every step. Values derived from the history
 (arrival flag and distance, limit use, plots and aggregates, the executed path,
 playback) see the recorded states only; extrema between them are not recorded.
 Finite jobs estimate stored states from this rule before starting
-(`estimated_states`: command ticks plus TO ticks plus the end).
+(`estimated_states`: a conservative command-plus-TO tick bound and the end).
 
 At the defaults (1000/500/100 Hz) this records every 2 ms, exactly the times the
 former default `record_every` 2 recorded: per simulated second 500 states, 500
-commands, 100 plans and 100 intervals. The conformance script records the same
+commands and up to 100 plans/intervals, depending on solve latency. The conformance script records the same
 way.
 
 ### Segment header
@@ -224,7 +253,7 @@ instead of with every record:
              "end_effector_frame": "...", "position_tol_m": 0.05, "speed_l1_tol_rad_s": 1.0}}
 ```
 
-`settings` are the segment's complete effective settings: `config` (`asdict(MpcParams)`
+`settings` are the segment's complete effective settings: `config` (`to_dict(MpcParams)`
 with the `plant` group: integrator, plant friction, limit handling and start pose), `task` and
 `execution` (rates, calculation mode, duration); `source` is the simulator
 checkout's identity. `simulator_identity`, `solver_profile`, `model_identity`,
@@ -343,18 +372,46 @@ orthogonal simulation settings in `config.plant` handle them in Live
 
 ## Simulation clock and plan execution
 
-Simulation time advances according to the requested rates, irrespective of
-solve latency. Physics is `tiago_mpc`'s `SimPlant` (RK4 or semi-implicit Euler,
+Simulation time advances according to the command and physics rates. Solving
+blocks the coordinator without advancing virtual time; the resulting plan then
+waits for its measured or declared latency while the old plan continues. Physics is `tiago_mpc`'s `SimPlant` (RK4 or semi-implicit Euler,
 [friction](friction.md)) with substeps of at most 1/`simulation_hz`: each integration chunk applies the held command and advances
 the plant to the chunk's end time. Every session (Reset, anchor, settings
 change, rollback) starts a fresh `SimPlant` at the current native state on a
 simulation clock at the current time, because that clock never moves backward.
-Integer tick counters
-and exact event boundaries avoid accumulating floating-point scheduling drift.
-Noncommensurate rates require splitting an integration step at a control or TO
-boundary. At a coincident boundary, solve first, select control next, then
-integrate. A bounded precalculation lands exactly on its requested duration
+Integer tick counters avoid accumulating floating-point command/physics drift.
+At each command tick the session activates an available pending plan, then calls
+the package's `Schedule` only when no solve is pending. Missed TO slots are
+skipped, never queued. A new solve with positive latency remains pending; zero
+declared latency can activate at its request tick. The active plan supplies the
+command, then physics integrates. A bounded precalculation lands exactly on its requested duration
 endpoint; continuous On Play has no duration endpoint.
+
+At stationary startup no command has been applied: `SimPlant` holds the state
+until the first plan activates, as the package loop does. A fresh session at a
+committed tip preserves its last applied torque while waiting. An anchor supplies
+q/qd/time without a held-command checkpoint: if it is moving, zero effort is
+applied during the wait so its dynamics continue. The initial state records
+`startup_command_source` as `position_hold`, `held_command` or
+`zero_effort_moving_anchor`. Reset/anchors never borrow an unrelated tip torque.
+Ordinary chunks retain pending plans; cancellation/rollback replaces the session
+and discards its pending result.
+
+Plan records keep `sim_time_s` at the actual request/history time. The separate
+`plan_origin_time_s` dates the initial condition, in the future when compensated;
+`measured_time_s` retains the original observation. Knot times remain offsets
+from the plan origin. `request_time_s`, `available_time_s`, `scheduled_activation_time_s`,
+`solve_latency_s` and `latency_overrun` describe the request and its earliest
+possible activation; `controller_wall_s` measures the forecast plus the whole RPC.
+The actual first command is identified by its `plan_seq` and `plan_activated`.
+State/control sequence IDs own historical association; a requested plan that
+never commands stays inspectable without becoming applied motion. Freeze writes
+the existing activation timings into optional prediction `stats`, including actual
+`activation_time_s` (null if never commanded). It exports the prediction's future
+origin and retains observation/request/origin timestamps under
+`provenance.live.plan_timing`, separately from native solver statistics. Episode
+and comparison plots index solve events by actual request time. Older recordings
+without separate origins retain their recorded meaning.
 
 Plans arrive native from `tiago_mpc`'s `Plan` (N−1 knot torques), possibly
 beyond the effort limit ([limit handling](#limit-handling)). At every
@@ -365,6 +422,11 @@ next control update. If execution outlasts the prediction horizon, hold the
 last nonterminal torque until replanning and mark `plan_exhausted: true` on the
 affected state; never use a nonexistent terminal control (`sample_knot` would
 raise there). The upstream controller warm-start heuristic remains intact.
+Live deliberately retains this diagnostic hold beyond the horizon, configurable
+effort clipping and simulated breach handling. It does not adopt the package
+loop's 100 ms/horizon lease, whole-plan raw-effort rejection or global STOP.
+The full blocking `run_virtual_time` also owns a fresh clock and plant lifecycle;
+Live keeps its own coordinator to support pause, history and continuation.
 
 Precalculation runs unpaced. On Play generation is paced to at most 1x and
 slows when computation cannot keep up. Recorded playback advances from browser
@@ -399,12 +461,27 @@ Setup costs are separate from recurring interval costs.
 Internal chunks used for cancellation and bounded transport do not create
 additional TO intervals: their measured costs accumulate until the TO boundary
 or requested final endpoint.
+An interval ends at the next eligible request tick (or an explicit endpoint).
+With TO Hz 0, `to_back_to_back` is true and there is no TO deadline:
+`to_budget_s` and its deadline ratio `mpc_ratio` are null. The separate
+`mpc_realtime_ratio` is controller wall time divided by actual simulated interval
+span; physics and total ratios use that span as well. These measure simulation
+compute throughput, not missed adaptive TO deadlines.
 
-Red means `solve_wall_s > to_budget_s`, with the nominal TO period as the
-optimizer deadline even for a final partial interval. Otherwise yellow means
+In fixed-rate TO, red means `solve_wall_s > to_budget_s`, with the nominal TO
+period as the optimizer deadline even for a final partial interval. Adaptive
+TO never gets a red TO-deadline marker. Otherwise yellow means
 physics or total serial computation exceeds the actual simulated interval
 duration. Red wins when both conditions hold. Tooltips show the separate
 costs and explain combined-only overruns without attributing them to physics
 alone. Generation real-time factor compares simulated progress with generation
 wall time; it never changes recorded playback speed. These are diagnostic
 execution measurements, not experiment benchmark evidence.
+
+ASAP can request many more solves than a fixed-rate run. If serial computation
+and recording cannot keep up with simulation time, live playback buffers at the
+growing history edge. That is slower-than-real-time simulation, not a missed
+ASAP solve deadline. A declared latency remains a physical availability delay
+regardless of TO mode; for example 50 seconds holds the initial command/pose
+until the first plan becomes available. The measured-latency checkbox is
+independent of the ASAP checkbox.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { itemRevision, modelWarningText, uploadPath, validateReference, referencePosition, playbackClock, setupReplayLibrary } from './replay-library.js';
+import { itemRevision, linkedKeys, modelWarningText, uploadPath, validateReference, referencePosition, playbackClock, setupReplayLibrary } from './replay-library.js';
 import { plotDOM } from './plot-dom-test-helper.js';
 
 function libraryHarness(t, items = []) {
@@ -96,6 +96,17 @@ test('model warning tooltip names both full-URDF hashes', () => {
   assert.match(text, /Displayed: d3be/);
 });
 
+test('comparison links retain ordered unique catalog paths and encode each replay value', async () => {
+  const { replayLinkUrl, linkedKey } = await import('./replay-library.js');
+  const keys = ['study/Stock', 'study/Compensation', 'study/PD feedback', 'study/Compensation+feedback'];
+  const url = replayLinkUrl('http://h:8090/?x=1&replay=old#t', keys);
+  assert.equal(url, 'http://h:8090/?x=1&replay=study/Stock&replay=study/Compensation&replay=study/PD%20feedback&replay=study/Compensation%2Bfeedback#t');
+  assert.deepEqual(linkedKeys(url), keys);
+  assert.equal(linkedKey(url), keys[0]);
+  assert.deepEqual(linkedKeys('http://h/?replay=&replay=one&replay=one&replay=uploads/two'), ['one', 'uploads/two']);
+  assert.deepEqual(linkedKeys('http://h/'), []);
+});
+
 test('session deep links add catalog tracks without loading a scene, selecting a legacy replay or rewriting the URL', async t => {
   const item = { id: 'run', name: 'study/run', source: 'ingest', status: 'ready', revision: '1' };
   const h = libraryHarness(t, [item]), added = [], scenes = [];
@@ -115,6 +126,64 @@ test('a pending session deep link is added once its catalog recording becomes av
   items.push({ id: 'run', name: 'study/run', source: 'ingest', status: 'ready', revision: '1' });
   await library.refresh(); assert.equal(added.length, 1); assert.equal(h.elements.get('library-message').hidden, true);
   assert(h.requests.every(url => url === '/api/replays')); assert.deepEqual(h.replacements, []);
+});
+
+test('a four-recording comparison loads in link order once without replacing tracks on catalog refresh', async t => {
+  const items = ['Stock', 'Compensation', 'PD feedback', 'Both'].map((name, i) => ({ id: `run-${i}`, name: `study/${name}`, source: 'ingest', status: 'ready', revision: '1' }));
+  const h = libraryHarness(t, [...items].reverse()), added = [], options = [];
+  h.location.href = 'http://localhost:8090/?' + items.map(item => `replay=${encodeURIComponent(item.name)}`).join('&');
+  const original = h.location.href;
+  let releaseFirst;
+  const firstLoading = new Promise(resolve => { releaseFirst = resolve; });
+  const library = h.create({ onLinkedItem: async (item, settings) => {
+    added.push(item); options.push(settings);
+    if (added.length === 1) await firstLoading;
+  } });
+  await flush();
+  await library.refresh(); // A catalog tick during an active load cannot start it again.
+  assert.deepEqual(added, [items[0]]);
+  releaseFirst(); await flush(); await flush();
+  assert.deepEqual(added, items);
+  assert.deepEqual(options, items.map(() => ({ multiple: true })));
+  items.forEach(item => { item.revision = '2'; });
+  await library.refresh();
+  assert.equal(added.length, 4); assert.equal(h.location.href, original);
+  assert.deepEqual(h.replacements, []); assert(h.requests.every(url => url === '/api/replays'));
+});
+
+test('missing or unreadable comparison recordings leave earlier tracks intact and join when ready', async t => {
+  const ready = { id: 'one', name: 'study/one', source: 'ingest', status: 'ready', revision: '1' };
+  const broken = { id: 'two', name: 'study/two', source: 'ingest', status: 'error', revision: '1', error: 'File is incomplete' };
+  const items = [ready, broken], h = libraryHarness(t, items), added = [];
+  h.location.href = 'http://localhost:8090/?replay=study/one&replay=study/two&replay=study/three&replay=study/one';
+  const library = h.create({ onLinkedItem: async item => added.push(item.id) });
+  await flush(); await flush();
+  assert.deepEqual(added, ['one']);
+  assert.match(h.elements.get('library-message').textContent, /File is incomplete/);
+  assert.match(h.elements.get('library-message').textContent, /study\/three is not in the library/);
+  broken.status = 'ready';
+  await library.refresh(); assert.deepEqual(added, ['one', 'two']);
+  items.push({ id: 'three', name: 'study/three', source: 'ingest', status: 'ready', revision: '1' });
+  await library.refresh(); assert.deepEqual(added, ['one', 'two', 'three']);
+  assert.equal(h.elements.get('library-message').hidden, true);
+  await library.refresh(); assert.deepEqual(added, ['one', 'two', 'three']);
+  assert.deepEqual(h.replacements, []);
+});
+
+test('a failed linked track does not block the other recordings or reload them on retry', async t => {
+  const items = ['one', 'two'].map(id => ({ id, name: `study/${id}`, source: 'ingest', status: 'ready', revision: '1' }));
+  const h = libraryHarness(t, items), added = [];
+  h.location.href = 'http://localhost:8090/?replay=study/one&replay=study/two';
+  let fail = true;
+  const library = h.create({ onLinkedItem: async item => {
+    if (item.id === 'one' && fail) throw new Error('Motion unavailable');
+    added.push(item.id);
+  } });
+  await flush(); await flush();
+  assert.deepEqual(added, ['two']);
+  assert.match(h.elements.get('library-message').textContent, /Motion unavailable/);
+  fail = false; await library.refresh(); assert.deepEqual(added, ['two', 'one']);
+  assert.equal(h.elements.get('library-message').hidden, true);
 });
 
 test('legacy ReplayLibrary entrypoints still open a linked scene when no session callback is supplied', async t => {

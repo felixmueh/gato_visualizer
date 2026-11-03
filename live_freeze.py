@@ -44,6 +44,7 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
     if world_frame not in ("base_footprint", "torso_lift_link"):
         raise ReplayError(f"Freeze reference frame is unsupported: {world_frame}")
     header, states, plans, breaches = None, [], [], []
+    activations, plan_timing = {}, {}
     total_samples = 0
     for record in records:
         if not isinstance(record, dict) or record.get("generation") != generation:
@@ -60,15 +61,24 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
             # A moving reference is saved at every state time too.
             total_samples += 2
         elif kind == "plan" and record.get("origin") != "preview":
-            plan = dict(id=f"live-{record.get('seq', len(plans))}", origin_time_s=record["sim_time_s"],
-                        time_s=record["knot_time_s"], q=record["q"], stats=_stats(record.get("stats")))
+            stats = _stats(record.get("stats"))
+            if "available_time_s" in record:
+                stats.update({key: record[key] for key in ("request_time_s", "available_time_s", "scheduled_activation_time_s", "solve_latency_s", "latency_overrun", "controller_wall_s") if key in record})
+                stats["live_plan_seq"] = record["seq"]
+            plan = dict(id=f"live-{record.get('seq', len(plans))}", origin_time_s=record.get("plan_origin_time_s", record["sim_time_s"]),
+                        time_s=record["knot_time_s"], q=record["q"], stats=stats)
             for field in ("qd_rad_s", "torque_nm", "torque_time_s"):
                 if record.get(field) is not None:
                     plan[field] = record[field]
+            if "plan_origin_time_s" in record:
+                plan_timing[plan["id"]] = {key: record[key] for key in (
+                    "request_time_s", "plan_origin_time_s", "measured_time_s") if key in record}
             plans.append(plan)
             total_samples += len(plan["time_s"])
             if len(plans) > MAX_PREDICTIONS:
                 raise ReplayError(f"Freeze exceeds the {MAX_PREDICTIONS} prediction display limit")
+        elif kind == "control" and record.get("plan_seq") is not None:
+            activations.setdefault(record["plan_seq"], record["sim_time_s"])
         elif kind == "breach":
             breaches.append(deepcopy(record))
         if total_samples > MAX_TOTAL_SAMPLES:
@@ -78,6 +88,10 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
         raise ReplayError("Live history has no segment header; cannot freeze this run")
     if len(states) < 2:
         raise ReplayError("Freeze needs at least two recorded states")
+    for plan in plans:
+        if "live_plan_seq" in plan["stats"]:
+            # None preserves a requested solve that never actually commanded.
+            plan["stats"]["activation_time_s"] = activations.get(plan["stats"]["live_plan_seq"])
     required = ("settings", "source", "simulator_identity", "solver_profile", "model_identity",
                 "position_tol_m", "speed_l1_tol_rad_s", "problem_configuration", "end_effector_frame", "joint_limits")
     missing = [key for key in required if key not in header]
@@ -85,6 +99,10 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
         raise ReplayError("Freeze segment header is missing " + ", ".join(missing))
     live = {key: deepcopy(header[key]) for key in required if key not in
             ("problem_configuration", "end_effector_frame", "joint_limits")}
+    if "effective_settings" in header:
+        live["effective_settings"] = deepcopy(header["effective_settings"])
+    if plan_timing:
+        live["plan_timing"] = plan_timing
     live.update(generation=generation, complete=bool(complete),
                 frozen_at=frozen_at or datetime.now(timezone.utc).isoformat(), breaches=breaches)
     sent = [record for record in states if record.get("torque_nm") is not None]

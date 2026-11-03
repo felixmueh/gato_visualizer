@@ -22,7 +22,7 @@ the specification and provides presentation interactions.
 }
 ```
 
-- `x.identity`: `episode_time`, `sqp_iteration`, `prediction_time`, `wall_time`,
+- `x.identity`: `episode_time`, `session_time`, `sqp_iteration`, `prediction_time`, `wall_time`,
   `numeric`, or `category`. `prediction_time` is a prediction-horizon offset.
 - Series have `label`, matching `x`/`y` arrays, optional `color`, and `style`
   `line`, `step`, or `bar`. Numeric missing values use null, never NaN/Infinity.
@@ -115,7 +115,8 @@ The SDK exports `Joint`, `Boolean`, `Number`, `Choice`, `EpisodeView`,
 - Source is Live generation, `{kind: "replay", id, trajectory_index}`, or
   `{kind: "inspection", id}` for a completed standalone Run again result.
   Inspection sources have no Episode; use them only for the Solve inspector.
-- `context` is `episode` or `solve`.
+- Single-source `context` is `episode` or `solve`. Comparison requests use the
+  collection contract described under [Comparison plots](#comparison-plots).
 - Null/omitted `solve_seq` follows the episode cursor's recorded association.
   Explicit identities may be strings or integers; previews use `preview:<seq>`
   to distinguish them from controller solves. Keep identities opaque in the UI.
@@ -192,3 +193,108 @@ specifications as the app. It runs on deterministic small fixtures without a
 GPU/server, reports structural and numerical test failures with nonzero exit,
 and can save JSON and standalone HTML using the shared renderer. Standard
 plotters include meaningful expected-value assertions as author examples.
+
+## Comparison plots
+
+`@plot_comparison` is additive to Episode/Solve and uses the same registry,
+typed inputs, PlotSpec renderer, asynchronous CPU jobs and plot directories.
+It receives an immutable `ComparisonView` containing ordered `ComparisonRun`
+objects: `key`, `label`, hex `color`, `source`, `offset_s`, `episode` (the
+existing broad `EpisodeView`) and optional `error`. No view attaches a live
+solver. Native episode clocks remain unchanged; `run.channel(path)` returns
+recorded samples on session seconds (`episode time + offset_s`).
+
+`ComparisonView.context` holds the host range/cursor and session clock.
+`bounds` is the union within that window; `common_bounds` the intersection of
+recorded spans (null without overlap); `run_bounds(run)` clips one span.
+`available_runs` excludes unavailable/empty episodes. The `.episode` retains
+full captured data so a metric can use valid bracketing samples at a window
+boundary; plot authors apply the range explicitly. `requires=('runs',)` means
+at least two available episodes; other requirements need two runs with that data.
+
+The typed `Channel()` input becomes a normal choice populated from recorded
+numeric scalar/vector leaves in timestamped `states`, `torque_samples`,
+`controls`, `intervals` and `plans`. Examples: `states.q.0`,
+`states.sensor.temperature_c`, `torque_samples.torque_nm.2`,
+`intervals.solve_wall_s`, `plans.stats.wall_s`. Booleans, strings, prediction
+matrices and arbitrary solver objects are excluded. `channels` contains
+`{value,label,unit,runs}`; known units also appear in choice labels. New numeric
+record fields need no dedicated plot. Absent per-run values remain null.
+
+The existing catalog/evaluate endpoints accept this additional envelope:
+
+```json
+{
+  "context":"comparison",
+  "sources":[
+    {"key":"track-1","label":"Default","color":"#b48cff","offset_s":0,
+     "source":{"kind":"replay","id":"study/default","revision":"retained-revision"}},
+    {"key":"track-2","label":"PD","color":"#6fa8ff","offset_s":0,
+     "source":{"kind":"live","generation":4}}
+  ],
+  "alignment":{"mode":"session_time"},
+  "range":{"mode":"window","start_s":0,"end_s":24},
+  "client_id":"comparison-sidebar",
+  "plots":[{"instance_id":"card-1","plot_id":"comparison.channel","inputs":{"channel":"states.q.0"}}]
+}
+```
+
+Each wrapper has exactly these five fields; keys are unique, offsets finite,
+colours `#rrggbb`, and there are at most 16 sources. Zero/one sources support
+retained-card empty states. Selectors are validated Replay catalog IDs or a
+committed Live generation; inspections/prediction horizons are not episodes.
+`alignment` is optional and only accepts `session_time`; task phase is not
+inferred from run duration. The range is in session seconds. No browser array
+or path uploads are accepted. Every submission snapshots the actual committed
+Live prefix; a replaced generation supersedes its comparison jobs.
+
+The existing jobs/results/catalog envelope remains. Comparison `context`
+contains `clock: "session:<client_id>"`, `bounds`, `common_bounds`, integer
+`usable_runs`, `joint_names`, `channels`, and `runs`. Each run reports full
+`bounds`, `analysis_bounds`, `episode_available`, `coverage_s`, `error`, original
+`time_origin_s`/`time_basis`, frame and retained provenance/outcome when present.
+No outcome is inferred. Cache identity includes source revisions/committed
+prefixes, offsets, labels/colours, range and inputs. The CPU replay cache is LRU
+bounded to 16 entries and approximately 256 MiB of retained Python objects;
+one larger recording can be evaluated but is not retained in that cache.
+
+Bundled definitions:
+
+- `comparison.tracking_error`: own-reference error overlays in mm.
+- `comparison.tracking_summary`: RMS/peak error bars over the common interval.
+  RMS integrates the square of piecewise-linear scalar error over valid time,
+  rather than weighting by sample count.
+- `comparison.smoothness`: command total variation per covered duration
+  (Euclidean norm of consecutive recorded torque jumps, Nm/s), acceleration RMS
+  from finite differences of recorded velocity (rad/s²), or speed RMS
+  (piecewise-linear recorded velocity, rad/s). Velocity is never inferred from q.
+- `comparison.channel`: the selected recorded channel on its own sample clock
+  plus offset; controls/torques use steps, intervals end with null gaps.
+- `comparison.control_effort`: cumulative ∫Σⱼτ_applied,j² dt curves (default
+  `view='cumulative'`) or per-run integral bars (`view='total'`), in **Nm²·s**.
+  Uses only `torque_samples`/`controls` with recorded `torque_nm`, over the
+  common selected episode interval. Applied commands use zero-order hold,
+  including the last command only up to the episode's final recorded state.
+  Missing/nonfinite/incomplete vectors interrupt support until another valid
+  applied sample arrives. The curve has gaps and resumes its **observed**
+  cumulative integral; partial totals report valid duration, not zero-filled
+  effort. A preceding recorded command can support the start of a clipped
+  window. There is no predicted/requested/state-torque substitution. This is
+  an effort cost proxy, not mechanical work or energy.
+
+Time overlays use `x.identity='session_time'` with an explicit session clock.
+Metric hover details retain valid duration and full recorded span: a shared
+prefix does not qualify an early-stopped task as successful. Missing telemetry
+remains unavailable per run while other runs can render. Sampling/filtering and
+recorded command-versus-actuator meanings still matter. No outside-span endpoint
+hold is added to plots or metrics. Single-source requests are unchanged.
+
+Comparison replay reads normalize the complete recorded execution and all saved
+plans' timed scalar statistics. They do not materialize prediction-horizon
+geometry or perform FK for every saved prediction: those remain on the ordinary
+Episode/Solve inspection path, and the original NPZ data is untouched. Channel
+paths are discovered once per immutable replay; Live discovery adds only newly
+committed records. Comparison contexts reuse immutable source records rather
+than freezing/copying the full recording for each selection or channel change.
+Cache-size accounting uses a conservative numeric-vector fast path; the same
+16-entry/256-MiB bounds and 30-second CPU job timeout remain in force.

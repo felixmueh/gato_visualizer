@@ -15,24 +15,29 @@ import source_runtime as runtime
 
 
 def checkout(root):
-    for name in ("venv-host/bin/python", ".venv/bin/python"):
+    for name in ("venv-host/bin/python", ".venv/bin/python", ".venv-container/bin/python"):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.symlink_to(sys.executable)
 
 
 class SourceSelectionTests(unittest.TestCase):
-    def test_selection_defaults_to_host_environment_and_selected_checkout_cache(self):
+    def test_selection_uses_uv_environment_for_platform_without_cross_platform_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkout(root)
-            selected = runtime.resolve_selection(root)
-            self.assertEqual(selected["python"], str(root / "venv-host/bin/python"))
+            with patch.object(runtime, "in_container", return_value=False):
+                selected = runtime.resolve_selection(root)
+                self.assertEqual(selected["python"], str(root / ".venv/bin/python"))
+                (root / ".venv/bin/python").unlink()
+                with self.assertRaisesRegex(ValueError, "not executable"):
+                    runtime.resolve_selection(root)
+            with patch.object(runtime, "in_container", return_value=True):
+                selected = runtime.resolve_selection(root)
+                self.assertEqual(selected["python"], str(root / ".venv-container/bin/python"))
             # No override: the visualizer chooses no cache; without tiago_mpc it is unknown.
             self.assertIsNone(selected["cache"])
             self.assertIsNone(selected["effective_cache"])
-            (root / "venv-host/bin/python").unlink()
-            self.assertEqual(runtime.resolve_selection(root)["python"], str(root / ".venv/bin/python"))
             self.assertFalse((root / ".cache").exists())
 
     def test_default_cache_is_tiago_mpcs_main_checkout_cache_also_from_a_worktree(self):
@@ -96,21 +101,29 @@ class SourceSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unknown token <root>"):
                 runtime.resolve_selection(root, cache="<root>/cache")
 
-    def test_default_templates_prefer_host_environment_and_store_only_overrides(self):
+    def test_default_templates_follow_platform_and_store_only_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             checkout(root)
-            self.assertEqual(runtime.checkout_defaults(root)["python"], "<checkout>/venv-host/bin/python")
+            default = runtime.default_interpreter_template(root)
+            self.assertEqual(runtime.checkout_defaults(root)["python"], default)
             self.assertIsNone(runtime.checkout_defaults(root)["cache"])  # no tiago_mpc here
-            container = runtime.resolve_selection(root, python="<checkout>/.venv/bin/python")
-            self.assertEqual(runtime.stored_selection(container), dict(mpc_root=str(root), python="<checkout>/.venv/bin/python"))
+            override = "<checkout>/.venv/bin/python" if runtime.in_container() else "<checkout>/.venv-container/bin/python"
+            container = runtime.resolve_selection(root, python=override)
+            self.assertEqual(runtime.stored_selection(container), dict(mpc_root=str(root), python=override))
             self.assertEqual(runtime.resolve_templates(root, cache="<checkout>/c")["cache"]["path"], str(root / "c"))
-            (root / "venv-host/bin/python").unlink()
-            self.assertEqual(runtime.default_interpreter_template(root), "<checkout>/.venv/bin/python")
+            self.assertEqual(runtime.default_interpreter_template(root), default)
             selection = runtime.resolve_selection(root)
             self.assertEqual(runtime.stored_selection(selection), dict(mpc_root=str(root)))
             selection = runtime.resolve_selection(root, cache="<checkout>/other")
             self.assertEqual(runtime.stored_selection(selection), dict(mpc_root=str(root), cache="<checkout>/other"))
+
+    def test_selected_children_do_not_inherit_pythonpath(self):
+        selected = dict(cache=None)
+        self.assertEqual(runtime.cache_environment(selected, dict(PYTHONPATH='/old/gato/python', OTHER='keep')),
+                         dict(OTHER='keep'))
+        self.assertEqual(runtime.cache_environment(dict(cache='/explicit'), dict(PYTHONPATH='/old')),
+                         dict(GATO_CACHE_DIR='/explicit'))
 
     def test_invalid_selection_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -197,12 +210,12 @@ class ProbeTests(unittest.TestCase):
             data = json.loads(result.stdout)
             self.assertTrue(data["compatible"], data.get("error"))
             self.assertEqual(data["available_N_by_friction"], dict(off=[], on=[]))  # an empty cache
-            self.assertEqual(len(data["modules"]), 2*len(runtime.KNOT_COUNTS))
+            self.assertEqual(len(data["modules"]), (1 if data.get("exact_availability") else 2)*len(runtime.KNOT_COUNTS))
             self.assertFalse(list(Path(cache).glob("modules/*/*/*.so")))
             expected = live_probe()
             for key in ("defaults", "friction", "contract"):
                 self.assertEqual(data[key], expected[key], key)
-            self.assertEqual(list(data["defaults"])[:2], ["N", "dt_s"])  # MpcParams field order
+            self.assertEqual(list(data["defaults"])[:3], ["type", "N", "dt_s"])  # native to_dict order
 
 
 class BuilderTests(unittest.TestCase):
@@ -255,15 +268,49 @@ class BuilderTests(unittest.TestCase):
 
 class DisplaySourceTests(unittest.TestCase):
     def test_selected_mpc_api_model_assets_and_grasp_frame_validate_before_use(self):
+        # Initialize package/C++ imports before mocking importlib.import_module;
+        # Pinocchio itself uses it while importing its extension submodules.
         script = load_script('source_probe_display_test')
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             selection = dict(mpc_root=str(root), python=sys.executable, cache=str(root/'cache'))
+            friction = SimpleNamespace(coulomb_nm=(1.,)*7, viscous_nm_s_per_rad=(2.,)*7)
             tiago = SimpleNamespace(FULL_URDF=root/'full.urdf', arm_urdf=lambda: root/'reduced.urdf', GRASP_FRAME='grasp',
-                                    urdf_friction=lambda width: SimpleNamespace(width_rad_s=width))
-            mpc = SimpleNamespace(MpcParams=1, TIAGO=SimpleNamespace(max_sqp_time_s=.01),
-                                  Mpc=SimpleNamespace(warmup=3), find_binary=4, compile_binary=5,
-                                  SimPlant=lambda *, integrator=None, coulomb_law="constraint": None)  # also tiago_mpc.sim
+                                    urdf_friction=lambda: friction)
+            class Plant:
+                def __init__(self, config):
+                    pass
+                def start(self, clock):
+                    pass
+            @dataclass(frozen=True)
+            class Config:
+                q: tuple = ()
+                qd: tuple = ()
+                substep: float = .001
+                integrator: str = "rk4"
+                friction: object = None
+                friction_law: object = None
+                def build(self):
+                    return Plant(self)
+            @dataclass(frozen=True)
+            class State:
+                t: float
+                q: object
+                qd: object
+            @dataclass(frozen=True)
+            class Plan:
+                t0: float
+                dt: float
+                states: object
+                torques: object
+                stats: object
+            @dataclass(frozen=True)
+            class MpcParams:
+                friction_law: object = None
+            mpc = SimpleNamespace(MpcParams=MpcParams, TIAGO=SimpleNamespace(max_sqp_time_s=.01),
+                                  Mpc=SimpleNamespace(warmup=3, request=4, result=5), find_binary=4, compile_binary=5,
+                                  SimPlant=Plant, SimConfig=Config, VirtualClock=object, State=State, Plan=Plan,
+                                  to_dict=lambda value: value, from_dict=lambda value: value, provenance=lambda: {})
             assets, kinematics = Mock(), Mock()
             with patch('live_mpc.import_tiago', return_value=tiago) as imported, \
                  patch.object(script.importlib, 'import_module', return_value=mpc), \
@@ -271,16 +318,36 @@ class DisplaySourceTests(unittest.TestCase):
                  patch.dict(os.environ):
                 loaded = script.load_source(selection)
                 self.assertEqual(loaded[:2], (tiago, mpc))
-                self.assertEqual(loaded[3].width_rad_s, .03)
+                self.assertIs(loaded[3], friction)
                 imported.assert_called_once_with(root)
                 assets.assert_called_once_with(root)
                 kinematics.assert_called_once_with(root/'full.urdf', end_effector_frame='grasp', reduced_urdf=root/'reduced.urdf')
                 self.assertEqual(os.environ['GATO_CACHE_DIR'], str(root/'cache'))
+                del mpc.Mpc.request
+                with self.assertRaisesRegex(ValueError, 'lacks Mpc.request or Mpc.result'):
+                    script.load_source(selection)
+                mpc.Mpc.request = 4
+                mpc.SimPlant.start = lambda self: None
+                with self.assertRaisesRegex(ValueError, 'SimPlant.start\\(clock\\)'):
+                    script.load_source(selection)
+                mpc.SimPlant.start = lambda self, clock: None
+                del mpc.VirtualClock
+                with self.assertRaisesRegex(ValueError, 'tiago_mpc.clock.VirtualClock'):
+                    script.load_source(selection)
+                mpc.VirtualClock = object
+                del mpc.State
+                with self.assertRaisesRegex(ValueError, 'tiago_mpc.interfaces.State and Plan'):
+                    script.load_source(selection)
+                mpc.State = State
+                del mpc.from_dict
+                with self.assertRaisesRegex(ValueError, 'record.to_dict, from_dict and provenance'):
+                    script.load_source(selection)
+                mpc.from_dict = lambda value: value
                 assets.side_effect = ValueError('canonical mesh is missing')
                 with self.assertRaisesRegex(ValueError, 'canonical mesh is missing'):
                     script.load_source(selection)
-                mpc.SimPlant = lambda *, friction=None: None  # tiago_mpc before the plant options
-                with self.assertRaisesRegex(ValueError, 'lacks integrator or coulomb_law'):
+                mpc.SimPlant = lambda *, friction=None: None  # old constructor, without SimConfig
+                with self.assertRaisesRegex(ValueError, 'SimConfig.*build.*SimPlant'):
                     script.load_source(selection)
                 del mpc.Mpc.warmup  # tiago_mpc before 31c405a
                 with self.assertRaisesRegex(ValueError, 'lacks Mpc.warmup'):

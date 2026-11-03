@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { setupLive as createLive } from './live.js';
+import { setupLive as createLive, restoreCompatibleSettings } from './live.js';
 // Existing controller tests exercise the unbuffered interpolated mode; buffered
 // presentation is covered explicitly below without changing their clocks.
 const setupLive = options => createLive({ presentationSettings: { report_hz: 20, buffer_ms: 0, interpolate: true }, ...options });
@@ -50,6 +50,8 @@ function harness() {
     body: new Element(), getElementById: $,
     createElement(tag) { const element = new Element(tag); created.push(element); return element; },
     querySelector(selector) {
+      const horizon = selector.match(/data-horizon="([^"]+)"/)?.[1];
+      if (horizon) return created.filter(el => el.dataset.horizon === horizon).at(-1);
       const path = selector.match(/data-task-path="([^"]+)"/)?.[1];
       return created.filter(el => el.dataset.taskPath === path).at(-1);
     },
@@ -67,7 +69,7 @@ function harness() {
     ],
   };
   const commands = [], sources = [];
-  let version = 0, historyHandler, commandHandler, freezeHandler;
+  let version = 0, historyHandler, commandHandler, freezeHandler, settingsHandler;
   class EventSource {
     static OPEN = 1;
     constructor() { this.readyState = 0; sources.push(this); }
@@ -78,25 +80,248 @@ function harness() {
   const fetch = async (url, options) => {
     if (url.includes('/history?')) return historyHandler(url);
     if (url.endsWith('/schema')) return { ok: true, json: async () => structuredClone(schema) };
+    if (url.endsWith('/settings')) return settingsHandler ? settingsHandler() : { ok: false, json: async () => ({}) };
     if (url.endsWith('/freeze')) return freezeHandler(JSON.parse(options.body));
     const command = JSON.parse(options.body); commands.push(command);
-    if (command.type === 'set_settings') version++;
+    if (['set_settings', 'patch_settings'].includes(command.type)) version++;
     if (commandHandler) return commandHandler(command, version);
     return { ok: true, json: async () => ({ accepted: true, settings_version: version }) };
   };
   const edit = (path, value) => {
-    const element = path.startsWith('target-offset-') ? $(path) : created.find(el => el.dataset.path === path);
+    const element = path.startsWith('target-offset-') ? $(path) : created.filter(el => el.dataset.path === path).at(-1);
     element.value = String(value); element.emit('input');
   };
-  return { $, document, EventSource, fetch, commands, sources, created, edit, schema, setHistoryHandler(value) { historyHandler = value; }, setCommandHandler(value) { commandHandler = value; }, setFreezeHandler(value) { freezeHandler = value; }, setVersion(value) { version = value; } };
+  return { $, document, EventSource, fetch, commands, sources, created, edit, schema, setHistoryHandler(value) { historyHandler = value; }, setCommandHandler(value) { commandHandler = value; }, setFreezeHandler(value) { freezeHandler = value; }, setVersion(value) { version = value; }, setSettingsHandler(value) { settingsHandler = value; } };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('source upgrade preserves known predictor friction without exposing native model fields', () => {
+  const h = harness(), friction = { type: 'Friction', coulomb_nm: Array(7).fill(1), viscous_nm_s_per_rad: Array(7).fill(.5) };
+  const law = { type: 'Tanh', width_rad_s: .03 };
+  Object.assign(h.schema.defaults.config, { friction: null, friction_law: law, armature: Array(7).fill(0) });
+  h.schema.parameters.push({ path: 'friction', kind: 'choice', choices: [{ value: null, label: 'Off' }, { value: friction, label: 'On' }] });
+  const saved = structuredClone(h.schema.defaults);
+  saved.config.friction = { ...friction, law }; saved.config.solver_params.q_cost = 13;
+  const restored = restoreCompatibleSettings(h.schema, saved);
+  assert.deepEqual(restored.config.friction, friction);
+  assert.deepEqual(restored.config.friction_law, law);
+  assert.deepEqual(restored.config.armature, Array(7).fill(0));
+  assert.equal(restored.config.solver_params.q_cost, 13);
+  assert.deepEqual(saved.config.friction.law, law);
+  for (const previous of [{ type: 'Sign' }, { type: 'Tanh', width_rad_s: .2 }]) {
+    saved.config.friction.law = previous;
+    assert.throws(() => restoreCompatibleSettings(h.schema, saved), /Saved predictor friction.*Reload/);
+  }
+});
+
+test('unknown saved predictor law blocks startup visibly instead of silently disabling friction', async () => {
+  const h = harness();
+  const friction = { type: 'Friction', coulomb_nm: Array(7).fill(1), viscous_nm_s_per_rad: Array(7).fill(.5) };
+  Object.assign(h.schema.defaults.config, { friction: null, friction_law: { type: 'Tanh', width_rad_s: .03 } });
+  h.schema.parameters.push({ path: 'friction', kind: 'choice', choices: [{ value: null, label: 'Off' }, { value: friction, label: 'On' }] });
+  const saved = structuredClone(h.schema.defaults);
+  saved.config.friction = { ...friction, law: { type: 'Tanh', width_rad_s: .2 } };
+  let retained = JSON.stringify(saved);
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource', 'sessionStorage'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource,
+    sessionStorage: { getItem: () => retained, removeItem() { retained = null; } } });
+  try {
+    const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await live.ready;
+    assert.match(h.$('live-availability').title, /Saved predictor friction.*Reload/);
+    assert.equal(h.commands.length, 0);
+    assert.equal(retained, null);
+    live.dispose();
+  } finally {
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+test('one latency compensation checkbox submits a runtime execution setting', async () => {
+  const h = harness();
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await live.ready;
+    assert.equal(live.settings.execution.latency_compensation, false);
+    assert.equal(h.$('live-latency-compensation').checked, false);
+    h.$('live-mode').emit('click');
+    const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'idle', settings_version: 0 });
+    await flush();
+    h.$('live-latency-compensation').checked = true;
+    h.$('live-latency-compensation').emit('change');
+    assert.equal(live.settings.execution.latency_compensation, true);
+    await new Promise(resolve => setTimeout(resolve, 380)); await flush();
+    const request = h.commands.filter(command => ['set_settings', 'patch_settings'].includes(command.type)).at(-1);
+    assert.equal((request.execution || request.patch.execution).latency_compensation, true);
+  } finally {
+    live?.dispose();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
 // A segment header: the constant context of a generation's records, sent once.
 const segment = (kind, context = {}) => ({ type: 'segment', generation: 0, settings_version: 0, context: { task: { kind }, ...context } });
 const plan = (version, seq, task_kind = 'reach') => ({
   type: 'plan', generation: 0, settings_version: version, seq, origin: 'preview', sim_time_s: 0,
   N: task_kind === 'reach' ? 32 : 64, dt_s: .01, knot_time_s: [0, .01], q: [Array(7).fill(0), Array(7).fill(0)],
   ee_xyz: [[.5, 0, 1], [.6, 0, 1]], reference_xyz: [[.7, 0, 1], [.7, 0, 1]], stats: {},
+});
+
+test('native model controls explain cached variants without labeling runtime costs as model builds', async () => {
+  const h = harness();
+  h.schema.parameters[0].effect = 'compiled_model';
+  h.schema.parameters[1].effect = 'runtime';
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    const field = path => h.created.filter(element => element.dataset.path === path).at(-1);
+    assert.match(field('N').title, /compiled model variant[\s\S]*Cached modules are reused[\s\S]*Build only if.*missing/);
+    assert.match(field('solver_params.q_cost').title, /Applied at runtime; no model build is needed/);
+    assert.doesNotMatch(field('solver_params.q_cost').title, /compiled model variant/);
+  } finally { Object.assign(globalThis, originals); }
+});
+
+function modelSchema(h, available = [32]) {
+  h.schema.supported_N = [16, 32, 64]; h.schema.available_N = available;
+  h.schema.compile_profile_id = 'one';
+  h.schema.compile_selection = { mpc_root: '/one', python: '/one/python', cache: null, effective_cache: '/one/cache' };
+  h.schema.source = { mpc_root: '/one', mpc_commit: 'recorded' };
+  h.schema.parameters.forEach(parameter => { parameter.effect = parameter.path === 'N' ? 'compiled_model' : 'runtime'; });
+}
+
+test('repeated target drags, task and runtime settings retain readiness without native lookups', async () => {
+  const h = harness(); modelSchema(h);
+  h.schema.task_anchors = { reach: [.4, -.3, 1], figure8: [.4, -.3, 1] };
+  let lookups = 0;
+  const fetch = async (url, options) => {
+    if (url === '/api/source/model') {
+      lookups++;
+      return { ok: true, json: async () => ({ compatible: true, compilation: { ready: true, N: 32, available_N: [32] } }) };
+    }
+    return h.fetch(url, options);
+  };
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await live.ready;
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'idle', settings_version: 0 }); await flush(); await flush();
+    const checked = lookups; assert.equal(checked, 1);
+    for (let i = 0; i < 10; i++) {
+      assert.equal(live.targetInteraction.available, true);
+      assert.ok(live.setTargetWorld([.5 + i / 100, -.2, 1.1]));
+      assert.equal(live.targetInteraction.available, true);
+      assert.equal(live.compilation.phase, 'ready');
+    }
+    h.edit('solver_params.q_cost', 7);
+    h.$('live-duration').value = '12'; h.$('live-duration').emit('input');
+    h.$('live-control-hz').value = '250'; h.$('live-control-hz').emit('input');
+    // Intermediate empty runtime input must not turn a known model into checking.
+    h.edit('solver_params.q_cost', ''); assert.equal(live.compilation.phase, 'ready');
+    h.edit('solver_params.q_cost', 8);
+    await new Promise(resolve => setTimeout(resolve, 380)); await flush();
+    assert.equal(lookups, checked);
+    const commands = h.commands.filter(command => ['set_settings', 'patch_settings'].includes(command.type));
+    assert.equal(commands.at(-1).config.solver_params.q_cost, 8);
+    assert.deepEqual(commands.at(-1).task.target_offset_m, [.19, .1, .1]);
+    assert.equal(live.compilation.phase, 'ready');
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('target editing stays available during a slow model check and shares that one check', async () => {
+  const h = harness(); modelSchema(h);
+  h.schema.task_anchors = { reach: [.4, -.3, 1] };
+  let release, lookups = 0;
+  const fetch = async (url, options) => {
+    if (url === '/api/source/model') {
+      lookups++;
+      return new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ compatible: true,
+        compilation: { ready: true, N: 32, available_N: [32] } }) }); });
+    }
+    return h.fetch(url, options);
+  };
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await live.ready;
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'idle', settings_version: 0 }); await flush();
+    assert.equal(live.compilation.phase, 'checking');
+    assert.equal(h.created.find(element => element.className === 'model-compile-prompt').hidden, true);
+    for (let i = 0; i < 5; i++) {
+      assert.equal(live.targetInteraction.available, true);
+      assert.ok(live.setTargetWorld([.5 + i / 100, -.2, 1.1]));
+    }
+    await new Promise(resolve => setTimeout(resolve, 380));
+    assert.equal(lookups, 1);
+    release(); await flush(); await flush();
+    assert.equal(live.compilation.phase, 'ready');
+    assert.equal(lookups, 1);
+    const command = h.commands.find(item => ['set_settings', 'patch_settings'].includes(item.type));
+    assert.deepEqual(command.task.target_offset_m, [.14, .1, .1]);
+  } finally { release?.(); live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('missing supported N stays selectable and local until the exact model is ready in cache', async () => {
+  const h = harness(); modelSchema(h);
+  const compiled = new Set([32]), lookups = []; let builds = 0;
+  const fetch = async (url, options) => {
+    if (url === '/api/source/model') {
+      const body = JSON.parse(options.body); lookups.push(body);
+      return { ok: true, json: async () => ({ compatible: true, compilation: { ready: compiled.has(body.params.N),
+        N: body.params.N, supported_N: [16, 32, 64], available_N: [...compiled], binary_path: compiled.has(body.params.N) ? '/actual.so' : null } }) };
+    }
+    if (url === '/api/source/build') { builds++; throw new Error('A cached model must not compile.'); }
+    return h.fetch(url, options);
+  };
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await live.ready;
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'idle', settings_version: 0 }); await flush(); await flush();
+    const numeric = () => h.commands.filter(command => ['set_settings', 'patch_settings'].includes(command.type));
+    assert.equal(numeric().length, 1); assert.equal(numeric()[0].config.N, 32);
+    const knot = h.created.filter(element => element.dataset.path === 'N').at(-1);
+    assert.equal(knot.children[2].disabled, false); assert.match(knot.children[2].textContent, /64.*not compiled/);
+    h.edit('N', 2); await new Promise(resolve => setTimeout(resolve, 380)); await flush();
+    assert.equal(live.settings.config.N, 64); assert.equal(live.compilation.phase, 'missing');
+    assert.equal(numeric().length, 1); assert.equal(numeric()[0].config.N, 32);
+    assert.equal(knot.children[2].disabled, false); assert.match(knot.children[2].textContent, /not compiled/);
+    const prompt = h.created.find(element => element.className === 'model-compile-prompt');
+    assert.equal(prompt.hidden, false);
+    compiled.add(64); h.edit('solver_params.q_cost', 8); await live.compileModel();
+    assert.equal(builds, 0); assert.equal(numeric().length, 2);
+    assert.equal(numeric()[1].config.N, 64); assert.equal(numeric()[1].config.solver_params.q_cost, 8);
+    assert.deepEqual(lookups.at(-1).selection, { mpc_root: '/one', python: '/one/python', cache: null });
+    assert.equal(prompt.hidden, true);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('an empty compiled catalog still opens supported model drafts and the Compile prompt', async () => {
+  const h = harness(); modelSchema(h, []);
+  const fetch = async (url, options) => url === '/api/source/model' ? { ok: true, json: async () => ({ compatible: true,
+    compilation: { ready: false, N: 32, supported_N: [16, 32, 64], available_N: [], binary_path: null } }) } : h.fetch(url, options);
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await live.ready;
+    assert.equal(live.settings.config.N, 32);
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'idle', settings_version: 0 }); await flush(); await flush();
+    assert.equal(live.compilation.phase, 'missing');
+    const knot = h.created.filter(element => element.dataset.path === 'N').at(-1);
+    assert.equal(knot.children.length, 3); assert.equal(knot.children.every(option => !option.disabled), true);
+    assert.equal(h.created.find(element => element.className === 'model-compile-prompt').hidden, false);
+    assert.equal(h.commands.some(command => ['set_settings', 'patch_settings'].includes(command.type)), false);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
 });
 
 test('Replay roundtrip retains complete Live draft and rejects cached plans from another configuration', async () => {
@@ -583,6 +808,25 @@ test('N stays an available choice while dt and horizon edit the same prediction 
     h.$('live-mode').emit('click'); h.$('replay-mode').emit('click'); await flush();
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
+});
+
+test('an equivalent settings echo preserves typed frequency notation in the derived Horizon field', async () => {
+  const h = harness(); h.schema.defaults.config.dt_s = .03;
+  h.schema.parameters.push({ path: 'dt_s', kind: 'float', label: 'Knot interval', min: .001, max: .1 });
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await live.ready;
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
+    const horizon = h.document.querySelector('[data-horizon="seconds"]');
+    horizon.value = '0.5 Hz'; horizon.emit('input');
+    assert.equal(live.settings.config.dt_s, Number((2 / 31).toPrecision(12)));
+    source.emit({ type: 'settings', ...live.settings, settings_version: 2 });
+    assert.notEqual(h.document.querySelector('[data-horizon="seconds"]'), horizon);
+    assert.equal(h.document.querySelector('[data-horizon="seconds"]').value, '0.5 Hz');
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
 });
 
 test('figure-eight transforms use static start anchor, preserve period and reach, and clamp dimensions', async () => {
@@ -1115,6 +1359,23 @@ function frictionSchema(h, { N = 32, on = [32], prediction = false } = {}) {
   return path => h.created.filter(el => el.dataset.path === path).at(-1);
 }
 
+test('adapter identity alone preserves the standard friction readout; friction ownership hides it', async () => {
+  for (const controls of [[], ['law'], ['friction']]) {
+    const h = harness(); frictionSchema(h);
+    const section = { defaults: {}, parameters: [], controls,
+      module: { path: '/visualizer/adapters/tiago.py', sha256: 'recorded', origin: 'bundled' } };
+    h.schema.source_settings = { simulation: section, predictor: { ...section, controls: [] } };
+    h.schema.defaults.source_settings = { simulation: {}, predictor: {} };
+    const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+    Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+    try {
+      setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+      const notes = h.created.filter(el => el.className === 'settings-note').map(el => el.textContent);
+      assert.equal(notes.some(text => text?.startsWith('Coulomb (Nm), joints 1–7:')), !controls.includes('friction'));
+    } finally { Object.assign(globalThis, originals); }
+  }
+});
+
 test('friction controls start loss-free and submit independent plant and predictor friction from the frozen native anchor', async () => {
   const h = harness(), field = frictionSchema(h);
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
@@ -1260,7 +1521,7 @@ test('unavailable friction transition cancels active work and keeps Cancel avail
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
-test('Limit handling shows Clip effort and the three Stop on breach checkboxes in one row with their defaults', async () => {
+test('Plant limit handling shows Clip effort and the three Stop on breach checkboxes in one row with their defaults', async () => {
   const h = harness();
   h.schema.defaults.config.plant = { friction: false, clip_effort: true, stop_on_breach: { position: true, velocity: true, torque: true } };
   h.schema.parameters.push({ path: 'plant.clip_effort', label: 'Clip effort', kind: 'bool', group: 'Limit handling', description: 'Clip each command' },
@@ -1281,7 +1542,7 @@ test('Limit handling shows Clip effort and the three Stop on breach checkboxes i
     assert.deepEqual(checks.map(label => [label.className, label.children[0].dataset.path, label.children[0].checked, label.children[1].textContent]), [
       ['row-check', 'plant.stop_on_breach.position', true, 'Joint limits'], ['row-check', 'plant.stop_on_breach.velocity', true, 'Velocity'],
       ['row-check', 'plant.stop_on_breach.torque', true, 'Torque']]);
-    assert(h.created.some(el => el.tagName === 'details' && el.open && el.children[0].textContent === 'Limit handling'));
+    assert(h.created.some(el => el.tagName === 'details' && el.open && el.children[0].textContent === 'Plant limit handling'));
     field('plant.clip_effort').checked = false; field('plant.clip_effort').emit('input');
     field('plant.stop_on_breach.velocity').checked = false; field('plant.stop_on_breach.velocity').emit('input');
     await new Promise(resolve => setTimeout(resolve, 380));
@@ -1573,4 +1834,494 @@ test('state callbacks observe the current displayed state and start-pose editabi
     live.seek(0);
     assert.deepEqual(observed.at(-1), { shown: 0, displayed: 0, focused: 0, editable: true });
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
+});
+
+async function withReplayHarness({ replayOnly = false, calculation = 'on_play' } = {}, run) {
+  const h = harness(); h.schema.defaults.execution.calculation = calculation;
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const session = createSession();
+    const live = setupLive({ replayOnly, onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    live.setSession(session); await live.enterLive();
+    await run({ h, live, session });
+  } finally {
+    h.$('replay-mode').emit('click'); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+}
+
+async function settleReplayHarness(h) {
+  const source = h.sources.at(-1); source.open();
+  source.emit({ type: 'status', state: 'paused', settings_version: 0 });
+  await flush(); source.emit(plan(1, 1));
+  for (const time of [0, .5]) source.emit({ type: 'state', settings_version: 1, sim_time_s: time,
+    q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] });
+  return source;
+}
+
+test('initial Replay mode plays, scrubs, changes speed and rewinds recordings without subscribing or calculating', async () => {
+  await withReplayHarness({ replayOnly: true }, async ({ h, live, session }) => {
+    const recording = session.addTrack({ span: [10, 12], offset_s: -5 });
+    session.addTrack({ span: [-100, 100], offset_s: 0, visible: false });
+    assert.equal(live.mode, 'live'); assert.equal(live.replayOnly, true); assert.equal(session.replayOnly, true);
+    assert.equal(h.sources.length, 0); assert.deepEqual(h.commands, []);
+    assert.equal(h.$('live-panel').inert, true);
+    assert.equal(h.$('live-preview').disabled, true); assert.equal(h.$('live-precalculate').disabled, true);
+    assert.equal(live.targetInteraction.available, false); assert.equal(live.startPose, null);
+    assert.deepEqual(live.history.sessionBounds, [5, 7]);
+
+    h.$('live-reset').emit('click'); assert.equal(session.cursor, 5);
+    h.$('live-speed').value = '2'; h.$('live-speed').emit('change');
+    assert.equal(live.playbackRate, 2); assert.equal(session.rate, 2);
+    // Even a retained Continue preference cannot extend Live from replay playback.
+    h.$('live-continue').checked = true; h.$('live-continue').emit('change');
+    h.$('live-play').emit('click'); live.frame(0); live.frame(500);
+    assert.equal(session.cursor, 6); assert.equal(live.playing, true);
+    live.frame(1500); assert.equal(session.cursor, 7); assert.equal(live.playing, false);
+    live.seek(6.25); assert.equal(session.cursor, 6.25);
+    h.$('live-reset').emit('click'); assert.equal(session.cursor, 5);
+    h.$('live-preview').emit('click'); h.$('live-precalculate').emit('click');
+    await flush(); assert.equal(h.sources.length, 0); assert.deepEqual(h.commands, []);
+
+    session.removeTrack(recording.id); live.frame(2000);
+    assert.equal(live.replayOnly, true); assert.equal(h.$('live-play').disabled, true);
+    h.$('live-play').emit('click'); await flush(); assert.deepEqual(h.commands, []);
+  });
+});
+
+test('computing reports numerical jobs and previews, independently of retained playback and disconnected Replay', async () => {
+  await withReplayHarness({ calculation: 'manual' }, async ({ h, live, session }) => {
+    const source = await settleReplayHarness(h);
+    assert.equal(live.computing, false);
+    h.$('live-play').emit('click'); live.frame(0); live.frame(100);
+    assert.equal(live.playing, true); assert.equal(live.computing, false);
+    source.emit({ type: 'status', state: 'calculating', settings_version: 1, job_active: true });
+    assert.equal(live.computing, true);
+    source.emit({ type: 'status', state: 'paused', settings_version: 1, job_active: false });
+    assert.equal(live.playing, true); assert.equal(live.computing, false);
+    h.$('live-preview').emit('click'); await flush();
+    assert.equal(live.playing, false); assert.equal(live.computing, true);
+    source.emit(plan(1, 2)); assert.equal(live.computing, false);
+    source.emit({ type: 'status', state: 'calculating', settings_version: 1, job_active: true });
+    assert.equal(live.computing, true);
+    session.addTrack({ span: [0, 2], offset_s: 0 }); await live.setReplayOnly(true);
+    assert.equal(live.computing, false);
+    source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true });
+    assert.equal(live.computing, false);
+  });
+});
+
+for (const calculation of ['manual', 'automatic']) {
+  test(`Replay mode cancels active ${calculation} precalculation while retaining Live history`, async () => {
+    await withReplayHarness({ calculation }, async ({ h, live, session }) => {
+      const source = await settleReplayHarness(h);
+      const recording = session.addTrack({ span: [0, 2], offset_s: 0 });
+      h.$('live-precalculate').emit('click'); await flush();
+      source.emit({ type: 'status', state: 'precalculating', settings_version: 1, job_active: true });
+      const before = h.commands.length, settings = live.settings;
+      await live.setReplayOnly(true);
+      assert.deepEqual(h.commands.slice(before), [{ type: 'cancel' }]);
+      assert.equal(source.readyState, 2); assert.equal(live.playing, false);
+      assert.equal(live.history.length, 2); assert.deepEqual(live.history.bounds, [0, .5]);
+      assert.deepEqual(live.settings, settings); assert.equal(session.track(recording.id), recording);
+      assert.deepEqual(live.history.sessionBounds, [0, 2]);
+      // A detached stream cannot resume a producer or replace retained history.
+      source.emit({ type: 'status', state: 'playing', settings_version: 1, job_active: true });
+      source.emit({ type: 'state', settings_version: 1, sim_time_s: 99, q: Array(7).fill(0), ee_xyz: [99, 0, 1] });
+      live.frame(1000); assert.equal(live.history.length, 2); assert.equal(live.playing, false);
+      assert.equal(h.commands.length, before + 1);
+    });
+  });
+}
+
+test('entering Replay mode drops a queued settings debounce and ignores further Live edits', async () => {
+  await withReplayHarness({}, async ({ h, live, session }) => {
+    await settleReplayHarness(h); session.addTrack({ span: [0, 2], offset_s: 0 });
+    h.edit('solver_params.q_cost', 9);
+    const draft = live.settings, before = h.commands.length;
+    await live.setReplayOnly(true);
+    h.edit('solver_params.q_cost', 12);
+    h.$('live-preview').emit('click'); h.$('live-precalculate').emit('click');
+    await new Promise(resolve => setTimeout(resolve, 380)); await flush();
+    assert.deepEqual(h.commands.slice(before), [{ type: 'cancel' }]);
+    assert.deepEqual(live.settings, draft); assert.equal(live.playing, false);
+    assert.equal(h.sources.length, 1);
+  });
+});
+
+test('a late Play acknowledgement cannot restart Live or replace its generation after entering Replay mode', async () => {
+  await withReplayHarness({}, async ({ h, live, session }) => {
+    await settleReplayHarness(h); session.addTrack({ span: [0, 2], offset_s: 0 });
+    let acknowledge;
+    h.setCommandHandler((command, version) => command.type === 'play'
+      ? new Promise(resolve => { acknowledge = () => resolve({ ok: true, json: async () => ({ accepted: true, generation: 99, settings_version: version }) }); })
+      : { ok: true, json: async () => ({ accepted: true, settings_version: version }) });
+    h.$('live-continue').checked = true; h.$('live-continue').emit('change');
+    live.seek(.5); h.$('live-play').emit('click'); await flush();
+    assert.equal(typeof acknowledge, 'function');
+    const generation = live.generation;
+    await live.setReplayOnly(true); const commands = h.commands.length;
+    acknowledge(); await flush(); await flush(); live.frame(1000);
+    assert.equal(live.generation, generation); assert.equal(live.playing, false);
+    assert.equal(live.replayOnly, true); assert.equal(h.commands.length, commands);
+    assert.equal(live.history.length, 2);
+  });
+});
+
+test('a late settings acknowledgement cannot continue a pending Play after entering Replay mode', async () => {
+  await withReplayHarness({}, async ({ h, live, session }) => {
+    await settleReplayHarness(h); session.addTrack({ span: [0, 2], offset_s: 0 });
+    let acknowledge;
+    h.setCommandHandler((command, version) => command.type === 'set_settings'
+      ? new Promise(resolve => { acknowledge = () => resolve({ ok: true, json: async () => ({ accepted: true, generation: 99, settings_version: version }) }); })
+      : { ok: true, json: async () => ({ accepted: true, settings_version: version }) });
+    h.edit('solver_params.q_cost', 9); h.$('live-play').emit('click'); await flush();
+    assert.equal(typeof acknowledge, 'function');
+    const generation = live.generation;
+    await live.setReplayOnly(true); const commands = h.commands.length;
+    acknowledge(); await flush(); await flush();
+    assert.equal(live.generation, generation); assert.equal(live.playing, false);
+    assert.equal(live.replayOnly, true); assert.equal(h.commands.length, commands);
+    assert.equal(h.commands.filter(command => command.type === 'play').length, 0);
+    assert.equal(live.settings.config.solver_params.q_cost, 9);
+  });
+});
+
+test('returning from Replay mode restores the settled Live run and recordings paused without another solve', async () => {
+  await withReplayHarness({}, async ({ h, live, session }) => {
+    await settleReplayHarness(h);
+    const recording = session.addTrack({ span: [10, 12], offset_s: -10, displayName: 'Reference run' });
+    session.setDisplay('live', 'hidden');
+    const settings = live.settings, retainedPlan = live.plan, generation = live.generation;
+    await live.setReplayOnly(true); live.seek(1);
+    const before = h.commands.length;
+    await live.setReplayOnly(false);
+    const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 1, job_active: false }); await flush();
+    assert.equal(live.replayOnly, false); assert.equal(session.replayOnly, false);
+    assert.equal(live.playing, false); assert.equal(session.cursor, 1);
+    assert.equal(live.history.length, 2); assert.deepEqual(live.history.bounds, [0, .5]);
+    assert.equal(live.generation, generation); assert.equal(live.plan, retainedPlan);
+    assert.deepEqual(live.settings, settings); assert.equal(session.track('live').display, 'hidden');
+    assert.equal(session.track(recording.id), recording); assert.equal(recording.offset_s, -10);
+    assert.equal(recording.displayName, 'Reference run'); assert.equal(h.$('live-panel').inert, false);
+    assert.equal(h.commands.length, before); assert.equal(h.sources.length, 2);
+  });
+});
+
+test('a quick return from Replay mode waits for cancellation before reconnecting Live', async () => {
+  await withReplayHarness({}, async ({ h, live, session }) => {
+    const source = await settleReplayHarness(h); session.addTrack({ span: [0, 2], offset_s: 0 });
+    let acknowledge;
+    h.setCommandHandler((command, version) => command.type === 'cancel'
+      ? new Promise(resolve => { acknowledge = () => resolve({ ok: true, json: async () => ({ accepted: true, settings_version: version }) }); })
+      : { ok: true, json: async () => ({ accepted: true, settings_version: version }) });
+    const entering = live.setReplayOnly(true);
+    const returning = live.setReplayOnly(false);
+    await flush(); assert.equal(source.readyState, 2); assert.equal(h.sources.length, 1);
+    assert.equal(live.playing, false); assert.equal(h.commands.at(-1).type, 'cancel');
+    acknowledge(); await Promise.all([entering, returning]);
+    assert.equal(h.sources.length, 2); assert.equal(live.replayOnly, false);
+    assert.equal(live.playing, false); assert.equal(live.history.length, 2);
+  });
+});
+
+test('Replay Play at the end rewinds locally even when retained Live ended at the same time with a breach', async () => {
+  await withReplayHarness({}, async ({ h, live, session }) => {
+    const source = await settleReplayHarness(h);
+    const records = [{ ...plan(1, 1), generation: 1 },
+      ...[0, .1].map(time => ({ type: 'state', generation: 1, settings_version: 1,
+        sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(0), ee_xyz: [time, 0, 1] })),
+      { type: 'breach', generation: 1, settings_version: 1, sim_time_s: .1,
+        message: 'Live velocity breach', breaches: [] }];
+    h.setHistoryHandler(async () => ({ ok: true, json: async () => ({ generation: 1,
+      next_cursor: records.length, complete: false, records }) }));
+    source.emit({ type: 'history', generation: 1, settings_version: 1,
+      history_cursor: records.length, complete: false }); await flush(); await flush();
+    assert.deepEqual(live.history.bounds, [0, .1]); assert.equal(live.history.breaches.length, 1);
+    source.emit({ type: 'status', state: 'paused', generation: 1, settings_version: 1,
+      job_active: false, breach: { sim_time_s: .1 }, message: 'Live velocity breach' });
+    session.addTrack({ span: [0, .1], offset_s: 0 });
+    live.seek(.1); await live.setReplayOnly(true);
+    const before = h.commands.length;
+    h.$('live-play').emit('click');
+    assert.equal(session.cursor, 0); assert.equal(live.playing, true);
+    live.frame(0); live.frame(50);
+    assert.equal(session.cursor, .05); assert.equal(live.playing, true);
+    live.frame(100); await flush();
+    assert.equal(session.cursor, .1); assert.equal(live.playing, false);
+    assert.equal(h.commands.length, before);
+  });
+});
+
+test('returning from Replay mode does not restart cancelled Automatic calculation that produced no plan', async () => {
+  await withReplayHarness({ calculation: 'automatic' }, async ({ h, live, session }) => {
+    h.setHistoryHandler(async () => ({ ok: true, json: async () => ({ generation: 1,
+      next_cursor: 0, complete: false, records: [] }) }));
+    const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
+    assert.equal(h.commands.at(-1).type, 'set_settings');
+    assert.equal(h.commands.at(-1).execution.calculation, 'automatic');
+    assert.equal(live.plan, undefined); assert.equal(live.pending, true);
+    source.emit({ type: 'status', state: 'precalculating', generation: 1,
+      settings_version: 1, job_active: true });
+    session.addTrack({ span: [0, 2], offset_s: 0 });
+    const settings = live.settings;
+    await live.setReplayOnly(true); assert.equal(h.commands.at(-1).type, 'cancel');
+    const before = h.commands.length;
+    await live.setReplayOnly(false);
+    const reconnected = h.sources.at(-1); reconnected.open();
+    reconnected.emit({ type: 'status', state: 'paused', generation: 1,
+      settings_version: 1, job_active: false }); await flush(); await flush();
+    assert.equal(h.commands.length, before); assert.equal(live.playing, false);
+    assert.equal(live.plan, undefined); assert.deepEqual(live.settings, settings);
+    assert.equal(session.tracks.length, 2); assert.equal(live.replayOnly, false);
+  });
+});
+
+// Shared settings are authoritative even when an agent writes outside this tab.
+async function sharedSettingsCase(run, { initial } = {}) {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  if (initial) h.setSettingsHandler(() => ({ ok: true, json: async () => structuredClone(initial) }));
+  const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+  try {
+    await live.ready; await live.enterLive();
+    const source = h.sources.at(-1); source.open();
+    if (initial) source.emit({ type: 'settings', ...initial });
+    source.emit({ type: 'status', state: 'paused', settings_version: initial?.settings_version ?? 0 });
+    await flush();
+    if (!initial) {
+      source.emit(plan(1, 1));
+      source.emit({ type: 'settings', ...live.settings, settings_version: 1 });
+    }
+    await run(h, live, source);
+  } finally {
+    live.dispose(); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+}
+
+test('agent settings hydrate fields and reset indicators; next browser edit sends only its own patch', async () => {
+  await sharedSettingsCase(async (h, live, source) => {
+    const remote = structuredClone(live.settings); remote.config.solver_params.q_cost = 27; remote.config.N = 64;
+    remote.execution.to_hz = 0; remote.execution.solve_latency_s = .0055;
+    const count = h.commands.length;
+    source.emit({ type: 'settings', ...remote, settings_version: 2 });
+    assert.deepEqual(live.settings, remote);
+    assert.equal(h.created.filter(el => el.dataset.path === 'solver_params.q_cost').at(-1).value, '27');
+    assert.equal(h.$('live-to-asap').checked, true);
+    assert.equal(h.$('live-to-hz').disabled, true);
+    assert.notEqual(h.$('live-to-hz').value, '0');
+    assert.equal(h.$('live-solve-latency').value, '0.0055');
+    assert.equal(h.$('live-latency-measured').checked, false);
+    assert.equal(h.created.filter(el => el.dataset.resetSetting === 'config.solver_params.q_cost').at(-1)?.disabled, false);
+    assert.equal(h.commands.length, count);
+    h.setVersion(2); h.edit('solver_params.max_pcg_iters', 333); h.$('live-preview').emit('click'); await flush();
+    const sent = h.commands.findLast(command => command.type === 'patch_settings');
+    assert.deepEqual(sent.patch, { config: { solver_params: { max_pcg_iters: 333 } } });
+    assert.equal(sent.expected_settings_version, 2);
+    assert.equal(live.settings.config.solver_params.q_cost, 27);
+  });
+});
+
+test('separate measured and back-to-back checkboxes submit native modes and preserve numeric drafts', async () => {
+  await sharedSettingsCase(async (h, live, source) => {
+    assert.equal(h.$('live-latency-measured').checked, true);
+    assert.equal(h.$('live-solve-latency').disabled, true);
+    assert.notEqual(h.$('live-solve-latency').value, 'measured');
+    h.$('live-latency-measured').checked = false; h.$('live-latency-measured').emit('change');
+    h.$('live-solve-latency').value = '5.5 ms'; h.$('live-solve-latency').emit('input');
+    h.$('live-to-asap').checked = true; h.$('live-to-asap').emit('change');
+    h.$('live-preview').emit('click'); await flush();
+    const sent = h.commands.findLast(command => command.type === 'patch_settings');
+    assert.deepEqual(sent.patch.execution, { to_hz: 0, solve_latency_s: .0055 });
+    source.emit({ type: 'settings', ...live.settings, settings_version: 2 }); h.setVersion(2);
+    h.$('live-latency-measured').checked = true; h.$('live-latency-measured').emit('change');
+    h.$('live-preview').emit('click'); await flush();
+    assert.equal(h.commands.findLast(command => command.type === 'patch_settings').patch.execution.solve_latency_s, 'measured');
+    assert.equal(h.$('live-solve-latency').disabled, true);
+    assert.equal(h.$('live-solve-latency').value, '5.5 ms');
+    h.$('live-to-asap').checked = false; h.$('live-to-asap').emit('change');
+    assert.equal(h.$('live-to-hz').disabled, false);
+    h.$('live-preview').emit('click'); await flush();
+    assert.equal(h.commands.findLast(command => command.type === 'patch_settings').patch.execution.to_hz, DEFAULT_EXECUTION.to_hz);
+  });
+});
+
+test('Live timing accepts periods and frequencies without changing canonical API units', async () => {
+  await sharedSettingsCase(async (h, live) => {
+    h.$('live-simulation-hz').value = '1 ms'; h.$('live-simulation-hz').emit('input');
+    h.$('live-control-hz').value = '2 ms'; h.$('live-control-hz').emit('input');
+    h.$('live-to-hz').value = '20 ms'; h.$('live-to-hz').emit('input');
+    h.$('live-duration').value = '0.05 Hz'; h.$('live-duration').emit('input');
+    h.$('live-preview').emit('click'); await flush();
+    const patch = h.commands.findLast(command => command.type === 'patch_settings').patch;
+    assert.deepEqual(patch.execution, { to_hz: 50, duration_s: 20 });
+    assert.equal(live.settings.execution.simulation_hz, 1000);
+    assert.equal(live.settings.execution.control_hz, 500);
+  });
+});
+
+test('external settings preserve unrelated debounced edits and override conflicting drafts', async () => {
+  await sharedSettingsCase(async (h, live, source) => {
+    h.edit('solver_params.q_cost', 9);
+    const remote = structuredClone(live.settings); remote.config.solver_params.q_cost = 4; remote.config.solver_params.max_sqp_iters = 12;
+    source.emit({ type: 'settings', ...remote, settings_version: 2 });
+    assert.equal(live.settings.config.solver_params.q_cost, 9);
+    assert.equal(live.settings.config.solver_params.max_sqp_iters, 12);
+    remote.config.solver_params.q_cost = 21;
+    source.emit({ type: 'settings', ...remote, settings_version: 3 });
+    assert.equal(live.settings.config.solver_params.q_cost, 21);
+  });
+});
+
+test('own SSE acknowledgement before HTTP preserves an edit typed after submission', async () => {
+  await sharedSettingsCase(async (h, live, source) => {
+    let acknowledge;
+    h.setCommandHandler((command, version) => command.type === 'patch_settings'
+      ? new Promise(resolve => { acknowledge = () => resolve({ ok: true, json: async () => ({ accepted: true, settings_version: version }) }); })
+      : { ok: true, json: async () => ({ accepted: true, settings_version: version }) });
+    h.edit('solver_params.q_cost', 8); h.$('live-preview').emit('click'); await flush();
+    const sent = structuredClone(live.settings);
+    h.edit('solver_params.q_cost', 9);
+    source.emit({ type: 'settings', ...sent, settings_version: 2 });
+    assert.equal(live.settings.config.solver_params.q_cost, 9);
+    acknowledge(); await flush();
+    assert.equal(live.settings.config.solver_params.q_cost, 9);
+  });
+});
+
+test('opening a viewer on accepted settings never resubmits defaults or resets the run', async () => {
+  const seed = harness(), current = { ...structuredClone(seed.schema.defaults), settings_version: 5 };
+  current.config.solver_params.q_cost = 77;
+  await sharedSettingsCase(async (h, live) => {
+    assert.equal(live.settings.config.solver_params.q_cost, 77);
+    assert.equal(h.commands.length, 0);
+  }, { initial: current });
+});
+
+test('configured backend start-pose edit submits its debounced reset patch', async () => {
+  const h = harness(), start = [-.39, -1.73, -.38, -2.33, 0, -1.21, .04];
+  h.schema.defaults.config.joint_margin_rad = .1;
+  h.schema.defaults.config.plant = { start_pose_rad: [...start] };
+  h.schema.parameters.push({ path: 'plant.start_pose_rad', kind: 'joints', label: 'Start pose',
+    lower: Array(7).fill(-3), upper: Array(7).fill(3) });
+  const accepted = { ...structuredClone(h.schema.defaults), settings_version: 5 };
+  h.setVersion(5);
+  // The accepted snapshot must hydrate the controller before Live is opened:
+  // this is a viewer joining an existing run, not configuring a fresh backend.
+  h.setSettingsHandler(() => ({ ok: true, json: async () => structuredClone(accepted) }));
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+    await live.ready; await live.enterLive();
+    const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 5 });
+    source.emit(plan(5, 1));
+    source.emit({ type: 'state', settings_version: 5, sim_time_s: 0, q: [...start],
+      qd: Array(7).fill(0), ee_xyz: [0, 0, 1] });
+    await flush();
+    assert.equal(h.commands.length, 0);
+    assert.equal(live.startPose.editable, true);
+    const edited = start.map((value, i) => i === 3 ? value + .3 : value);
+    assert.equal(live.setStartPose(edited), true);
+    assert.deepEqual(live.settings.config.plant.start_pose_rad, edited);
+    assert.equal(h.commands.length, 0); // one commit after the debounce
+    await new Promise(resolve => setTimeout(resolve, 380));
+    assert.deepEqual(h.commands, [{ type: 'patch_settings',
+      patch: { config: { plant: { start_pose_rad: edited } } },
+      expected_settings_version: 5, reset: true }]);
+    assert.deepEqual(accepted.config.plant.start_pose_rad, start);
+  } finally {
+    live?.dispose(); await flush();
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+test('Replay settings polling hydrates retained Live without numerical commands', async () => {
+  await sharedSettingsCase(async (h, live) => {
+    await live.setReplayOnly(true);
+    const remote = { ...structuredClone(live.settings), settings_version: 2 };
+    remote.config.solver_params.max_sqp_iters = 24;
+    h.setSettingsHandler(() => ({ ok: true, json: async () => remote }));
+    const count = h.commands.length;
+    await live.refreshSettings();
+    assert.equal(live.settings.config.solver_params.max_sqp_iters, 24);
+    assert.equal(h.created.filter(el => el.dataset.path === 'solver_params.max_sqp_iters').at(-1).value, '24');
+    assert.equal(h.commands.length, count);
+    assert.equal(live.replayOnly, true);
+  });
+});
+
+test('stale version rejection rebases current values without resending the complete old form', async () => {
+  await sharedSettingsCase(async (h, live) => {
+    const remote = { ...structuredClone(live.settings), settings_version: 2 };
+    remote.config.solver_params.max_sqp_iters = 26;
+    h.setCommandHandler(() => ({ ok: false, status: 409, json: async () => ({ accepted: false, error: 'Settings changed', settings: remote }) }));
+    h.edit('solver_params.q_cost', 9); h.$('live-preview').emit('click'); await flush();
+    assert.equal(live.settings.config.solver_params.q_cost, 9);
+    assert.equal(live.settings.config.solver_params.max_sqp_iters, 26);
+    assert.equal(h.commands.at(-1).type, 'patch_settings');
+    assert.deepEqual(h.commands.at(-1).patch, { config: { solver_params: { q_cost: 9 } } });
+  });
+});
+
+test('a poll started before a same-version Stop/Continue event cannot restore the stale preference', async () => {
+  await sharedSettingsCase(async (h, live, source) => {
+    const stale = { ...structuredClone(live.settings), settings_version: 1 };
+    let finishPoll;
+    h.setSettingsHandler(() => new Promise(resolve => { finishPoll = () => resolve({ ok: true, json: async () => stale }); }));
+    const refreshing = live.refreshSettings();
+    const current = structuredClone(stale); current.execution.continue_at_end = true;
+    source.emit({ type: 'settings', ...current });
+    finishPoll(); await refreshing;
+    assert.equal(live.settings.execution.continue_at_end, true);
+    assert.equal(h.$('live-continue').checked, true);
+  });
+});
+
+test('editing a field back to its accepted value does not submit an empty patch or block Preview', async () => {
+  await sharedSettingsCase(async (h, live) => {
+    const count = h.commands.length;
+    h.edit('solver_params.q_cost', 9); h.edit('solver_params.q_cost', 4);
+    h.$('live-preview').emit('click'); await flush();
+    assert.deepEqual(h.commands.slice(count).map(command => command.type), ['preview']);
+    assert.equal(live.settings.config.solver_params.q_cost, 4);
+  });
+});
+
+test('a field following GATO looks as if GATO\'s value were chosen and stays None until changed', async () => {
+  const h = harness();
+  Object.assign(h.schema.defaults.config, { warm_start: null, admm: { iters: null } });
+  h.schema.parameters.push(
+    { path: 'warm_start', kind: 'choice', gato_default: true, choices: [{ value: null, label: 'GATO default' }, 'shift', 'hold'] },
+    { path: 'admm.iters', kind: 'int', nullable: true, gato_default: true, min: 1, max: 200 });
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await live.ready;
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
+    const select = () => h.created.filter(el => el.dataset.path === 'warm_start').at(-1);
+    const iters = () => h.created.filter(el => el.dataset.path === 'admm.iters').at(-1);
+    assert.equal(select().children[0].textContent, 'GATO default');  // no configured solver yet
+    assert.equal(iters().value, '');
+    source.emit({ type: 'settings', ...live.settings, settings_version: 1,
+                  effective_settings: { params: { warm_start: 'shift', admm: { iters: 10 } } } });
+    await flush();
+    const [gato, shift, hold] = select().children;
+    assert.equal(gato.textContent, 'shift'); assert.equal(gato.selected, true);  // GATO's shift, shown as chosen
+    assert.equal(shift.hidden, true); assert.equal(hold.hidden, false);
+    assert.equal(iters().value, '10');
+    h.edit('solver_params.q_cost', 5);  // another edit keeps both following GATO
+    assert.equal(live.settings.config.warm_start, null);
+    assert.equal(live.settings.config.admm.iters, null);
+    h.edit('admm.iters', 12);
+    assert.equal(live.settings.config.admm.iters, 12);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
 });

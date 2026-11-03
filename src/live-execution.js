@@ -1,12 +1,23 @@
 // Mirrors execution_session.DEFAULT_EXECUTION: commands at 500 Hz.
-export const DEFAULT_EXECUTION = { simulation_hz: 1000, control_hz: 500, to_hz: 100, calculation: 'on_play', duration_s: 10, continue_at_end: false };
+export const DEFAULT_EXECUTION = { simulation_hz: 1000, control_hz: 500, to_hz: 100, solve_latency_s: 'measured', latency_compensation: false, calculation: 'on_play', duration_s: 10, continue_at_end: false };
+
+export function parseSolveLatency(value) {
+  const text = String(value).trim();
+  if (text === 'measured') return text;
+  const seconds = text ? Number(text) : NaN;
+  if (!Number.isFinite(seconds) || seconds < 0) throw new Error('Solve latency needs “measured” or nonnegative seconds.');
+  return seconds;
+}
 
 export function validateExecution(value) {
   const next = { ...DEFAULT_EXECUTION, ...value };
-  for (const key of ['simulation_hz', 'control_hz', 'to_hz', 'duration_s']) {
+  for (const key of ['simulation_hz', 'control_hz', 'duration_s']) {
     if (!Number.isFinite(next[key]) || next[key] <= 0) throw new Error(`${key.replaceAll('_', ' ')} must be positive.`);
   }
+  if (!Number.isFinite(next.to_hz) || next.to_hz < 0) throw new Error('TO Hz must be nonnegative; 0 requests back-to-back.');
+  if (next.solve_latency_s !== 'measured' && (typeof next.solve_latency_s !== 'number' || !Number.isFinite(next.solve_latency_s) || next.solve_latency_s < 0)) throw new Error('Solve latency needs “measured” or nonnegative seconds.');
   if (next.simulation_hz < next.control_hz || next.control_hz < next.to_hz) throw new Error('Use Simulation Hz ≥ Control Hz ≥ TO Hz.');
+  if (typeof next.latency_compensation !== 'boolean') throw new Error('Latency compensation must be a checkbox value.');
   if (!['on_play', 'manual', 'automatic'].includes(next.calculation)) throw new Error('Choose a calculation mode.');
   next.continue_at_end = Boolean(next.continue_at_end);
   return next;
@@ -14,8 +25,15 @@ export function validateExecution(value) {
 
 export function intervalSeverity(interval) {
   // Explicit causes take priority over total time: red always trumps yellow.
-  if (interval.mpc_overrun || interval.severity === 'red' || interval.severity === 'mpc') return 'red';
+  if (!interval.to_back_to_back && (interval.mpc_overrun || interval.severity === 'red' || interval.severity === 'mpc')) return 'red';
   if (interval.physics_overrun || interval.simulation_overrun || interval.combined_overrun || ['yellow', 'simulation', 'combined'].includes(interval.severity)) return 'yellow';
+  // Earlier ASAP records carry a spurious red flag. Preserve the raw record,
+  // but display only real-time throughput overload for that mode.
+  if (interval.to_back_to_back) {
+    const span = interval.end_time_s - interval.start_time_s;
+    if (interval.physics_ratio > 1 || interval.total_ratio > 1 ||
+        Number.isFinite(span) && span > 0 && (interval.physics_wall_s > span || interval.total_wall_s > span)) return 'yellow';
+  }
   return 'normal';
 }
 
@@ -24,10 +42,13 @@ export function intervalDescription(interval) {
   const severity = intervalSeverity(interval);
   const span = interval.end_time_s - interval.start_time_s;
   const physicsOver = interval.physics_overrun || interval.simulation_overrun || interval.physics_ratio > 1 || (Number.isFinite(span) && interval.physics_wall_s > span);
-  const reason = severity === 'red' ? 'MPC exceeded budget' : severity === 'yellow' ? physicsOver ? 'Simulation exceeded budget' : 'Combined computation exceeded budget' : 'Within budget';
+  const reason = severity === 'red' ? 'MPC exceeded budget' : severity === 'yellow' ? interval.to_back_to_back
+    ? physicsOver ? 'Simulation slower than real time' : 'Combined computation slower than real time'
+    : physicsOver ? 'Simulation exceeded budget' : 'Combined computation exceeded budget' : interval.to_back_to_back ? 'Within real-time compute budget' : 'Within budget';
   // Effort clipping counts every command of the interval, also unrecorded ones.
   const clipped = interval.clipped_commands > 0 ? ` · ${interval.clipped_commands} ${interval.clipped_commands === 1 ? 'command' : 'commands'} clipped to the effort limit` : '';
-  return `${reason}${clipped} · MPC ${ms(interval.mpc_wall_s ?? interval.solve_wall_s)} · physics ${ms(interval.physics_wall_s ?? interval.simulation_wall_s)} · total ${ms(interval.total_wall_s)} · nominal TO budget ${ms(interval.to_budget_s ?? interval.budget_s)} · physics / total interval ${ms(span)}`;
+  const deadline = interval.to_back_to_back ? 'TO as fast as possible · no TO deadline' : `nominal TO budget ${ms(interval.to_budget_s ?? interval.budget_s)}`;
+  return `${reason}${clipped} · MPC ${ms(interval.mpc_wall_s ?? interval.solve_wall_s)} · physics ${ms(interval.physics_wall_s ?? interval.simulation_wall_s)} · total ${ms(interval.total_wall_s)} · ${deadline} · physics / total interval ${ms(span)}`;
 }
 
 // One simulated-time clock for recorded and growing histories. Catching up to

@@ -30,7 +30,7 @@ Amendment, 2026-10-22 (migration to `tiago_mpc` main; supersedes the imports
 named above and the friction defaults of the first amendment): `tiago_mpc` no
 longer has `reach_sim.py`, JSON configurations or their loader. The visualizer
 now reuses its package API unchanged: `MpcParams` (the Live settings are
-`asdict(MpcParams)` plus the visualizer's `plant` group), `find_binary` and
+`to_dict(MpcParams)` plus the visualizer's `plant` group), `find_binary` and
 `Mpc(params, binary)`, which only loads, in the solver child, and `SimPlant` on a
 simulation clock in the coordinator, replaced by a fresh plant on Reset, anchor
 or rollback. The visualizer keeps its own multirate clocks and zero-order hold.
@@ -38,7 +38,16 @@ Plant and predictor are loss-free by default; plant friction uses `SimPlant`'s
 own integrator and Coulomb law options (amended 2026-10-23: RK4 or semi-implicit
 Euler; tanh, sign or constraint Coulomb), and predictor friction is a compiled
 variant with a fixed 0.03 rad/s tanh width. Conformance compares this Live loop with
-`tiago_mpc`'s `experiments.reach.reach` in-process.
+`tiago_mpc`'s `run_virtual_time` with a `Reach` task in-process.
 
 Implementation and exact timing semantics: [execution-api.md](../execution-api.md).
 Source ownership and verification: [architecture.md](../architecture.md).
+
+Amendment, 2026-10-27: match the package's virtual-time request and pending-plan
+timing through Live settings. Reuse `tiago_mpc.loops.Schedule`; measured native
+solver wall latency is the default, declared seconds optional, TO Hz zero means
+back-to-back. Commands continue from the old plan until tick-quantized activation.
+The session coordinator remains here because it owns pause/cancel, chunked
+history, continuation and Live's diagnostic clipping/breach/final-command hold.
+Directly running the blocking package loop would replace those contracts and
+introduce its finite-run lifecycle, global STOP and physical plan lease.

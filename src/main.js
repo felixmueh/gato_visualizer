@@ -12,6 +12,7 @@ import './animation-export-dialog.css';
 import { createArmVisibility } from './arm-visibility.js';
 import { livePredictionForView, inspectedPathStyle } from "./prediction-selection.js";
 import { setupSourceSettings } from "./source-settings.js";
+import { watchBackend } from './backend-watch.js';
 import { createLimitTint } from "./limit-tint.js";
 import { DEFAULT_LIMIT_USE, pickLimitUse } from "./limit-use.js";
 import { setupPresentationSettings } from "./presentation-settings.js";
@@ -21,12 +22,13 @@ import "./floating-dialog.css";
 import { workbenchShell } from "./workbench-shell.js";
 import { setupExpandedTimeline, aggregateSpan } from "./expanded-timeline.js";
 import { setupPlotInspection } from "./plot-inspection.js";
+import { setupComparisonPlots } from "./comparison-plots.js";
 import { setupWorkbench } from "./workbench-ui.js";
 import { setupGhostControls } from './transport-popover.js';
 import { setupSidebarResize } from "./sidebar-width.js";
 import { setupAuxiliaryViews, visibleSceneBounds } from "./auxiliary-views.js";
 import { createJointTable, updateJointTable, sampleTelemetry, setupJointViewToggle, setupJointLock } from "./joint-telemetry.js";
-import { setupReplayLibrary, validateReference, referencePosition, playbackClock, isStartPoseScene } from "./replay-library.js";
+import { setupReplayLibrary, linkedKeys, validateReference, referencePosition, playbackClock, isStartPoseScene } from "./replay-library.js";
 import { setupTargetGizmo } from "./target-gizmo.js";
 import { setupJointEditor } from "./joint-editor.js";
 import { setupViewCube } from "./view-cube.js";
@@ -94,10 +96,15 @@ let ready = false;
 let live;
 let session, trackScene, armVisibility;
 let lastAnimationExport = null;
-// Focus stays on the main track in this deliverable; all presentation reads use it.
-const focusedTrack = () => live?.mode === "live" ? session?.focused : null;
+// Replay mode inspects the first visible recording; Live retains its own focus.
+const focusedTrack = () => live?.mode !== 'live' ? null : session?.replayOnly
+  ? session.activeTracks.find(track => track.visible !== false) || null : session?.focused;
 let solverProfiles;
-const sourceSettings = setupSourceSettings({ button: $('source-settings-open'), onOpen: () => solverProfiles?.refresh().catch(() => {}), onPlottersReload: () => plotInspection.refresh(), beforeApply: () => {
+const backendWatch = watchBackend({ onRestart: () => {
+  try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
+  location.reload();
+} });
+const sourceSettings = setupSourceSettings({ button: $('source-settings-open'), getBuildSettings: root => live?.buildSettingsFor(root), onBuildComplete: build => live?.retryBuiltSettings(build), onOpen: () => solverProfiles?.refresh().catch(() => {}), onPlottersReload: () => { plotInspection.refresh(); comparisonPlots.refresh(); }, beforeApply: () => {
   try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
 } });
 // Notices link straight to the settings tab that fixes them.
@@ -115,6 +122,7 @@ const presentationSettings = setupPresentationSettings({ container: sourceSettin
   // Plots that draw limit states receive the same thresholds with each request.
   plotInspection.invalidate();
 } });
+window.addEventListener('pagehide', () => { backendWatch.dispose(); presentationSettings.dispose(); solverProfiles?.dispose(); comparisonPlots.destroy(); live?.dispose(); });
 solverProfiles = setupSolverProfiles({ liveContainer: $('live-panel'), editorContainer: sourceSettings.panels.solverProfiles,
   beforeActivate: () => live?.beginSolverProfileSwitch(),
   onSettled: async item => { await live?.finishSolverProfileSwitch(item); plotInspection.refresh(); },
@@ -200,12 +208,13 @@ const expandedTimeline = setupExpandedTimeline({
     if ('offset_s' in patch) session.setOffset(id, patch.offset_s);
     if ('visible' in patch) session.setVisible(id, patch.visible);
     if ('display' in patch) session.setDisplay(id, patch.display);
+    refreshFitAvailability();
     auxiliaryViews?.invalidate();
   },
   onTrackReset: id => { session.resetOffset(id); auxiliaryViews?.invalidate(); },
-  onTrackRemove: id => { session.removeTrack(id); auxiliaryViews?.invalidate(); },
+  onTrackRemove: id => { session.removeTrack(id); refreshFitAvailability(); auxiliaryViews?.invalidate(); },
   onSeek: time => {
-    if (focusedTrack()) { live.seek(time); return; }
+    if (live?.mode === 'live') { live.seek(time); return; }
     const input = $('timeline');
     if (input.disabled) return;
     input.value = time;
@@ -224,6 +233,7 @@ const plotInspection = setupPlotInspection({
       return { source: track.source, revision: [track.history?.cursor, track.plan?.seq, track.plan?.settings_version, track.plan?.origin],
         solveSeq: track.plan?.origin === 'preview' ? `preview:${track.plan.seq}` : null, label: track.label };
     }
+    if (session?.replayOnly) return null;
     return trajectory ? { source: { kind: 'replay', id: replayLibrary?.selectedId || 'default', trajectory_index: data?.trajectories?.indexOf(trajectory) ?? 0,
       ...(data?.source?.plot_revision ? { revision: data.source.plot_revision } : {}) }, revision: data?.source?.plot_revision || trajectory.id, label: trajectory.label || 'Imported recording' } : null;
   },
@@ -238,8 +248,14 @@ const plotInspection = setupPlotInspection({
   getLimitUse: () => limitUse,
   onInspectionStart: () => live?.holdForInspection(),
   onClearAggregate: () => expandedTimeline.clearAggregate(),
-  onSeek: time => expandedTimeline.seek(time),
+  onSeek: time => expandedTimeline.seek(time + (focusedTrack()?.offset_s || 0)),
   onPrediction: inspection => { inspectedPrediction = inspection; renderInspectedPrediction(); },
+});
+const comparisonPlots = setupComparisonPlots({
+  container: $('comparison-plots'), getSession: () => session,
+  getView: () => ({ aggregate: session?.aggregate, cursor: session?.cursor, visible: workbench.activeTab === 'comparison', liveComputing: Boolean(live?.computing) }),
+  onAvailability: ({ visible }) => workbench.setComparisonAvailable(visible),
+  onClearAggregate: () => expandedTimeline.clearAggregate(),
 });
 // While Live playback runs at the growing edge, episode plots reveal data only
 // up to the playback cursor, in step with the 3D view. Paused, scrubbed or
@@ -250,10 +266,10 @@ function liveReveal(time) {
 }
 function updateExpandedTimeline() {
   if (live?.mode === 'live') {
-    const track = session?.focused, history = track?.history || live.history;
+    const track = session?.track('live'), history = track?.history || live.history;
     expandedTimeline.update({ mode: 'live', identity: session?.id, session, bounds: session?.span || history.presentationBounds,
       time: session?.cursor ?? history.selectedTime, clockLabel: 'Session time',
-      intervals: history.intervals, breaches: history.breaches || [], revision: track?.historyRevision, tracks: session ? sessionLanes() : [], catalog: replayLibrary?.items || [],
+      intervals: session?.replayOnly ? emptyTimingIntervals : history.intervals, breaches: session?.replayOnly ? [] : history.breaches || [], revision: track?.historyRevision, tracks: session ? sessionLanes() : [], catalog: replayLibrary?.items || [],
       aggregate: session?.aggregate, freezeAvailable: !$('live-freeze').disabled, ...onionSkin?.timeline });
   } else {
     const duration = trajectory ? trajectory.time_s.at(-1) - trajectory.time_s[0] : 0;
@@ -374,6 +390,7 @@ async function loadRobot(url) {
 }
 
 function fitTaskPoints(options = {}) {
+  if (session?.replayOnly) return trajectoryFitPoints({ replay: focusedTrack()?.motion, ...options });
   return trajectoryFitPoints({
     replay: trajectory,
     live: Boolean(focusedTrack()),
@@ -388,7 +405,7 @@ function fitTaskPoints(options = {}) {
 }
 
 function refreshFitAvailability() {
-  $('camera-arm').disabled = focusedTrack() ? !focusedTrack().fitAvailable : !fitTaskPoints().points.length;
+  $('camera-arm').disabled = session?.replayOnly ? !fitTaskPoints().points.length : focusedTrack() ? !focusedTrack().fitAvailable : !fitTaskPoints().points.length;
   $('animation-export-open').disabled = !ready;
 }
 
@@ -567,6 +584,15 @@ function togglePlay() {
 
 function updateOnionSkin() {
   if (!onionSkin) return;
+  if (session?.replayOnly) {
+    const sources = (trackScene?.onionSources || []).filter(item => item.visible !== false);
+    const primary = sources[0] || { times: [], bounds: [0, 0], states: () => [] };
+    onionSkin.update({ ...primary, mode: 'live', primaryLabel: 'Recordings',
+      identity: primary.identity || session.id, revision: primary.revision,
+      trackBounds: session.span, range: aggregateSpan(session.aggregate, session.span),
+      offset: -(primary.seekOffset || 0), hideCursor: true, comparisons: sources.slice(1) });
+    return;
+  }
   const history = focusedTrack()?.history || null;
   if (history) {
     onionSkin.update({ mode: 'live', identity: `live:${history.generation}`, revision: live.historyRevision,
@@ -629,7 +655,7 @@ function animate(timestamp) {
   trackScene?.sort(camera);
   onionSpike?.beforeRender(camera);
   renderer.render(scene, camera);
-  workbench.update(); updateExpandedTimeline(); plotInspection.update(); auxiliaryViews?.render(timestamp);
+  workbench.update(); updateExpandedTimeline(); plotInspection.update(); comparisonPlots.update(); auxiliaryViews?.render(timestamp);
   onionSpike?.frame(timestamp);
 }
 
@@ -730,8 +756,11 @@ async function start() {
     setCamera("home");
     ready = true;
     await presentationSettings.ready;
-    live = setupLive({ presentationSettings: presentationSettings.settings, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item), onFreeze: async item => {
-      await addSessionTrack(item.id, item); await replayLibrary?.refresh();
+    live = setupLive({ presentationSettings: presentationSettings.settings, replayOnly: linkedKeys(location.href).length > 0, onReplayMode: () => {
+      if (!inspectedPrediction?.pinned) inspectedPrediction = null;
+      auxiliaryViews?.invalidate(); plotInspection.invalidate(); renderInspectedPrediction(); refreshFitAvailability();
+    }, onMode: changeMode, onPlan: showLivePlan, onReference: showLiveReference, onState: showLiveState, onReset: resetLiveTrace, onSolverProfile: item => solverProfiles.handleEvent(item), onFreeze: async item => {
+      await addSessionTrack(item.id, item, { replayOnly: false }); await replayLibrary?.refresh();
     } });
     session = createSession();
     session.updateMain({ endEffectorFrame: defaultData.end_effector_frame });
@@ -751,7 +780,7 @@ async function start() {
       previewPose: q => live.previewStartPose(q), commitPose: q => live.setStartPose(q),
       onSelect: () => targetGizmo.deselect(), getGhostHit: raycaster => onionSkin.pick(raycaster) });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Start pose',
-      onLinkedItem: item => addSessionTrack(item.id, item) });
+      onLinkedItem: (item, { multiple }) => addSessionTrack(item.id, item, { linkedComparison: multiple }) });
     await live.enterLive();
     $("connection-label").textContent = "Local source";
     document.querySelector(".connection").classList.add("connected");
@@ -762,15 +791,16 @@ async function start() {
       onionSpike = setupOnionSpike({ renderer, scene, camera, controls, robot, getTrajectory: () => playing || live?.mode === 'live' ? null : trajectory, getJointNames: () => data.joint_names, auxiliaryViews, setNormalVisible: value => onionSkin.setVisible(value) });
     }
     window.__motionStudio = {
-      get animationExport() { return { busy: animationExportDialog.busy, last: lastAnimationExport }; },
-      get session() { return session ? { id: session.id, focusedId: session.focused?.id, span: session.span, cursor: session.cursor, rate: session.rate, aggregate: session.aggregate,
+      get session() { return session ? { id: session.id, replayOnly: session.replayOnly, focusedId: focusedTrack()?.id, span: session.span, cursor: session.cursor, rate: session.rate, aggregate: session.aggregate,
         tracks: session.tracks.map(track => ({ id: track.id, kind: track.kind, source: track.source, label: track.label, displayName: track.displayName, color: track.color, offset_s: track.offset_s,
           display: track.display, visible: track.visible, span: track.span, time: trackTime(track, session.cursor), outside: outsideSpan(track, session.cursor) })), ...trackScene?.snapshot } : null; },
+      get animationExport() { return { busy: animationExportDialog.busy, last: lastAnimationExport }; },
       get onionSpike() { return onionSpike?.snapshot; },
       get onionSkin() { return onionSkin?.snapshot; },
       get auxiliaryViews() { return auxiliaryViews?.snapshot; },
       get timeline() { return expandedTimeline.snapshot; },
       get plots() { return plotInspection.snapshot; },
+      get comparisons() { return comparisonPlots.snapshot; },
       get workbench() { return { activeTab: workbench.activeTab, auxiliaryVisible: workbench.auxiliaryVisible }; },
       get targetGizmo() { return targetGizmo?.snapshot; },
       get jointEdit() { return jointEditor?.snapshot; },
@@ -879,7 +909,7 @@ function showLivePlan(plan) {
 
 function renderInspectedPrediction() {
   auxiliaryViews?.invalidate();
-  if (live?.mode !== 'live') {
+  if (live?.mode !== 'live' || session?.replayOnly) {
     if (replayInspectionPrediction) { scene?.remove(replayInspectionPrediction); replayInspectionPrediction.geometry.dispose(); replayInspectionPrediction.material.dispose(); replayInspectionPrediction = undefined; }
     if (inspectedPrediction?.active && inspectedPrediction.prediction?.ee_xyz?.length && scene) { replayInspectionPrediction = makePredictionLine(inspectedPrediction.prediction.ee_xyz, inspectedPrediction); replayInspectionPrediction.name = 'inspected-solve-prediction'; scene.add(replayInspectionPrediction); }
     return;
@@ -916,7 +946,7 @@ function resetLiveTrace() {
 }
 
 function showLiveState(state, context = {}) {
-  if (!robot || !liveGroup || (session && session.focused?.kind !== 'live')) return;
+  if (!robot || !liveGroup || session?.replayOnly || (session && session.focused?.kind !== 'live')) return;
   const focused = focusedTrack();
   state = focused?.displayedState || state;
   context = { ...context, segment: focused?.context || context.segment };
@@ -1063,7 +1093,7 @@ function showTrackError(error) {
   else console.warn('Track unavailable:', error.message);
 }
 
-async function addSessionTrack(id, item) {
+async function addSessionTrack(id, item, { replayOnly = true, linkedComparison = false } = {}) {
   if (!session) throw new Error('The session is not ready.');
   item ||= replayLibrary?.items.find(entry => entry.id === id);
   const response = await fetch(`/api/replays/motion?id=${encodeURIComponent(id)}`);
@@ -1072,13 +1102,15 @@ async function addSessionTrack(id, item) {
   validateTrajectory(motion, defaultData.joint_names.length); validateReference(motion);
   const track = session.addTrack({ kind: 'replay', source: { kind: 'replay', id: motion.id, revision: motion.revision },
     label: item?.source === 'freeze' ? freezeTimeLabel(motion) : item?.name || motion.label,
-    defaultOffset: item?.source === 'freeze' ? 'zero' : 'align-start',
+    displayName: linkedComparison ? motion.label || item?.name?.split('/').at(-1) : undefined,
+    defaultOffset: linkedComparison || item?.source === 'freeze' ? 'zero' : 'align-start',
     span: [motion.time_s[0], motion.time_s.at(-1)], timeBasis: motion.time_basis,
     endEffectorFrame: motion.end_effector_frame,
     settings: motion.provenance?.live?.settings || null,
     motion, catalogSource: item?.source, catalogName: item?.name, provenance: motion.provenance });
   const message = $('timeline-track-message'); if (message) message.hidden = true;
-  auxiliaryViews?.invalidate(); updateExpandedTimeline(); return track;
+  if (replayOnly) { const transition = live.setReplayOnly(true); live.seek(track.span[0] + track.offset_s); await transition; }
+  auxiliaryViews?.invalidate(); refreshFitAvailability(); updateExpandedTimeline(); return track;
 }
 
 function freezeTimeLabel(motion) {
@@ -1088,7 +1120,7 @@ function freezeTimeLabel(motion) {
 }
 
 function sessionLanes() {
-  return session.tracks.map(track => ({ ...track, intervals: track.kind === 'live' ? session.focused.history?.intervals || [] : [] }));
+  return session.activeTracks.map(track => ({ ...track, intervals: track.kind === 'live' ? track.history?.intervals || [] : [] }));
 }
 
 let mainDimmed = false;
@@ -1111,10 +1143,18 @@ function setMainDimmed(dimmed) {
 
 function updateSessionScene() {
   if (!session || !trackScene) return;
-  const main = focusedTrack();
-  armVisibility?.setVisible(!main || main.display !== 'hidden');
-  if (main?.display === 'hidden') $('limit-tint-tooltip').hidden = true;
+  const main = session.track('live'), replayOnly = session.replayOnly;
+  armVisibility?.setVisible(!replayOnly && main.display !== 'hidden');
+  if (replayOnly || main.display === 'hidden') $('limit-tint-tooltip').hidden = true;
+  if (liveGroup) liveGroup.visible = live?.mode === 'live' && !replayOnly;
   trackScene.update({ tracks: session.tracks, time: session.cursor, mainReference: main?.reference,
-    visible: Boolean(main), opacity: presentationSettings.settings.ghost_start_opacity_percent / 100 });
-  setMainDimmed(Boolean(main && !main.empty && outsideSpan(main, session.cursor)));
+    visible: live?.mode === 'live', ...(replayOnly ? { mainReference: null } : {}), opacity: presentationSettings.settings.ghost_start_opacity_percent / 100 });
+  setMainDimmed(Boolean(!replayOnly && main && !main.empty && outsideSpan(main, session.cursor)));
+  if (replayOnly) {
+    const track = focusedTrack(), motion = track?.motion;
+    if (motion) {
+      const time = trackTime(track, session.cursor), sample = sampleTrajectory(motion, time), telemetry = sampleTelemetry(motion, time);
+      updateJointTelemetry(sample.q, telemetry.qd, telemetry.torque, motion.joint_limits || null, motion.torque_kind || 'recorded', motion.mpc_bounds || null);
+    } else updateJointTelemetry(null, null, null, null);
+  }
 }

@@ -6,13 +6,15 @@ export function createLiveHistory(options = {}) {
   const limits = { ...LIVE_HISTORY_LIMITS, ...options };
   let samples = [];
   let currentPlan = null;
+  let plansBySeq = new Map();
+  let recentPlans = [];
   let intervals = [];
   // Limit breaches where Live stopped (records of type 'breach'), in time order.
   let breaches = [];
   let planAfterState = false;
   let revision = 0, metricCache = null, truncated = false;
   const changed = () => { revision++; metricCache = null; };
-  const clear = () => { samples = []; intervals = []; breaches = []; currentPlan = null; planAfterState = false; truncated = false; changed(); };
+  const clear = () => { samples = []; intervals = []; breaches = []; currentPlan = null; plansBySeq.clear(); recentPlans = []; planAfterState = false; truncated = false; changed(); };
   const trim = () => {
     const newest = samples.at(-1)?.state.sim_time_s;
     while (samples.length > 1 && (samples.length > limits.maxSamples || newest - samples[0].state.sim_time_s > limits.maxSeconds)) { samples.shift(); truncated = true; }
@@ -28,6 +30,8 @@ export function createLiveHistory(options = {}) {
         else plans.delete(plan);
       }
     }
+    const retained = new Set([...samples.map(sample => sample.plan).filter(Boolean), ...recentPlans]);
+    for (const [seq, plan] of plansBySeq) if (plan !== currentPlan && !retained.has(plan)) plansBySeq.delete(seq);
   };
   const addPlan = (plan) => {
     // Pause/reconnect republishes the last solve. Reuse an identical payload's
@@ -35,8 +39,13 @@ export function createLiveHistory(options = {}) {
     // A restarted sequence with changed data must remain a new prediction.
     const repeated = currentPlan && ['seq', 'settings_version', 'sim_time_s'].every((key) => currentPlan[key] === plan[key]) && JSON.stringify(currentPlan) === JSON.stringify(plan);
     currentPlan = repeated ? currentPlan : plan;
+    // At a tick P0 can activate while P1 is requested, before control(P0) is
+    // consumed. Keep both until their state/control association catches up.
+    recentPlans = [currentPlan, ...recentPlans.filter(item => item !== currentPlan)].slice(0, 2);
+    plansBySeq.set(currentPlan.seq, currentPlan);
     planAfterState = true;
-    if (samples.length && Math.abs(samples.at(-1).state.sim_time_s - plan.sim_time_s) < 1e-9) samples.at(-1).plan = currentPlan;
+    // A delayed solve is an inspectable request, not yet the applied plan.
+    if (!('available_time_s' in plan) && samples.length && Math.abs(samples.at(-1).state.sim_time_s - plan.sim_time_s) < 1e-9) samples.at(-1).plan = currentPlan;
     trim();
     changed();
   };
@@ -48,7 +57,9 @@ export function createLiveHistory(options = {}) {
       clear();
       currentPlan = resetPlan;
     }
-    const plan = currentPlan && currentPlan.sim_time_s <= state.sim_time_s + 1e-9 ? currentPlan : null;
+    const plan = state.plan_seq != null ? plansBySeq.get(state.plan_seq) || null
+      : 'control_updates' in state ? null
+      : currentPlan && !('available_time_s' in currentPlan) && currentPlan.sim_time_s <= state.sim_time_s + 1e-9 ? currentPlan : null;
     const sample = { state, plan };
     if (samples.length && Math.abs(samples.at(-1).state.sim_time_s - state.sim_time_s) < 1e-9) samples[samples.length - 1] = sample;
     else samples.push(sample);
@@ -90,6 +101,12 @@ export function createLiveHistory(options = {}) {
   const addRecord = (record) => {
     if (record.type === 'plan') addPlan(record);
     else if (record.type === 'state') addState(record);
+    else if (record.type === 'control') {
+      // Endpoint state torque describes the preceding interval. The command at
+      // this same tick owns the following prediction, including first activation.
+      const last = samples.at(-1), plan = plansBySeq.get(record.plan_seq);
+      if (last && plan && Math.abs(last.state.sim_time_s - record.sim_time_s) < 1e-9) { last.plan = plan; changed(); }
+    }
     else if (record.type === 'interval') { intervals.push(record); changed(); }
     else if (record.type === 'breach' && Number.isFinite(record.sim_time_s)) { breaches.push(record); changed(); }
   };
@@ -109,7 +126,7 @@ export function createLiveHistory(options = {}) {
     get metricSnapshot() {
       if (!metricCache) {
         const states = samples.map(sample => sample.state);
-        const plans = [...new Set(samples.map(sample => sample.plan).filter(Boolean))];
+        const plans = [...new Set([...samples.map(sample => sample.plan).filter(Boolean), ...plansBySeq.values()])];
         if (currentPlan && !plans.includes(currentPlan)) plans.push(currentPlan);
         const start = states[0]?.sim_time_s ?? -Infinity;
         metricCache = { revision, states, plans, intervals: intervals.filter(item => item.end_time_s > start), truncated, sourceKind: 'live' };

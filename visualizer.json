@@ -4,5 +4,8 @@
     "report_hz": 20,
     "buffer_ms": 200,
     "interpolate": false
+  },
+  "source": {
+    "mpc_root": "/workspace/tiago_mpc"
   }
 }

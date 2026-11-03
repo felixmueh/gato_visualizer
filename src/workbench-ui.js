@@ -21,9 +21,12 @@ export function setupWorkbench({ document: doc = document, onLayout = () => {} }
   const $ = id => doc.getElementById(id), shell = $('workbench');
   setupTransportPopovers(doc);
   let currentTab = 'views';
+  const tabs = ['views', 'episode', 'solve', 'comparison', 'joints'].filter(name => $(`inspection-tab-${name}`));
+  if ($('inspection-tab-comparison')) $('inspection-tab-comparison').hidden = true;
   const selectTab = name => {
+    if (!tabs.includes(name) || $(`inspection-tab-${name}`).hidden) return;
     currentTab = name;
-    for (const tab of ['views', 'episode', 'solve', 'joints']) {
+    for (const tab of tabs) {
       $(`inspection-${tab}`).hidden = tab !== name;
       $(`inspection-tab-${tab}`).setAttribute('aria-selected', String(tab === name));
       $(`inspection-tab-${tab}`).tabIndex = tab === name ? 0 : -1;
@@ -39,15 +42,15 @@ export function setupWorkbench({ document: doc = document, onLayout = () => {} }
       onLayout();
     });
   }
-  const tabs = ['views', 'episode', 'solve', 'joints'];
-  for (const [i, name] of tabs.entries()) {
+  for (const name of tabs) {
     const button = $(`inspection-tab-${name}`);
     button.addEventListener('click', () => selectTab(name));
     button.addEventListener('keydown', event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
       event.preventDefault();
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (i + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
-      selectTab(tabs[next]); $(`inspection-tab-${tabs[next]}`).focus();
+      const shown = tabs.filter(tab => !$(`inspection-tab-${tab}`).hidden), index = shown.indexOf(name);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? shown.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + shown.length) % shown.length;
+      selectTab(shown[next]); $(`inspection-tab-${shown[next]}`).focus();
     });
   }
   // The metrics module fills this mount with recorded series.
@@ -60,5 +63,9 @@ export function setupWorkbench({ document: doc = document, onLayout = () => {} }
     play.title = playing ? 'Pause' : 'Play';
   };
   update();
-  return { update, get activeTab() { return currentTab; }, get auxiliaryVisible() { return currentTab === 'views' && !$('right-sidebar').hidden; }, selectTab };
+  const setComparisonAvailable = value => {
+    const tab = $('inspection-tab-comparison');
+    if (tab) tab.hidden = !value && currentTab !== 'comparison';
+  };
+  return { update, setComparisonAvailable, get activeTab() { return currentTab; }, get auxiliaryVisible() { return currentTab === 'views' && !$('right-sidebar').hidden; }, selectTab };
 }

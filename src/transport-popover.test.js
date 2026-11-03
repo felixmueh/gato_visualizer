@@ -74,3 +74,22 @@ test('Fixed spacing defaults on for old preferences, persists off and disables o
   assert.equal(reloaded.elements.get('live-ghost-spacingEnabled').checked, true); assert.equal(reloaded.elements.get('live-ghost-interval_s').disabled, false);
   assert.equal(Number(reloaded.elements.get('live-ghost-interval_s').value), 1.25);
 });
+
+test('ghost spacing accepts reciprocal frequency without rewriting the edited popover', async () => {
+  const { document: doc } = plotDOM(), elements = new Map(), stored = new Map();
+  for (const mode of ['live', 'replay']) for (const name of ['spacingEnabled', 'interval_s', 'maxCount']) {
+    const input = doc.createElement('input'); input.dataset.tip = 'setting';
+    input.removeAttribute = key => delete input.attributes[key]; elements.set(`${mode}-ghost-${name}`, input);
+  }
+  doc.getElementById = id => elements.get(id);
+  const controls = setupGhostControls({ doc, storage: { getItem: key => stored.get(key), setItem: (key, value) => stored.set(key, value) }, onChange() {} });
+  const interval = elements.get('live-ghost-interval_s');
+  interval.value = '4 Hz'; await interval.emit('change');
+  assert.equal(interval.type, 'text'); assert.equal(interval.value, '4 Hz');
+  assert.equal(controls.settings.interval_s, .25); assert.equal(elements.get('replay-ghost-interval_s').value, '0.25');
+  assert.equal(JSON.parse(stored.get(GHOST_SETTINGS_KEY)).interval_s, .25);
+  const maximum = elements.get('replay-ghost-maxCount'); maximum.value = '8'; await maximum.emit('change');
+  assert.equal(interval.value, '4 Hz');
+  interval.value = '0Hz'; await interval.emit('change');
+  assert.equal(interval.getAttribute('aria-invalid'), 'true'); assert.equal(controls.settings.interval_s, .25);
+});

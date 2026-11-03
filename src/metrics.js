@@ -56,7 +56,7 @@ export function metricSeries(data = EMPTY, joint = 0) {
     return result;
   };
   return {
-    solve: [series('MPC wall', intervalPoints(i => scale(i.solve_wall_s ?? i.mpc_wall_s, 1000)), true), series('Nominal TO budget', intervalPoints(i => scale(i.to_budget_s ?? i.budget_s, 1000)), true)],
+    solve: [series('MPC wall', intervalPoints(i => scale(i.solve_wall_s ?? i.mpc_wall_s, 1000)), true), series('Nominal TO budget', intervalPoints(i => i.to_back_to_back ? null : scale(i.to_budget_s ?? i.budget_s, 1000)), true)],
     physics: [series('Physics wall', intervalPoints(i => scale(i.physics_wall_s ?? i.simulation_wall_s, 1000)), true)],
     total: [series('Total wall', intervalPoints(i => scale(i.total_wall_s, 1000)), true)],
     iterations: ['sqp', 'pcg', 'admm'].map(key => series(key.toUpperCase(), planPoints(p => p.stats?.[`${key}_iters`]), true)),

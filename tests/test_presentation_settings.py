@@ -21,6 +21,53 @@ from visualizer_config import load_visualizer_config, save_local_settings, save_
 
 
 class PresentationConfigTests(unittest.TestCase):
+    def test_partial_updates_preserve_other_fields_and_reject_invalid_atomically(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'visualizer.json'
+            path.write_text('{}')
+            live = SimpleNamespace(set_report_hz=lambda value: None)
+            service = PresentationSettings(path, live=live)
+            self.assertEqual(service.patch({'buffer_ms': 700}), dict(DEFAULT_PRESENTATION, buffer_ms=700))
+            self.assertEqual(service.patch({'interpolate': True})['buffer_ms'], 700)
+            before = service.settings(), path.read_bytes(), path.stat().st_mtime_ns
+            for invalid in ([], None, {'unknown': 1}, {'buffer_ms': -1}, {'interpolate': None},
+                            {'report_hz': 0, 'limit_tint': False}):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    service.patch(invalid)
+                self.assertEqual((service.settings(), path.read_bytes(), path.stat().st_mtime_ns), before)
+            self.assertEqual(service.patch({}), before[0])
+            self.assertEqual(path.stat().st_mtime_ns, before[2])
+
+    def test_concurrent_disjoint_patches_both_survive_and_failed_live_update_rolls_back(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'visualizer.json'
+            path.write_text('{}')
+            service = PresentationSettings(path)
+            barrier, failures = threading.Barrier(3), []
+            def apply(changes):
+                try:
+                    barrier.wait()
+                    service.patch(changes)
+                except Exception as error:
+                    failures.append(error)
+            workers = [threading.Thread(target=apply, args=(value,))
+                       for value in ({'buffer_ms': 700}, {'limit_tint': False})]
+            for worker in workers:
+                worker.start()
+            barrier.wait()
+            for worker in workers:
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive())
+            self.assertEqual(failures, [])
+            self.assertEqual(service.settings(), dict(DEFAULT_PRESENTATION, buffer_ms=700, limit_tint=False))
+            before = service.settings(), json.loads(path.read_text())
+            def reject(value):
+                raise RuntimeError('worker stopped')
+            service.live = SimpleNamespace(set_report_hz=reject)
+            with self.assertRaisesRegex(RuntimeError, 'worker stopped'):
+                service.patch({'report_hz': 50, 'buffer_ms': 100})
+            self.assertEqual((service.settings(), json.loads(path.read_text())), before)
+
     def test_defaults_validation_and_other_settings_preserved(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/'visualizer.json'
@@ -122,6 +169,16 @@ class PresentationConfigTests(unittest.TestCase):
                 self.assertEqual(json.load(urlopen(request)), value)
                 self.assertEqual(json.load(urlopen(url)), value)
                 self.assertEqual(load_visualizer_config(path).presentation, value)
+                request = Request(url + '/patch', data=b'{"buffer_ms": 123}',
+                                  headers={'Content-Type':'application/json'})
+                value = dict(value, buffer_ms=123)
+                self.assertEqual(json.load(urlopen(request)), value)
+                self.assertEqual(json.load(urlopen(url)), value)
+                request = Request(url + '/patch', data=b'{"unknown": 1}',
+                                  headers={'Content-Type':'application/json'})
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(request)
+                self.assertEqual(caught.exception.code, 400)
                 request = Request(url, data=b'{"report_hz": 10}', headers={'Content-Type':'application/json'})
                 with self.assertRaises(HTTPError) as caught:
                     urlopen(request)

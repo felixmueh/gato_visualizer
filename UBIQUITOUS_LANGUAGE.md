@@ -34,7 +34,8 @@
 | **Simulation time** | The task/plant clock recorded with robot states, independent of time spent computing them. | Solver time, wall time |
 | **Simulation frequency** | The nominal plant integration rate (RK4 or semi-implicit Euler), with steps split at control or replanning boundaries. | Display rate |
 | **Control frequency** | The rate at which the current prediction supplies a held actuator command. | MPC frequency, replanning frequency |
-| **TO frequency** | The trajectory-optimization/replanning rate requesting new solves. | Control frequency, reporting frequency |
+| **TO frequency** | The trajectory-optimization request-slot rate. Requests start at command ticks with no solve pending; missed slots are skipped. Zero means back-to-back. | Control frequency, reporting frequency |
+| **Solve latency** | The delay from a solve request to plan availability: measured solver host wall time by default, or declared seconds. The first eligible command tick activates it; plan age remains measured from its input state. | CUDA time, RPC wall time, prediction knot spacing |
 | **Control events** | The command ticks and TO updates; the Live history records every command and plan and the simulated state at each control event, not at physics steps. | Recording substeps, sample rate |
 | **Segment header** | The first record of a generation's Live history: everything constant within that segment (effective settings, source and identities, limits and bounds, task path and anchors). Other records name their segment by generation. | Plan context, per-record context |
 | **Knot interval** | The time spacing of states in a prediction horizon. | Control period |
@@ -57,13 +58,14 @@
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Session** | Tracks shown together with one session time, transport and focus. | Comparison mode |
+| **Session** | Tracks shown together with one session time, transport and presentation source, in Live or Replay mode. | Comparison mode |
+| **Replay mode** | A session mode that cancels and blocks Live calculation, hides the retained Live track and plays only visible recordings. Opening a recording or replay link enters it; Return to Live restores Live paused with all recordings retained. | Legacy Replay workspace, deleting Live |
 | **Track** | An immutable recorded MPC episode placed on session time, with an offset, colour, visibility and arm/dot display. | Clip, layer |
 | **Track time** | A recording's own clock: session time minus its offset. | Global time |
-| **Main track** | Live's current generation, always present, growing/editable, offset fixed at zero; empty while idle or unavailable. | Active track |
-| **Session time** | Shared playback axis, equal to the main track's simulation clock. | Global time, wall time |
+| **Main track** | Live's current generation, retained even in Replay mode, growing/editable only in Live, offset fixed at zero; empty while idle or unavailable. | Active track |
+| **Session time** | Shared playback axis on which tracks are placed by their offsets; Live's simulation clock defines zero, while Replay mode excludes Live from the playback span. | Global time, wall time |
 | **Offset** | Presentation-only placement of a track on session time, in seconds; never written into the recording. | Time correction |
-| **Focused track** | The track supplying the solid robot, limit tint, Joints, prediction, Episode and follow-cursor Solve. Live only in this phase. | Selected track, active track |
+| **Focused track** | The track supplying presentation reads: Live normally; the first visible replay supplies Joints, Episode and follow-cursor Solve in Replay mode. There is no general track focus selector; pinned solves keep their own source. | Selected track, active track |
 | **Lane** | A track's row below the expanded timeline ruler. | Layer |
 | **Freeze** | A Live run exported as a replay NPZ into RAM and available as a track; Keep to disk is a later phase. | Snapshot, temporary replay |
 | **Ghost arm** | A translucent right arm at another recorded state; comparison ghosts use their track colour. | Prediction |

@@ -16,6 +16,11 @@ from tests.tiago_mpc_source import MPC_ROOT, live_probe, start_pose
 LOCK_HELD = False
 
 
+class FakeClock:
+    def __init__(self): self.value=0.
+    def __call__(self): return self.value
+
+
 class FakeLocks:
     def __init__(self, root):
         self.handles = []
@@ -127,7 +132,8 @@ class FakeAdapter:
                     _reference=np.zeros((self.N, 6)), N=self.N, dt_s=self.dt,
                     sim_time_s=self.t, seq=self.sequence, origin=origin,
                     settings_version=version, target_xyz=[0,0,0],
-                    stats=dict(solve_time_ms=2., sqp_iters=1, controller_restarted=was_fresh))
+                    stats=dict(solve_time_ms=2., step_wall_s=getattr(self, 'plan_wall_s', 0.),
+                               sqp_iters=1, controller_restarted=was_fresh))
     def segment_header(self, version, execution):
         return dict(type='segment', sim_time_s=self.t, settings_version=version,
                     context=dict(task=self.task, end_effector_frame='arm_right_tool_joint',
@@ -143,6 +149,12 @@ class FakeAdapter:
 def fake_schema(root):
     from live_mpc import build_schema
     probe = live_probe()
+    # FakeAdapter models only the protocol and toy plant below. Its synthetic
+    # N16 catalog cannot stand in for native armature/provider availability.
+    probe['defaults'].pop('armature', None)
+    probe['source_settings'] = {role: dict(defaults={}, parameters=[], controls=[], module=None)
+                                for role in ('simulation', 'predictor')}
+    probe['effective_settings'] = {}
     probe['available_N_by_friction'] = dict(off=[16], on=[])
     schema = build_schema(probe, root or MPC_ROOT, start_pose())
     schema['defaults']['config']['N'] = 16
@@ -204,7 +216,7 @@ class SchedulerTests(unittest.TestCase):
             while a.t < end-1e-12:
                 records.extend(session.advance_interval(end))
         times=[r['sim_time_s'] for r in records if r['type']=='state']
-        events=[k/23 for k in range(7)]+[k/11 for k in range(4)]+[.035,.07,.15,.231]
+        events=[k/23 for k in range(7)]+[.035,.07,.15,.231]
         self.assertTrue(all(any(abs(t-e)<1e-12 for e in events) for t in times))
         for tick in range(1,6):
             self.assertTrue(any(abs(t-tick/23)<1e-12 for t in times))
@@ -224,8 +236,7 @@ class SchedulerTests(unittest.TestCase):
         records=[]
         while a.t < .12-1e-12:
             records.extend(session.advance_interval(.12))
-        # TO tick .090909 is between control ticks .086956 and .130435.
-        # All physics after that replan must still use torque 10, not new 20.
+        # The .090909 TO slot waits for the .130435 command tick.
         after=[r for r in records if r['type']=='state' and r['sim_time_s']>1/11+1e-12]
         self.assertTrue(after)
         self.assertTrue(all(r['torque_nm']==[10.]*7 for r in after))
@@ -262,11 +273,11 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(len(kind('plan')),25)
         self.assertTrue(all('record_every' not in r for r in records))
         self.assertLessEqual(len(ticks),estimated_states(dict(DEFAULT_EXECUTION,simulation_hz=1000.,control_hz=500.,to_hz=100.),.25))
-    def test_noncommensurate_recording_is_the_union_of_command_and_to_ticks(self):
+    def test_noncommensurate_requests_and_recording_follow_command_ticks(self):
         execution=dict(DEFAULT_EXECUTION,simulation_hz=70.,control_hz=23.,to_hz=11.)
         a,session,records=self.run_recorded(.5,**{k:execution[k] for k in ('simulation_hz','control_hz','to_hz')})
         times=[r['sim_time_s'] for r in records if r['type']=='state']
-        events=sorted({*(k/23 for k in range(12)),*(k/11 for k in range(6)),.5})
+        events=sorted({*(k/23 for k in range(12)),.5})
         self.assertEqual(len(times),len(events))
         for t,expected in zip(times,events):
             self.assertAlmostEqual(t,expected,places=12)
@@ -317,12 +328,11 @@ class SchedulerTests(unittest.TestCase):
         self.assertAlmostEqual(a.t,.04)
         self.assertEqual([(r['type'],round(r['sim_time_s'],9)) for r in records[-4:-2]],[('state',.04),('control',.04)])
         self.assertTrue(records[-1]['partial'])
-        # Continuing holds the command; the torque stays beyond until the next plan's first
-        # knot (1 Nm) is commanded again: at 0.2 s, where a command meets a plan, so the
-        # next breach starts at 0.24 s.
+        # Continuing holds the command until the next plan at .12 s re-arms
+        # effort, so the next second-knot command breaches at .16 s.
         records=self.run_until(session,.5)
-        self.assertEqual([round(r['sim_time_s'],9) for r in records if r['type']=='breach'],[.24])
-        self.assertAlmostEqual(a.t,.24)
+        self.assertEqual([round(r['sim_time_s'],9) for r in records if r['type']=='breach'],[.16])
+        self.assertAlmostEqual(a.t,.16)
         stopped=self.limited(dict(effort=np.full(7,1.5)),torque=False)
         session=MultirateSession(stopped,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.))
         self.assertFalse(any(r['type']=='breach' for r in self.run_until(session,.3)))
@@ -356,8 +366,126 @@ class SchedulerTests(unittest.TestCase):
     def test_execution_has_no_recording_setting(self):
         self.assertEqual(DEFAULT_EXECUTION['control_hz'],500.)
         self.assertNotIn('record_every',DEFAULT_EXECUTION)
+        self.assertEqual(DEFAULT_EXECUTION['solve_latency_s'],'measured')
         with self.assertRaises(ValueError):
             validate_execution(dict(DEFAULT_EXECUTION,record_every=2))
+        self.assertEqual(validate_execution(dict(DEFAULT_EXECUTION,to_hz=0))['to_hz'],0)
+        for latency in (-1, True, None, float('nan'), float('inf'), 'ideal'):
+            with self.subTest(latency=latency), self.assertRaises(ValueError):
+                validate_execution(dict(DEFAULT_EXECUTION,solve_latency_s=latency))
+
+    def test_delayed_activation_uses_native_wall_and_original_plan_age(self):
+        a=FakeAdapter(); a.clock=FakeClock(); a.plan_wall_s=.025
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=50.,to_hz=25.),clock=a.clock)
+        records=self.run_until(session,.08)
+        controls=[r for r in records if r['type']=='control']
+        self.assertEqual([round(r['sim_time_s'],9) for r in controls],[.04,.06])
+        self.assertEqual([r['plan_elapsed_s'] for r in controls],[.04,.06])
+        self.assertTrue(all(r['torque_nm']==[2.]*7 for r in controls))  # knot zero was missed
+        self.assertEqual(controls[0]['plan_activated'],True)
+        first=next(r for r in records if r['type']=='plan')
+        self.assertAlmostEqual(first['solve_latency_s'],.025)
+        self.assertAlmostEqual(first['controller_wall_s'],.03)  # RPC is recorded separately
+        self.assertAlmostEqual(first['available_time_s'],.025)
+        self.assertAlmostEqual(first['scheduled_activation_time_s'],.04)
+        states=[r for r in records if r['type']=='state' and r['sim_time_s']<=.04]
+        self.assertTrue(all(r['torque_nm'] is None and np.array_equal(r['_x'],np.zeros(14)) for r in states))
+
+    def test_long_delay_keeps_old_plan_and_skips_slots_without_catchup(self):
+        a=FakeAdapter()
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,solve_latency_s=.025))
+        records=self.run_until(session,.085)
+        plans=[r for r in records if r['type']=='plan']
+        controls=[r for r in records if r['type']=='control']
+        np.testing.assert_allclose([r['sim_time_s'] for r in plans],[0,.026,.052,.078],atol=1e-12)
+        self.assertTrue(all(r['plan_seq']==1 for r in controls if .026<=r['sim_time_s']<.052))
+        self.assertEqual([r['plan_seq'] for r in controls if r['plan_activated']],[1,2,3])
+        self.assertAlmostEqual(controls[0]['plan_elapsed_s'],.026)
+
+    def test_back_to_back_and_chunk_continuation_preserve_pending_plan(self):
+        a=FakeAdapter()
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,to_hz=0,solve_latency_s=.0055))
+        first=session.advance_interval(.003)
+        pending=session.pending_plan
+        self.assertEqual(session.solves,1)
+        self.assertFalse(any(r['type']=='control' for r in first))
+        self.assertIsNone(a.applied_torque)
+        records=first+self.run_until(session,.02)
+        self.assertIsNotNone(pending)
+        np.testing.assert_allclose([r['sim_time_s'] for r in records if r['type']=='plan'],[0,.006,.012,.018],atol=1e-12)
+        self.assertEqual(next(r for r in records if r['type']=='control')['plan_seq'],pending['seq'])
+        self.assertTrue(all(r['to_back_to_back'] for r in records if r['type']=='interval'))
+        self.assertTrue(all(r['to_budget_s'] is None and r['mpc_ratio'] is None for r in records if r['type']=='interval'))
+        self.assertTrue(all(np.isfinite(r['mpc_realtime_ratio']) for r in records if r['type']=='interval'))
+
+    def test_back_to_back_has_no_deadline_even_when_call_overhead_exceeds_simulated_solve_delay(self):
+        interval=interval_record(0., .004, .004, .006, .001, .007, to_back_to_back=True)
+        self.assertIsNone(interval['to_budget_s'])
+        self.assertIsNone(interval['mpc_ratio'])
+        self.assertEqual(interval['severity'], 'yellow')
+        self.assertAlmostEqual(interval['mpc_realtime_ratio'], 1.5)
+        self.assertEqual(interval_record(0., .01, None, .004, .001, .006, to_back_to_back=True)['severity'], 'none')
+        # Fixed-rate TO keeps its real deadline, even at a final partial interval.
+        self.assertEqual(interval_record(0., .004, .005, .006, .001, .007)['severity'], 'red')
+
+    def test_resume_holds_committed_torque_and_moving_anchor_uses_explicit_zero(self):
+        a=FakeAdapter(); a.t=4.; a.x[7:]=.2; a.applied_torque=np.full(7,3.)
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,solve_latency_s=.01))
+        self.assertEqual(session.initial_state()['startup_command_source'],'held_command')
+        session.advance_interval(4.005)
+        np.testing.assert_allclose(a.x[:7],.015)
+        np.testing.assert_allclose(a.applied_torque,3)
+        a=FakeAdapter(); a.t=4.; a.x[7:]=.2
+        session=MultirateSession(a,dict(DEFAULT_EXECUTION,solve_latency_s=.01))
+        self.assertEqual(session.initial_state()['startup_command_source'],'zero_effort_moving_anchor')
+        np.testing.assert_array_equal(a.applied_torque,np.zeros(7))
+        session.advance_interval(4.005)
+        self.assertAlmostEqual(a.t,4.005)
+
+    def test_command_request_transcript_matches_native_virtual_loop(self):
+        from tiago_mpc.interfaces import State, Plan
+        from tiago_mpc.loops import run_virtual_time
+        class Plant:
+            def start(self,clock):
+                self.clock,self.t,self.q,self.qd,self.command=clock,clock.now(),np.zeros(7),np.zeros(7),None
+            def state(self): return State(self.t,self.q.copy(),self.qd.copy())
+            def apply(self,u): self.command=np.array(u)
+            def advance(self,t):
+                if self.command is not None:
+                    self.q += self.command*(t-self.t); self.qd += self.command*(t-self.t)
+                self.t=t; self.clock.reach(t)
+            def take_events(self): return []
+            def stop(self): pass
+        class Mpc:
+            N=32; dt=.01
+            def __init__(self): self.requests=[]
+            def warmup(self,*args): pass
+            def request(self,s,*args):
+                self.requests.append(s.t)
+                self.pending=Plan(s.t,self.dt,np.tile(np.r_[s.q,s.qd],(self.N,1)),
+                                  .01*np.arange(1.,self.N)[:,None]*np.ones(7),dict(wall_s=.013), measured_t=getattr(s, "measured_t", s.t))
+            def result(self,block=False): return self.pending
+        class Task:
+            def done(self,*args): return False
+            def at(self,*args): return (np.zeros((32,6)),None)
+        for latency,to_hz in ((.0055,100.),('measured',100.),(.025,100.),(.0055,0.)):
+            with self.subTest(latency=latency,to_hz=to_hz):
+                mpc=Mpc(); ticks=[]
+                outcome=run_virtual_time(Plant(),mpc,Task(),tick_callbacks=[ticks.append],
+                    command_period=.002,update_period=1/to_hz if to_hz else 0.,duration=.08,solve_latency_s=latency)
+                self.assertEqual(outcome.status,'timeout')
+                a=FakeAdapter(); a.N=32; a.dt=.01; a.plan_wall_s=.013
+                solve=a.solve_snapshot
+                def scaled(origin,version):
+                    p=solve(origin,version); p['_torques']*=.01; return p
+                a.solve_snapshot=scaled
+                session=MultirateSession(a,dict(DEFAULT_EXECUTION,to_hz=to_hz,solve_latency_s=latency))
+                records=self.run_until(session,.08)
+                commands=[r for r in records if r['type']=='control']
+                sent=[t for t in ticks if t.command is not None]
+                np.testing.assert_allclose([r['sim_time_s'] for r in records if r['type']=='plan'],mpc.requests,atol=1e-12)
+                np.testing.assert_allclose([r['sim_time_s'] for r in commands],[t.t for t in sent],atol=1e-12)
+                np.testing.assert_allclose([r['torque_nm'] for r in commands],[t.command for t in sent],atol=1e-12)
     def test_actual_physics_and_nominal_to_budget_red_priority(self):
         self.assertEqual(interval_record(0,.01,.1,.11,.3,.42)['severity'],'red')
         self.assertEqual(interval_record(0,.01,.1,.02,.001,.021)['severity'],'yellow')
@@ -371,7 +499,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(session.advance_interval(.01,cancelled=lambda:session.solves>0),[])
         self.assertEqual(a.t,0)
         self.assertEqual(session.steps,0)
-        self.assertEqual(session.controls.shape,(2,7))
+        self.assertEqual(np.asarray(session.pending_plan['_torques']).shape,(2,7))
     def test_history_roundtrip_generation_and_page_bounds(self):
         with tempfile.TemporaryDirectory() as folder:
             store=HistoryStore(folder)
@@ -551,6 +679,7 @@ class SpawnTests(unittest.TestCase):
         request['execution']['calculation']='on_play'
         request['config']['solver']['max_sqp_iters']=6000  # 1.5 Nm effort limit
         request['config']['plant']['clip_effort']=False
+        request['config']['dt_s']=.01  # the fake plan's torque grows by one per 10 ms knot
         self.service.command(request)
         self.wait(lambda:self.service.latest.get('plan',{}).get('settings_version')==1)
         generation=self.service.generation
@@ -564,9 +693,9 @@ class SpawnTests(unittest.TestCase):
         self.assertEqual(self.service.generation,generation)
         self.service.command(dict(type='play'))
         self.wait(lambda:(self.service.latest.get('status',{}).get('breach') or {}).get('sim_time_s',0)>.05)
-        self.assertAlmostEqual(self.service.latest['status']['breach']['sim_time_s'],.24)
+        self.assertAlmostEqual(self.service.latest['status']['breach']['sim_time_s'],.16)
         breaches=[r for r in self.records() if r['type']=='breach']
-        self.assertEqual([round(r['sim_time_s'],9) for r in breaches],[.04,.24])
+        self.assertEqual([round(r['sim_time_s'],9) for r in breaches],[.04,.16])
         plans=[r for r in self.records() if r['type']=='plan' and r['origin']=='play']
         self.assertTrue(all(not plan['stats']['controller_restarted'] for plan in plans[1:]))
         clipped=self.settings(simulation_hz=100.,control_hz=25.,to_hz=10.)

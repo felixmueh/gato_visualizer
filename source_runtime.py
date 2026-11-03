@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import sys
 
 ROOT = Path(__file__).resolve().parent
 PROBE_SCRIPT = ROOT / "scripts/source_probe.py"
@@ -27,14 +26,13 @@ DEFAULT_CACHE_LABEL = "tiago_mpc's default"
 KNOT_COUNTS = (8, 16, 24, 32, 48, 64, 96, 128)
 
 
-def default_interpreter_template(root):
-    """Default interpreter template: the host `venv-host` when usable, else the container's `.venv`.
+def in_container():
+    return Path('/.dockerenv').is_file() or Path('/run/.containerenv').is_file()
 
-    This is the one place that decides the preference; change it here only.
-    """
-    host = Path(root) / "venv-host/bin/python"
-    usable = host.is_file() and os.access(host, os.X_OK)
-    return f"{CHECKOUT_TOKEN}/{'venv-host' if usable else '.venv'}/bin/python"
+
+def default_interpreter_template(root):
+    """The checkout's uv environment; never fall back to the other platform's venv."""
+    return f"{CHECKOUT_TOKEN}/{'.venv-container' if in_container() else '.venv'}/bin/python"
 
 
 def expand_template(value, root):
@@ -65,25 +63,28 @@ _DEFAULT_CACHE_CODE = ("import os, sys; sys.path.insert(0, sys.argv[1]); os.envi
                        "from tiago_mpc.util import cache_root; print(cache_root())")
 
 
-def default_cache(mpc_root):
+def default_cache(mpc_root, python=None):
     """tiago_mpc's own default cache for a checkout: util.cache_root() with GATO_CACHE_DIR
-    unset, so its git lookup is not duplicated here. util needs only the standard
-    library, hence this interpreter. None when the checkout has no such tiago_mpc."""
+    unset, so its git lookup is not duplicated here. Use the selected environment:
+    importing tiago_mpc also loads its Python dependencies. None if unavailable."""
     root = str(Path(mpc_root).expanduser().resolve())
-    if root not in _DEFAULT_CACHES:
-        environment = {key: value for key, value in os.environ.items() if key != "GATO_CACHE_DIR"}
+    python = str(python or expand_template(default_interpreter_template(root), root))
+    key = (root, python)
+    if key not in _DEFAULT_CACHES:
+        environment = {key: value for key, value in os.environ.items() if key not in ("GATO_CACHE_DIR", "PYTHONPATH")}
         try:
-            result = subprocess.run([sys.executable, "-I", "-c", _DEFAULT_CACHE_CODE, root], capture_output=True,
+            result = subprocess.run([python, "-I", "-c", _DEFAULT_CACHE_CODE, root], capture_output=True,
                                     text=True, timeout=30, check=True, env=environment)
         except (OSError, subprocess.SubprocessError):
             return None
-        _DEFAULT_CACHES[root] = result.stdout.strip().splitlines()[-1]
-    return _DEFAULT_CACHES[root]
+        _DEFAULT_CACHES[key] = result.stdout.strip().splitlines()[-1]
+    return _DEFAULT_CACHES[key]
 
 
 def cache_environment(selection, environment=None):
-    """Child environment: GATO_CACHE_DIR set to an explicit cache override, else unset."""
+    """Selected environment's packages, without inherited PYTHONPATH or an implicit cache override."""
     environment = dict(os.environ if environment is None else environment)
+    environment.pop("PYTHONPATH", None)
     if selection.get("cache"):
         environment["GATO_CACHE_DIR"] = selection["cache"]
     else:
@@ -96,7 +97,7 @@ def checkout_defaults(mpc_root):
     for missing paths. The default cache is tiago_mpc's resolved path (None if unknown)."""
     root = Path(mpc_root).expanduser().resolve()
     python = default_interpreter_template(root)
-    cache = default_cache(root)
+    cache = default_cache(root, expand_template(python, root))
     return dict(mpc_root=str(root), python=python, cache=cache, cache_label=DEFAULT_CACHE_LABEL,
                 resolved=dict(python=str(expand_template(python, root)), cache=cache))
 
@@ -149,11 +150,13 @@ def resolve_selection(mpc_root, python=None, cache=None):
         directory = str(expand_template(templates["cache"], root).resolve())
         _check_cache(Path(directory))
     return dict(mpc_root=str(root), python=str(interpreter), cache=directory,
-                effective_cache=directory or default_cache(root), templates=templates)
+                effective_cache=directory or default_cache(root, interpreter), templates=templates)
 
 
-def source_command(selection, operation="probe", ns=()):
-    """The selected interpreter runs scripts/source_probe.py (probe, or build ns)."""
+_UNPINNED_SETTINGS = object()
+
+def source_command(selection, operation="probe", ns=(), *, params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
+    """The selected interpreter runs scripts/source_probe.py (probe, model, or build ns)."""
     selected = resolve_selection(selection["mpc_root"], python=selection.get("python"), cache=selection.get("cache"))
     command = [selected["python"], str(PROBE_SCRIPT), operation,
                "--mpc-root", selected["mpc_root"], "--python", selected["python"]]
@@ -161,15 +164,22 @@ def source_command(selection, operation="probe", ns=()):
         command += ["--cache", selected["cache"]]
     if ns:
         command += ["--N", *map(str, ns)]
+    if params is not None:
+        command += ["--params-json", json.dumps(params, allow_nan=False)]
+    if source_settings is not None:
+        command += ["--source-settings-json", json.dumps(source_settings, allow_nan=False)]
+    if source_settings_module is not _UNPINNED_SETTINGS:
+        command += ["--source-settings-module-json", json.dumps(source_settings_module, allow_nan=False)]
     return command
 
 
-def build_command(selection, counts, rebuild=False, prediction_friction=False):
+def build_command(selection, counts, rebuild=False, prediction_friction=False, *, params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
     """Command/env for a parent-managed streaming build subprocess."""
     ns = list(counts)
     if not ns or any(isinstance(n, bool) or n not in KNOT_COUNTS for n in ns):
         raise ValueError(f"Build knot counts must be among {', '.join(map(str, KNOT_COUNTS))}")
-    command = source_command(selection, "build", sorted(set(ns)))
+    command = source_command(selection, "build", sorted(set(ns)), params=params, source_settings=source_settings,
+                             source_settings_module=source_settings_module)
     if prediction_friction:
         command.append("--prediction-friction")
     if rebuild:
@@ -177,12 +187,14 @@ def build_command(selection, counts, rebuild=False, prediction_friction=False):
     return command, dict(cache_environment(selection), PYTHONUNBUFFERED="1")
 
 
-def probe_selection(selection, timeout=120):
+def probe_selection(selection, timeout=120, *, operation="probe", params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
     """The selected interpreter's import probe: tiago_mpc's API, the compiled modules
     (find_binary per KNOT_COUNTS and predictor friction), defaults and contract.
+    operation='model' only resolves the draft and checks its exact native binaries.
     Never imports the source here."""
     try:
-        command = source_command(selection)
+        command = source_command(selection, operation, params=params, source_settings=source_settings,
+                             source_settings_module=source_settings_module)
         result = subprocess.run(command, capture_output=True, text=True,
                                 timeout=timeout, check=False, env=cache_environment(selection))
         try:
@@ -207,11 +219,10 @@ def source_identity(root):
         except (OSError, subprocess.SubprocessError):
             return None
     data = {}
-    for name, path in (("mpc", Path(root)), ("gato", Path(root) / "external/gato")):
-        data[name + "_commit"] = git(path, "rev-parse", "HEAD")
-        data[name + "_branch"] = git(path, "branch", "--show-current")
-        status = git(path, "status", "--porcelain")
-        data[name + "_dirty"] = None if status is None else bool(status)
+    data["mpc_commit"] = git(root, "rev-parse", "HEAD")
+    data["mpc_branch"] = git(root, "branch", "--show-current")
+    status = git(root, "status", "--porcelain")
+    data["mpc_dirty"] = None if status is None else bool(status)
     return data
 
 

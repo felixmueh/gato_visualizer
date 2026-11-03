@@ -1,6 +1,8 @@
 import { intervalDescription, intervalSeverity } from './live-execution.js';
 import { snapOffset } from './session.js';
 import { createFloatingDialog } from './floating-dialog.js';
+import { configureTimeInput, readTimeInput, parseTimeValue } from './time-input.js';
+const OFFSET_TIME = { unit: 's', allowFrequency: false, label: 'Track offset' };
 
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 export function timelineTypingTarget(target) {
@@ -240,6 +242,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     const badges = doc.createElement('span'); badges.className = 'timeline-lane-badges';
     const differences = doc.createElement('span'); differences.className = 'timeline-lane-differences';
     const offset = doc.createElement('input'); offset.type = 'text'; offset.className = 'timeline-lane-offset'; offset.setAttribute('inputmode', 'decimal');
+    configureTimeInput(offset, OFFSET_TIME);
     offset.setAttribute('aria-label', `Track ${track.letter || track.id} offset in seconds`);
     const unit = doc.createElement('span'); unit.className = 'timeline-lane-offset-unit'; unit.textContent = 's';
     const eye = doc.createElement('button'); eye.type = 'button'; eye.className = 'timeline-lane-visibility';
@@ -255,8 +258,9 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     clip.append(bands); rail.append(clip, cursor); information.append(label, badges, differences); header.append(chip, information, offset, unit, eye, display, action); row.append(header, rail);
     const node = { row, chip, label, badges, differences, offset, eye, display, remove, freeze, rail, clip, bands, cursor, track, bandsKey: '' };
     function applyOffset() {
-      const value = Number(offset.value.replace(/s\s*$/, '').trim());
-      if (!offset.value.trim() || !Number.isFinite(value)) { offset.value = offsetText(node.track.offset_s || 0); return; }
+      let value;
+      try { value = readTimeInput(offset, OFFSET_TIME); }
+      catch { offset.value = offsetText(node.track.offset_s || 0); offset.setCustomValidity?.(''); return; }
       onTrackChange(track.id, { offset_s: value });
     }
     if (track.kind !== 'live') {
@@ -334,8 +338,13 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       node.label.title = [track.catalogName || track.label || name, ...differences.map(diffText)].join('\n');
       node.differences.textContent = differences.slice(0, 2).map(diffText).join(' · '); node.differences.title = differences.map(diffText).join('\n');
       node.badges.replaceChildren(...(track.badges || []).filter(badge => badge.label !== 'Incomplete').map(badge => { const element = doc.createElement('span'); element.className = 'timeline-lane-badge'; element.textContent = badge.label || '⚠'; element.title = badge.title || ''; return element; }));
-      if (doc.activeElement !== node.offset) node.offset.value = offsetText(offset);
+      if (doc.activeElement !== node.offset) {
+        let equivalent = false;
+        try { equivalent = parseTimeValue(node.offset.value, OFFSET_TIME) === offset; } catch {}
+        if (!equivalent) node.offset.value = offsetText(offset);
+      }
       node.offset.disabled = main; node.offset.title = main ? 'Live offset is fixed at 0 s' : 'Offset in session time; double-click the lane to reset';
+      configureTimeInput(node.offset, OFFSET_TIME);
       node.eye.textContent = track.visible === false ? '○' : '●'; node.eye.title = track.visible === false ? 'Show track' : 'Hide track';
       node.eye.setAttribute('aria-label', `${track.visible === false ? 'Show' : 'Hide'} track ${name}`); node.eye.setAttribute('aria-pressed', String(track.visible !== false)); node.eye.disabled = main;
       node.display.textContent = !main && track.display === 'dot' ? 'Dot' : 'Arm'; node.display.title = main ? track.display === 'hidden' ? 'Show Live arm' : 'Hide Live arm' : 'Toggle ghost arm / end-effector dot'; node.display.disabled = false;

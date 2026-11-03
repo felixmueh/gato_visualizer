@@ -74,3 +74,21 @@ test('hiding the inspector cancels capability work but an active job keeps polli
   assert.equal(h.requests.at(-1).path, '/api/solve-inspections/jobs/j/stop');
   assert.equal(h.ui.snapshot.active, false); assert.equal(h.timers.size, 0); h.ui.destroy();
 });
+
+test('inspection wall budget accepts units or frequency, preserves its text and keeps none optional', async () => {
+  const h = fixture(path => path.endsWith('/capability') ? { available: true } : { id: 'done', state: 'completed', source: { kind: 'inspection', id: 'result' } });
+  h.ui.update(context('s1')); await flush();
+  assert.equal(h.ui.budget.type, 'text');
+  for (const text of ['20ms', '50 Hz']) {
+    h.ui.budget.value = text; await h.ui.run.emit('click');
+    assert.equal(h.requests.at(-1).body.budget_s, .02); assert.equal(h.ui.budget.value, text);
+  }
+  for (const text of ['', 'none']) {
+    h.ui.budget.value = text; await h.ui.run.emit('click');
+    assert.equal('budget_s' in h.requests.at(-1).body, false);
+  }
+  const before = h.requests.length;
+  h.ui.budget.value = '0ms'; await h.ui.run.emit('click');
+  assert.equal(h.requests.length, before); assert.match(h.ui.status.textContent, /greater than 0 s/);
+  h.ui.destroy();
+});

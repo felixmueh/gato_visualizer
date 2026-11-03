@@ -191,6 +191,16 @@ class StandardPlotNumericTests(unittest.TestCase):
         self.assertEqual(covered['combined_only'], .5)
         self.assertEqual(covered['physics'], 0.)
 
+    def test_asap_has_no_deadline_including_old_records_with_spurious_red_flags(self):
+        interval = dict(start_time_s=0., end_time_s=.004, to_budget_s=.004,
+                        solve_wall_s=.006, physics_wall_s=.001, total_wall_s=.007,
+                        severity='red', to_back_to_back=True)
+        covered = interval_coverage([interval])
+        self.assertEqual(covered['mpc'], 0.)
+        self.assertAlmostEqual(covered['combined_only'], .004)
+        interval['physics_wall_s'] = .008
+        self.assertAlmostEqual(interval_coverage([interval])['physics'], .004)
+
 
 class FreezeTests(unittest.TestCase):
     def test_fast_paths_freeze_like_the_plain_recursion(self):

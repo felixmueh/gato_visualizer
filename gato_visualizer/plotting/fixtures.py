@@ -38,3 +38,24 @@ def example_episode(*, missing=False, context=None):
                             # Physical (scene) limits; here equal to the recorded bounds.
                             scene_joint_limits=dict(lower_position_rad=[-1., -2.], upper_position_rad=[1., 2.],
                                                     velocity_rad_s=[2., 2.], effort_nm=[5., 5.])), context or InspectionContext())
+
+
+def example_comparison(*, missing=False, context=None):
+    """Two linear signals with distinct clocks/rates and one early termination.
+
+    Both are placed at session zero. Error is t metres in A and 2t in B;
+    the common interval is [0, 1], giving RMS sqrt(1/3) and sqrt(4/3).
+    """
+    from .comparison import ComparisonView, ComparisonRun
+    runs = []
+    for key, origin, times, scale, color in [('a', 10., [0., .5, 1., 2.], 1., '#b48cff'),
+                                            ('b', 20., [0., .25, .5, .75, 1.], 2., '#6fa8ff')]:
+        states = [dict(sim_time_s=origin+t, q=[scale*t], qd_rad_s=[scale*t],
+                       ee_xyz=[scale*t, 0., 0.], target_xyz=[0., 0., 0.], sensor=dict(temperature_c=20+t)) for t in times]
+        controls = [dict(sim_time_s=origin+t, torque_nm=[scale*t]) for t in times]
+        if missing and key == 'b':
+            states = [{k: v for k, v in state.items() if k not in ('qd_rad_s', 'ee_xyz', 'target_xyz')} for state in states]
+            controls = []
+        episode = EpisodeView(dict(states=states, controls=controls, torque_samples=controls, joint_names=['arm_right_1_joint']))
+        runs.append(ComparisonRun(key, 'Run '+key.upper(), episode, -origin, color, dict(kind='replay', id=key)))
+    return ComparisonView(tuple(runs), context or InspectionContext(clock='session:fixture'))

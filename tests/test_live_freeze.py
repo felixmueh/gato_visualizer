@@ -23,7 +23,7 @@ from live_freeze import committed_records, export_freeze, freeze_arguments
 from replay_format import JOINT_NAMES, ReplayError, load_replay
 from replay_library import ReplayLibrary
 from server import RobotKinematics, load_scene, make_server, replay_motion, replay_scene
-from tiago_mpc_source import MODEL, MPC_ROOT, replay_exporter
+from tests.tiago_mpc_source import MODEL, MPC_ROOT, replay_exporter
 
 tools = replay_exporter()
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +108,7 @@ class LiveFreezeTests(unittest.TestCase):
         np.testing.assert_array_equal(replay.torque_nm, [[2.]*7, [3.]*7])
         self.assertEqual(replay.reference.frame, "base_footprint")
         np.testing.assert_array_equal(replay.reference.xyz, [[.3,-.2,.5], [.31,-.2,.5], [.32,-.2,.5]])
+
         self.assertEqual(replay.metadata["fixed_joints"], dict(torso_lift_joint=.12))
         self.assertEqual(replay.joint_limits, self.scene["joint_limits"])
         self.assertEqual(len(replay.predictions), 1)
@@ -127,6 +128,55 @@ class LiveFreezeTests(unittest.TestCase):
         self.assertEqual((live["generation"], live["frozen_at"]), (7, "2026-10-23T12:34:56+00:00"))
         complete = load_replay(self.export(complete=True), model_urdf=MODEL)
         self.assertTrue(complete.metadata["provenance"]["live"]["complete"])
+
+    def test_compensated_freeze_preserves_future_origin_and_actual_request_time_for_plots(self):
+        from plot_sources import SourceReader
+        from replay_library import _signature
+        records = deepcopy(self.records)
+        records[2].update(request_time_s=3., plan_origin_time_s=3.006, measured_time_s=3.)
+        path = self.export(records=records)
+        replay = load_replay(path, model_urdf=MODEL)
+        self.assertEqual(replay.predictions[0].origin_time_s, 3.006)
+        self.assertEqual(replay.metadata["provenance"]["live"]["plan_timing"]["live-1"],
+                         dict(request_time_s=3., plan_origin_time_s=3.006, measured_time_s=3.))
+        self.assertNotIn("plan_origin_time_s", replay.predictions[0].stats)
+        reader = SourceReader(MPC_ROOT, self.scene)
+        for comparison in (False, True):
+            raw = reader.read(dict(kind="replay", id="freeze", path=str(path), signature=list(_signature(path)),
+                                   comparison=comparison))
+            self.assertEqual(raw["plans"][0]["sim_time_s"], 0.)
+            self.assertEqual(raw["plans"][0]["recorded_origin_time_s"], 3.006)
+
+    def test_freeze_retains_source_values_and_actual_resolved_models_and_law(self):
+        records = deepcopy(self.records)
+        header = records[0]["context"]
+        header["settings"]["source_settings"] = dict(
+            simulation=dict(armature_on=False, armature=[.5]*7, law="both"),
+            predictor=dict(armature_on=True, armature=[.5]*7))
+        effective = dict(params=dict(armature=[.5]*7), plant=dict(armature=[0.]*7),
+                         law=dict(type="ExampleCustomLaw", gain=3.),
+                         modules=dict(simulation=dict(path="/source/_visualizer/_settings.py", sha256="a"*64),
+                                      predictor=dict(path="/profile/_visualizer/_settings.py", sha256="b"*64)))
+        header["effective_settings"] = effective
+        replay = load_replay(self.export(records), model_urdf=MODEL)
+        live = replay.metadata["provenance"]["live"]
+        self.assertEqual(live["settings"]["source_settings"], header["settings"]["source_settings"])
+        self.assertEqual(live["effective_settings"], effective)
+
+    def test_delayed_freeze_preserves_request_origin_and_actual_activation_in_optional_stats(self):
+        records=deepcopy(self.records)
+        records[2].update(request_time_s=3.,available_time_s=3.0055,scheduled_activation_time_s=3.006,
+                          solve_latency_s=.0055,latency_overrun=False,controller_wall_s=.008)
+        records[3].update(plan_seq=1,sim_time_s=3.006)
+        pending=deepcopy(records[2]); pending.update(seq=3,sim_time_s=3.015,request_time_s=3.015,
+            available_time_s=3.025,scheduled_activation_time_s=3.026)
+        records.insert(-1,pending)
+        replay=load_replay(self.export(records=records),model_urdf=MODEL)
+        self.assertEqual([p.origin_time_s for p in replay.predictions],[3.,3.015])
+        self.assertEqual(replay.predictions[0].stats['activation_time_s'],3.006)
+        self.assertIsNone(replay.predictions[1].stats['activation_time_s'])
+        np.testing.assert_array_equal(replay.predictions[0].time_s,[0,.01,.02])
+        np.testing.assert_array_equal(replay.predictions[0].q,records[2]['q'])
 
     def test_limits_refused_and_partial_files_removed_without_silent_truncation(self):
         destination = self.folder / "freeze.npz"

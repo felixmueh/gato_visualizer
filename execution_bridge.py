@@ -31,6 +31,23 @@ class LiveFreezeConflict(ValueError):
     pass
 
 
+class LiveSettingsConflict(ValueError):
+    def __init__(self, settings):
+        super().__init__("Settings changed")
+        self.settings = settings
+
+
+def merge_settings(current, patch):
+    """Merge objects recursively; arrays, scalars and null replace values."""
+    result = deepcopy(current)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge_settings(result[key], value)
+        else:
+            result[key] = deepcopy(value)
+    return result
+
+
 class HistoryStore:
     """Append-only JSONL; bounded pages and a compact byte-offset index.
 
@@ -288,6 +305,9 @@ class ProcessLiveService:
             if ready.get("kind") != "ready":
                 raise RuntimeError(ready.get("message", "Numerical worker failed during setup"))
             self.schema = ready["schema"]
+            self.schema["compile_selection"] = {key: self.active_profile.get(key)
+                for key in ("mpc_root", "python", "cache", "effective_cache")}
+            self.schema["compile_profile_id"] = self.active_profile_id
         except BaseException:
             self.shutdown.set()
             self._process.join(timeout=3)
@@ -298,9 +318,13 @@ class ProcessLiveService:
         self.config = deepcopy(self.schema["defaults"]["config"])
         self.task = deepcopy(self.schema["defaults"]["task"])
         self.execution = deepcopy(self.schema["defaults"].get("execution", DEFAULT_EXECUTION))
+        self.source_settings = deepcopy(self.schema["defaults"].get("source_settings", dict(simulation={}, predictor={})))
+        self.effective_settings = deepcopy(self.schema.get("effective_settings", {}))
         self.schema["execution"] = dict(defaults=deepcopy(self.execution),
             max_duration_s=120, max_states=MAX_STATES,
-            rates_order=["simulation_hz", "control_hz", "to_hz"])
+            rates_order=["simulation_hz", "control_hz", "to_hz"],
+            solve_latency=dict(field="solve_latency_s", measured="measured", units="s", minimum=0),
+            back_to_back_to_hz=0)
         # Runtime scratch on tmpfs (runtime_files); only the current run is kept.
         self.history_store = HistoryStore(runtime_directory("history"))
         self.inspection_store = HistoryStore(runtime_directory("solves"))
@@ -339,7 +363,8 @@ class ProcessLiveService:
                                                generation=self.generation, settings_version=self.version,
                                                bridge_command_epoch=self._freeze_epoch + 1))
                 self._freeze_epoch += 1
-            return self.cursor, [self.latest[k] for k in ("status", "segment", "plan", "state", "history") if k in self.latest]
+            return self.cursor, [dict(type="settings", **self.settings_snapshot()),
+                                 *[self.latest[k] for k in ("status", "segment", "plan", "state", "history") if k in self.latest]]
 
     def unsubscribe(self):
         with self.condition:
@@ -442,7 +467,8 @@ class ProcessLiveService:
             request = dict(type="switch_solver_profile", profile=deepcopy(profile), anchor=anchor,
                 token=self.revision.value, generation=self.generation, target_generation=self.generation+1,
                 settings_version=self.version, config=deepcopy(self.config), task=deepcopy(self.task),
-                execution=deepcopy(self.execution), previous_profile_id=self.active_profile_id)
+                execution=deepcopy(self.execution), source_settings=deepcopy(self.source_settings),
+                previous_profile_id=self.active_profile_id)
             self.commands.put_nowait(request)
             self.publish(dict(type="status", state="paused", message="Switching solver profile",
                 generation=self.generation, settings_version=self.version, job_active=False))
@@ -460,13 +486,25 @@ class ProcessLiveService:
         if not probe.get("compatible"):
             return False
         available = available_modules(probe)
-        source = source_identity(Path(selection["mpc_root"]).expanduser().resolve())
+        source = (dict(deepcopy(probe["source"]), mpc_root=str(selection["mpc_root"])) if "source" in probe else
+                  source_identity(Path(selection["mpc_root"]).expanduser().resolve()))
         with self.condition:
             active = self.active_profile
             if (self.closed or not self._process.is_alive() or self.profile_switch["state"] == "switching" or
                     any(str(active.get(key)) != str(selection.get(key)) for key in keys) or
                     source != self.schema.get("source")):
                 return False
+            if self.schema.get("exact_availability") or probe.get("exact_availability"):
+                # The build may belong to an unaccepted browser draft. Refresh
+                # the accepted model, never label its running history as that draft.
+                from source_runtime import probe_selection
+                from live_mpc import mpc_params
+                role = self.schema["source_settings"]["predictor"]
+                accepted = probe_selection(active, params=mpc_params(self.config),
+                    source_settings=self.source_settings["predictor"], source_settings_module=role.get("module"))
+                if not accepted.get("compatible"):
+                    return False
+                available = available_modules(accepted)
             try:
                 self.commands.put_nowait(dict(type="refresh_compiled", **deepcopy(available)))
             except queue.Full:
@@ -493,26 +531,87 @@ class ProcessLiveService:
             if not ready or self.closed or self.revision.value != token:
                 raise ValueError("Live did not reach an inspection pause boundary; try again when idle")
 
+    def settings_snapshot(self):
+        """Accepted settings, read without subscribing or scheduling numerical work."""
+        with self.condition:
+            return dict(config=deepcopy(self.config), task=deepcopy(self.task),
+                        execution=deepcopy(self.execution), source_settings=deepcopy(getattr(self, "source_settings", dict(simulation={}, predictor={}))),
+                        effective_settings=deepcopy(getattr(self, "effective_settings", {})),
+                        available_N=deepcopy(self.schema.get("available_N", [])),
+                        available_N_by_friction=deepcopy(self.schema.get("available_N_by_friction", {})),
+                        exact_availability=bool(self.schema.get("exact_availability")), settings_version=self.version,
+                        generation=self.generation)
+
     def command(self, command):
-        from live_mpc import validate_settings
+        # Merge, validation and acceptance share the lock: disjoint client patches
+        # cannot overwrite one another and a rejected patch changes nothing.
+        with self.condition:
+            return self._command_locked(command)
+
+    def _command_locked(self, command):
+        from live_mpc import validate_settings, validate_source_settings, mpc_params, available_modules
         if not isinstance(command, dict):
             raise ValueError("Live command must be a JSON object")
         kind = command.get("type")
-        allowed = {"set_settings": {"type", "config", "task", "execution", "anchor", "reset"},
+        allowed = {"set_settings": {"type", "config", "task", "execution", "source_settings", "anchor", "reset", "expected_settings_version"},
+                   "patch_settings": {"type", "patch", "anchor", "reset", "expected_settings_version"},
                    "precalculate": {"type", "anchor"}, "preview": {"type", "anchor"}, "play": {"type"},
                    "pause": {"type"}, "cancel": {"type"}, "reset": {"type"}}
         if kind not in allowed or not set(command) <= allowed[kind]:
             raise ValueError("Unknown live command or unexpected command fields")
         request = deepcopy(command)
+        presentation_only = False
+        if kind in ("set_settings", "patch_settings"):
+            if "expected_settings_version" in request:
+                expected = request.pop("expected_settings_version")
+                if type(expected) is not int or expected < 0:
+                    raise ValueError("expected_settings_version must be a nonnegative integer")
+                if expected != self.version:
+                    raise LiveSettingsConflict(self.settings_snapshot())
+        if kind == "patch_settings":
+            patch = request.pop("patch", None)
+            if (not isinstance(patch, dict) or not patch or
+                    set(patch) - {"config", "task", "execution", "source_settings"} or
+                    any(not isinstance(value, dict) for value in patch.values())):
+                raise ValueError("patch requires config, task, execution or source_settings objects")
+            presentation_only = (set(patch) == {"execution"} and
+                                 set(patch["execution"]) == {"continue_at_end"} and
+                                 not {"anchor", "reset"}.intersection(request))
+            current = dict(config=self.config, task=self.task, execution=self.execution,
+                           source_settings=getattr(self, "source_settings", dict(simulation={}, predictor={})))
+            task_kind = patch.get("task", {}).get("kind", self.task["kind"])
+            if task_kind != self.task["kind"]:
+                descriptor = next((task for task in self.schema["tasks"] if task["kind"] == task_kind), None)
+                if descriptor is None:
+                    raise ValueError("Unknown task kind")
+                current["task"] = descriptor["defaults"]
+            request.update(merge_settings(current, patch))
+            request["type"] = kind = "set_settings"
+        checked_model = None
         if kind == "set_settings":
-            if "reset" in command and not isinstance(command["reset"], bool):
+            if "reset" in request and not isinstance(request["reset"], bool):
                 raise ValueError("reset must be a boolean")
-            if command.get("reset") and command.get("anchor") is not None:
+            if request.get("reset") and request.get("anchor") is not None:
                 raise ValueError("Choose reset or an anchor, not both")
-            if not {"config", "task"} <= set(command):
+            if not {"config", "task"} <= set(request):
                 raise ValueError("set_settings requires config and task")
-            request["config"], request["task"] = validate_settings(command["config"], command["task"], self.schema)
-            request["execution"] = validate_execution(command.get("execution", self.execution))
+            exact_model = bool(self.schema.get("exact_availability") or
+                               (isinstance(request["config"], dict) and "armature" in request["config"]))
+            request["config"], request["task"] = validate_settings(request["config"], request["task"], self.schema,
+                                                                  check_available=not exact_model)
+            request["source_settings"] = validate_source_settings(self.schema, request.get("source_settings",
+                getattr(self, "source_settings", None)))
+            if exact_model and not presentation_only:
+                from source_runtime import probe_selection
+                role = self.schema["source_settings"]["predictor"]
+                checked_model = probe_selection(self.active_profile, params=mpc_params(request["config"]),
+                    source_settings=request["source_settings"]["predictor"], source_settings_module=role.get("module"))
+                if not checked_model.get("compatible"):
+                    raise ValueError(checked_model.get("error", "Predictor settings could not be resolved"))
+                if checked_model["effective_settings"]["params"]["N"] not in checked_model["available_N"]:
+                    raise ValueError(f"Not compiled: N={checked_model['effective_settings']['params']['N']} for the requested predictor settings. "
+                                     "Build this exact model in Settings › Backend (Build selected N).")
+            request["execution"] = validate_execution(request.get("execution", self.execution))
             if request["execution"]["calculation"] == "automatic" and estimated_states(request["execution"]) > MAX_STATES:
                 raise ValueError(f"Requested rates/duration exceed {MAX_STATES} stored states; reduce duration or rates")
         if "anchor" in command:
@@ -524,6 +623,12 @@ class ProcessLiveService:
                 raise ValueError("A solver profile switch is in progress")
             if not self._process.is_alive():
                 raise ValueError("Numerical worker stopped; restart the server")
+            if presentation_only:
+                # This is the browser's tip-extension preference, not a change to
+                # generated motion. Sharing it must not discard history or solve.
+                self.execution = request["execution"]
+                self.publish(dict(type="settings", **self.settings_snapshot()))
+                return self.next_version
             if kind == "precalculate" or (kind == "play" and self.execution["calculation"] != "on_play"):
                 retained = self.history_store.state_count if kind == "play" else 0
                 if retained+estimated_states(self.execution) > MAX_STATES:
@@ -539,6 +644,15 @@ class ProcessLiveService:
                 self.next_version += 1
                 self.version = self.next_version
                 self.config, self.task, self.execution = request["config"], request["task"], request["execution"]
+                self.source_settings = deepcopy(request["source_settings"])
+                if checked_model is not None:
+                    self.schema.update(available_modules(checked_model))
+                    self.effective_settings = merge_settings(getattr(self, "effective_settings", {}),
+                                                             checked_model.get("effective_settings", {}))
+                    self.schema["effective_settings"] = deepcopy(self.effective_settings)
+                    for spec in self.schema["parameters"]:
+                        if spec["path"] == "N":
+                            spec["choices"] = list(self.schema["available_N"])
             # Pause is playback-only during explicit precalculation. It must not
             # invalidate a manual/automatic job; Cancel is the separate control.
             if kind == "pause" and self.execution["calculation"] != "on_play":
@@ -559,9 +673,12 @@ class ProcessLiveService:
                 self._reset_stores()
                 for key in ("segment", "plan", "state"):
                     self.latest.pop(key, None)
+                if kind == "set_settings":
+                    self.publish(dict(type="settings", **self.settings_snapshot()))
                 self.publish(self._history_metadata())
             request.update(token=self.revision.value, generation=self.generation, settings_version=self.version,
                            config=deepcopy(self.config), task=deepcopy(self.task), execution=deepcopy(self.execution),
+                           source_settings=deepcopy(getattr(self, "source_settings", dict(simulation={}, predictor={}))),
                            generation_start=deepcopy(self._generation_start), bridge_command_epoch=self._freeze_epoch + 1)
             self.commands.put_nowait(request)
             self._freeze_epoch += 1
@@ -598,20 +715,38 @@ class ProcessLiveService:
                             self.active_profile_id = identifier
                             self.active_profile = deepcopy(packet["profile"])
                             self.profile_switch = dict(state="idle")
-                            for key in ("available_N", "available_N_by_friction", "parameters", "friction", "source"):
-                                self.schema[key] = deepcopy(packet["schema"][key])
+                            for key in ("available_N", "available_N_by_friction", "supported_N", "exact_availability", "parameters", "friction", "source", "source_settings"):
+                                if key in packet["schema"]:
+                                    self.schema[key] = deepcopy(packet["schema"][key])
+                            self.schema["compile_selection"] = {key: self.active_profile.get(key)
+                                for key in ("mpc_root", "python", "cache", "effective_cache")}
+                            self.schema["compile_profile_id"] = self.active_profile_id
+                            self.source_settings = deepcopy(packet.get("source_settings", self.source_settings))
+                            self.effective_settings = deepcopy(packet.get("effective_settings", {}))
+                            self.schema["effective_settings"] = deepcopy(self.effective_settings)
+                            self.publish(dict(type="settings", **self.settings_snapshot()))
                             self.publish_events([dict(type="solver_profile", state="active",
-                                profile_id=identifier, generation=self.generation), self._history_metadata()])
+                                profile_id=identifier, generation=self.generation,
+                                switch_revision=self._profile_revision_floor), self._history_metadata()])
                         else:
                             self.active_profile_id = packet.get("active_profile_id")
                             self.profile_switch = dict(state="failed", profile_id=identifier, error=packet["message"])
                             self.publish(dict(type="solver_profile", state="failed", profile_id=identifier,
-                                generation=self.generation, active_profile_id=self.active_profile_id, error=packet["message"]))
+                                generation=self.generation, active_profile_id=self.active_profile_id,
+                                switch_revision=self._profile_revision_floor, error=packet["message"]))
                     continue
                 # A queued record from the replaced solver cannot enter either
                 # history while the activation transaction is in progress.
                 if (self.profile_switch["state"] == "switching" or
                         packet.get("token", -1) < self._profile_revision_floor):
+                    continue
+                if kind == "resolved_settings":
+                    with self.condition:
+                        if packet.get("generation") == self.generation and packet.get("token") == self.revision.value:
+                            self.source_settings = deepcopy(packet["source_settings"])
+                            self.effective_settings = deepcopy(packet["effective_settings"])
+                            self.schema["effective_settings"] = deepcopy(self.effective_settings)
+                            self.publish(dict(type="settings", **self.settings_snapshot()))
                     continue
                 if kind == "failure":
                     with self.condition:
@@ -645,6 +780,9 @@ class ProcessLiveService:
                         self.history_store.complete = packet.get("complete", False)
                         if segment:
                             self.segment = self.latest["segment"] = self._unannounced_segment = segment
+                            if "effective_settings" in segment["context"]:
+                                self.effective_settings = deepcopy(segment["context"]["effective_settings"])
+                                self.schema["effective_settings"] = deepcopy(self.effective_settings)
                         # History is independent of the latest-value SSE display.
                         # Every record remains queryable even when SSE coalesces.
                         if latest_plan:

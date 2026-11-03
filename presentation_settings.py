@@ -61,10 +61,19 @@ class PresentationSettings:
         with self.lock:
             return deepcopy(self.value)
 
+    def patch(self, changes):
+        """Validate and apply selected fields against the current value atomically."""
+        if not isinstance(changes, dict) or set(changes) - set(DEFAULT_PRESENTATION):
+            raise ValueError('Unknown presentation setting or non-object patch')
+        with self.lock:
+            return self.update(dict(self.value, **changes))
+
     def update(self, value):
         from visualizer_config import save_local_settings
         value = validate_presentation(value)
         with self.lock:
+            if value == self.value:
+                return deepcopy(value)
             save_local_settings(self.path, presentation=value)
             try:
                 if self.live is not None and value['report_hz'] != self.value['report_hz']:

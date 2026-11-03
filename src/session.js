@@ -7,7 +7,7 @@ const finiteSpan = span => Array.isArray(span) && span.length === 2 && span.ever
 const offsetOf = track => track.kind === 'live' ? 0 : track.offset_s || 0;
 
 export function sessionSpan(value) {
-  const tracks = Array.isArray(value) ? value : value.tracks;
+  const tracks = Array.isArray(value) ? value : value.activeTracks || value.tracks;
   const spans = tracks.filter(track => (track.kind === 'live' || track.visible !== false) && finiteSpan(track.span) && !track.empty)
     .map(track => track.span.map(time => time + offsetOf(track)));
   return spans.length ? [Math.min(...spans.map(span => span[0])), Math.max(...spans.map(span => span[1]))] : [0, 0];
@@ -77,7 +77,7 @@ export function createSession() {
   const main = { id: 'live', kind: 'live', source: { kind: 'live', generation: null }, letter: 'A', label: 'Live', displayName: 'Live', color: 0xffffff,
     offset_s: 0, defaultOffset: 'zero', visible: true, display: 'arm', span: [0, 0], empty: true, timeBasis: 'simulation', settings: null };
   const tracks = [main], listeners = new Set();
-  let cursor = 0, rate = 1, aggregate = { start: null, end: null }, nextTrack = 1, revision = 0;
+  let cursor = 0, rate = 1, aggregate = { start: null, end: null }, nextTrack = 1, revision = 0, replayOnly = false;
   const notify = () => { revision++; for (const listener of listeners) listener(session); };
   const getTrack = id => tracks.find(track => track.id === id);
   const comparisons = () => {
@@ -93,9 +93,12 @@ export function createSession() {
   const session = {
     id: `session-${++sessionSequence}`, timeBasis: 'simulation', tracks,
     get focusedId() { return main.id; }, get focused() { return main; },
-    get span() { return sessionSpan(tracks); }, get cursor() { return cursor; }, get rate() { return rate; },
+    get replayOnly() { return replayOnly; },
+    get activeTracks() { return replayOnly ? tracks.filter(track => track.kind !== 'live') : tracks; },
+    get span() { return sessionSpan(session.activeTracks); }, get cursor() { return cursor; }, get rate() { return rate; },
     get aggregate() { return { ...aggregate }; }, get revision() { return revision; },
     track: getTrack,
+    setReplayOnly(value) { const next = Boolean(value); if (replayOnly !== next) { replayOnly = next; notify(); } },
     updateMain(fields) {
       const compare = fields.context !== main.context || fields.settings !== main.settings || fields.endEffectorFrame !== main.endEffectorFrame;
       const changed = compare || fields.empty !== main.empty || fields.span?.[0] !== main.span?.[0] || fields.span?.[1] !== main.span?.[1] || fields.source?.generation !== main.source?.generation;

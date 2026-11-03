@@ -204,6 +204,20 @@ test('lane drag uses pointer capture, six-pixel snapping and Alt; explicit edits
   await row.querySelector('.timeline-lane-remove').emit('click'); assert.deepEqual(removed, ['b']);
 });
 
+test('signed track offsets accept time units, retain equivalent text and reject frequency notation', async () => {
+  const tracks = laneTracks(), changes = [];
+  const { timeline, nodes } = sessionTimelineFixture({ onTrackChange: (id, patch) => changes.push([id, patch]) });
+  const update = revision => timeline.update({ mode: 'live', identity: 'session', bounds: [0, 10], time: 0, revision, tracks });
+  update(1); await nodes.get('live-timeline-expand').emit('click');
+  const offset = nodes.get('timeline-lanes').children[1].querySelector('.timeline-lane-offset');
+  offset.value = '-350 ms'; await offset.emit('change');
+  assert.deepEqual(changes.at(-1), ['b', { offset_s: -.35 }]);
+  tracks[1].offset_s = -.35; update(2); assert.equal(offset.value, '-350 ms');
+  const before = changes.length;
+  offset.value = '50 Hz'; await offset.emit('change');
+  assert.equal(changes.length, before); assert.equal(offset.value, '-0.350');
+});
+
 test('session aggregate and zoom persist across generations, empty main spans and Replay visits', async () => {
   const { timeline, nodes } = sessionTimelineFixture(), intervals = [];
   const live = (bounds, revision) => timeline.update({ mode: 'live', identity: 'session', bounds, time: 0, revision, intervals, tracks: laneTracks() });

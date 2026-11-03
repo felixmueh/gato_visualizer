@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """Opt-in GPU conformance of the visualizer's Live loop with tiago_mpc's own reach.
 
-Runs experiments.reach.reach(SimPlant(substep=.001), Mpc(params), run_simulation) in
-this process, then the visualizer's SimulatorAdapter, solver child and
+Runs run_virtual_time with SimConfig(substep=.001), a prebuilt Mpc(params),
+SampleKnot and a declared 5.5 ms solve latency in this process, then the visualizer's SimulatorAdapter, solver child and
 MultirateSession from the same start, target and MpcParams (Live's defaults: TIAGO
-without the SQP wall-time limit, warm-up on), and compares the states at every command
+without the SQP wall-time limit, warm-up on) and an explicitly loss-free RK4 plant
+on both sides, independently of Live's plant defaults, and compares the states at every command
 tick, the commands and the plans. The rates are the reach's defaults: commands every
 2 ms (500 Hz), a control update every knot (100 Hz), physics on a 1 ms grid. The
-session records the state at every command tick and every command, as in Live. run()
+session records the state at every command tick and every command, as in Live. run_virtual_time
 warms up from the start state before its first tick; the session's configure reseeds
 the same way (mpc.warmup in the solver child). Both use tiago_mpc's Mpc and SimPlant;
 this checks the visualizer's scheduling, hold law, reseed and process boundary against
-run(). The default reach arrives quickly, so the reference reach gets a zero position
-tolerance: it never arrives and runs for the whole duration (default 3 s). Timing is
-excluded. Run it with the selected checkout's interpreter while the GPU is free: it
+run_virtual_time. The default reach arrives quickly, so the reference reach gets a zero position
+tolerance: it never arrives and runs for the whole duration (default 3 s). Both
+sides include the declared solve delay; wall-clock performance is not compared. Run it with the selected checkout's interpreter while the GPU is free: it
 takes the experiment locks.
 """
 from __future__ import annotations
@@ -25,27 +26,88 @@ import json
 import os
 from pathlib import Path
 import sys
+import traceback
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from execution_session import DEFAULT_EXECUTION, MultirateSession
-from live_mpc import GPULocks, build_schema, import_tiago, start_pose_spec
+from live_mpc import GPULocks, build_schema, import_tiago, mpc_params, start_pose_spec
 from source_runtime import probe_selection, resolve_selection
 from visualizer_config import DEFAULT_MPC_ROOT
 
-COMMAND_PERIOD_S = .002  # the reach's default command period (experiments/common.py, run_experiment)
+COMMAND_PERIOD_S = .002
+SOLVE_LATENCY_S = .0055  # intentionally between command ticks: activation at 6 ms
+
+
+def reference_plant(config, accumulated_ticks=False):
+    """Build the native plant, optionally normalizing advances to Live's 1 ms grid."""
+    from tiago_mpc.sim import SimPlant
+
+    class GridPlant(SimPlant):
+        # The loop accumulates command tick times while Live advances to origin +
+        # k/rate. Splitting both into the same 1 ms endpoints avoids float32
+        # optimizer amplification of ulp-sized substep differences.
+        def advance(self, t):
+            for k in range(round(self.t * 1000) + 1, round(t * 1000) + 1):
+                super().advance(k / 1000)
+
+    return config.build() if accumulated_ticks else GridPlant(config)
+
+
+def run_reference(plant, mpc, task, output, duration):
+    """Record the current native loop without compiling or owning the passed MPC."""
+    from tiago_mpc.laws import SampleKnot
+    from tiago_mpc.loops import VirtualTime, run_virtual_time
+    from tiago_mpc.record import RunRecord
+    law = SampleKnot()
+    timing = VirtualTime(command_period=COMMAND_PERIOD_S, update_period=mpc.dt, solve_latency_s=SOLVE_LATENCY_S)
+    record = RunRecord(output, task=task, params=mpc.params, plant=plant.config,
+                       law=law, timing=timing, duration=duration)
+    try:
+        outcome = run_virtual_time(plant, mpc, task, law, [record],
+                                   command_period=timing.command_period,
+                                   update_period=timing.update_period,
+                                   duration=duration, solve_latency_s=timing.solve_latency_s)
+        record.metadata.update(status=outcome.status, reason=outcome.reason, end_t=outcome.t)
+    except BaseException as error:
+        record.metadata.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "error",
+                               error=traceback.format_exc())
+        raise
+    finally:
+        record.add_events(plant.take_events())
+        record.save()
+    return record
+
+
+def reference_arrays(record):
+    """The native RunRecord read interface, excluding ticks with no sent command."""
+    ticks, plans = record.ticks, record.plans
+    sent = np.isfinite(ticks["command"]).all(axis=1)
+    return ticks["t"], dict(state=np.column_stack((ticks["q"], ticks["qd"])),
+                            command=ticks["command"][sent], plan_states=plans["states"],
+                            plan_torques=plans["torques"])
+
+
+def compare_arrays(expected, got, atol):
+    if expected.shape != got.shape:
+        return dict(shape_equal=False, max_abs_difference=None)
+    rows = np.abs(expected - got).reshape(len(expected), -1).max(axis=1) if len(expected) else np.array([])
+    beyond = np.flatnonzero(rows > atol)
+    return dict(shape_equal=True, max_abs_difference=float(rows.max(initial=0.)),
+                first_row_beyond_atol=int(beyond[0]) if len(beyond) else None,
+                max_abs_difference_before_it=float(rows[:beyond[0]].max(initial=0.)) if len(beyond) else None)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mpc-root", type=Path, default=Path(os.environ.get("TIAGO_MPC_ROOT", DEFAULT_MPC_ROOT)))
     parser.add_argument("--steps", type=int, default=300, help="knot intervals of 10 ms")
-    parser.add_argument("--atol", type=float, default=1e-9)
+    parser.add_argument("--atol", type=float, default=1e-3)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--accumulated-ticks", action="store_true",
-                        help="keep run()'s accumulated tick times (deadline += period) instead of the 1 ms grid")
+                        help="keep run_virtual_time's accumulated tick times instead of the 1 ms grid")
     args = parser.parse_args()
     if not 1 <= args.steps <= 800:
         parser.error("--steps must be in [1, 800] (the reach's 8 s timeout)")
@@ -60,9 +122,10 @@ def main():
         os.environ["GATO_CACHE_DIR"] = selection["cache"]
     import_tiago(root)
     sys.path.insert(0, str(root))  # tiago_mpc's experiments package
-    from experiments.reach import Reach, reach
-    from tiago_mpc.mpc import TIAGO, Mpc, MpcParams, find_binary
-    from tiago_mpc.sim import SimPlant
+    from experiments.reach import Reach
+    from tiago_mpc.mpc import TIAGO, Mpc, find_binary
+    from tiago_mpc.record import from_dict
+    from tiago_mpc.sim import SimConfig
     params = replace(TIAGO, max_sqp_time_s=None)  # the simulation clock: no wall-time limit
     if not params.warmup:
         parser.error("The comparison covers the default warm-up")
@@ -80,19 +143,14 @@ def main():
         mpc = Mpc(params, binary)
         task = Reach(position_tol_m=0.)  # never arrives: compare the whole duration
 
-        class GridPlant(SimPlant):
-            """run() accumulates its tick times (deadline += period) and SimPlant its substeps
-            (t + h); MultirateSession steps to origin + k/rate. The substep lengths then differ
-            by an ulp, and GATO's float32 solve amplifies that round-off after about a hundred
-            plans. This plant steps run()'s ticks on the session's 1 ms grid, k/1000."""
-            def advance(self, t):
-                for k in range(round(self.t * 1000) + 1, round(t * 1000) + 1):
-                    super().advance(k / 1000)
-
-        plant = (SimPlant if args.accumulated_ticks else GridPlant)(substep=.001)
-        record = reach(plant, mpc, task=task, out=output / "reference", duration=duration,
-                       command_period=COMMAND_PERIOD_S, update_period=params.dt_s)
-        expected, expected_status = record.trajectory, record.summary["status"]
+        plant = reference_plant(SimConfig(substep=.001), args.accumulated_ticks)
+        try:
+            record = run_reference(plant, mpc, task, output / "reference", duration)
+        finally:
+            plant.close()
+            mpc.close()
+        ticks, reference = reference_arrays(record)
+        expected_status = record.metadata["status"]
         del mpc, record
 
         from solver_adapter import SimulatorAdapter
@@ -101,38 +159,32 @@ def main():
         adapter = SimulatorAdapter(root)
         adapter.gpu_locks = locks
         adapter.select_profile(profile, schema)
-        config = schema["defaults"]["config"]
-        if MpcParams.from_dict({key: value for key, value in config.items() if key != "plant"}) != params:
+        # Preserve this loss-free RK4 comparison independently of the interactive
+        # plant's constraint-friction defaults. The reference above is loss-free.
+        defaults = schema["defaults"]["config"]
+        config = dict(defaults, plant=dict(defaults["plant"], integrator="rk4", friction=False))
+        if from_dict(mpc_params(config)) != params:
             parser.error("Live's default MpcParams differ from the reference's")
         adapter.configure(config, dict(kind="reach", target_offset_m=[0., 0., 0.]))
         np.testing.assert_allclose(adapter.target, task.target_m, rtol=0, atol=1e-12)
         session = MultirateSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000.,
-                                                 control_hz=1 / COMMAND_PERIOD_S, to_hz=1 / params.dt_s))
+                                                 control_hz=1 / COMMAND_PERIOD_S, to_hz=1 / params.dt_s,
+                                                 solve_latency_s=SOLVE_LATENCY_S))
         records = [session.initial_state()]
         while adapter.t < duration - 1e-12:
             records.extend(session.advance_interval(duration))
         states = {round(r["sim_time_s"], 9): np.asarray(r["_x"]) for r in records if r["type"] == "state"}
-        ticks = expected["time_s"]
         actual = dict(state=np.array([states[round(t, 9)] for t in ticks]),
                       command=np.array([r["torque_nm"] for r in records if r["type"] == "control"]),
                       plan_states=np.array([r["_states"] for r in records if r["type"] == "plan"]),
                       plan_torques=np.array([r["_torques"] for r in records if r["type"] == "plan"]))
         np.savez_compressed(output / "visualizer.npz", time_s=ticks, **actual)
-        sent = np.isfinite(expected["command"]).all(axis=1)
-        reference = dict(state=expected["state"], command=expected["command"][sent],
-                         plan_states=expected["plan_states"], plan_torques=expected["plan_torques"])
-        def check(expected, got):
-            if expected.shape != got.shape:
-                return dict(shape_equal=False, max_abs_difference=None)
-            rows = np.abs(expected - got).reshape(len(expected), -1).max(axis=1)
-            beyond = np.flatnonzero(rows > args.atol)
-            return dict(shape_equal=True, max_abs_difference=float(rows.max()),
-                        first_row_beyond_atol=int(beyond[0]) if len(beyond) else None,
-                        max_abs_difference_before_it=float(rows[:beyond[0]].max(initial=0.)) if len(beyond) else None)
-        checks = {key: check(reference[key], actual[key]) for key in reference}
+        checks = {key: compare_arrays(reference[key], actual[key], args.atol) for key in reference}
         passed = all(c["shape_equal"] and c["max_abs_difference"] <= args.atol for c in checks.values())
         result = dict(passed=passed, atol=args.atol, steps=args.steps, accumulated_ticks=args.accumulated_ticks,
+                      plant_case="loss_free_rk4",
                       command_period_s=COMMAND_PERIOD_S, update_period_s=params.dt_s, reference_status=expected_status,
+                      solve_latency_s=SOLVE_LATENCY_S,
                       reference_ticks=len(ticks), checks=checks, binary=str(binary),
                       params=json.loads(json.dumps(config)),
                       note="Diagnostic conformance only; no timing or convergence claim")

@@ -47,7 +47,8 @@ class EndEffectorTests(unittest.TestCase):
         self.q = np.array([[-.39, -1.73, -.38, -2.35, 0, -1.21, .04],
                            [-.25, -1.6, -.5, -2.1, .1, -1., -.1]])
         self.path = tools.save_replay(self.root / "replay.npz", time_s=[0, .03], q=self.q,
-                                      joint_names=JOINT_NAMES, model_urdf=self.full, time_basis="simulation")
+                                      joint_names=JOINT_NAMES, model_urdf=self.full, time_basis="simulation",
+                                      end_effector_frame=tools.FLANGE_FRAME)
 
     def tearDown(self):
         self.temporary.cleanup()

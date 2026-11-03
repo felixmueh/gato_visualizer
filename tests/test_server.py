@@ -140,7 +140,8 @@ class ReplayOnlyApiTests(unittest.TestCase):
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
         try:
-            for method, path, status in [("GET", "/api/live/schema", 503), ("GET", "/api/live/history?generation=0", 503),
+            for method, path, status in [("GET", "/api/live/schema", 503), ("GET", "/api/live/settings", 503),
+                                         ("GET", "/api/live/history?generation=0", 503),
                                          ("GET", "/api/live/events", 503), ("POST", "/api/live/command", 503),
                                          ("GET", "/api/solver-profiles", 503), ("POST", "/api/solver-profiles/activate", 503),
                                          ("POST", "/api/solve-inspections", 503), ("GET", "/api/unknown", 404),

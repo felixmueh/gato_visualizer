@@ -2,14 +2,40 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from collections import OrderedDict
 from collections.abc import Mapping
+from dataclasses import replace
 import json
 from pathlib import Path
+import sys
+from types import MappingProxyType
 from gato_visualizer.plotting.views import freeze
 
 
 CONTINUE_REASON = ("Exact continuation is unavailable because this solver does not expose "
                    "a resumable optimizer checkpoint.")
+MAX_REPLAY_CACHE_BYTES = 256*1024*1024
+MAX_REPLAY_CACHE_ITEMS = 16
+
+
+def _retained_bytes(value, seen=None):
+    """Bound the CPU replay cache by retained Python object size, sharing counted once."""
+    seen = set() if seen is None else seen
+    identity = id(value)
+    if identity in seen:
+        return 0
+    seen.add(identity)
+    size = sys.getsizeof(value)
+    if isinstance(value, Mapping):
+        size += sum(_retained_bytes(k, seen)+_retained_bytes(v, seen) for k, v in value.items())
+    elif isinstance(value, (tuple, list)):
+        if set(map(type, value)) <= {float, int, str, bool, type(None)}:
+            # Conservative: shared scalar storage may be counted twice. Avoid a
+            # recursive function/id/set lookup per cell of every numeric vector.
+            size += sum(map(sys.getsizeof, value))
+        else:
+            size += sum(_retained_bytes(v, seen) for v in value)
+    return size
 
 
 def serializable(value):
@@ -35,9 +61,12 @@ class SourceReader:
         self.segment = None
         self.raw_cache = None
         self.cursor = self.offset = 0
-        self.replay_cache = {}
+        self.replay_cache = OrderedDict()
+        self.replay_cache_sizes = {}
+        self.replay_cache_bytes = 0
         self.preview_reader = None
         self.inspection_cache = {}
+        self.numeric_channel_paths = set()
 
     def read(self, descriptor):
         if descriptor["kind"] == "inspection":
@@ -77,6 +106,7 @@ class SourceReader:
                 self.identity, self.records, self.cursor, self.offset = identity, [], 0, 0
                 self.buckets = {name: [] for name in ("states", "plans", "intervals", "controls")}
                 self.segment = self.raw_cache = None
+                self.numeric_channel_paths = set()
             if not Path(descriptor["path"]).exists():
                 # Only the current run is kept; a replaced generation's file is gone.
                 raise ValueError("History changed; its run was replaced")
@@ -97,11 +127,16 @@ class SourceReader:
                     bucket = {"state": "states", "plan": "plans", "interval": "intervals", "control": "controls"}.get(record.get("type"))
                     if bucket:
                         self.buckets[bucket].append(record)
+                        from gato_visualizer.plotting.comparison import record_channel_paths
+                        self.numeric_channel_paths.update(record_channel_paths(bucket, record))
+                        if bucket == 'controls':
+                            self.numeric_channel_paths.update(record_channel_paths('torque_samples', record))
                     self.raw_cache = None
                     self.cursor += 1
                 self.offset = stream.tell()
             if self.raw_cache is None:
-                self.raw_cache = freeze(dict(records=tuple(self.records), **self.buckets))
+                self.raw_cache = freeze(dict(records=tuple(self.records), **self.buckets,
+                                            numeric_channel_paths=tuple(sorted(self.numeric_channel_paths))))
             # Nested records are immutable shared snapshots. Only cheap outer
             # cursor/preview metadata changes between repeated evaluations.
             raw = dict(self.raw_cache, source=descriptor)
@@ -121,6 +156,9 @@ class SourceReader:
                 raw["previews"] = [descriptor["preview"]]
             return freeze(raw)
         key = (descriptor.get("path"), descriptor.get("revision", "default"))
+        comparison = descriptor.get('comparison', False)
+        if comparison:
+            key += ('comparison',)
         if key not in self.replay_cache:
             if descriptor.get("path"):
                 from replay_format import load_replay
@@ -130,7 +168,11 @@ class SourceReader:
                 if list(_signature(path)) != descriptor["signature"]:
                     raise ValueError("Replay changed; explicitly reload the selected recording")
                 replay = load_replay(path, model_urdf=Path(self.mpc_root)/"models/tiago_pro/tiago_pro.urdf")
-                scene = replay_scene(replay, path, self.mpc_root, self.default_scene)
+                # Comparison plots consume recorded execution and timed plan
+                # statistics. Prediction geometry belongs to Episode/Solve and
+                # must not be eagerly converted/FK'd/copied for every comparison.
+                scene = replay_scene(replace(replay, predictions=()) if comparison else replay,
+                                     path, self.mpc_root, self.default_scene)
                 if list(_signature(path)) != descriptor["signature"]:
                     raise ValueError("Replay changed during loading; explicitly reload it")
                 # Preserve all parsed replay metadata and original reference.
@@ -144,8 +186,81 @@ class SourceReader:
             else:
                 scene = self.default_scene
             raw = scene_records(scene)
-            self.replay_cache = {key: freeze(raw)}  # bounded to the selected recording
+            if comparison and descriptor.get('path'):
+                origin = raw['time_origin_s']
+                timing = raw['source'].get('provenance', {}).get('live', {}).get('plan_timing', {})
+                raw['plans'] = [dict(id=plan.identifier, seq=plan.identifier,
+                    label=plan.label, sim_time_s=timing.get(plan.identifier, {}).get('request_time_s', plan.origin_time_s)-origin,
+                    recorded_origin_time_s=plan.origin_time_s, stats=plan.stats,
+                    metadata=dict(origin_time_s=plan.origin_time_s, recorded_start_s=plan.origin_time_s,
+                                  stats=plan.stats)) for plan in replay.predictions]
+                raw['records'] = [*raw['states'], *raw['plans']]
+                raw['recorded_prediction_count'] = len(replay.predictions)
+            if comparison:
+                from gato_visualizer.plotting.comparison import discover_channel_paths
+                raw['numeric_channel_paths'] = discover_channel_paths(raw)
+            captured = freeze(raw)
+            size = _retained_bytes(captured)
+            if size > MAX_REPLAY_CACHE_BYTES:
+                return captured  # one large request may read it, but cannot retain it
+            self.replay_cache[key] = captured
+            self.replay_cache_sizes[key] = size
+            self.replay_cache_bytes += size
+            while len(self.replay_cache) > MAX_REPLAY_CACHE_ITEMS or self.replay_cache_bytes > MAX_REPLAY_CACHE_BYTES:
+                removed, _ = self.replay_cache.popitem(last=False)
+                self.replay_cache_bytes -= self.replay_cache_sizes.pop(removed)
+        self.replay_cache.move_to_end(key)
         return self.replay_cache[key]
+
+
+def comparison_source(reader, descriptor, request):
+    """Capture each episode once; retain native clocks and expose session placement."""
+    from gato_visualizer.plotting import ComparisonView, ComparisonRun, EpisodeView, InspectionContext
+    from gato_visualizer.plotting.views import finite
+    from gato_visualizer.plotting.comparison import intersect
+    runs = []
+    for entry in descriptor['runs']:
+        error = None
+        try:
+            # Set the projection in the CPU worker too: a plotter reload is
+            # sufficient even when the HTTP parent's class predates this hint.
+            raw = reader.read(dict(entry['descriptor'], comparison=True))
+            selected = entry['source'].get('trajectory_index')
+            if selected is not None:
+                trajectories = raw.get('trajectories', ())
+                if selected >= len(trajectories) or trajectories[selected].get('kind') != 'recorded':
+                    raise ValueError('Comparison requires recorded motion, not a prediction horizon')
+                raw = dict(raw, states=tuple(s for s in raw.get('states', ()) if s.get('trajectory_index') == selected))
+            # SourceReader's nested records are already immutable. A new
+            # threshold/context envelope must not traverse/copy the episode.
+            raw = MappingProxyType(dict(raw, limit_settings=freeze(request.get('limit_settings') or {})))
+        except (ValueError, OSError) as exc:
+            raw, error = dict(states=[]), str(exc)
+        episode = EpisodeView(raw)
+        if not episode.all_states and error is None:
+            error = 'No recorded episode states'
+        runs.append(ComparisonRun(entry['key'], entry['label'], episode, entry['offset_s'], entry['color'], entry['source'], error))
+    analysis = request.get('range') or {}
+    clock = 'session:'+str(request.get('client_id', 'comparison'))
+    context = InspectionContext(episode_cursor_s=analysis.get('cursor_s'), analysis_range=analysis.get('mode', 'entire'),
+        visible_window=((analysis.get('start_s'), analysis.get('end_s')) if analysis.get('mode') in ('window', 'visible') else None), clock=clock)
+    view = ComparisonView(tuple(runs), context)
+    details = []
+    for run in runs:
+        bounds = view.run_bounds(run)
+        metadata = run.metadata
+        scene = run.episode.raw.get('scene', {})
+        source = scene.get('source', {})
+        details.append(dict(key=run.key, label=run.label, color=run.color, source=serializable(run.source), offset_s=run.offset_s,
+            bounds=run.bounds, analysis_bounds=bounds, episode_available=run.error is None and run.bounds is not None,
+            coverage_s=max(0., bounds[1]-bounds[0]) if bounds else 0., error=run.error,
+            time_origin_s=run.episode.raw.get('time_origin_s', 0),
+            time_basis=metadata.get('time_basis', 'simulation' if run.source.get('kind') == 'live' else source.get('time_basis')),
+            end_effector_frame=metadata.get('end_effector_frame', source.get('end_effector_frame')),
+            outcome=serializable(metadata.get('outcome', metadata.get('provenance', {}).get('outcome'))),
+            provenance=serializable(metadata.get('provenance', source.get('provenance', {})))))
+    return view, serializable(dict(clock=clock, bounds=view.bounds, common_bounds=view.common_bounds,
+                      usable_runs=len(view.available_runs), runs=details, channels=list(view.channels), joint_names=list(runs[0].episode.joint_names) if runs else []))
 
 
 def scene_records(scene):
@@ -159,6 +274,7 @@ def scene_records(scene):
     recorded = next((t for t in raw["trajectories"] if t.get("kind") == "recorded"), None)
     origin = recorded["time_s"][0] if recorded and recorded.get("time_s") else 0
     raw["time_origin_s"] = origin
+    plan_timing = raw["source"].get("provenance", {}).get("live", {}).get("plan_timing", {})
     for trajectory_index, trajectory in enumerate(raw["trajectories"]):
         if trajectory.get("kind") == "prediction":
             plan = dict(trajectory)
@@ -168,6 +284,15 @@ def scene_records(scene):
                         recorded_origin_time_s=original_time,
                         sim_time_s=None if original_time is None else original_time-origin,
                         knot_time_s=plan.get("time_s", []), stats=metadata.get("stats", {}))
+            timing = plan_timing.get(plan["id"], {})
+            for field in ("plan_origin_time_s", "measured_time_s"):
+                if field in timing:
+                    plan[field] = timing[field]-origin
+            if "request_time_s" in timing:
+                plan["sim_time_s"] = plan["request_time_s"] = timing["request_time_s"]-origin
+            if "activation_time_s" in plan["stats"]:
+                activation = plan["stats"]["activation_time_s"]
+                plan["activation_time_s"] = None if activation is None else activation-origin
             if "diagnostics" in plan["stats"]:
                 plan["diagnostics"] = plan["stats"]["diagnostics"]
             if "iterations" in plan["stats"]:
@@ -260,13 +385,20 @@ def inspect_source(raw, selection=None, analysis=None):
         states = raw.get("states", [])
         state = next((s for s in reversed(states) if cursor is not None and s.get("sim_time_s", 0) <= cursor), None)
         seq = (state or {}).get("plan_seq")
+        control = next((c for c in reversed(raw.get("controls", []))
+                        if cursor is not None and c.get("sim_time_s", 0) <= cursor), None)
+        if control is not None and (state is None or control["sim_time_s"] >= state["sim_time_s"]):
+            seq = control.get("plan_seq", seq)
         if seq is not None:
             selected = next((p for p in plans if p.get("seq") == seq), None)
             association = "recorded"
-        if selected is None and cursor is not None:
-            selected = next((p for p in reversed(plans) if p.get("sim_time_s") is not None and p["sim_time_s"] <= cursor), None)
+        if selected is None and cursor is not None and not (state is not None and "control_updates" in state):
+            selected = next((p for p in reversed(plans)
+                             if p.get("activation_time_s", p.get("sim_time_s")) is not None
+                             and p.get("activation_time_s", p.get("sim_time_s")) <= cursor
+                             and "available_time_s" not in p), None)
             association = "timestamp fallback"
-        elif selected is None:
+        elif selected is None and cursor is None:
             selected, association = plans[-1], "latest available (no episode cursor)"
     elif raw.get("previews"):
         selected, association = raw["previews"][-1], "preview"

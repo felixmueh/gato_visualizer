@@ -7,7 +7,7 @@ if __name__ == "__main__":
     arm_parent_death_signal(int(sys.argv[sys.argv.index("--parent-pid") + 1]))
 
 import argparse
-from dataclasses import asdict, replace
+from dataclasses import replace
 import hashlib
 import importlib
 import inspect
@@ -70,6 +70,7 @@ class SolverSession:
         from live_mpc import import_tiago
         from server import RobotKinematics
         self.tiago = import_tiago(root)
+        self.root = Path(root).resolve()
         self.module = importlib.import_module("tiago_mpc.mpc")
         arm = self.tiago.arm_urdf()
         self.kinematics = RobotKinematics(self.tiago.FULL_URDF, end_effector_frame=self.tiago.GRASP_FRAME,
@@ -84,28 +85,39 @@ class SolverSession:
     def bootstrap(self):
         return dict(contract=model_contract(self.kinematics, self.tiago), model_identity=self.model_identity)
 
-    def configure(self, params, max_sqp_iters=None):
+    def configure(self, params, max_sqp_iters=None, source_settings=None, settings_module=None):
         """Mpc(params, find_binary(params)): loads a compiled module, never compiles."""
         from inspection_problem import capture_constraint_bounds
         from live_mpc import LIMIT_KEYS, mpc_bounds_from_rows, urdf_joint_limits
+        from tiago_mpc.record import from_dict, to_dict
         m = self.module
-        params = m.MpcParams.from_dict(params)
+        params = from_dict(params)
+        if not isinstance(params, m.MpcParams):
+            raise ValueError("Solver configuration must be tagged MpcParams from tiago_mpc.record.to_dict")
+        from worktree_settings import resolve_predictor
+        if source_settings is not None:
+            params, resolution = resolve_predictor(self.root, source_settings, params, to_dict,
+                                                   expected_module=settings_module)
+        else:
+            resolution = dict(values=None, effective=to_dict(params), module=None)
         if max_sqp_iters is not None:
             params = replace(params, solver=params.solver.replace(max_sqp_iters=max_sqp_iters))
-        self.mpc = self.seed = None  # release the previous controller's GPU buffers first
         binary = m.find_binary(params)
         if binary is None:
             raise ValueError(f"Not compiled: N={params.N} {'with' if params.friction else 'without'} predictor "
                              "friction. Build it in Settings › Backend (Build selected N).")
+        self.mpc = self.seed = None  # release previous buffers only after valid model lookup
         self.mpc = m.Mpc(params, binary)
         self.restarted = True
         solver = self.mpc.controller.solver
         rows = capture_constraint_bounds(solver)
-        configuration = asdict(params)
+        configuration = to_dict(params)
         gpu_urdf = self.tiago.runtime_urdf(params.friction)
         self.configuration = configuration
         self.model_identity = dict(self.model_identity, gpu_urdf_sha256=hashlib.sha256(gpu_urdf.read_bytes()).hexdigest(),
-                                   end_effector_frame=params.ee_frame)
+                                   end_effector_frame=self.tiago.GRASP_FRAME,
+                                   armature=list(getattr(params, "armature", (0.,)*7)),
+                                   friction=to_dict(params.friction))
         capture = (bool(getattr(solver.lib, "ITERATION_CAPTURE_AVAILABLE", False)) and
                    "capture_iterations" in inspect.signature(solver.solve).parameters)
         return dict(capabilities=dict(iteration_capture=capture, exact_resume=False),
@@ -113,8 +125,10 @@ class SolverSession:
                                 native_source_id=getattr(solver.lib, "NATIVE_SOURCE_ID", None)),
                     joint_limits=urdf_joint_limits(self.tiago.limits()),
                     mpc_bounds=mpc_bounds_from_rows(rows, {key: configuration[key] for key in LIMIT_KEYS}),
-                    constraint_bounds_native=rows, configuration=configuration,
-                    model_identity=self.model_identity, prediction_friction=configuration["friction"])
+                    constraint_bounds_native=rows, configuration=configuration, settings_resolution=resolution,
+                    resolved=to_dict(self.mpc.params),  # what GATO resolved, None followed its default
+                    model_identity=self.model_identity, prediction_friction=configuration["friction"],
+                    prediction_friction_law=configuration["friction_law"], armature=configuration["armature"])
 
     def reset(self, state, time_s, reference):
         """Reseed the controller from a native state and the task reference for a request
@@ -122,7 +136,7 @@ class SolverSession:
         solve (as run() before its first tick); without the warm-up, the plain controller
         reset. A reseed repeating the previous one, with no solve in between, changes
         nothing and is skipped. Returns whether a warm-up ran and its wall time."""
-        from tiago_mpc.plan import State
+        from tiago_mpc.interfaces import State
         mpc, x = self.mpc, solver_state(state)
         reference = np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6)
         seed = (x.tobytes(), reference.tobytes())
@@ -137,20 +151,27 @@ class SolverSession:
         self.seed, self.restarted = seed, True
         return dict(warmup=mpc.params.warmup, skipped=False, wall_s=time.perf_counter() - started)
 
-    def solve(self, state, time_s, reference, origin, settings_version):
-        from tiago_mpc.plan import State
+    def solve(self, state, time_s, reference, origin, settings_version, measured_time_s=None):
+        from tiago_mpc.interfaces import State
         mpc, x = self.mpc, solver_state(state)
         reference = np.asarray(reference, dtype=np.float32).reshape(mpc.N, 6)
         if origin == "preview":
             self.reset(x, time_s, reference)
         self.seed = None  # the solve moves the controller on from its seed
-        mpc.request(State(float(time_s), x[:7], x[7:]), reference)
+        initial = State(float(time_s), x[:7], x[7:])
+        if measured_time_s is not None:
+            from tiago_mpc.interfaces import Prediction
+            initial = Prediction(float(time_s), x[:7], x[7:], measured_t=float(measured_time_s))
+        mpc.request(initial, reference)
         plan = mpc.result()
         stats = plan_stats(plan.stats, self.restarted)
         self.restarted = False
         raw = mpc.step.solve.stats
+        measured = float(getattr(plan, "measured_t", time_s))
         return dict(type="plan", origin=origin, settings_version=settings_version,
-                    initial_state=dict(q=x[:7].tolist(), qd=x[7:].tolist(), time_s=float(time_s)),
+                    initial_state=dict(q=x[:7].tolist(), qd=x[7:].tolist(), time_s=float(time_s),
+                                       measured_time_s=measured),
+                    plan_origin_time_s=float(plan.t0), measured_time_s=measured,
                     sim_time_s=float(time_s), N=mpc.N, dt_s=mpc.dt,
                     _states=np.array(plan.states), _torques=np.array(plan.torques), stats=stats,
                     diagnostics={name: finite_or_none(getattr(raw, name)) for name in DIAGNOSTICS if hasattr(raw, name)})
@@ -175,7 +196,8 @@ def serve(channel, root):
             elif session is None:
                 raise ValueError("Solver process is not initialized")
             elif operation == "configure":
-                result = session.configure(payload["params"], payload.get("max_sqp_iters"))
+                result = session.configure(payload["params"], payload.get("max_sqp_iters"),
+                                           payload.get("source_settings"), payload.get("settings_module"))
             elif session.mpc is None:
                 raise ValueError("Solver is not configured")
             elif operation == "reset":
@@ -185,7 +207,8 @@ def serve(channel, root):
                           file=sys.stderr, flush=True)
             elif operation == "solve":
                 result = dict(plan=session.solve(payload["state"], payload["time_s"], payload["reference"],
-                                                 payload["origin"], payload["settings_version"]))
+                                                 payload["origin"], payload["settings_version"],
+                                                 measured_time_s=payload.get("measured_time_s")))
             elif operation == "inspect":
                 from inspection_worker import inspect_solve
                 session.seed = None  # the cold solve leaves the solver elsewhere

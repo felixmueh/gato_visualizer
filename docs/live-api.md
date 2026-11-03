@@ -10,6 +10,10 @@ commands and read retained records; they own no controller or CUDA state.
 ## Transport
 
 - `GET /api/live/schema`: JSON for building the settings UI (below).
+- `GET /api/live/settings`: current accepted `config`, `task`, `execution`,
+  `settings_version` and `generation`. This read neither subscribes nor schedules
+  numerical work. The schema describes defaults; this endpoint describes the
+  current settings.
 - `GET /api/live/events`: Server-Sent Events, each `data:` line one JSON
   object with a `type` field. On connect the server sends the current
   `status` and the latest `plan` and `state`.
@@ -20,6 +24,16 @@ commands and read retained records; they own no controller or CUDA state.
   The browser keeps an old prediction labelled as pending until a plan with
   that version or a newer version arrives. Non-settings commands return the
   most recently assigned version.
+- `patch_settings` changes only supplied nested fields, with optional
+  `expected_settings_version`; a stale version returns HTTP 409 and current
+  `settings`. See [agent controls](agent-api.md) for the CLI and payloads.
+  Accepted settings are broadcast as `settings` events with the same complete
+  snapshot as the GET endpoint, before generation notices. Reconnect sends the
+  current snapshot first. Browser fields, task geometry, start pose and reset
+  arrows follow these settings; unrelated pending edits are preserved. A newer
+  remote value wins a conflicting draft. An own acknowledgement preserves edits
+  made after that request was sent. Browsers submit partial patches with a
+  version guard, preventing a stale complete form from replacing agent edits.
 - Without Live (`--replay-only`, or a setup error), every Live, solver-profile
   and Run-again route answers 503 with `{"error": "<reason>"}`; unknown `/api/`
   routes answer 404 with a JSON `error`.
@@ -39,19 +53,55 @@ server-owned RAM freeze, independent of later Live generation changes. See
 
 ## Settings object
 
-`config` is `asdict(MpcParams)` of the selected `tiago_mpc` plus the
+Browser timing controls accept explicit units: `50 Hz`, `0.02 s` and `20 ms`
+express the same frequency/period. Bare numbers use the labelled unit. This
+covers execution rates, knot interval/horizon, task period, duration and optional
+SQP wall-time budget; descriptors with timing units use the same parser. API
+payloads remain canonical numbers, not unit strings.
+
+**Measured solve latency** is a checkbox. Checked sends the existing
+`solve_latency_s: "measured"`; otherwise its numeric declared-latency field is
+active. **TO as fast as possible** sends the existing `to_hz: 0`; otherwise the
+fixed-rate field is active. Disabled fields retain their last numeric drafts.
+Back-to-back TO starts another request at the next control tick after the
+previous request finishes. It does not overlap solves or bypass measured delay.
+
+**Latency compensation** sends `execution.latency_compensation: true` (default
+false). It forecasts the execution initial condition using the plant model and
+actual command policy. Declared delay is fixed; measured mode forecasts only the
+previous solve's latency, initially 5 ms. No additional tuning fields are exposed.
+The execution/history timestamp contract is in [execution](execution-api.md).
+
+Task setup sits below the task selector. Execution timing is separate from
+Prediction horizon. Plant dynamics/controller choices and predictor dynamics
+precede MPC bounds, costs and solver controls. Goal/task and runtime edits do
+not trigger model lookups; model checks run in the background with task handles
+editable. Missing compiled models still block numerical calculation until an
+explicit Build. See [source settings](source-settings.md).
+
+`config` is `to_dict(MpcParams)` of the selected `tiago_mpc` plus the
 visualizer's simulated-plant group:
+
+The native serializer tags dataclasses: `type: "MpcParams"`, nested
+`solver.type: "SolverParams"`, `admm.type: "AdmmLimits"`, and the friction
+and law types. These fixed metadata fields travel with the configuration;
+they are required and validated, and have no UI controls. A source change
+rebuilds settings from the new source's schema rather than converting old
+parameter formats.
 
 - `MpcParams` fields: `N`, `dt_s`, `solver` (GATO's `SolverParams`: SQP/PCG
   caps and tolerance, `mu`, `rho`, costs, `linsys`, `exact_hessian`, …),
-  `ee_frame`, `warm_start`, `reset_rho_each_step`, `admm_linsys`, `admm`
+  `warm_start`, `reset_rho_each_step`, `admm_linsys`, `admm`
   (ADMM limit-row settings), `joint_margin_rad`, `velocity_fraction`,
   `effort_fraction`, `friction` (predictor friction, `null` when loss-free),
+  `friction_law` (separate native tanh law; the standard adapter fixes it at 0.03 rad/s),
+  `armature` (native reflected-inertia vector; zero with the standard adapter, which adds
+  no control; a [source settings adapter](source-settings.md) may control both),
   `max_sqp_time_s` (wall time for a solve's SQP iterations within
   `solver.max_sqp_iters`; `null`: no time limit) and `warmup` (a boolean:
   GATO's warm-up solve at every reseed, below).
 - `plant`: the simulation group: `integrator` (`"rk4"`, loss-free, or
-  `"euler"`, semi-implicit), `friction` (plant friction, false; needs
+  `"euler"`, semi-implicit, default), `friction` (plant friction, true; needs
   `"euler"`), `coulomb_law` (`"tanh"`, `"sign"` or `"constraint"`, the
   default), `friction_width_rad_s` (0.03, the tanh law's width),
   `clip_effort` (true: commands clipped to ± the raw URDF effort limit before
@@ -71,7 +121,8 @@ interpreter's source probe, with `max_sqp_time_s: null`, plus the `plant`
 group above (its start pose from the simulator's checkout, `live_mpc.start_pose_spec`). `TIAGO`'s 10 ms limit is for the wall clock; Live and
 precalculation run on the simulation clock, so the visualizer's default has no
 time limit, and the user can still set one (Felix, 2026-10-23). The solver child
-rebuilds `MpcParams.from_dict` from everything except `plant`; no
+uses `tiago_mpc.record.from_dict` on everything except `plant` and requires an
+`MpcParams` result; no
 configuration file is written. Recorded plans carry the same object as
 `problem_configuration`.
 
@@ -132,7 +183,7 @@ receiving its first solved plan.
      "kind": "float", "scale": "linear", "min": 0, "max": 100000}
   ],
   "source": {"mpc_root": "...", "mpc_commit": "...", "mpc_dirty": false,
-             "gato_commit": "..."}
+             "gato": {"version": "0.1.5", "direct_url": null, "file": ".../site-packages/gato/__init__.py"}}
 }
 ```
 
@@ -158,8 +209,9 @@ browser edits it in the Joints tab, not the settings panel); `scale` is `log` or
 default is shown. An entry may carry a `description` (its tooltip) and a
 `row`: entries sharing a row are shown side by side (the three **Stop on
 breach** checkboxes of the **Limit handling** group). Fixed fields have `disabled: true` and a single allowed
-choice: `solver.linsys` is null, `solver.exact_hessian` is false, and
-`ee_frame` is the grasp frame the simulator tracks. `friction` is one choice
+choice: `solver.linsys` is null and `solver.exact_hessian` is false. The
+end-effector is fixed to the selected source's grasp frame, carried in the
+model/segment metadata rather than the MPC settings. `friction` is one choice
 between loss-free and the URDF friction with the fixed tanh width. The backend
 rejects plant friction with the RK4 integrator. All numeric
 ranges are enforced by the backend and published by `live_mpc.parameter_specs`;
@@ -189,7 +241,7 @@ rollback after a cancellation, resuming Play after a preview), it calls
 `tiago_mpc`'s `Mpc.warmup(state, reference)` with the task reference a request
 at that time gets (the figure-eight window from the state's time). With
 `warmup` on, that resets the controller and runs GATO's warm-up solve, as
-`run()` does before its first tick; with it off, it is the plain controller
+`run_virtual_time()` does before its first tick; with it off, it is the plain controller
 reset. A reseed repeating the previous one with no solve in between is skipped.
 The warm-up is no plan: it creates no record and is not part of an interval's
 timing. Like a solve, the call has no deadline. The solver log
@@ -204,6 +256,13 @@ remain idle; no continuous solving is
 required for Replay, camera movement or scrubbing retained history.
 
 ## Events
+
+`settings` events contain `{type: "settings", config, task, execution,
+settings_version, generation}`. They describe accepted settings before the
+worker finishes configuring or computing a new prediction. Open Replay viewers
+read the same snapshot once per second without subscribing or calculating;
+recorded tracks remain immutable. A viewer joining an already configured backend
+keeps its current settings and history instead of submitting defaults.
 
 ```json
 {"type": "status", "state": "idle|playing|paused|gpu_busy|error",
@@ -283,6 +342,7 @@ remain monotonic independently.
 
 `config.plant` sets the simulated plant's integrator, friction and Coulomb law;
 `config.friction` is the predictor's (`null` or the URDF friction with the fixed
-0.03 rad/s tanh width). Both default to loss-free. `available_N_by_friction.off`
+0.03 rad/s tanh width). The plant defaults to Euler with constraint friction;
+the predictor defaults to loss-free. `available_N_by_friction.off`
 / `.on` identify the compiled predictor variants. See [friction](friction.md)
 for the laws and the build contract.

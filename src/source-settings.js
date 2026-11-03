@@ -31,6 +31,7 @@ export async function sourceRequest(path, body, fetcher = fetch) {
 export function trackCheckoutDefaults({ fields, resets, request = sourceRequest, group = 'checkout-defaults', label = '', delay = 250, schedule = setTimeout, unschedule = clearTimeout }) {
   const defaults = { python: null, cache: null };
   let token = 0, root = '', timer;
+  let resolvedRoot = null;
   const names = { python: `${label}Python interpreter`, cache: `${label}binary cache` };
   const value = key => { const text = fields[key].value.trim(); return text && text !== defaults[key] ? text : null; };
   for (const key of Object.keys(defaults)) {
@@ -39,6 +40,7 @@ export function trackCheckoutDefaults({ fields, resets, request = sourceRequest,
       reset: text => { fields[key].value = text; fields[key].dispatchEvent?.(new Event('input', { bubbles: true })); } });
   }
   function apply(next) {
+    resolvedRoot = next?.mpc_root || null;
     for (const key of Object.keys(defaults)) {
       const text = fields[key].value.trim();
       if (!text || text === defaults[key]) fields[key].value = next?.[key] || '';
@@ -66,12 +68,12 @@ export function trackCheckoutDefaults({ fields, resets, request = sourceRequest,
   for (const key of Object.keys(defaults)) {
     fields[key].addEventListener?.('input', () => { unschedule(timer); timer = schedule(() => follow(root), delay); });
   }
-  return { defaults, apply, follow, value };
+  return { defaults, apply, follow, value, get resolvedRoot() { return resolvedRoot; } };
 }
 
 const textField = (name, title, attrs = '') => `<div class="dialog-field"><label for="source-${name}">${title}</label><input id="source-${name}" name="${name}" type="text" spellcheck="false" autocomplete="off" ${attrs}></div>`;
 
-export function setupSourceSettings({ button, beforeApply = () => {}, reload = () => location.reload(), onPlottersReload = () => {}, onOpen = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
+export function setupSourceSettings({ button, beforeApply = () => {}, reload = () => location.reload(), onPlottersReload = () => {}, onOpen = () => {}, getBuildSettings = () => null, onBuildComplete = () => {}, request = sourceRequest, storage = globalThis.localStorage } = {}) {
   const content = document.createElement('div'); content.className = 'source-settings-form';
   content.innerHTML = `<section class="dialog-section"><h3>Simulator source</h3>
     ${textField('mpc_root', 'tiago_mpc checkout', 'required')}
@@ -82,9 +84,8 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
     <div class="solver-profile-slot"></div>
     <section class="dialog-section"><h3>Binaries</h3>
     <div class="dialog-field" title="Knot counts the visualizer offers: 8, 16, 24, 32, 48, 64, 96, 128"><label for="source-counts">Knot counts N</label><input id="source-counts" name="counts" type="text" inputmode="numeric" placeholder="e.g. 48 96"></div>
-    <label class="source-rebuild" title="Off builds loss-free predictors. On builds predictors with the URDF Coulomb + viscous friction (tanh width 0.03 rad/s, compiled in)."><input name="prediction_friction" type="checkbox">Predictor friction modules</label>
     <label class="source-rebuild" title="Rebuild selected counts even when already compiled; the old module file is replaced"><input name="rebuild" type="checkbox">Rebuild compiled counts</label>
-    <div class="source-actions"><button type="button" data-action="build" title="Compiles with half the CPU cores and keeps Live running. Normal setting changes never compile.">Build selected N</button></div>
+    <div class="source-actions"><button type="button" data-action="build" title="Build the current predictor for this active checkout, or the selected source's defaults. Normal setting changes never compile.">Build selected N</button></div>
     <pre class="source-build-log" hidden></pre></section>
     <section class="dialog-section"><h3>Plotting</h3>
     <div class="dialog-field" title="Bundled plots are always available. Reload saves this directory and reloads Python plotters without restarting MPC."><label for="source-plotters">Python plotting directory</label><input id="source-plotters" name="plotters" type="text" spellcheck="false" autocomplete="off"></div>
@@ -103,6 +104,7 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
   resets.bind({ key: 'source.plotters', name: 'Python plotting directory', input: field('plotters'), host: field('plotters'), group: 'source',
     getValue: () => field('plotters').value.trim(), getDefault: () => plottersDefault ?? field('plotters').value.trim(), reset: value => { field('plotters').value = value; } });
   let initialized = false, busy = false, buildRunning = false, restarting = false, timer;
+  let completedBuild = null;
   const selection = () => ({ mpc_root: field('mpc_root').value.trim(), python: checkout.value('python'), cache: checkout.value('cache') });
   function say(text, error = false) { message.textContent = text; message.dataset.error = String(error); }
   function controls() {
@@ -113,7 +115,8 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
   }
   function describe(result) {
     const source = result.source || {};
-    const rows = [['Revision', `${source.mpc_branch || 'detached'} · ${source.mpc_commit || 'unknown'}${source.mpc_dirty ? ' · modified' : ''}`], ['Compiled N', ['off', 'on'].map(mode => `${mode === 'on' ? 'friction' : 'loss-free'}: ${(result.available_N_by_friction?.[mode] || []).join(', ') || 'none'}`).join(' · ')]];
+    const compiled = result.exact_availability ? (result.available_N || []).join(', ') || 'none' : ['off', 'on'].map(mode => `${mode === 'on' ? 'friction' : 'loss-free'}: ${(result.available_N_by_friction?.[mode] || []).join(', ') || 'none'}`).join(' · ');
+    const rows = [['Revision', `${source.mpc_branch || 'detached'} · ${source.mpc_commit || 'unknown'}${source.mpc_dirty ? ' · modified' : ''}`], ['Compiled N', compiled]];
     identity.replaceChildren?.(...rows.flatMap(([term, value]) => { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = term; dd.textContent = value; return [dt, dd]; }));
     identity.dataset.compatible = String(Boolean(result.compatible));
     if (!result.compatible) say(result.error || (result.errors || []).join('; ') || 'Selected source is incompatible.', true);
@@ -147,6 +150,10 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
         log.hidden = false; log.textContent = build.log || build.error || 'Preparing build…'; log.scrollTop = log.scrollHeight;
         say(buildRunning ? `Building N=${build.N.join(', ')}. Live remains available.` : build.state === 'complete' ? build.live_refreshed ? 'Build complete. Live lists the new knot counts.' : 'Build complete. Apply to reload the available knot counts.' : `Build failed: ${build.error || `exit ${build.returncode}`}. See the retained build log.`, build.state === 'failed');
         log.title = build.log_path;
+        if (build.state === 'complete' && build.result && completedBuild !== build.log_path) {
+          completedBuild = build.log_path;
+          await onBuildComplete(build);
+        }
       }
       controls();
       if (buildRunning) timer = setTimeout(refresh, 1000);
@@ -167,7 +174,9 @@ export function setupSourceSettings({ button, beforeApply = () => {}, reload = (
   action('inspect').addEventListener('click', () => run(async () => { say('Checking selected environment and binary identities…'); describe(await request('/api/source/inspect', selection())); if (!message.textContent) say('Source checked.'); }));
   action('build').addEventListener('click', () => run(async () => {
     const counts = parseBuildCounts(field('counts').value);
-    await request('/api/source/build', { selection: selection(), N: counts, rebuild: field('rebuild').checked, prediction_friction: field('prediction_friction').checked });
+    await checkout.follow(field('mpc_root').value.trim());
+    const draft = getBuildSettings(checkout.resolvedRoot || selection().mpc_root);
+    await request('/api/source/build', { selection: selection(), N: counts, rebuild: field('rebuild').checked, ...(draft || {}) });
     clearTimeout(timer); await refresh();
   }));
   action('apply').addEventListener('click', () => run(async () => {

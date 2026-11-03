@@ -74,3 +74,37 @@ test('breach records are kept in order and found where playback crosses them', (
   assert.equal(history.breachCrossed(.03, .25).message, 'at 0.2'); // Play from a breach continues past it.
   history.clear(); assert.equal(history.breaches.length, 0);
 });
+
+test('requested plans remain inspectable while command and state sequence own activation', () => {
+  const history = createLiveHistory({ maxPlans: Infinity });
+  const first = { ...plan(0, 1, 1), available_time_s: .0055 };
+  const second = { ...plan(.01, 1, 2), available_time_s: .0155 };
+  history.addState({ ...state(0), control_updates: 0 }); history.addPlan(first);
+  history.addState({ ...state(.004), control_updates: 0 });
+  assert.equal(history.at().plan, null);
+  history.addState({ ...state(.006), control_updates: 0 });
+  history.addRecord({ type: 'control', sim_time_s: .006, plan_seq: 1 });
+  history.addState({ ...state(.01), control_updates: 2, plan_seq: 1 }); history.addPlan(second);
+  history.addState({ ...state(.014), control_updates: 4, plan_seq: 1 });
+  assert.equal(history.at(.014).plan, first);
+  history.addState({ ...state(.016), control_updates: 5, plan_seq: 1 });
+  history.addRecord({ type: 'control', sim_time_s: .016, plan_seq: 2 });
+  assert.equal(history.at(.016).plan, second);
+  assert.deepEqual(history.metricSnapshot.plans, [first, second]);
+  // A canceled pending request cannot acquire a new session's uncommanded state.
+  history.addState({ ...state(.02), control_updates: 0 });
+  assert.equal(history.at().plan, null);
+});
+
+test('finite retention keeps a just-activated plan when the next request precedes its control record', () => {
+  const history = createLiveHistory({ maxPlans: 1 });
+  const p0 = { ...plan(0, 1, 1), available_time_s: .006 };
+  const p1 = { ...plan(.006, 1, 2), available_time_s: .012 };
+  history.addState({ ...state(0), control_updates: 0 }); history.addPlan(p0);
+  history.addState({ ...state(.006), control_updates: 0 });
+  history.addPlan(p1);
+  history.addRecord({ type: 'control', sim_time_s: .006, plan_seq: 1 });
+  assert.equal(history.at(.006).plan, p0);
+  history.addState({ ...state(.008), control_updates: 1, plan_seq: 1 });
+  assert.equal(history.at(.008).plan, p0);
+});

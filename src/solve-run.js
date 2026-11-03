@@ -1,4 +1,6 @@
 import { sourceRequest } from './source-settings.js';
+import { configureTimeInput, readTimeInput } from './time-input.js';
+const WALL_BUDGET = { unit: 's', nullable: true, min: 0, minExclusive: true, label: 'Wall budget' };
 
 /** One bounded fresh inspection. This never sends ordinary Live commands. */
 export function setupSolveRun({ container, onStart = () => {}, onComplete = () => {}, request = sourceRequest, schedule = setTimeout, unschedule = clearTimeout, now = Date.now } = {}) {
@@ -7,6 +9,7 @@ export function setupSolveRun({ container, onStart = () => {}, onComplete = () =
   const controls = el('div', null, 'solve-run-controls');
   const capLabel = el('label', 'SQP cap'), cap = el('input'); cap.type = 'number'; cap.min = '1'; cap.max = '10000'; cap.step = '1'; cap.value = '20'; cap.setAttribute('aria-label', 'Run again SQP iteration cap'); capLabel.append(cap);
   const budgetLabel = el('label', 'Wall budget (s)'), budget = el('input'); budget.type = 'number'; budget.min = '0'; budget.step = 'any'; budget.placeholder = 'Optional'; budget.setAttribute('aria-label', 'Optional inspection wall budget in seconds'); budgetLabel.append(budget);
+  configureTimeInput(budget, WALL_BUDGET);
   const run = el('button', 'Run again'), stop = el('button', 'Stop'); run.type = stop.type = 'button'; run.setAttribute('aria-label', 'Run a fresh solve from the captured state');
   stop.title = 'Cancel a queued inspection or terminate its isolated worker. No partial trace is retained.'; stop.setAttribute('aria-label', stop.title);
   controls.append(capLabel, budgetLabel, run, stop);
@@ -55,7 +58,9 @@ export function setupSolveRun({ container, onStart = () => {}, onComplete = () =
   }
   async function start() {
     if (destroyed || active || !capability?.available) return;
-    const sqp_iters = Number(cap.value), budget_s = budget.value.trim() ? Number(budget.value) : undefined;
+    const sqp_iters = Number(cap.value); let budget_s;
+    try { budget_s = readTimeInput(budget, WALL_BUDGET); }
+    catch (error) { status.textContent = error.message; return; }
     if (!Number.isInteger(sqp_iters) || sqp_iters < 1 || sqp_iters > 10000 || budget_s != null && (!Number.isFinite(budget_s) || budget_s <= 0)) {
       status.textContent = 'Choose an integer SQP cap from 1 to 10000 and a positive optional wall budget.'; return;
     }

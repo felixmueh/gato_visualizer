@@ -7,7 +7,7 @@ from .views import finite
 
 
 class Axis(TypedDict, total=False):
-    identity: Literal['episode_time', 'sqp_iteration', 'prediction_time', 'wall_time', 'numeric', 'category']
+    identity: Literal['episode_time', 'session_time', 'sqp_iteration', 'prediction_time', 'wall_time', 'numeric', 'category']
     label: str
     unit: str
     clock: str
@@ -77,7 +77,7 @@ def validate_spec(spec: Any) -> PlotSpec:
     require(isinstance(spec.get('notes', []), list) and all(isinstance(x, str) for x in spec.get('notes', [])), 'notes must be strings')
     if kind in ('lines', 'bars', 'spans'):
         axis = spec.get('x', {})
-        require(isinstance(axis, dict) and axis.get('identity') in ('episode_time', 'sqp_iteration', 'prediction_time', 'wall_time', 'numeric', 'category'), 'invalid x axis identity')
+        require(isinstance(axis, dict) and axis.get('identity') in ('episode_time', 'session_time', 'sqp_iteration', 'prediction_time', 'wall_time', 'numeric', 'category'), 'invalid x axis identity')
         require(all(isinstance(axis.get(key), str) for key in ('label', 'unit')), 'x label/unit must be text')
     if kind in ('lines', 'bars'):
         axis = spec.get('y', {})

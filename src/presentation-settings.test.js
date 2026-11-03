@@ -19,16 +19,18 @@ class Element {
   removeAttribute() {} setAttribute() {}
 }
 
-async function harness(t, { store = { report_hz: 10, buffer_ms: 350, interpolate: true, limit_tint: false }, fail = false } = {}) {
+async function harness(t, { store = { report_hz: 10, buffer_ms: 350, interpolate: true, limit_tint: false }, fail = false, request: requestOverride } = {}) {
   if (!t.mock.timers._enabled) { t.mock.timers.enable({ apis: ['setTimeout'] }); t.mock.timers._enabled = true; }
   const original = globalThis.document; globalThis.document = { createElement: () => new Element() };
   t.after(() => { globalThis.document = original; });
-  const container = new Element(), posts = [], changes = [], state = { fail };
+  const container = new Element(), posts = [], changes = [], state = { fail, reads: 0 };
   const ui = setupPresentationSettings({ container, onChange: value => changes.push(value), request: async (path, body) => {
-    assert.equal(path, '/api/presentation/settings');
-    if (!body) return { ...store };
+    assert.equal(path, body ? '/api/presentation/settings/patch' : '/api/presentation/settings');
+    if (requestOverride) return requestOverride(path, body, { store, posts, state });
+    if (!body) { state.reads++; return { ...store }; }
     if (state.fail) throw new Error('disk full');
-    posts.push(body); Object.assign(store, body); return body; } });
+    posts.push(body); Object.assign(store, body); return { ...store }; } });
+  t.after(() => ui.dispose());
   const section = container.children[0], field = name => section.querySelector(`[name="${name}"]`);
   await ui.ready;
   return { ui, section, field, posts, changes, store, state, tick: ms => t.mock.timers.tick(ms), title: section.querySelector('.presentation-title') };
@@ -44,7 +46,7 @@ test('limit-state fields apply at once, validate their range and save', async t 
   assert.equal(h.field('limit_at_torque_percent').dataset.invalid, 'true');
   assert.equal(h.changes.at(-1).limit_at_torque_percent, 0.2);
   h.tick(400); await settle();
-  assert.equal(h.posts.at(-1).limit_near_percent, 80); assert.equal(h.posts.at(-1).limit_at_torque_percent, 0.2);
+  assert.deepEqual(h.posts.at(-1), { limit_near_percent: 80 });
 });
 
 test('ghost opacity endpoints apply and persist independently without changing numerical settings', async t => {
@@ -97,12 +99,28 @@ test('presentation loads from its own endpoint and has no Save button', async t 
   assert.equal(h.field('report_hz').value, '10'); assert.equal(h.field('limit_tint').checked, false);
 });
 
+test('presentation timing accepts either units, saves canonical numbers and retains typed spellings after echo', async t => {
+  const h = await harness(t), rate = h.field('report_hz'), buffer = h.field('buffer_ms');
+  assert.equal(rate.type, 'text'); assert.equal(buffer.type, 'text');
+  rate.value = '20 ms'; rate.listeners.change();
+  buffer.value = '.5 s'; buffer.listeners.change();
+  assert.equal(h.ui.settings.report_hz, 50); assert.equal(h.ui.settings.buffer_ms, 500);
+  h.tick(400); await settle();
+  assert.deepEqual(h.posts.at(-1), { report_hz: 50, buffer_ms: 500 });
+  assert.equal(rate.value, '20 ms'); assert.equal(buffer.value, '.5 s');
+  await h.ui.refresh(); assert.equal(rate.value, '20 ms'); assert.equal(buffer.value, '.5 s');
+  rate.value = '.001 s'; rate.listeners.change();
+  assert.equal(rate.dataset.invalid, 'true'); assert.equal(h.ui.settings.report_hz, 50);
+  buffer.value = '-1ms'; buffer.listeners.change();
+  assert.equal(buffer.dataset.invalid, 'true'); assert.equal(h.ui.settings.buffer_ms, 500);
+});
+
 test('checkboxes apply at once and save after a debounce', async t => {
   const h = await harness(t);
   h.field('limit_tint').checked = true; h.field('limit_tint').listeners.change();
   assert.equal(h.changes.at(-1).limit_tint, true); assert.equal(h.posts.length, 0);
   h.tick(400); await settle();
-  assert.deepEqual(h.posts, [{ ...DEFAULT_PRESENTATION, report_hz: 10, buffer_ms: 350, interpolate: true, limit_tint: true }]);
+  assert.deepEqual(h.posts, [{ limit_tint: true }]);
 });
 
 test('numeric fields apply on commit or idle, never per keystroke, and rapid changes coalesce', async t => {
@@ -138,7 +156,7 @@ test('a change during an in-flight save is sent afterwards; failures are marked 
   h.state.fail = false;
   h.field('limit_tint').checked = true; h.field('limit_tint').listeners.change(); h.tick(400); await settle();
   assert.equal(h.title.dataset.saveFailed, undefined);
-  assert.deepEqual(h.posts.at(-1), { ...DEFAULT_PRESENTATION, report_hz: 10, buffer_ms: 350, interpolate: false, limit_tint: true });
+  assert.deepEqual(h.posts.at(-1), { interpolate: false, limit_tint: true });
 });
 
 test('settings persist across a reload through the endpoint', async t => {
@@ -147,4 +165,100 @@ test('settings persist across a reload through the endpoint', async t => {
   h.field('buffer_ms').value = '500'; h.field('buffer_ms').listeners.change(); h.tick(400); await settle();
   const reloaded = await harness(t, { store });
   assert.equal(reloaded.ui.settings.buffer_ms, 500); assert.equal(reloaded.field('buffer_ms').value, '500');
+});
+
+test('polling hydrates externally changed fields and callbacks without posting numerical work', async t => {
+  const h = await harness(t);
+  Object.assign(h.store, { buffer_ms: 800, interpolate: false, ghost_end_opacity_percent: 15 });
+  h.tick(1000); await settle();
+  assert.equal(h.state.reads, 2);
+  assert.equal(h.field('buffer_ms').value, '800');
+  assert.equal(h.field('interpolate').checked, false);
+  assert.equal(h.field('ghost_end_opacity_percent').value, '15');
+  assert.equal(h.changes.at(-1).buffer_ms, 800);
+  assert.equal(h.posts.length, 0);
+  const count = h.changes.length;
+  await h.ui.refresh();
+  assert.equal(h.changes.length, count); // unchanged polling does not redraw plots
+  h.ui.dispose();
+  h.tick(5000); await settle();
+  assert.equal(h.state.reads, 3);
+});
+
+test('remote updates preserve a pending local field and its save patches only that field', async t => {
+  const h = await harness(t);
+  h.field('buffer_ms').value = '600'; h.field('buffer_ms').listeners.change();
+  Object.assign(h.store, { buffer_ms: 900, report_hz: 70, limit_tint: true });
+  await h.ui.refresh();
+  assert.equal(h.ui.settings.buffer_ms, 600);
+  assert.equal(h.field('buffer_ms').value, '600');
+  assert.equal(h.field('report_hz').value, '70');
+  assert.equal(h.field('limit_tint').checked, true);
+  h.tick(400); await settle();
+  assert.deepEqual(h.posts, [{ buffer_ms: 600 }]);
+  assert.equal(h.store.report_hz, 70);
+  assert.equal(h.store.limit_tint, true);
+});
+
+test('typing retains the local draft while other externally changed values appear', async t => {
+  const h = await harness(t);
+  h.field('buffer_ms').value = '65'; h.field('buffer_ms').listeners.input();
+  Object.assign(h.store, { buffer_ms: 900, report_hz: 75 });
+  await h.ui.refresh();
+  assert.equal(h.field('buffer_ms').value, '65');
+  assert.equal(h.field('report_hz').value, '75');
+  h.tick(700); await settle();
+  assert.equal(h.ui.settings.buffer_ms, 65);
+  h.tick(400); await settle();
+  assert.deepEqual(h.posts, [{ buffer_ms: 65 }]);
+});
+
+test('a change during an in-flight patch is saved afterwards and retains response fields', async t => {
+  let finish;
+  const h = await harness(t, { request: async (path, body, { store, posts }) => {
+    if (!body) return { ...store };
+    posts.push({ ...body }); Object.assign(store, body);
+    if (posts.length === 1) return new Promise(resolve => { finish = () => resolve({ ...store }); });
+    return { ...store };
+  } });
+  h.field('limit_tint').checked = true; h.field('limit_tint').listeners.change();
+  h.tick(400); await settle();
+  h.store.buffer_ms = 800;
+  h.field('report_hz').value = '40'; h.field('report_hz').listeners.change();
+  finish(); await settle();
+  assert.equal(h.field('buffer_ms').value, '800');
+  assert.equal(h.field('report_hz').value, '40');
+  h.tick(400); await settle();
+  assert.deepEqual(h.posts, [{ limit_tint: true }, { report_hz: 40 }]);
+  assert.equal(h.store.buffer_ms, 800);
+});
+
+test('a poll started before a save cannot restore the old preferences afterwards', async t => {
+  let finish, reads = 0;
+  const h = await harness(t, { request: async (path, body, { store, posts }) => {
+    if (!body) {
+      if (++reads === 2) { const stale = { ...store }; return new Promise(resolve => { finish = () => resolve(stale); }); }
+      return { ...store };
+    }
+    posts.push({ ...body }); Object.assign(store, body); return { ...store };
+  } });
+  const refresh = h.ui.refresh();
+  h.field('buffer_ms').value = '650'; h.field('buffer_ms').listeners.change();
+  h.tick(400); await settle();
+  finish(); await refresh;
+  assert.equal(h.field('buffer_ms').value, '650');
+  assert.equal(h.ui.settings.buffer_ms, 650);
+  assert.equal(h.changes.at(-1).buffer_ms, 650);
+});
+
+test('invalid remote snapshots and failed polls leave the last valid displayed settings', async t => {
+  const h = await harness(t);
+  h.store.buffer_ms = -1;
+  await h.ui.refresh();
+  assert.equal(h.ui.settings.buffer_ms, 350);
+  assert.equal(h.field('buffer_ms').value, '350');
+  assert.equal(h.changes.length, 1);
+  h.store.buffer_ms = 850;
+  await h.ui.refresh();
+  assert.equal(h.field('buffer_ms').value, '850');
 });

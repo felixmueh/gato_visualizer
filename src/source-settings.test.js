@@ -86,7 +86,9 @@ test('source window checks without compiling, streams explicit build status, the
     throw new Error(path);
   };
   try {
-    const ui = setupSourceSettings({ button, request, beforeApply: () => beforeApply++, reload: () => reloaded++ });
+    const draft = { params: { type: 'MpcParams', N: 32, armature: [1, 0, 0, 0, 0, 0, 0] }, source_settings: { armature_on: true }, source_settings_module: { sha256: 'pinned' } };
+    const ui = setupSourceSettings({ button, request, getBuildSettings: root => root === '/source' ? draft : null,
+      beforeApply: () => beforeApply++, reload: () => reloaded++ });
     await button.emit('click'); await new Promise(resolve => setImmediate(resolve));
     assert.equal(ui.dialog.isOpen, true);
     assert.deepEqual(requests.map(item => item.path), ['/api/source', '/api/source/defaults', '/api/plots/settings']);
@@ -100,11 +102,12 @@ test('source window checks without compiling, streams explicit build status, the
     await action('inspect').emit('click');
     assert.equal(requests.filter(item => item.path.endsWith('/build')).length, 0);
     field('counts').value = '96,48';
-    field('prediction_friction').checked = true;
     assert.equal(requests.filter(item => item.path.endsWith('/build')).length, 0);
     await action('build').emit('click');
     assert.deepEqual(requests.find(item => item.path.endsWith('/build')).body.N, [48, 96]);
-    assert.equal(requests.find(item => item.path.endsWith('/build')).body.prediction_friction, true);
+    assert.deepEqual(requests.find(item => item.path.endsWith('/build')).body.params, draft.params);
+    assert.deepEqual(requests.find(item => item.path.endsWith('/build')).body.source_settings, draft.source_settings);
+    assert.deepEqual(requests.find(item => item.path.endsWith('/build')).body.source_settings_module, draft.source_settings_module);
     assert.equal(action('apply').disabled, true);
     assert.equal(form.querySelector('.source-build-log').textContent, 'compiling current key');
     currentBuild = { ...currentBuild, state: 'complete' };

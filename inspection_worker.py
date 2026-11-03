@@ -83,5 +83,5 @@ def inspect_solve(session, payload):
         diagnostics=diagnostics, stats=dict(sqp_iters=result.iteration_trace.iterations_run,
             solve_time_ms=float(result.solve_time_us)/1000, inspection_call_wall_s=wall,
             pcg_iters=int(np.sum(result.iteration_trace.pcg_iters))),
-        end_effector_frame=mpc.params.ee_frame)
+        end_effector_frame=session.tiago.GRASP_FRAME)
     return write_artifact(Path(payload["artifact_directory"]), result.iteration_trace, metadata)

@@ -35,8 +35,10 @@ def groups(n=3):
 def plan():
     return dict(id='chosen', seq=7, origin='controller', N=3, dt_s=.03,
         initial_state=dict(q=[.2]*7, qd=[.1]*7, time_s=1.25), reference_native=[[.1,.2,.3,0,0,0]]*3,
-        problem_configuration=dict(N=3, dt_s=.03, solver=dict(max_sqp_iters=5), admm=dict(rho=.01),
-            admm_linsys='pcg', joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85, friction=None),
+        problem_configuration=dict(type='MpcParams', N=3, dt_s=.03,
+            solver=dict(type='SolverParams', max_sqp_iters=5), admm=dict(type='AdmmLimits', rho=.01),
+            admm_linsys='pcg', joint_margin_rad=.1, velocity_fraction=.8, effort_fraction=.85, friction=None,
+            friction_law=dict(type='Tanh', width_rad_s=.03)),
         joint_limits=dict(lower_position_rad=[-2]*7,upper_position_rad=[2]*7,
                           velocity_rad_s=[1]*7,effort_nm=[10]*7),
         constraint_bounds_native=groups(), task=dict(kind='reach',target_offset_m=[0,0,0]),
@@ -174,6 +176,27 @@ class ArtifactTests(unittest.TestCase):
     def test_pre_migration_recordings_report_run_again_unavailable(self):
         p=plan();p['problem_configuration']=dict(N=3,dt_s=.03,solver_params=dict(max_sqp_iters=5),controller={})
         with self.assertRaisesRegex(ValueError,'unavailable: pre-migration recording'): captured_problem(p)
+        p=plan();p['problem_configuration'].pop('type')
+        with self.assertRaisesRegex(ValueError,'unavailable: pre-migration recording'): captured_problem(p)
+        p=plan();p['problem_configuration']['solver'].pop('type')
+        with self.assertRaisesRegex(ValueError,'captured MpcParams are incomplete'): captured_problem(p)
+
+    def test_previous_friction_api_is_viewable_but_cannot_be_run_again(self):
+        for nested in (False, True):
+            p = plan()
+            if nested:
+                p['problem_configuration']['friction'] = dict(type='Friction', coulomb_nm=[1.]*7,
+                    viscous_nm_s_per_rad=[2.]*7, law=dict(type='Tanh', width_rad_s=.2))
+            else:
+                p['problem_configuration'].pop('friction_law')
+            original = deepcopy(p)
+            with self.subTest(nested=nested), self.assertRaisesRegex(ValueError, 'previous friction API'):
+                captured_problem(p)
+            from inspection_problem import run_again_capability
+            capability = run_again_capability(p)
+            self.assertFalse(capability['available'])
+            self.assertIn('recorded motion', capability['reason'])
+            self.assertEqual(p, original)
 
     def test_native_capture_has_finite_shape_validation(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -199,10 +222,10 @@ class NativeOperationTests(unittest.TestCase):
             def reset_dual(self):pass
             def reset_rho(self):pass
         solver=Solver()
-        mpc=SimpleNamespace(N=3,dt=.03,params=SimpleNamespace(ee_frame='tool'),
+        mpc=SimpleNamespace(N=3,dt=.03,params=SimpleNamespace(),
             controller=SimpleNamespace(admm_linsys='pcg',solver=solver))
         session=SimpleNamespace(mpc=mpc,model_identity={'actual':'model'},
-            configuration=plan()['problem_configuration'],tiago=SimpleNamespace())
+            configuration=plan()['problem_configuration'],tiago=SimpleNamespace(GRASP_FRAME='tool'))
         p=plan()
         # Asymmetric joint-6 q bounds are installed as captured, in native coordinates.
         p['constraint_bounds_native'][0]['lo'][5]=-.7
@@ -231,6 +254,7 @@ class NativeOperationTests(unittest.TestCase):
             self.assertEqual(result['iterations_run'],2)
             self.assertNotIn('xu',json.dumps(result))
             record=json.loads(Path(result['path']).read_text())
+            self.assertEqual(record['end_effector_frame'],'tool')
             self.assertEqual(record['signs'],[1.]*7)
             self.assertEqual(record['constraint_bounds_native'],p['constraint_bounds_native'])
             self.assertEqual(record['joint_limits']['upper_position_rad'],[2]*7)
@@ -260,7 +284,7 @@ class JobTests(unittest.TestCase):
         self.profiles=SimpleNamespace(active_selection=lambda identifier=None:deepcopy(self.profile))
         self.plots=SimpleNamespace(mpc_root='/simulator',default_scene={},replays=SimpleNamespace(current=None,listeners=[]),
             _descriptor=lambda source:self.history.plot_source(source['generation']))
-        self.probe=lambda selection:dict(compatible=True,available_N=[3],available_N_by_friction=dict(off=[3],on=[]),
+        self.probe=lambda selection, **kwargs:dict(compatible=True,available_N=[3],available_N_by_friction=dict(off=[3],on=[]),
             contract=contract(),capabilities=dict(iteration_capture_by_friction=dict(off={'3':True},on={})))
         self.calls=[]
         parent=self
@@ -392,9 +416,9 @@ class JobTests(unittest.TestCase):
         self.profile.update(mpc_root=str(root), python=str(python), cache=str(cache))
         original = self.probe
         self.probes = []
-        def counted(selection):
+        def counted(selection, **kwargs):
             self.probes.append(deepcopy(selection))
-            return original(selection)
+            return original(selection, **kwargs)
         self.service.probe = counted
         return source, module, python
 
@@ -426,7 +450,9 @@ class JobTests(unittest.TestCase):
         result = self.service.capability(request)
         self.assertFalse(result['available'])
         self.assertIn('N=4',result['reason'])
-        self.assertEqual(len(self.probes),1)
+        # The same captured model reuses its probe; a different N/model is
+        # checked independently rather than assuming one profile-wide answer.
+        self.assertEqual(len(self.probes),2)
         self.assertEqual(self.calls,[])
 
     def test_capability_cache_invalidates_for_rebuild_source_environment_and_profile(self):
@@ -454,30 +480,49 @@ class JobTests(unittest.TestCase):
     def test_negative_capture_capability_is_cached_until_binary_rebuild(self):
         _, module, _ = self.cached_profile()
         counted = self.service.probe
-        def without_capture(selection):
-            result = counted(selection)
+        def without_capture(selection, **kwargs):
+            result = counted(selection, **kwargs)
             result['capabilities']['iteration_capture_by_friction']['off']['3'] = False
             return result
         self.service.probe = without_capture
         for _ in range(3):
             result = self.service.capability(self.request())
             self.assertFalse(result['available'])
-            self.assertIn('capture',result['reason'])
+            self.assertIn('native iteration capture',result['reason'])
         self.assertEqual(len(self.probes),1)
         self.service.probe = counted
         module.write_bytes(b'capture-capable rebuilt binary')
         self.assertTrue(self.service.capability(self.request())['available'])
         self.assertEqual(len(self.probes),2)
 
+    def test_capability_cache_watches_installed_and_editable_gato_sources(self):
+        _, _, python = self.cached_profile()
+        packages = python.parent.parent / 'lib/python3.10/site-packages'
+        installed = packages / 'gato/interface.py'
+        installed.parent.mkdir(parents=True); installed.write_text('# installed GATO')
+        metadata = packages / 'gato_mpc-0.1.5.dist-info'
+        metadata.mkdir(); (metadata/'METADATA').write_text('Version: 0.1.5\n')
+        direct_url = metadata/'direct_url.json'
+        editable = self.folder/'editable-gato/python/gato/interface.py'
+        editable.parent.mkdir(parents=True); editable.write_text('# editable GATO')
+        self.assertTrue(self.service.capability(self.request())['available'])
+        self.service.capability(self.request()); self.assertEqual(len(self.probes), 1)
+        installed.write_text('# changed installed GATO')
+        self.service.capability(self.request()); self.assertEqual(len(self.probes), 2)
+        direct_url.write_text(json.dumps(dict(url=(self.folder/'editable-gato').as_uri(), dir_info=dict(editable=True))))
+        self.service.capability(self.request()); self.assertEqual(len(self.probes), 3)
+        editable.write_text('# changed editable GATO')
+        self.service.capability(self.request()); self.assertEqual(len(self.probes), 4)
+
     def test_concurrent_capability_checks_share_one_probe(self):
         self.cached_profile()
         entered, release = threading.Event(), threading.Event()
         counted = self.service.probe
-        def slow(selection):
+        def slow(selection, **kwargs):
             entered.set()
             if not release.wait(3):
                 raise AssertionError('Test did not release source probe')
-            return counted(selection)
+            return counted(selection, **kwargs)
         self.service.probe = slow
         results = []
         threads = [threading.Thread(target=lambda: results.append(self.service.capability(self.request())))
@@ -496,8 +541,8 @@ class JobTests(unittest.TestCase):
     def test_changes_during_probe_are_not_cached_as_current(self):
         source, _, _ = self.cached_profile()
         counted = self.service.probe
-        def changing(selection):
-            result = counted(selection)
+        def changing(selection, **kwargs):
+            result = counted(selection, **kwargs)
             source.write_text('# source changed during probe')
             return result
         self.service.probe = changing

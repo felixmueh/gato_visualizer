@@ -8,6 +8,12 @@ Read [README.md](README.md) for launch and user workflows,
 files, checks and accepted decisions. Follow the topic links there for the
 area being changed; update its existing contract when behavior changes.
 
+For programmatic control, read [the agent API guide](docs/agent-api.md).
+`scripts/control.py` reads current settings and the schema, patches Live and
+presentation settings, sends simulation commands, and selects MPC sources or
+solver profiles. Open viewers reflect shared settings changes. Use partial
+patches and the documented version checks when editing an existing session.
+
 Current Live uses a simulation coordinator plus a persistent solver child;
 plots run in a separate CPU process. Report frequency and playback buffering
 are presentation settings, independent of simulation/control/TO rates.
@@ -56,9 +62,9 @@ code idiom; dialogs use the same palette as the workbench.
 ## Relationship to tiago_mpc — Felix, 2026-10-21
 
 `tiago_mpc` keeps changing and the visualizer must follow it, but this project
-avoids changes to `tiago_mpc`, including its `external/gato`. Locate it through
+avoids changes to `tiago_mpc`, including its GATO dependency. Locate it through
 the configurable path (`--mpc-root` / `TIAGO_MPC_ROOT`, default
-`../tiago_mpc`). Do not add a submodule or move this repository unless Felix
+`../tiago_mpc-visualizer-base`). Do not add a submodule or move this repository unless Felix
 decides so.
 
 The producer-side replay exporter is the explicitly requested exception:
@@ -68,6 +74,41 @@ Keep one lightweight implementation there; visualizer tests can use it to
 create portable recording fixtures.
 
 ### The tiago_mpc API the visualizer uses — Felix, 2026-10-22
+
+**Settings ownership — Felix, 2026-10-27:** descriptors and UI-to-native adapter
+functions belong to this visualizer repository (`adapters/`). Use the bundled
+standard adapter for compatible checkouts; an optional locally ignored
+`<checkout>/_visualizer/_settings.py` overrides it for an experiment. The current
+friction override is a relative symlink to `adapters/friction_compensation.py`.
+Keep native algorithms/defaults in `tiago_mpc`; require no tracked visualizer
+hook or tests there. Preserve resolved values, actual adapter path/hash and
+explicit model availability/Build checks. See `docs/source-settings.md`.
+
+**Common compilation controls — Felix, 2026-10-27:** offer all supported knot
+counts and allow uncompiled predictor settings as editable drafts. Shade missing
+models and show one explicit Compile action at the top center of the viewport.
+Resolve actual native parameters and ask `find_binary`; never duplicate cache
+identity in the visualizer. Build exactly the frozen draft through the existing
+Build service, then recheck the latest draft before accepting it. Retain edits
+made during Build and reject stale source/profile/cache/adapter results. Field
+`effect` metadata declares runtime versus compiled-model check dependencies;
+native lookup decides availability. Runtime annotations reuse readiness, while
+unannotated predictor fields are checked conservatively. Goal/task, execution
+and simulation/law edits never invalidate predictor readiness. Keep checks
+asynchronous and hidden, with target handles editable during checks. Keep
+per-joint friction and armature coefficients in code;
+expose enablement toggles, laws and smoothing widths. PD gain vectors stay in
+the code-owned tuned preset as requested later in the same session.
+
+**Timing and comparison UI — Felix, 2026-10-27:** use the shared time-input
+parser for typed Hz/period units; retain numeric API units and equivalent typed
+spelling. Measured latency and as-fast-as-possible TO are separate checkboxes
+with disabled, retained numeric drafts. Task setup belongs directly below Task;
+keep plant controls together and distinguish them from MPC bounds. Comparison
+plots use a contextual tab and their own extensible `@plot_comparison` functions,
+including tracking, smoothness and a generic recorded-channel plot. Analysis
+runs in the separate CPU worker. Preserve all recorded samples/statistics;
+avoid needless prediction geometry when comparing execution. See `docs/plot-api.md`.
 
 Supersedes the 2026-10-21 import list under "Visualizer timing ownership"
 (`reach_sim.py`, `reaching_config`). Reason: the `tiago_mpc` refactor removed
@@ -80,7 +121,7 @@ follows the package API that experiments use, without shims.
   compiles. Live constructs `Mpc` from `find_binary(params)` and reports
   "not compiled" otherwise. The visualizer has no module discovery or plant
   naming of its own.
-- **Settings are `asdict(MpcParams)`** plus the visualizer's `plant` group
+- **Settings are `to_dict(MpcParams)`** plus the visualizer's `plant` group
   (the simulated plant); `task` and `execution` are unchanged. No configuration
   files are written.
 - **Live** steps `tiago_mpc.sim.SimPlant` in the simulation coordinator (a
@@ -93,8 +134,27 @@ follows the package API that experiments use, without shims.
   starts at the start pose.
 - **Run again on recordings from before the migration** reports
   "unavailable: pre-migration recording"; there is no converter.
-- **Default `tiago_mpc` root is `../tiago_mpc`.** The frozen
-  `tiago_mpc_vis_baseline` worktree is no longer used.
+- **Stable default source (Felix, 2026-10-24):** use the sibling
+  `../tiago_mpc-visualizer-base` worktree on `visualizer/base`. Advance it only
+  when Felix requests it, from a clean worktree with `git merge --ff-only main`,
+  then sync its own uv environment and use Source Apply to restart the backend.
+  Do not automatically track main or copy its uncommitted working changes.
+  The older `tiago_mpc_vis_baseline` worktree remains retired.
+- **Current package API (Felix, 2026-10-28):** stable base is `7fa9c75` (TIAGo main with GATO 0.1.7, advanced 2026-11-03): its settings follow GATO's defaults, so a None in `MpcParams` (warm_start, reset_rho_each_step, admm_linsys, linsys, the thresholds, the `AdmmLimits` fields) is offered as the choice "GATO default". An MPC's `params` are the values GATO resolved; the solver worker's configure reply sends them as `resolved`, `effective_settings.params` holds them, and the panel shows them as "GATO default (value)" while a field follows GATO. Friction holds coefficients only; `SimConfig.friction_law` and `MpcParams.friction_law` select evaluation separately, and predictor armature is explicit.
+  Construct the plant with `SimConfig(q=..., qd=..., substep=..., friction=...,
+  friction_law=..., integrator=...).build()`, then call `start(VirtualClock(sim_time_s))`.
+  Friction is coefficient-only; `MpcParams.friction_law` and `SimConfig.friction_law`
+  select their laws separately. The standard adapter keeps the native defaults without
+  controls; a source settings adapter (docs/source-settings.md) may control both.
+  State/Plan live in `tiago_mpc.interfaces`. Native configurations round-trip
+  through `record.to_dict` / `from_dict`, with fixed `type` metadata hidden
+  from UI controls; never discard friction-law identity with `asdict`.
+  GATO identity comes from `record.provenance()["gato"]`. Solver calls use
+  `Mpc.request` and `Mpc.result`; `Mpc.step` holds the latest raw result for
+  diagnostics. The conformance reference uses `run_virtual_time` with explicit
+  declared `solve_latency_s=.0055` on both sides; the visualizer reuses
+  `loops.Schedule` and retains its multirate/history lifecycle. Normal Live
+  uses measured solve latency.
 - **The reduced arm is derived, not a file in the checkout** (tiago_mpc,
   2026-10-23). `tiago.arm_urdf()` derives it with the grasp frame from
   `models/tiago_pro/tiago_pro.urdf` into the cache (`GATO_CACHE_DIR`) and
@@ -237,15 +297,16 @@ full. See [runtime files](docs/execution-api.md#runtime-files).
 
 Conformance (Felix, 2026-10-22, replaces the comparison with `reach_sim.py`):
 the opt-in GPU script `scripts/check_conformance.py` runs
-`experiments.reach.reach` with `SimPlant` and `Mpc` in-process, then the
+`run_virtual_time` with a `Reach` task with `SimPlant` and `Mpc` in-process, then the
 visualizer's adapter, solver child and multirate session at the same rates,
 start, target and `MpcParams`, and compares states at every command tick,
 commands and plans, so drift in `tiago_mpc` fails loudly. By default the
 reference steps on the session's 1 ms grid for 3 s without arriving, and the
-comparison is bit for bit. It covers the default loss-free reach, not every
+comparison uses a sensible numerical tolerance. The native 3 s delayed comparison
+also passed with exactly matching arrays (2026-10-27). It covers the explicit loss-free RK4 reach case, not every
 profile, friction or inspection path. Since `tiago_mpc` 31c405a (Felix,
 2026-10-23) both sides use `TIAGO` without the SQP time limit and with the
-warm-up (`run()` warms up before its first tick, the session's configure
+warm-up (`run_virtual_time()` warms up before its first tick, the session's configure
 reseeds the same way), at the reach's default rates: 500 Hz commands, a
 control update per 10 ms knot.
 
@@ -313,10 +374,11 @@ Develop with them, keep coefficients configurable, and make plant/predictor
 coefficient mismatch easy to set up for robustness checks; identified values
 come later and matter for tuning, not for the design.
 
-**Friction — Felix, 2026-10-22 and 2026-10-23:** plant and predictor are
-loss-free by default, matching `tiago_mpc`'s friction opt-in. The plant
-(`config.plant`) maps onto `SimPlant`'s options: integrator RK4 (default,
-loss-free only) or semi-implicit Euler; plant friction (URDF coefficients, Euler
+**Friction defaults — Felix, 2026-10-26:** simulate with URDF friction,
+the constraint Coulomb law and semi-implicit Euler by default. Predictor friction
+retains its separate loss-free default. This supersedes the older loss-free
+simulated-plant default. The plant (`config.plant`) maps onto `SimPlant`'s options:
+integrator RK4 (loss-free only) or semi-implicit Euler (default); plant friction (URDF coefficients, Euler
 only) with a tanh (settable width, default 0.03 rad/s), sign or constraint
 (default) Coulomb law. Predictor friction is a compiled variant whose tanh width
 is fixed at 0.03 rad/s and not settable, since each width is its own compiled
@@ -425,16 +487,23 @@ such as a solver-internal default, is simply used and needs no display or
 report. Display what was resolved and handed to the solver, not what was
 requested, so display and solver cannot disagree.
 
-Since the settings became `asdict(MpcParams)` (Felix, 2026-10-22), every
-`MpcParams` field is shown with its value, including `ee_frame`, `warmup`,
+Settings use native `to_dict(MpcParams)` (refactor, 2026-10-26); every
+`MpcParams` field is shown with its value, including `warmup`,
 `max_sqp_time_s` and `warm_start`; values the visualizer cannot change appear as
-fixed choices. A `max_sqp_time_s` of None (Live's default, 2026-10-23) shows as
+fixed choices. Serialization `type` tags are fixed metadata, not parameters.
+A `max_sqp_time_s` of None (Live's default, 2026-10-23) shows as
 "none".
+
+Since `tiago_mpc` 9dbde7f (Felix, 2026-10-24), the MPC always tracks
+`tiago.GRASP_FRAME`; `ee_frame` is no longer a parameter. Frame identity belongs
+to model/segment metadata and remains recorded on historical replays.
 
 ## Host environment and GPU
 
-Run on the host with the selected `tiago_mpc` checkout's interpreter, preferring
-`venv-host/bin/python` and falling back to `.venv/bin/python`. Do not install
+Run with the selected `tiago_mpc` checkout's uv interpreter: `.venv/bin/python`
+on the host, `.venv-container/bin/python` in Docker or Podman (Felix, 2026-10-24).
+Never fall back to the other platform's environment. GATO comes from that
+environment's installed package; do not add `external/gato` to `PYTHONPATH`. Do not install
 packages into these environments. Source / Build settings may select a different
 prepared interpreter and persist that selection in the visualizer config.
 
@@ -473,7 +542,8 @@ into the running solver's own checkout, interpreter and cache only adds modules
 and is listed without a restart (Felix, 2026-10-23, above).
 Reconstruct source-bound robot/render/replay objects and start fresh Live history;
 retain saved replays and compatible UI settings. Path precedence is
-`--mpc-root`, then `TIAGO_MPC_ROOT`, then the saved selection, then `../tiago_mpc`.
+`--mpc-root`, then `TIAGO_MPC_ROOT`, then the saved selection, then
+`../tiago_mpc-visualizer-base`.
 An explicit Apply replaces launch-time source/environment overrides for that
 restart. nvcc 12.9 rejects host GCC 15; Felix's shell uses
 `CUDAHOSTCXX=/usr/bin/g++-14`. Do not change toolchain settings silently.
@@ -483,6 +553,15 @@ explicit Run again may use a separate temporary child while Live is idle, with
 only one GPU computation at a time. Solve only while a view needs it, and pause
 solving while a GPU timing run holds the locks used by
 `tiago_mpc/experiments/random100/run.py`.
+
+**Memory-heavy commands: one at a time — Felix, 2026-11-03:** parallel builds
+by several agents exhausted the 15 GiB host and froze the desktop. Run every
+compile (GATO module builds, `uv sync` or `pip install` of large packages),
+test suite and benchmark under the shared lock, on the host
+`flock /var/home/felix/_Uni/MasterThesis/impl/.locks/heavy.lock <command>`
+and in the container `flock /workspace/.locks/heavy.lock <command>` (the same
+file). `flock` waits for the holder; for long waits run the command in the
+background. Never launch several subagents that compile at the same time.
 
 ## Experiment storage and presentation — Felix, 2026-10-21
 
@@ -529,6 +608,11 @@ specific plot when Felix asks for one. Keep the default handoff small and easy
 to inspect, without an unsolicited plotting/reporting framework.
 
 ## Coordination
+
+Commit your changes in this repository once its tests pass; Felix does not review
+them uncommitted (Felix, 2026-11-03). Commit only your own changes, never another
+session's uncommitted work, and do not push. Changes to `tiago_mpc` stay
+uncommitted for his review (its own AGENTS.md).
 
 Use bounded parallel implementation and review when useful. Coordinate shared
 edits. Queue worktree cleanup after merging branches. At the end of the work

@@ -174,13 +174,15 @@ a failed nonblocking lease acquisition reports a terminal `busy` job.
 
 The selected problem must contain native initial q/qd/task time, the exact
 native reference, the effective `MpcParams` (`problem_configuration`, the
-`asdict(MpcParams)` the solve used), and explicitly captured installed
+`to_dict(MpcParams)` the solve used), and explicitly captured installed
 constraint rows. `constraint_bounds_native` records the actual native
 position/velocity/torque bounds and activity masks once after configuration.
 These are separate from display/physical `joint_limits`; compiled default
 margins and offsets must never be inferred from a physical-limit table.
 Historical records without exact constraint capture report unavailable. Missing
-Replay references, configuration or state are also unavailable, including a
+native configuration type metadata also reports a pre-migration recording;
+the viewer does not reconstruct old parameter dataclasses from display data.
+Missing Replay references, configuration or state are also unavailable, including a
 position-only replay with enough geometry to draw a trajectory. Solves recorded
 before the migration to `tiago_mpc` main carry the old configuration shape
 (`solver_params`, `controller`) and report "Run again unavailable:

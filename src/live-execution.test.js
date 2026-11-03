@@ -1,11 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
+import { DEFAULT_EXECUTION, validateExecution, parseSolveLatency, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
 import { createLiveHistory } from './live-history.js';
 
 test('execution rates are independent of knot spacing and ordered physics ≥ control ≥ TO', () => {
   assert.deepEqual(validateExecution({ simulation_hz: 1000, control_hz: 200, to_hz: 33.5 }).to_hz, 33.5);
   for (const value of [{ simulation_hz: 10, control_hz: 20 }, { control_hz: 20, to_hz: 30 }, { duration_s: 0 }, { to_hz: NaN }, { calculation: 'other' }]) assert.throws(() => validateExecution(value));
+});
+
+test('solve latency defaults to measured, declared seconds and TO zero round-trip', () => {
+  assert.equal(DEFAULT_EXECUTION.solve_latency_s, 'measured');
+  assert.equal(validateExecution({ to_hz: 0 }).to_hz, 0);
+  assert.equal(parseSolveLatency(' measured '), 'measured');
+  for (const value of ['0', '.0055', '1e-2']) assert.equal(parseSolveLatency(value), Number(value));
+  for (const value of ['', '-1', 'NaN', 'ideal']) assert.throws(() => parseSolveLatency(value));
+  for (const value of [null, true, '0.01', -1, NaN, Infinity]) assert.throws(() => validateExecution({ solve_latency_s: value }));
+});
+
+test('latency compensation is one optional execution toggle with an off default', () => {
+  assert.equal(DEFAULT_EXECUTION.latency_compensation, false);
+  assert.equal(validateExecution({}).latency_compensation, false);
+  assert.equal(validateExecution({ latency_compensation: true }).latency_compensation, true);
+  for (const value of [0, 1, 'true', null]) assert.throws(() => validateExecution({ latency_compensation: value }));
 });
 
 test('MPC overrun is red even when simulation is slower, combined-only overrun is yellow', () => {
@@ -14,6 +30,17 @@ test('MPC overrun is red even when simulation is slower, combined-only overrun i
   assert.equal(intervalSeverity({ severity: 'yellow', physics_ratio: .4, total_ratio: 1.1 }), 'yellow');
   assert.equal(intervalSeverity({ severity: 'none' }), 'normal');
   assert.match(intervalDescription({ severity: 'red', solve_wall_s: .03, physics_wall_s: .08, to_budget_s: .02 }), /MPC exceeded budget.*30.00 ms.*80.00 ms.*20.00 ms/);
+});
+
+test('ASAP never reports a missed TO deadline; throughput overload remains yellow', () => {
+  const interval = { to_back_to_back: true, severity: 'red', mpc_overrun: true,
+    start_time_s: 0, end_time_s: .004, solve_wall_s: .006, physics_wall_s: .001,
+    total_wall_s: .007, to_budget_s: .004, total_ratio: 1.75 };
+  assert.equal(intervalSeverity(interval), 'yellow');
+  assert.match(intervalDescription(interval), /Combined computation slower than real time[\s\S]*no TO deadline/);
+  assert.doesNotMatch(intervalDescription(interval), /MPC exceeded budget|actual TO interval budget/);
+  assert.equal(intervalSeverity({ ...interval, severity: 'none', mpc_overrun: false, total_wall_s: .003, total_ratio: .75 }), 'normal');
+  assert.equal(intervalSeverity({ ...interval, to_back_to_back: false }), 'red');
 });
 
 test('history clock plays saved simulated time at1x regardless compute speed, holds tail and never jumps ahead', () => {

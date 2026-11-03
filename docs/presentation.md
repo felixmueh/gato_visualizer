@@ -11,6 +11,13 @@
 
 These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, `interpolate` a boolean, `limit_tint` a boolean, both ghost opacity percentages within 0–100, `limit_near_percent` within 1–100, `limit_at_position_rad` within 0–0.1, `limit_at_velocity_rad_s` within 0–1 and `limit_at_torque_percent` within 0–10. A saved `presentation` key without any of these fields takes their defaults. Legacy `ghost_opacity_percent` migrates to start opacity and an end opacity scaled by 25/55; explicit new endpoints take precedence. Source, build, plotting and replay preferences are preserved when saving this key.
 
+Timing fields accept explicit units, keeping canonical API values: reporting can
+be `20 Hz` or `50 ms`, buffer can be `200 ms` or `0.2 s`, and ghost spacing can
+be `0.5 s` or `2 Hz`. Signed timeline offsets accept time units such as
+`-350 ms`; offsets have no frequency interpretation. Equivalent server echoes
+preserve the typed spelling. Physical angular velocities and friction widths
+remain in their own units.
+
 **Settings dialog (UI tab):** no Save button. Checkboxes apply on change. Numeric fields apply on a committed change (change, blur, Enter) or after 700 ms without typing, never per keystroke. A value outside its range is marked on the field with the reason as tooltip; it is neither applied nor saved and the last valid value stays in effect. Valid changes are saved through the POST above after a 400 ms debounce, so a burst (including `report_hz`, whose backend update happens with the POST) sends only the last value, with at most one request in flight. A failed save marks the section heading ("! not saved", reason in the tooltip) while the setting stays applied; the next change retries.
 
 `report_hz` controls the numerical worker's wall-clock reporting cadence, independently of TO, control and simulation frequencies. Reports retain every recorded plan, state, control sample and per-interval deadline measurement (states at the control events, see [recording](execution-api.md#recording)). A report is split into IPC packets of at most 256 records; splitting does not trigger an earlier report. History/latest notifications are published after the final packet. Progress statuses follow the configured cadence. Pause, cancel, inspection pause, settings/profile transitions, completion and errors flush pending records immediately. No reporting wait is added to numerical execution, and changing this preference does not reset the controller, history generation, settings version or warm start.
@@ -18,6 +25,13 @@ These are also the defaults when the local `visualizer.json` has no `presentatio
 The report window bounds accumulation by elapsed wall time (at most one second at the minimum reporting frequency, observed at completed numerical boundaries). Existing finite-job state limits and Live pacing remain in force; no extra recording queue or spool is introduced. A slow numerical call can delay a report beyond its target deadline.
 
 `buffer_ms` is a browser presentation target in **simulation-time milliseconds**, not a numerical integration delay or a wall-clock reporting interval. `interpolate` selects display interpolation; the default is sample hold. Both are consumed by the frontend and never change recorded values or plant/control calculations. Available buffered motion comes from received history bounds, not a progress status's computational `history_end_s`, which may lead a pending report.
+
+`POST /api/presentation/settings/patch` accepts a partial object of these fields
+and returns the complete saved preferences. It merges and validates atomically;
+an invalid or unknown field changes nothing. Browsers save only edited fields
+and poll the GET endpoint every second, in Live and Replay, so agent changes
+update open controls and rendering. Pending local edits are preserved by field;
+an old read cannot undo an in-flight save. See [agent controls](agent-api.md).
 
 ## Joint limit states
 
@@ -117,22 +131,42 @@ implementation report stay in this worktree’s ignored `_expr_data/onion-skin/`
 
 ## Session and tracks
 
-The application opens directly into one browser-owned Live session, initially
-the main track **Live** only. There is no Replay/Live mode switch. The
-session time equals Live's recorded simulation time. Each immutable replay
+The application opens directly into one browser-owned session, initially
+the main track **Live** only unless a replay link was supplied. The bottom-bar
+**Replay** toggle selects Replay mode within this same workspace. Each immutable replay
 track samples at `session time − offset`, interpolating recorded samples and
 holding the nearest endpoint outside its span. Main-track playback retains the
-Live sample-hold/interpolation preference. The session span is the union of
-the main track and visible comparison tracks. Focus is main-only in this phase;
-settings and the target gizmo always edit Live, while pinned solves retain
-their own source.
+Live sample-hold/interpolation preference. In Live, the session span is the union
+of the main track and visible comparison tracks and presentation reads Live.
+In Replay mode, the span includes only visible replay tracks and Joints,
+Episode and follow-cursor Solve read the first visible replay. There is no
+arbitrary track focus selector. Pinned solves retain their own source.
+
+Replay mode cancels any active Live calculation, including Manual/Automatic
+precalculation, and blocks new simulation, preview and Live settings submissions.
+Live settings stay visible but inert; target and start-pose editing are unavailable.
+Live's lane, solid right arm, paths and temporal ghosts are hidden. The Live
+track and its history, settings and arm-display choice are preserved.
+Play, Pause, scrub and speed operate locally over the replay-only span; Reset
+rewinds to its start. No end-of-playback preference extends Live in this mode.
+A subtle amber outline surrounds the viewport and a top-centre
+**Replay mode · Return to Live** button restores Live. This button and the
+bottom-bar toggle return to the retained Live session, paused, with all replay
+tracks, offsets and display choices intact. Hiding or removing all replays
+leaves Replay mode selected with an empty playback span.
 
 **Add track** in the expanded heading opens a searchable floating catalog,
 with RAM freezes under Temporary, library recordings and uploads. Hover or
 focus a recording for a preview of its actual end-effector path and recorded
 duration; previews never calculate motion. File/folder upload actions use the
-same recording library. A `?replay=<library path>` link adds its recording as
-a track without switching focus or replacing the main run.
+same recording library. Opening a catalog entry through Add track enters Replay
+mode. A `?replay=<library path>` link also enters Replay mode and adds its
+recording without replacing the main run; initial linked startup does not
+subscribe to Live events or request an automatic preview.
+Repeated `replay` parameters open multiple tracks in the same Replay-mode
+session, with offset zero and editable names from their recording labels.
+Each available recording loads once; late catalog arrivals join the retained
+tracks. The first visible replay continues to supply the inspectors.
 Replays align their start with the main track's
 start (session zero when it is empty); freezes start at offset zero. Lanes show
 an effective offset, including zero, plus eye, Arm/Dot and removal controls.
@@ -143,8 +177,8 @@ main arm is hidden. The rest of the robot remains visible in all views.
 Replay names are editable and start at A, B, C; source names stay in tooltips.
 The compact name field leaves more room for the time axis. The boxed remove
 button sits in the rightmost action column, directly below Live's second
-Freeze button beside its arm display control. A compact ruler sits directly above the Live
-row. Aggregate barriers and outside shading span every track rail.
+Freeze button beside its arm display control. A compact ruler sits directly above
+the track rows. Aggregate barriers and outside shading span every track rail.
 Dragging shifts a track without modifying recorded data; snapping within 6 px
 uses zero, the cursor and track endpoints. Alt-drag disables snapping;
 double-click resets the default offset. A lane's hover tooltip shows track
@@ -173,14 +207,27 @@ survive Live generation changes. When Live is unavailable, the application
 still opens this session: its empty main lane and loaded comparison tracks
 support local playback; calculation controls remain disabled.
 
-Freeze for comparison is available with at least two states, no active job and
+Freeze for comparison stays in Live and is available with at least two states, no active job and
 no dirty/pending settings. It exports the current run via `save_replay`, adds
 it at offset zero and seeks the episode cursor to the run start. Breach-stopped
 and cancelled runs are allowed. Freezes live only in
 the server's RAM-backed runtime directory, survive page reloads, and are pruned
 to eight oldest-first; server shutdown deletes them. The browser's track list,
-offsets and display choices are not persisted or written to config. Focus
-switching, Keep, comparison plots and a past-run browser are later phases.
+offsets, mode and display choices are not persisted or written to config.
+General focus switching, Keep and a past-run browser are later phases.
+The contextual **Comparison** tab is available with at least two loaded
+recorded runs. It has a separate extensible Python plot catalog, seeded with
+tracking error, tracking summary and smoothness. Its **+** catalog includes a
+generic recorded numeric channel plot and **Squared control effort**, with
+cumulative integral and total-by-run views of ∫Σⱼτ_applied,j² dt in Nm²·s.
+Duplicate a card to compare several signals or views. Effort uses recorded
+applied torque and is a cost proxy, not mechanical work or energy.
+Plots follow run names/colours/offsets and the shared session aggregate window,
+preserving actual sample support and missing values. Catalog, preview and plot
+calculations wait while Live is calculating, then refresh after it pauses or
+finishes. Playback of retained data does not defer plots. An already submitted
+CPU job can finish, but its stale response is ignored. See
+[comparison plotting](plot-api.md#comparison-plots).
 
 ## Viewport start-pose editing
 

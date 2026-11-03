@@ -12,7 +12,7 @@ from presentation_settings import DEFAULT_PRESENTATION, migrate_presentation, va
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "visualizer.json"
 DEFAULT_INGEST_DIRECTORY = ROOT.parent / "_expr_data/ingest"
-DEFAULT_MPC_ROOT = ROOT.parent / "tiago_mpc"
+DEFAULT_MPC_ROOT = ROOT.parent / "tiago_mpc-visualizer-base"
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ _SAVE_LOCK = threading.RLock()
 
 
 def effective_source_selection(config, mpc_root=None, environment=None):
-    """CLI > source environment > saved selection > neighboring checkout."""
+    """CLI > source environment > saved selection > stable visualizer worktree."""
     from source_runtime import resolve_selection
     environment = os.environ if environment is None else environment
     saved = config.source or {}

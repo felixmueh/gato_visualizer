@@ -88,7 +88,7 @@ def canonical_joint_limits(urdf):
 def provenance_mpc_bounds(provenance, limits):
     """MPC bounds from a replay's recorded tiago_mpc parameters.
 
-    provenance.params is asdict(MpcParams); tiago_mpc's set_bounds applies its
+    provenance.params is the native to_dict(MpcParams); tiago_mpc's set_bounds applies its
     joint_margin_rad, velocity_fraction and effort_fraction to the raw URDF
     limits. Only numeric values count; missing ones are not inferred.
     """
@@ -429,7 +429,7 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 return
             if self.live_unavailable(urlsplit(self.path).path):
                 return
-            if urlsplit(self.path).path == "/api/presentation/settings" and presentation is not None:
+            if urlsplit(self.path).path in ("/api/presentation/settings", "/api/presentation/settings/patch") and presentation is not None:
                 self.presentation_command()
                 return
             if urlsplit(self.path).path.startswith("/api/solve-inspections") and inspections is not None:
@@ -459,6 +459,7 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 self.send_error(403)
                 return
             try:
+                from execution_bridge import LiveSettingsConflict
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 65536:
                     raise ValueError("Expected a JSON command under 64 KiB")
@@ -467,6 +468,8 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 body = json.loads(self.rfile.read(length))
                 version = live.command(body)
                 result, status = dict(accepted=True, settings_version=version), 200
+            except LiveSettingsConflict as exc:
+                result, status = dict(accepted=False, error=str(exc), settings=exc.settings), 409
             except (ValueError, TypeError) as exc:
                 result, status = dict(accepted=False, error=str(exc)), 400
             self.send_payload(json.dumps(result, allow_nan=False).encode(),
@@ -514,7 +517,8 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 65536 or self.headers.get_content_type() != "application/json":
                     raise ValueError("Expected JSON presentation settings under 64 KiB")
-                result = presentation.update(json.loads(self.rfile.read(length)))
+                update = (presentation.patch if urlsplit(self.path).path.endswith("/patch") else presentation.update)
+                result = update(json.loads(self.rfile.read(length)))
                 status = 200
             except (ValueError, TypeError, OSError, RuntimeError) as exc:
                 result, status = dict(error=str(exc)), 400
@@ -604,7 +608,7 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                     raise ValueError("Expected a JSON source command under 64 KiB")
                 body = json.loads(self.rfile.read(length))
                 action = urlsplit(self.path).path.removeprefix("/api/source/")
-                method = getattr(sources, action, None) if action in ("inspect", "build", "apply", "defaults") else None
+                method = getattr(sources, action, None) if action in ("inspect", "model", "build", "apply", "defaults") else None
                 if method is None:
                     self.send_error(404)
                     return
@@ -835,6 +839,9 @@ def make_server(scene, robot_xml, mesh_assets, host="127.0.0.1", port=8090, dist
                                   "application/json; charset=utf-8")
             elif path == "/api/live/schema" and live is not None:
                 self.send_payload(json.dumps(live.schema, allow_nan=False).encode(),
+                                  "application/json; charset=utf-8")
+            elif path == "/api/live/settings" and live is not None:
+                self.send_payload(json.dumps(live.settings_snapshot(), allow_nan=False).encode(),
                                   "application/json; charset=utf-8")
             elif path == "/api/live/history" and live is not None:
                 from execution_bridge import HistoryGenerationError
