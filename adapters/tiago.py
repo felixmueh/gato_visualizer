@@ -48,6 +48,9 @@ RANGES = {"dt_s": (.001, .1), "solver.max_sqp_iters": (1, 100000), "solver.max_p
 GATO_DEFAULT_PATHS = ("warm_start", "reset_rho_each_step", "admm_linsys", "admm_threshold", "linsys",
                       "bdsv_threshold", "reseed_threshold", "admm.iters", "admm.eps_abs", "admm.eps_rel",
                       "admm.check_every", "admm.rho_q", "admm.rho_qd", "admm.rho_u")
+# What GATO's resolved None means for a field, shown once a configured solver reports it.
+GATO_NONE_MEANINGS = {"reseed_threshold": "off", "admm_threshold": "unused (only under auto)",
+                      "bdsv_threshold": "unused (only under auto)"}
 
 # Reviewed native runtime fields. New predictor fields stay conservative until
 # annotated; this list controls rechecking, never native binary/cache identity.

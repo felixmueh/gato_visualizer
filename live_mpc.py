@@ -17,7 +17,7 @@ import sys
 
 import numpy as np
 
-from adapters.tiago import LABELS, DESCRIPTIONS, GATO_DEFAULT_PATHS, RANGES, PARAMETER_EFFECTS
+from adapters.tiago import LABELS, DESCRIPTIONS, GATO_DEFAULT_PATHS, GATO_NONE_MEANINGS, RANGES, PARAMETER_EFFECTS
 
 ROOT = Path(__file__).resolve().parent
 # The reach task's tolerances (values of tiago_mpc experiments/reach.py:Reach).
@@ -134,6 +134,8 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
                 spec["description"] = DESCRIPTIONS[name]
             if name in GATO_DEFAULT_PATHS:
                 spec["gato_default"] = True  # None follows GATO; the panel shows its resolved value
+                if name in GATO_NONE_MEANINGS:
+                    spec["gato_none"] = GATO_NONE_MEANINGS[name]  # GATO's own None
             if name == "plant.start_pose_rad":
                 spec.update(kind="joints", group="Start pose", lower=list(start_pose["lower"]),
                             upper=list(start_pose["upper"]))

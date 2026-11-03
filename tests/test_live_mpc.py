@@ -97,6 +97,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((specs["admm.iters"]["kind"], specs["admm.iters"]["nullable"]), ("int", True))
         self.assertTrue(specs["warm_start"]["gato_default"] and specs["admm.rho_u"]["gato_default"])
         self.assertNotIn("gato_default", specs["max_sqp_time_s"])  # its None is "no limit", not GATO's
+        self.assertEqual(specs["reseed_threshold"]["gato_none"], "off")
         for fixed in ("solver.exact_hessian", "solver.cost_curvature", "solver.linsys"):
             self.assertTrue(specs[fixed]["disabled"], fixed)
         self.assertEqual(specs["N"]["choices"], [16, 32])

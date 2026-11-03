@@ -2296,10 +2296,11 @@ test('editing a field back to its accepted value does not submit an empty patch 
 
 test('a field following GATO looks as if GATO\'s value were chosen and stays None until changed', async () => {
   const h = harness();
-  Object.assign(h.schema.defaults.config, { warm_start: null, admm: { iters: null } });
+  Object.assign(h.schema.defaults.config, { warm_start: null, admm: { iters: null }, reseed_threshold: null });
   h.schema.parameters.push(
     { path: 'warm_start', kind: 'choice', gato_default: true, choices: [{ value: null, label: 'GATO default' }, 'shift', 'hold'] },
-    { path: 'admm.iters', kind: 'int', nullable: true, gato_default: true, min: 1, max: 200 });
+    { path: 'admm.iters', kind: 'int', nullable: true, gato_default: true, min: 1, max: 200 },
+    { path: 'reseed_threshold', kind: 'float', nullable: true, gato_default: true, gato_none: 'off', min: 1e-6, max: 10 });
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
   let live;
@@ -2312,8 +2313,10 @@ test('a field following GATO looks as if GATO\'s value were chosen and stays Non
     assert.equal(select().children[0].textContent, 'GATO default');  // no configured solver yet
     assert.equal(iters().value, '');
     source.emit({ type: 'settings', ...live.settings, settings_version: 1,
-                  effective_settings: { params: { warm_start: 'shift', admm: { iters: 10 } } } });
+                  effective_settings: { params: { warm_start: 'shift', admm: { iters: 10 }, reseed_threshold: null } } });
     await flush();
+    const reseed = h.created.filter(el => el.dataset.path === 'reseed_threshold').at(-1);
+    assert.equal(reseed.value, ''); assert.equal(reseed.placeholder, 'off');  // GATO's own None, known
     const [gato, shift, hold] = select().children;
     assert.equal(gato.textContent, 'shift'); assert.equal(gato.selected, true);  // GATO's shift, shown as chosen
     assert.equal(shift.hidden, true); assert.equal(hold.hidden, false);

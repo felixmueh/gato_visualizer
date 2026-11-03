@@ -214,9 +214,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   const gatoValues = new Map();  // path -> GATO's value, kept once a solver reported it
   function refreshGatoDefaults() {
     for (const field of gatoDefaultFields) {
+      // undefined: not reported yet; null: GATO's own None (for example re-seeding off)
       const reported = fieldValue(effectiveSettings || schema?.effective_settings, `params.${field.path}`);
-      if (readPath(acceptedSettings?.config, field.path) == null && reported != null) gatoValues.set(field.path, reported);
-      const value = gatoValues.get(field.path);
+      if (readPath(acceptedSettings?.config, field.path) == null && reported !== undefined) gatoValues.set(field.path, reported);
+      const value = gatoValues.get(field.path), known = gatoValues.has(field.path);
       if (field.option) {
         // GATO's option takes the label of the choice equal to GATO's value, which is hidden.
         const options = [...field.input.children].filter(option => option !== field.option);
@@ -228,7 +229,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
         // The number shows GATO's value; parseParameter reads it back as None while unchanged.
         const shown = value == null ? '' : String(value);
         if (field.input.value === '' || field.input.value === field.input.dataset.gatoValue) field.input.value = shown;
-        field.input.dataset.gatoValue = shown; field.input.placeholder = 'GATO default';
+        field.input.dataset.gatoValue = shown;
+        field.input.placeholder = known && value == null ? field.parameter.gato_none || 'none' : 'GATO default';
       }
     }
   }
