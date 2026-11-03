@@ -320,7 +320,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     // the initial zero-time state, including controls retained across Apply.
     if (item.settings_version === 0 && initial) return;
     clearTimeout(settingsTimer);
-    if (numericalChange && !initial) pausePlayback();
+    // Our submission already paused playback. Its delayed echo must not cancel
+    // a Play requested after that submission; remote edits still pause normally.
+    if (numericalChange && !initial && !ownRequest) pausePlayback();
     settings = next; submittedSettings = cloneSettings(remote);
     expectedVersion = item.settings_version;
     dirty = !settingValuesEqual(settings, remote);
@@ -456,6 +458,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     const request = ++submission;
     let next = readSettings(true);
     if (!next) return false;
+    // Pause before the first await so Play can retain its newer intent while
+    // model readiness and the settings acknowledgement arrive asynchronously.
+    pausePlayback();
     if (compilationEnabled()) {
       const checked = await modelCompilation.check();
       if (!checked?.compilation.ready || request !== submission || profileSwitching || profileUnavailable || replayOnly || mode !== 'live') return false;
@@ -476,7 +481,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     // A new start pose starts a new run at t = 0 from it, as Reset.
     const resetting = initialResetPending || !settingValuesEqual(startPoseValue(next.config), acceptedStartPose);
     const anchor = resetting ? undefined : frozenAnchor || displayedAnchor();
-    pausePlayback(); controlsEnabled(); refreshPlanLabel();
+    controlsEnabled(); refreshPlanLabel();
     message(next.execution.calculation === 'automatic' ? 'Replacing calculation from the displayed starting state…' : 'Updating one-horizon preview…');
     const transaction = patch && !initialResetPending ? { type: 'patch_settings', patch } : { type: 'set_settings', ...next };
     if (serverSettingsVersion != null) transaction.expected_settings_version = serverSettingsVersion;

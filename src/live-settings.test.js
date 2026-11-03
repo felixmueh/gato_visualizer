@@ -487,6 +487,94 @@ test('Play during a dirty settings debounce queues generation after accepted set
   }
 });
 
+test('first Play survives the asynchronous readiness check for dirty cached settings', async () => {
+  for (const calculation of ['on_play', 'automatic']) {
+    const h = harness(); modelSchema(h); h.schema.defaults.execution.calculation = calculation;
+    const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+    const fetch = async (url, options) => url === '/api/source/model'
+      ? { ok: true, json: async () => ({ compatible: true, compilation: { ready: true, N: 32, available_N: [32] } }) }
+      : h.fetch(url, options);
+    Object.assign(globalThis, { document: h.document, fetch, EventSource: h.EventSource });
+    let live;
+    const records = [], shown = [];
+    h.setHistoryHandler(url => ({ ok: true, json: async () => ({ generation: 2,
+      records: records.slice(Number(new URL(url, 'http://test').searchParams.get('after'))),
+      next_cursor: records.length, complete: false }) }));
+    try {
+      live = setupLive({ onMode() {}, onPlan() {}, onState(state) { shown.push(state); }, onReset() {} });
+      await live.ready; h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+      source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); await flush();
+      source.emit(plan(1, 1));
+      source.emit({ type: 'state', settings_version: 1, sim_time_s: 0, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [0, 0, 1] });
+      assert.equal(live.compilation.phase, 'ready');
+      h.edit('solver_params.q_cost', 9); h.$('live-play').emit('click'); await flush(); await flush();
+      assert.equal(live.playing, true, calculation);
+      assert.equal(h.$('live-play').textContent, 'Pause', calculation);
+      assert.equal(h.commands.filter(command => command.type === 'play').length, 1, calculation);
+      records.push(...[0, .2].map(time => ({ type: 'state', generation: 2, settings_version: 2,
+        sim_time_s: time, q: Array(7).fill(time), qd: Array(7).fill(1), ee_xyz: [time, 0, 1] })));
+      source.emit({ type: 'status', state: 'playing', generation: 2, settings_version: 2, job_active: true });
+      source.emit({ type: 'history', generation: 2, settings_version: 2, history_cursor: records.length }); await flush();
+      live.frame(0); live.frame(100);
+      assert.equal(live.history.selectedTime, .1, calculation);
+      assert.equal(shown.at(-1).q[0], .1, calculation);
+    } finally { live?.dispose(); Object.assign(globalThis, originals); }
+  }
+});
+
+test('own settings echoes before or after HTTP acknowledgement retain the first Play intent', async () => {
+  for (const echoBeforeHttp of [true, false]) {
+    await sharedSettingsCase(async (h, live, source) => {
+      let acknowledge;
+      h.setCommandHandler((command, version) => command.type === 'patch_settings'
+        ? new Promise(resolve => { acknowledge = () => resolve({ ok: true, json: async () => ({ accepted: true, settings_version: version }) }); })
+        : { ok: true, json: async () => ({ accepted: true, settings_version: version }) });
+      source.emit({ type: 'state', settings_version: 1, sim_time_s: 0, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [0, 0, 1] });
+      h.edit('solver_params.q_cost', 9); h.$('live-play').emit('click'); await flush();
+      const ownEcho = { type: 'settings', ...live.settings, settings_version: 2 };
+      if (echoBeforeHttp) source.emit(ownEcho);
+      acknowledge(); await flush(); await flush();
+      if (!echoBeforeHttp) source.emit(ownEcho);
+      assert.equal(live.playing, true, `echo before HTTP: ${echoBeforeHttp}`);
+      assert.equal(h.$('live-play').textContent, 'Pause');
+      assert.equal(h.commands.filter(command => command.type === 'play').length, 1);
+    });
+  }
+});
+
+test('scrubbing during a dirty settings readiness check cancels the queued Play intent', async () => {
+  const h = harness(); modelSchema(h);
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  const fetch = async (url, options) => url === '/api/source/model'
+    ? { ok: true, json: async () => ({ compatible: true, compilation: { ready: true, N: 32, available_N: [32] } }) }
+    : h.fetch(url, options);
+  Object.assign(globalThis, { document: h.document, fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await live.ready;
+    h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
+    source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); await flush();
+    source.emit(plan(1, 1));
+    h.edit('solver_params.q_cost', 9); h.$('live-play').emit('click');
+    live.seek(0); // Cancels playback while the cached readiness Promise is still pending.
+    await flush(); await flush();
+    assert.equal(live.playing, false);
+    assert.equal(h.$('live-play').textContent, 'Play');
+    assert.equal(h.commands.some(command => command.type === 'play'), false);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('external numerical settings still pause active playback', async () => {
+  await sharedSettingsCase(async (h, live, source) => {
+    source.emit({ type: 'state', settings_version: 1, sim_time_s: 0, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [0, 0, 1] });
+    h.$('live-play').emit('click'); await flush(); assert.equal(live.playing, true);
+    const remote = live.settings; remote.config.solver_params.q_cost = 19;
+    source.emit({ type: 'settings', ...remote, settings_version: 2 });
+    assert.equal(live.playing, false);
+    assert.equal(h.$('live-play').textContent, 'Play');
+  });
+});
+
 test('rejected Continue extension stops playback and does not retry every animation frame', async () => {
   const h = harness();
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
