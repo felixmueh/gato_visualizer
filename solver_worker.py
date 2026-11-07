@@ -206,6 +206,8 @@ def serve(channel, root):
         notified = False
         reserved = None
         try:
+            if operation == 'submit_stream' and control is not None:
+                control.mark_busy()
             if identity["protocol"] != 1:
                 raise ValueError("Unsupported solver RPC protocol")
             if capture_error is not None and operation not in ('close','end_stream','configure'):
@@ -302,8 +304,12 @@ def serve(channel, root):
                 continue
             send_message(channel, dict(identity, ok=False, error=str(exc)))
         finally:
-            for descriptor in lease_descriptors:
-                os.close(descriptor)
+            try:
+                for descriptor in lease_descriptors:
+                    os.close(descriptor)
+            finally:
+                if operation == 'submit_stream' and control is not None:
+                    control.mark_idle()
 
 
 if __name__ == "__main__":

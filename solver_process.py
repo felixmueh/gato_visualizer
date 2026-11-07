@@ -336,6 +336,25 @@ class SolverProcess:
             if self.process.poll() is not None:
                 raise RuntimeError(f'Solver process disconnected; diagnostics: {self.log_path}')
 
+    def wait_idle(self, timeout=15):
+        """Wait for paused Live's own solve/capture, leaving its reply unread.
+
+        A new request can be queued while the child finishes an older capture.
+        Wait for the current reply before trusting the child's idle marker.
+        Call only while the numerical invocation is parked.
+        """
+        deadline = time.monotonic()+timeout
+        while self.control is not None:
+            if self.process.poll() is not None:
+                raise RuntimeError(f'Solver process disconnected; diagnostics: {self.log_path}')
+            unread = self.stream_pending and not select.select([self.channel], [], [], 0.)[0]
+            if not unread and not self.control.busy:
+                return
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Live solver did not finish its pending work before the inspection timeout')
+            time.sleep(min(.01, remaining))
+
     def result_stream(self, block=False):
         if not self.stream_pending:
             return None

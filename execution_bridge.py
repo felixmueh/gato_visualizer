@@ -321,11 +321,15 @@ class ProcessLiveService:
                 raise ValueError("Live command queue is busy")
             token = self.revision.value
             self.commands.put_nowait(dict(type="inspection_pause", token=token,
-                inspection_id=identifier, generation=self.generation, settings_version=self.version))
+                inspection_id=identifier, inspection_timeout_s=timeout,
+                generation=self.generation, settings_version=self.version))
             ready = self.condition.wait_for(lambda: self.closed or self.revision.value != token or
                 self.latest.get("status", {}).get("inspection_pause_id") == identifier, timeout=timeout)
             if not ready or self.closed or self.revision.value != token:
                 raise ValueError("Live did not reach an inspection pause boundary; try again when idle")
+            error = self.latest.get("status", {}).get("inspection_pause_error")
+            if error:
+                raise ValueError(error)
 
     def settings_snapshot(self):
         """Accepted settings, read without subscribing or scheduling numerical work."""

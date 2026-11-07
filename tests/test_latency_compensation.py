@@ -64,9 +64,9 @@ def run_projection(adapter, *, latency=.0055, end=.06):
     session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=latency,
                                              latency_compensation=True))
     # Matching propagation is an explicit test configuration, not a Live invariant.
-    session.settings = replace(session.settings, compensation=replace(session.settings.compensation,
+    session.compensation = replace(session.compensation,
         friction=adapter.config.friction, friction_law=adapter.config.friction_law,
-        armature=adapter.config.armature, substep=adapter.config.substep))
+        armature=adapter.config.armature, substep=adapter.config.substep)
     records = [session.initial_state()]
     while session.progress.t < end-1e-12:
         before = session.progress.t
@@ -111,7 +111,9 @@ class LatencyCompensationTests(unittest.TestCase):
                 self.assertTrue(all(np.max(np.abs(r["torque_nm"])) <= 1.5 for r in commands))
                 self.assertGreater(session.pending_clipped + sum(r.get("clipped_commands", 0)
                                    for r in records if r["type"] == "interval"), 0)
-                times = [r["sim_time_s"] for r in records if "sim_time_s" in r]
+                # A returned solve retains its original request timestamp even
+                # when command/state observations were published while it ran.
+                times = [r["sim_time_s"] for r in records if r["type"] in ("state", "control")]
                 self.assertEqual(times, sorted(times))
 
     def test_measured_forecast_uses_only_previous_solve_and_early_reply_waits_for_origin(self):

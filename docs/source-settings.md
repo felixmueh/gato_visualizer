@@ -45,7 +45,7 @@ def describe():
     }
 
 def build_simulation(values, base_sim_config):
-    # Return this checkout's actual SimConfig and a callable ControlLaw.
+    # Return this checkout's actual SimConfig and a ControlLaw returning Command | Fault.
     return sim_config, law
 
 def build_predictor(values, base_mpc_params):
@@ -58,6 +58,10 @@ controls needs no builder; the visualizer preserves its native base object and
 default law. No default values are duplicated in an empty standard adapter.
 
 The first real example is `adapters/friction_compensation.py`.
+Laws use native `Command(requested, applied)` results and propagate native
+`Fault` results. A custom wrapper must preserve that contract; torque-array
+return values have no compatibility fallback. Execution safety and effort
+handling are separate loop arguments, outside the law slot and timing settings.
 It exposes independent plant/predictor armature toggles, predictor friction,
 scalar smoothing widths and default/PD/friction-FF/both. The per-joint armature
 and friction coefficients stay in code; effective native objects still record

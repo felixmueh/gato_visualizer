@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import select
 import tempfile
 import threading
 import time
@@ -243,6 +244,119 @@ RecordingRing.put=delayed_put
                     take_record(locator)
                 self.assertEqual(RING_HEADER.unpack_from(remote.recording.mapping)[1],0)
 
+    def test_inspection_idle_wait_preserves_the_unread_reply_and_timeout_preserves_the_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory)/'allow-capture'
+            code = '''original_put=RecordingRing.put
+def delayed_put(self,*args,**kwargs):
+    until=time.monotonic()+5
+    while not Path(%r).exists():
+        if time.monotonic()>until:raise AssertionError('Capture was not released')
+        time.sleep(.001)
+    return original_put(self,*args,**kwargs)
+RecordingRing.put=delayed_put
+''' % str(marker)
+            with self.child_adapter(directory, code) as (adapter, remote):
+                session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=.002,
+                                                      latency_compensation=False))
+                try:
+                    records = session.advance_interval(.002)
+                    invocation, progress = session._thread, session.progress
+                    remote.wait_stream()
+                    self.assertTrue(remote.control.busy)
+                    with self.assertRaisesRegex(TimeoutError, 'inspection timeout'):
+                        remote.wait_idle(timeout=.02)
+                    self.assertIs(session._thread, invocation)
+                    self.assertIs(session.progress, progress)
+                    self.assertTrue(session._parked)
+                    self.assertTrue(remote.stream_pending)
+                    finished, errors = threading.Event(), []
+                    def wait_idle():
+                        try:
+                            remote.wait_idle(timeout=2)
+                        except Exception as error:
+                            errors.append(error)
+                        finally:
+                            finished.set()
+                    waiter = threading.Thread(target=wait_idle)
+                    waiter.start()
+                    self.assertFalse(finished.wait(.03))
+                    marker.touch()
+                    self.assertTrue(finished.wait(2))
+                    waiter.join()
+                    self.assertEqual(errors, [])
+                    self.assertFalse(remote.control.busy)
+                    self.assertTrue(remote.stream_pending)
+                    self.assertTrue(select.select([remote.channel], [], [], 0)[0])
+                    records.extend(session.advance_interval(.004))
+                    records = [resolve_record(record) for record in records]
+                    plans = [record for record in records if record['type'] == 'plan']
+                    self.assertEqual(len(plans), 1)
+                    self.assertEqual(plans[0]['request_time_s'], 0.)
+                    self.assertIs(session._thread, invocation)
+                finally:
+                    marker.touch()
+                    session.close()
+
+    def test_inspection_idle_wait_rejects_the_previous_captures_idle_gap_before_the_current_reply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture, received, release = [Path(directory)/name for name in
+                                          ('allow-capture', 'second-received', 'allow-second')]
+            code = '''import solver_worker
+original_put=RecordingRing.put
+def delayed_put(self,*args,**kwargs):
+    until=time.monotonic()+5
+    while not Path(%r).exists():
+        if time.monotonic()>until:raise AssertionError('Capture was not released')
+        time.sleep(.001)
+    return original_put(self,*args,**kwargs)
+RecordingRing.put=delayed_put
+original_receive=solver_worker.receive_leased_message
+submissions=0
+def delayed_receive(channel):
+    global submissions
+    request,leases=original_receive(channel)
+    if request['operation']=='submit_stream':
+        submissions+=1
+        if submissions==2:
+            Path(%r).touch()
+            until=time.monotonic()+5
+            while not Path(%r).exists():
+                if time.monotonic()>until:raise AssertionError('Second request was not released')
+                time.sleep(.001)
+    return request,leases
+solver_worker.receive_leased_message=delayed_receive
+''' % (str(capture), str(received), str(release))
+            with self.child_adapter(directory, code) as (adapter, remote):
+                from tiago_mpc.interfaces import State
+                try:
+                    remote.start_stream(adapter.N, adapter.dt)
+                    reference = np.zeros((adapter.N, 6))
+                    remote.submit_stream(State(0., adapter.x[:7], adapter.x[7:]), reference)
+                    _, first_locator = remote.result_stream(True)
+                    remote.submit_stream(State(.002, adapter.x[:7], adapter.x[7:]), reference)
+                    capture.touch()
+                    deadline = time.monotonic()+2
+                    while not received.exists() and time.monotonic() < deadline:
+                        time.sleep(.001)
+                    self.assertTrue(received.exists())
+                    self.assertFalse(remote.control.busy)
+                    self.assertFalse(select.select([remote.channel], [], [], 0)[0])
+                    with self.assertRaisesRegex(TimeoutError, 'inspection timeout'):
+                        remote.wait_idle(timeout=.02)
+                    self.assertTrue(remote.stream_pending)
+                    release.touch()
+                    remote.wait_idle(timeout=2)
+                    self.assertTrue(remote.stream_pending)
+                    self.assertTrue(select.select([remote.channel], [], [], 0)[0])
+                    second, second_locator = remote.result_stream(True)
+                    self.assertEqual(second.t0, .002)
+                    take_record(first_locator)
+                    take_record(second_locator)
+                finally:
+                    capture.touch()
+                    release.touch()
+
     def test_capture_error_is_reported_without_unleased_teardown_and_configure_recovers(self):
         with tempfile.TemporaryDirectory() as directory:
             code='''original_put=RecordingRing.put
@@ -321,7 +435,7 @@ RecordingRing.put=fail_once
         adapter.remote = DeferredRemote(adapter,clock)
         return adapter
 
-    def test_torque_breach_quiesces_and_observes_the_pending_solve_without_physics(self):
+    def test_torque_breach_completes_its_interval_and_parks_before_collecting_the_next_solve(self):
         from tests.test_execution import WIDE_LIMITS
         adapter = self.buffered_adapter()
         adapter.limit_handling = dict(limits=dict(WIDE_LIMITS,effort=np.ones(7)),clip_effort=False,
@@ -329,14 +443,54 @@ RecordingRing.put=fail_once
         session = NativeSession(adapter,dict(DEFAULT_EXECUTION,to_hz=500.,solve_latency_s=.002,latency_compensation=False))
         try:
             records = session.advance_interval(.01)
-            self.assertAlmostEqual(adapter.t,.002)
+            self.assertAlmostEqual(adapter.t,.004)
             self.assertTrue(session._parked)
-            self.assertFalse(adapter.remote.stream_pending)
-            self.assertEqual(sum(r['type']=='plan' for r in records),2)
+            self.assertTrue(adapter.remote.stream_pending)
+            self.assertEqual(sum(r['type']=='plan' for r in records),1)
             self.assertEqual(sum(r['type']=='control' for r in records),1)
-            self.assertEqual(session.steps,0)
+            self.assertEqual(session.steps,2)
             self.assertTrue(any(r['type']=='breach' for r in records))
         finally:session.close()
+
+    def test_terminal_fault_records_the_drained_solve_even_when_its_plan_never_activates(self):
+        adapter = self.buffered_adapter()
+        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, to_hz=100., solve_latency_s=.03,
+                                              latency_compensation=False))
+        self.addCleanup(session.close)
+        records = []
+        while not session.finished:
+            records.extend(session.advance_interval(.1))
+        records = [resolve_record(record) for record in records]
+        plans = [record for record in records if record['type'] == 'plan']
+        controls = [record for record in records if record['type'] == 'control']
+        self.assertEqual(session.outcome.reason, 'lease_expired')
+        self.assertAlmostEqual(session.progress.t, .04)
+        self.assertEqual([record['seq'] for record in plans], [1, 2])
+        np.testing.assert_allclose([record['sim_time_s'] for record in plans], [0., .03])
+        self.assertEqual({record['plan_seq'] for record in controls}, {1})
+        self.assertEqual(session.solves, len(plans))
+        self.assertFalse(adapter.remote.stream_pending)
+
+    def test_finite_duration_drains_the_final_solve_and_completes_at_the_anchored_endpoint(self):
+        adapter = self.buffered_adapter()
+        adapter.t = .05
+        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, to_hz=100., solve_latency_s=.03,
+                                              latency_compensation=False), duration_s=.004)
+        self.addCleanup(session.close)
+        records = []
+        while not session.finished:
+            records.extend(session.advance_interval(.054))
+        records = [resolve_record(record) for record in records]
+        plans = [record for record in records if record['type'] == 'plan']
+        self.assertEqual(session.outcome.status, 'timeout')
+        self.assertAlmostEqual(session.progress.t, .054)
+        self.assertEqual(session.solves, 1)
+        self.assertEqual(len(plans), 1)
+        self.assertAlmostEqual(plans[0]['request_time_s'], .05)
+        self.assertAlmostEqual(plans[0]['available_time_s'], .08)
+        self.assertFalse(any(record['type'] == 'control' for record in records))
+        self.assertFalse(adapter.remote.stream_pending)
+        self.assertEqual(session.advance_interval(.054), [])
 
     def test_async_physics_and_total_wall_are_charged_at_the_same_interval_boundary(self):
         from tests.test_execution import FakeClock
@@ -350,7 +504,10 @@ RecordingRing.put=fail_once
             self.assertEqual(len(intervals),3)
             for interval in intervals:
                 self.assertAlmostEqual(interval['physics_wall_s'],.0002)
-                self.assertAlmostEqual(interval['total_wall_s'],.0012)
+            np.testing.assert_allclose([interval['total_wall_s'] for interval in intervals],
+                                       [.0012, .0012, .0002], atol=1e-12)
+            self.assertEqual(session.solves, 2)
+            self.assertTrue(adapter.remote.stream_pending)
         finally:session.close()
 
     def test_recording_retirement_preserves_in_flight_data_and_reclaims_after_consumption(self):
@@ -465,7 +622,7 @@ with fake_gpu(),socket.socket(fileno=int(sys.argv[sys.argv.index('--fd')+1])) as
                 self.assertTrue(any('_recording' in record for record in raw))
                 records = [resolve_record(record) for record in raw]
                 plans = [record for record in records if record['type']=='plan']
-                self.assertEqual(len(plans), 2)
+                self.assertEqual(len(plans), 1)
                 self.assertEqual(len([r for r in records if r['type']=='control']),1)
                 json.dumps([r for r in records if r['type']=='control'], allow_nan=False)
                 from live_presentation import render_state

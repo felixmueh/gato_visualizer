@@ -169,7 +169,10 @@ Run again uses the currently active compatible solver profile in a temporary
 isolated child. The normal Live child remains idle with its private controller
 state intact. The coordinator pauses Live calculation at a committed numerical
 chunk boundary, without invalidating its revision, rewinding history, resetting
-the controller, or stepping the plant for the inspection. A later Play resumes
+the controller, or stepping the plant for the inspection. Unlike ordinary Pause,
+this handoff waits for its own outstanding solve and capture to finish before
+releasing the GPU lease. The control reply stays unread for resume; an inspection
+timeout leaves the paused invocation intact. A later Play resumes
 that retained controller/session. There is one active GPU computation under the
 same canonical GPU leases as Live and experiments. The extra idle process and
 CUDA context can consume resources; inspection timings are diagnostics rather

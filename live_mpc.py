@@ -364,7 +364,9 @@ class GPULocks:
 
     def release(self):
         for handle in reversed(self.handles):
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            # SCM_RIGHTS gives the solver the same open-file description.
+            # Closing our copy lets outstanding work retain its borrowed lock;
+            # LOCK_UN would revoke that lock while the child is still solving.
             handle.close()
         self.handles.clear()
 

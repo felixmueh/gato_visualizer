@@ -14,7 +14,7 @@ from tests.test_execution import FakeAdapter, FakeLocks, fake_schema
 class ProgressUpdatesTests(unittest.TestCase):
     def test_fast_precalculation_retains_every_interval_with_bounded_progress(self):
         schema = fake_schema(None)
-        execution = dict(schema['defaults']['execution'], calculation='manual', duration_s=.2)
+        execution = dict(schema['defaults']['execution'], calculation='manual', duration_s=.2, solve_latency_s=0.)
         commands, messages, shutdown = queue.Queue(), [], threading.Event()
         commands.put(dict(type='precalculate', token=0, generation=0, settings_version=1,
             config=deepcopy(schema['defaults']['config']), task=deepcopy(schema['defaults']['task']),

@@ -32,8 +32,8 @@ Python catalog uses `@plot_comparison`; see
 
 Use the prepared sibling `../tiago_mpc-visualizer-base` worktree (branch
 `visualizer/base`) after advancing it to include the shared-loop API. Live requires
-native message callbacks, cancellation, plan-age settings and composable effort
-laws; the source probe rejects checkouts missing those capabilities. The selected
+separate native tick, solve-completed and diagnostic callbacks, cancellation,
+execution safety and effort handling; the source probe rejects checkouts missing those capabilities. The selected
 source needs canonical models, fetched LFS meshes and GATO dependencies
 (select another checkout with `--mpc-root`,
 `TIAGO_MPC_ROOT` or Settings › Backend). The viewer opens at the start pose,
@@ -430,14 +430,20 @@ skipped. The old plan continues until the first control tick at or after the
 new plan becomes available. Its age still starts at the state used for the
 solve, so latency may skip its first knots. The prediction knot interval is separate.
 Live runs `tiago_mpc.loops.run_virtual_time` directly, passing the native
-`VirtualTimeSettings` object through required `settings=` and using
-`duration=None`, with callbacks for reporting and pause. That object holds
-command/update periods, solve latency, compensation, plan age and effort handling.
+`VirtualTimeSettings` object through required `settings=`, with callbacks for
+reporting and pause. Live passes a finite maximum duration and relaxes the native
+experiment duration guard in its simulation process; cancellation ends the run.
+That settings object holds
+only command/update periods and solve latency. Compensation, safety and effort
+handling are explicit invocation arguments. Live constructs
+`ExecutionSafety(max_plan_age_s=...)` separately from its timing settings.
 The source probe requires this API. **Plan age limit** is off by default; enabling it sets a
 positive age deadline. A plan's finite horizon always applies. The native loop
 applies effort handling after evaluating the selected command law; Live selects
 `EffortClip` when **Clip effort** is enabled and `None` otherwise. Optional
-latency compensation predicts using the same law and effort handling.
+latency compensation predicts using the same law and effort handling. Native
+laws and effort handlers return `Command | Fault`; effort handlers receive the
+law's `Command`, retaining requested and applied torque separately.
 The history records every command, plan and timing interval and the state at
 every command tick (every 2 ms at the defaults); the physics steps
 between them are simulated, not recorded. The warm-start policy is

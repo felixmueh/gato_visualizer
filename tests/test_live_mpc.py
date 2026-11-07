@@ -2,6 +2,7 @@
 from copy import deepcopy
 import fcntl
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -364,6 +365,27 @@ class Figure8Tests(SettingsTests):
 
 
 class LockTests(unittest.TestCase):
+    def test_release_retains_a_borrowed_solver_lease_until_its_descriptor_closes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'gpu.lock'
+            locks = GPULocks(MPC_ROOT)
+            locks.paths = [path]
+            self.assertTrue(locks.acquire())
+            borrowed = os.dup(locks.handles[0].fileno())
+            try:
+                locks.release()
+                self.assertEqual(locks.handles, [])
+                with path.open('a') as contender:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    os.close(borrowed)
+                    borrowed = None
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                if borrowed is not None:
+                    os.close(borrowed)
+                locks.release()
+
     def test_failed_partial_acquisition_releases_previous_locks(self):
         with tempfile.TemporaryDirectory() as folder:
             paths = [Path(folder) / "first", Path(folder) / "second"]

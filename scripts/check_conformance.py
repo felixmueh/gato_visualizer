@@ -38,41 +38,41 @@ def reference_plant(config):
 
 def run_reference(plant, mpc, task, output, duration, *, to_hz=100., latency=SOLVE_LATENCY_S, compensation=None):
     """Record the current native loop without compiling or owning the passed MPC."""
-    from tiago_mpc.interfaces import SolveCompleted
-    from tiago_mpc.laws import EffortClip, SampleKnot
+    from tiago_mpc.laws import EffortClip, ExecutionSafety, SampleKnot
     from tiago_mpc.loops import VirtualTimeSettings, run_virtual_time
     from tiago_mpc.record import RunRecord
     law = SampleKnot()
     timing = VirtualTimeSettings(command_period=COMMAND_PERIOD_S, update_period=1/to_hz,
-                                 solve_latency_s=latency, compensation=compensation, max_plan_age_s=None,
-                                 effort_handling=EffortClip())
+                                 solve_latency_s=latency)
+    safety, effort_handling = ExecutionSafety(max_plan_age_s=None), EffortClip()
     record = RunRecord(output, task=task, params=mpc.params, plant=plant.config,
-                       law=law, timing=timing, duration=duration)
-    record.returned_plans = []
-    def observe(message):
-        if isinstance(message, SolveCompleted):
-            record.returned_plans.append(message.plan)
+                       law=law, settings=timing, loop="run_virtual_time", duration=duration,
+                       compensation=compensation, safety=safety, effort_handling=effort_handling)
     try:
-        outcome = run_virtual_time(plant, mpc, task, law, [record],
-                                   settings=timing, duration=duration, message_callbacks=(observe,))
+        outcome = run_virtual_time(plant, mpc, task, law, tick_callbacks=(record,),
+                                   settings=timing, duration=duration, compensation=compensation,
+                                   safety=safety, effort_handling=effort_handling,
+                                   solve_completed_callbacks=(record.solve_completed,),
+                                   diagnostic_callbacks=(record.diagnostic,))
         record.metadata.update(status=outcome.status, reason=outcome.reason, end_t=outcome.t)
     except BaseException as error:
         record.metadata.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "error",
                                error=traceback.format_exc())
         raise
     finally:
-        record.add_events(plant.take_events())
+        for diagnostic in plant.take_diagnostics():
+            record.diagnostic(diagnostic)
         record.save()
     return record
 
 
 def reference_arrays(record):
     """Command history plus all solves, independently of activation."""
-    ticks, plans = record.ticks, record.returned_plans
+    ticks, plans = record.ticks, record.plans
     sent = np.isfinite(ticks["command"]).all(axis=1)
     return ticks["t"], dict(state=np.column_stack((ticks["q"], ticks["qd"])),
-                            command=ticks["command"][sent], plan_states=np.array([p.states for p in plans]),
-                            plan_torques=np.array([p.torques for p in plans]))
+                            command=ticks["command"][sent], plan_states=plans["states"],
+                            plan_torques=plans["torques"])
 
 
 def compare_arrays(expected, got, atol):
@@ -163,13 +163,11 @@ def main():
         session = NativeSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000.,
                                                  control_hz=1 / COMMAND_PERIOD_S, to_hz=args.to_hz,
                                                  solve_latency_s=args.solve_latency,
-                                                 latency_compensation=args.latency_compensation))
+                                                 latency_compensation=args.latency_compensation), duration_s=duration)
         records = [session.initial_state()]
         from solver_exchange import resolve_record
-        while session.progress.t < duration - 1e-12:
+        while not session.finished:
             records.extend(resolve_record(record) for record in session.advance_interval(duration))
-            if session.finished:
-                break
         states = {round(r["sim_time_s"], 9): np.asarray(r["_x"]) for r in records if r["type"] == "state"}
         actual = dict(state=np.array([states[round(t, 9)] for t in ticks]),
                       command=np.array([r["torque_nm"] for r in records if r["type"] == "control"]).reshape(-1, 7),

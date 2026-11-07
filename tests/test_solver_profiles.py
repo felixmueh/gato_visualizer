@@ -495,7 +495,7 @@ with socket.socket(fileno=fd) as channel:
                     seq=1, stats=dict(solve_time_ms=0.,step_wall_s=0.), sim_time_s=0., type="plan")
         adapter.solve_snapshot = lambda origin, version, **kwargs: deepcopy(plan)
         session = NativeSession(adapter, dict(DEFAULT_EXECUTION,
-            simulation_hz=100., control_hz=100., to_hz=100.))
+            simulation_hz=100., control_hz=100., to_hz=100., solve_latency_s=0.))
         self.addCleanup(session.close)
         records = session.advance_interval(.01)
         control = next(record for record in records if record["type"] == "control")

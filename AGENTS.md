@@ -157,11 +157,14 @@ follows the package API that experiments use, without shims.
   declared `solve_latency_s=.0055` on both sides. Since 2026-11-03 the visualizer
   invokes `loops.run_virtual_time` directly through `NativeSession`, retaining
   reporting/history ownership. `NativeSession` constructs native
-  `VirtualTimeSettings` and passes required `settings=` and `duration=None`;
-  command/update periods, latency, compensation, maximum plan age and effort
-  handling belong to that object. The source probe requires the new API;
-  the old `VirtualTime` name and split loop arguments have no fallback.
-  Normal Live uses measured solve latency.
+  `VirtualTimeSettings` and passes required `settings=` and a finite `duration=`;
+  that object contains only command/update periods and solve latency.
+  Compensation, `ExecutionSafety(max_plan_age_s=...)` and effort handling are
+  separate invocation arguments. The source probe requires this API;
+  the old `VirtualTime` name and combined settings have no fallback.
+  Normal Live uses measured solve latency. Its simulation process relaxes the
+  native experiment duration guard and uses a finite maximum duration, ending
+  by cancellation; conformance uses its actual finite test duration.
 - **The reduced arm is derived, not a file in the checkout** (tiago_mpc,
   2026-10-23). `tiago.arm_urdf()` derives it with the grasp frame from
   `models/tiago_pro/tiago_pro.urdf` into the cache (`GATO_CACHE_DIR`) and
@@ -230,22 +233,28 @@ activation, forecasting or command evaluation here. `NativeSession` retains a
 single invocation on a coordinator thread, publishes detached batches through a
 bounded queue, and parks its before-tick callback for Pause/end boundaries.
 Read committed `progress` snapshots from the owner; the native thread owns the
-live adapter and numerical counters. Pause drains and quiesces before releasing
-GPU leases, and resumes intact. Cancel sets a per-invocation flag and
+live adapter and numerical counters. Pause drains published batches and parks
+before result collection, retaining an unread solve until resume. Closing the
+coordinator's GPU descriptors leaves outstanding child work holding its leases.
+Cancel sets a per-invocation flag and
 wakes/joins it before replacement. Reset/settings/profile changes create fresh
 plant, controller, law and forecast state. On Play wall-clock pacing stays here
 and rebases on resume; precalculation is unpaced. No special pause memory policy.
 
-Use the native Tick, SolveCompleted and Event callbacks; every returned plan
+Use separate native Tick, SolveCompleted and Diagnostic callback sequences; every returned plan
 is observable even if never activated. Full-rate physics observers queue breach
 events until the next command boundary, retaining exact detection time/state.
-Command laws return torque arrays. `VirtualTimeSettings.effort_handling`
-defaults to `EffortClip`; experiments can select `RejectOnEffort`.
+Command laws return native `Command | Fault`. The separate `effort_handling`
+argument defaults to `EffortClip`; experiments can select `RejectOnEffort`.
 Live passes `EffortClip` with its watched effort limits when clipping is enabled,
 and `None` otherwise so its breach watcher can pause on applied torque.
+Effort handlers accept `Command` and return `Command | Fault`; a law or handler
+fault propagates without an array conversion fallback. `ExecutionSafety`
+implements structural `SafetyInterface.validate(plan, t, state) -> Fault | None`;
+custom safety objects are allowed, while the finite horizon is always enforced.
 Latency prediction evaluates the same law and effort handling with private
 hypothetical state. Keep forecast computation in the numerical path.
-`max_plan_age_s` is configurable, null in Live by default;
+`ExecutionSafety.max_plan_age_s` is configurable, null in Live by default;
 finite horizon validity still applies and there is no implicit final-knot hold.
 The physical robot retains stricter safety checks.
 
@@ -256,8 +265,8 @@ control arrays plus small notifications, and a separate bounded recording ring
 consumed by the raw ingestion process. It releases slots before the HTTP/history
 process decodes captures or derives geometry. Preserve every observation with explicit
 backpressure. Reclaim stale/cancelled slots and retain retired rings until their
-published records are consumed. Quiesce GPU work before reporting/pause releases
-leases. Move diagnostic formatting, FK and JSON out of the numerical path;
+published records are consumed. Close borrowed GPU descriptors without explicit
+unlock so outstanding child work retains its leases. Move diagnostic formatting, FK and JSON out of the numerical path;
 measure total wall directly because physics and solver costs overlap. Keep upstream GATO unchanged and native warm-start behavior intact.
 See [ADR 001](docs/adr/001-upstream-and-clocks.md).
 
@@ -429,8 +438,8 @@ settings in `config.plant` (the **Limit handling** group), never part of
   for position and velocity against the raw URDF limits, every command for the
   torque actually applied after clipping, so with clipping on the torque box
   cannot trigger). Planned knots that are never applied never breach. Live
-  pauses calculation and playback at the breaching tick with a message naming
-  joint, quantity, value and limit; Play continues. A quantity of a joint
+  pauses calculation at the next command boundary and playback at the detected
+  breach, with a message naming joint, quantity, value and limit; Play continues. A quantity of a joint
   breaches when it starts to be beyond its limit and re-arms once back within
   it, so a value that stays beyond pauses once; a value already beyond when a
   segment starts is armed only once back within.

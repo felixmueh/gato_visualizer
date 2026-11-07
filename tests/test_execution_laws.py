@@ -10,6 +10,28 @@ from tests.test_execution import FakeAdapter, TIGHT_EFFORT
 
 
 class ExecutionLawTests(unittest.TestCase):
+    def test_age_limit_uses_the_separate_native_safety_object(self):
+        adapter = FakeAdapter()
+        adapter.N, adapter.effective_settings = 32, {}
+        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0., max_plan_age_s=.003))
+        self.addCleanup(session.close)
+        records = session.advance_interval(.01)
+        self.assertEqual(adapter.effective_settings['safety'],
+                         {'type': 'ExecutionSafety', 'max_plan_age_s': .003})
+        np.testing.assert_allclose([r['sim_time_s'] for r in records if r['type'] == 'control'], [0., .002])
+        self.assertTrue(session.finished)
+        self.assertEqual(session.outcome.reason, 'lease_expired')
+
+    def test_custom_law_fault_is_reported_without_sending_a_command(self):
+        adapter = FakeAdapter()
+        adapter.law = lambda plan, t, state: tm.Fault('custom_law_fault')
+        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+        self.addCleanup(session.close)
+        records = session.advance_interval(.002)
+        self.assertFalse(any(r['type'] == 'control' for r in records))
+        self.assertTrue(session.finished)
+        self.assertEqual(session.outcome.reason, 'custom_law_fault')
+
     @unittest.skipUnless(hasattr(tm, 'PlanFeedback'), 'Selected source has no optional PD law')
     def test_pd_uses_current_feedback_between_solves(self):
         adapter = FakeAdapter()
@@ -85,7 +107,10 @@ class ExecutionLawTests(unittest.TestCase):
 
         def law(plan, t, state):
             calls.append(t)
-            return tm.SampleKnot()(plan, t, state)+5
+            command = tm.SampleKnot()(plan, t, state)
+            if isinstance(command, tm.Fault):
+                return command
+            return tm.Command(command.requested+5, command.applied+5)
 
         adapter.law = law
         settings = dict(DEFAULT_EXECUTION, simulation_hz=100., control_hz=25., to_hz=10., solve_latency_s=0.)

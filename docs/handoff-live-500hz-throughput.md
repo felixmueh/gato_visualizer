@@ -1,23 +1,34 @@
 # Handoff: Live at TO 500 Hz falls behind real time
 
-Consolidation, 2026-11-03: the trial changes are integrated on separate
-`integration/shared-loop-consolidation` branches in
-`../tiago_mpc-shared-loop-integration` and
+Current integration, 2026-11-07: native branch
+`integration/shared-loop-consolidation-2` is in
+`../tiago_mpc-shared-loop-integration`; visualizer branch
+`integration/shared-loop-consolidation` is in
 `../tiago_mpc_visualizer-shared-loop-integration`. Their main bases are native
-`221acad` and visualizer `61430ec`. The original trial directories and the
-viewer on 8132 remain available. Both complete trial working states were
-preserved on `wip/shared-loop-preserved-20261103` before integration; neither
-original main checkout was changed. Current-main orientation/cost-menu settings,
+`221acad` and visualizer `41d7bd3`. Neither main checkout was changed.
+The old loop-events/live-loop trials and redundant refactor branches have been
+retired. Historical summaries and reproduction scripts remain under the current
+worktrees' `_expr_data/shared-loop/`; superseded raw captures were removed.
+Servers mentioned below are historical and have been stopped.
+Current-main orientation/cost-menu settings,
 orientation display/IK and asynchronous-settings Play behavior must survive.
+
+The final API migration uses separate tick, solve-completed and diagnostic
+callbacks. Pause retains unread replies; inspection waits for its own worker to
+finish before taking the GPU. Normal, latency-compensated and terminal-outstanding
+GPU conformance cases have zero array differences. Chromium verified compact
+playback, exact orientation exports, retained pause/resume and reset without
+JavaScript errors. Final checks and the cleanup manifest are in
+`_expr_data/native-api-migration-20261107/`; only the latest identical refactor
+replay remains in the shared `ingest/visualizer-shared-loop` directory.
 
 Integration order:
 
 1. Retain the prepared GATO dependency. Felix confirmed that the merged setup
    should use the local armature + collision-cache work until upstream includes
    it. The native integration selects
-   `../GATO-tiago-armature-collision-cache`, based on `69bd8d8` with the existing
-   collision-cache changes in `gato/bsqp/bsqp.cuh` and
-   `gato/bsqp/kernels/admm.cuh`. These files were not changed by consolidation.
+   `../GATO/.worktrees/tiago-combined`, containing the local armature and
+   collision-cache changes. These dependency sources were not changed by this refactor.
    GRiD remains `../GRiD-tiago-armature-060`. The two repository changes alone
    do not package those external dependency sources.
 2. Review and merge the native shared-loop change first. Advance the stable
@@ -28,9 +39,9 @@ Integration order:
 4. If either main advances during review, replay that integration commit onto
    its new main and repeat the affected checks, native first and visualizer second.
 
-The initial replay of the preserved trial commits preceded consolidation so
-cleanup targets the combined current code. Review commits contain the
-consolidated result, one per repository; no main branch is advanced here.
+The initial replay of the preserved trial commits preceded consolidation.
+Native review checkpoints remain in its integration branch history; the final
+loop is committed before the visualizer API migration. No main branch is advanced here.
 
 The consolidation separates `history_store.py` from service orchestration,
 `src/live-history-paging.js` from Live settings/playback state, and
@@ -51,8 +62,10 @@ ASAP TO, retained 201 states, scrubbed and hydrated exact export predictions,
 and reported no JavaScript errors. This is functional/numerical validation,
 not a fresh throughput claim. Logs, source identities, review commit IDs and
 the dependency patch are under each integration worktree's
-`_expr_data/shared-loop/consolidation/`. The combined review viewer is
-**http://192.168.178.82:8133/**; 8132 remains the previous working trial.
+`_expr_data/shared-loop/consolidation/`. These November 3 results describe the
+earlier integration. Final API migration checks are under
+`_expr_data/native-api-migration-20261107/` in the visualizer and
+`_expr_data/shared-loop/native-integration-final-tests.log` in the native checkout.
 
 Latest follow-up, 2026-11-03, browser data churn: playback now reads a compact
 companion JSONL stream with identical cursors and full state/control/event

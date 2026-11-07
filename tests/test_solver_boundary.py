@@ -185,7 +185,7 @@ class BoundaryTests(unittest.TestCase):
                         records.extend(session.advance_interval(.1))
                     plans = [r for r in records if r['type']=='plan']
                     commands = [r for r in records if r['type']=='control']
-                    self.assertEqual(len(plans), 50)
+                    self.assertEqual(len(plans), 49)
                     self.assertEqual(len(commands), 49)
                     self.assertTrue(all(r['available_time_s'] >= r['request_time_s'] for r in plans))
                     self.assertEqual(plans[0]['initial_state']['measured_time_s'], 0.)

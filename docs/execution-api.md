@@ -9,13 +9,17 @@ compares headless and observed execution of this shared loop.
 
 `NativeSession` constructs one native `VirtualTimeSettings` from the accepted
 execution settings and passes it as the required `settings=` argument to
-`run_virtual_time(..., settings=settings, duration=None, ...)`. It owns
-`command_period`, `update_period`, `solve_latency_s`, `compensation`,
-`max_plan_age_s` and `effort_handling`; these are not separate loop arguments.
+`run_virtual_time(..., settings=settings, duration=..., ...)`. The settings object owns
+only `command_period`, `update_period` and `solve_latency_s`.
+Compensation, `ExecutionSafety(max_plan_age_s=...)` and effort handling are
+separate loop arguments, serialized separately in effective settings.
 The command law, callbacks, cancellation, start time and initial command remain
-invocation arguments. The explicit `duration=None` keeps the run unbounded;
-the callback gate pauses it and cancellation ends it. Sources with the old `VirtualTime`
-name or split configuration arguments fail the source probe; there is no fallback.
+invocation arguments. Live supplies `sys.float_info.max` as a finite duration
+and overrides the native experiment duration guard in the simulation process.
+The callback gate pauses it and cancellation ends it. Conformance supplies its
+actual finite duration so both runs collect the same terminal results.
+Sources with the old `VirtualTime`
+name or combined execution settings fail the source probe; there is no fallback.
 
 ## Settings and commands
 
@@ -235,16 +239,18 @@ a full batch queue applies reporting backpressure. The coordinator reads the
 immutable `progress` snapshot returned with each batch, never the live adapter
 or numerical counters. Snapshots include interval costs so cancellation restores
 the exact committed tip and cannot charge unpublished work to retained history.
-A `before_tick` callback blocks for explicit Pause and requested end boundaries;
+A callback in `before_tick_callbacks` blocks for explicit Pause and requested end boundaries;
 resuming releases it without recreating the controller, pending plan, command
 law or predictor. Pause drains the queued and final partial batches before its
 acknowledgement. On Play retains its at-most-1× pacing and rebases its wall-time
 anchor on resume; it uses short windows when ahead and runs continuously while
 catching up to wall time. Precalculation is unpaced.
-The loop's `quiesce_at` hook resolves a pending solve before a pause/end
-boundary, even if its virtual activation lies further in the future. Thus GPU
-work is idle before the owner releases its lease, and returned unused plans are
-retained. Pending activation and optimizer state survive ordinary resume.
+The gate runs before result collection. Outstanding work can finish while paused;
+its reply stays unread until resume, preserving pending activation and optimizer
+state. Releasing coordinator GPU leases closes its descriptors without explicitly
+unlocking them: the solver child's shared descriptors retain the locks until its
+solve and capture publication finish. Cancellation wakes the gate, joins the
+invocation and disposes of unread results before replacing the session.
 An applied-torque breach marks a pause request in the Tick callback; the native
 loop collects outstanding work and re-enters the same gate before more physics.
 The gate can therefore see the same timestamp twice, without a duplicate state
@@ -357,8 +363,8 @@ TO requests are quantized to command ticks, including at noncommensurate rates.
 It also records the state at the end of each call (job end,
 pause, a bounded chunk, which ends on a command tick) and at a detected breach.
 `SolveCompleted` messages preserve every returned plan, including plans that
-never activate. Tick and Event messages supply commands and numerical events;
-this is a typed callback stream, with no event broker.
+never activate. Separate Tick and Diagnostic callbacks supply commands and
+numerical diagnostics; each callback group receives only its own payload type.
 Physics still integrates at `simulation_hz`; the steps between two recorded states
 are simulated but not recorded. Nothing the session computes depends on what is
 recorded: breach detection, plan exhaustion, overrun timing, clipping counts and
@@ -462,8 +468,10 @@ less than 512 MiB free; a full directory fails the run with a message naming it.
 ## Limit handling
 
 Felix, 2026-11-03. Virtual execution accepts finite, correctly shaped plans.
-Command laws return torque arrays; `VirtualTimeSettings.effort_handling`
-applies the selected effort policy to each requested command.
+Command laws return native `Command | Fault`; the loop's separate
+`effort_handling` argument applies the selected effort policy to each `Command`,
+returning `Command | Fault`. Requested and applied torque remain separate.
+Faults propagate directly without an array-return compatibility fallback.
 Two orthogonal simulation settings in `config.plant` handle them in Live
 ([settings](live-api.md#settings-object)):
 
@@ -481,8 +489,8 @@ Two orthogonal simulation settings in `config.plant` handle them in Live
   recorded ones: position and velocity at every physics endpoint against
   the raw URDF position and velocity limits, the applied torque (after
   clipping) at every command against the effort limit. Planned knots are never
-  checked. A torque breach parks after its command, before integrating.
-  A position or velocity breach queues a native `Event` with its exact physics
+  checked. A torque breach parks at the next command tick after its applied command.
+  A position or velocity breach queues a native `Diagnostic` with its exact physics
   timestamp and state; the callback receives it and parks at the next command
   boundary. Detection is full-rate while stopping can lag by the remainder
   of one command period. The detection state is recorded, including between
@@ -511,12 +519,16 @@ Two orthogonal simulation settings in `config.plant` handle them in Live
   armed only once back within. With clipping on, the applied torque cannot
   exceed the effort limit, so the torque box matters once clipping is off.
 
-Native `VirtualTimeSettings` defaults to `effort_handling=EffortClip()`. Live sets
+Native `run_virtual_time` defaults to `effort_handling=EffortClip()`. Live sets
 `EffortClip(effort=...)` with the watched limits while clipping is enabled,
 and `None` otherwise, leaving torque breaches to its pause watcher. Effective
-settings record `law` and `effort_handling` separately. Native experiments can
-select `RejectOnEffort` or another callable that returns an accepted torque
-array or `None` to reject it. Robot execution retains its stricter safety checks.
+settings record `law`, `safety`, `compensation` and `effort_handling` separately.
+Native experiments can select `RejectOnEffort` or another callable accepting
+`Command` and returning `Command | Fault`. Native `ExecutionSafety` implements
+structural `SafetyInterface.validate(plan, t, state) -> Fault | None` with a
+100 ms default age limit; Live explicitly disables age expiry by default.
+Custom safety objects are allowed, but finite horizon validity is always
+enforced. Robot execution retains its stricter safety checks.
 
 ## Simulation clock and plan execution
 
@@ -528,8 +540,8 @@ waits for its measured or declared latency while the old plan continues. Physics
 the plant to the chunk's end time. Every session (Reset, anchor, settings
 change, rollback) starts a fresh `SimPlant` at the current native state on a
 simulation clock at the current time, because that clock never moves backward.
-Both execution paths retain the native loop's accumulated tick times and plant
-substeps; the observer never reconstructs or normalizes their integration grid.
+Both execution paths use the native command schedule and plant substeps;
+the observer never reconstructs or normalizes their integration grid.
 At each command tick the native loop activates an available pending plan and
 uses its `Schedule` when no solve is pending. Missed TO slots are
 skipped, never queued. A new solve with positive latency remains pending; zero
@@ -554,32 +566,6 @@ from the plan origin. `request_time_s`, `available_time_s`, `scheduled_activatio
 `solve_latency_s` and `latency_overrun` describe the request and its earliest
 possible activation; `controller_wall_s` measures the child's native controller
 call, excluding the independent forecast and asynchronous recording consumer.
-The actual first command is identified by its `plan_seq` and `plan_activated`.
-State/control sequence IDs own historical association; a requested plan that
-never commands stays inspectable without becoming applied motion. Freeze writes
-the existing activation timings into optional prediction `stats`, including actual
-`activation_time_s` (null if never commanded). It exports the prediction's future
-origin and retains observation/request/origin timestamps under
-`provenance.live.plan_timing`, separately from native solver statistics. Episode
-and comparison plots index solve events by actual request time. Older recordings
-without separate origins retain their recorded meaning.
-
-At stationary startup no command has been applied: `SimPlant` holds the state
-until the first plan activates, as the package loop does. A fresh session at a
-committed tip preserves its last applied torque while waiting. An anchor supplies
-q/qd/time without a held-command checkpoint: if it is moving, zero effort is
-applied during the wait so its dynamics continue. The initial state records
-`startup_command_source` as `position_hold`, `held_command` or
-`zero_effort_moving_anchor`. Reset/anchors never borrow an unrelated tip torque.
-Ordinary chunks retain pending plans; cancellation/rollback replaces the session
-and discards its pending result.
-
-Plan records keep `sim_time_s` at the actual request/history time. The separate
-`plan_origin_time_s` dates the initial condition, in the future when compensated;
-`measured_time_s` retains the original observation. Knot times remain offsets
-from the plan origin. `request_time_s`, `available_time_s`, `scheduled_activation_time_s`,
-`solve_latency_s` and `latency_overrun` describe the request and its earliest
-possible activation; `controller_wall_s` measures the forecast plus the whole RPC.
 The actual first command is identified by its `plan_seq` and `plan_activated`.
 State/control sequence IDs own historical association; a requested plan that
 never commands stays inspectable without becoming applied motion. Freeze writes
@@ -629,8 +615,8 @@ Each TO execution interval, including the final partial interval, produces:
 `solve_wall_s` measures the child's native controller call, including native plan
 construction; the native GATO-step timing remains separate. `physics_wall_s`
 measures plant integration and its step observers. These resource costs can
-overlap and must not be added. `controller_foreground_wall_s` records coordinator
-preparation/submission/result-wait time. `total_wall_s` measures active native invocation time, including
+overlap and must not be added. `controller_foreground_wall_s` records the
+visualizer adapter's request submission and result-wait time. `total_wall_s` measures active native invocation time, including
 command evaluation and observer capture, excluding time parked in the callback,
 deliberate pacing sleeps, rendering and transport work.
 Setup costs are separate from recurring interval costs.

@@ -69,8 +69,10 @@ configuration, memory accounting and lossless simulation backpressure. The
 coordinator never freezes/thaws whole solve records.
 `NativeSession` retains one native loop invocation on a coordinator thread;
 ordinary batches enter a bounded queue while execution continues. The owner
-reads committed immutable progress snapshots; explicit Pause drains and quiesces
-the invocation before releasing GPU leases. Blocking callbacks gate requested
+reads committed immutable progress snapshots; explicit Pause drains published
+batches and parks before result collection, retaining any unread solve. Closing
+the coordinator's GPU descriptors leaves outstanding child work holding its leases.
+Blocking callbacks gate requested
 ends and actual pauses, while a full queue applies lossless backpressure. The native loop owns
 request scheduling, activation, command laws and latency prediction. The
 visualizer captures detached numerical observations; HTTP-side FK, diagnostic
@@ -84,7 +86,7 @@ The lifetime rules are part of these boundaries:
 - The native invocation thread owns evolving plant/controller state. The
   coordinator reads committed `Progress` snapshots and sends gate/cancellation
   requests; it does not inspect partially updated numerical state.
-- Pause quiesces pending solver work and retains the invocation. Cancellation
+- Pause retains the invocation and any unread solver reply. Cancellation
   wakes and joins it before replacement; reset gets new numerical state.
 - A recording locator belongs to the ingestion process after handoff. Stale
   generations still release their slots; shutdown drains or reclaims only the
@@ -141,15 +143,19 @@ friction=..., friction_law=...).build()` from the native state and starts the pl
 moves backward in a plant instance. The source probe checks this lifecycle and
 the MPC's `request`/`result` interface before a source can be selected. The
 session constructs native `VirtualTimeSettings` and invokes upstream
-`run_virtual_time(..., settings=settings, duration=None, ...)` directly,
-preserving its integration grid and pending activation at command ticks.
-The settings object owns command/update periods, solve latency, compensation,
-maximum plan age and effort handling; callbacks and lifecycle controls remain
-invocation arguments. The source probe requires this settings dataclass and
-the `settings`/`duration` parameters. Measured solve latency is the
+`run_virtual_time(..., settings=settings, duration=..., ...)` directly.
+The native plant integrates its configured substeps up to each command tick.
+Live uses a finite maximum duration and relaxes the experiment duration guard
+only in its simulation process; conformance supplies a finite test duration.
+The settings object owns only command/update periods and solve latency.
+Compensation, `ExecutionSafety(max_plan_age_s=...)`, effort handling, callbacks
+and lifecycle controls are separate invocation arguments. The source probe
+requires the three timing fields, these loop parameters and the safety
+validator it uses. Measured solve latency is the
 normal default. Conformance uses declared latency (5.5 ms by default) on both
 sides. Effort clipping is the native loop's separate effort handling after
-command-law evaluation; physics breach events are detected at every substep and
+command-law evaluation. Laws and effort handlers return native `Command | Fault`,
+and handlers receive the complete `Command`. Physics breach events are detected at every substep and
 delivered at the next command boundary.
 Age expiry is configurable and disabled by default in Live; the finite horizon
 still applies, with no implicit final-command hold. See

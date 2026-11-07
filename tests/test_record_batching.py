@@ -106,9 +106,9 @@ class CompletedRecordsTests(unittest.TestCase):
 
 
 class WorkerRecordBatchingTests(unittest.TestCase):
-    def run_worker(self, action=None, ring=None):
+    def run_worker(self, action=None, ring=None, idle_wait=None):
         schema = fake_schema(None)
-        execution = dict(schema['defaults']['execution'], calculation='on_play', duration_s=.2)
+        execution = dict(schema['defaults']['execution'], calculation='on_play', duration_s=.2, solve_latency_s=0.)
         config, task = deepcopy(schema['defaults']['config']), deepcopy(schema['defaults']['task'])
         commands, messages, shutdown = queue.Queue(), [], threading.Event()
         revision = SimpleNamespace(value=0)
@@ -117,6 +117,11 @@ class WorkerRecordBatchingTests(unittest.TestCase):
         batches = []
 
         class Session(NativeSession):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                if idle_wait is not None:
+                    self.adapter.remote = SimpleNamespace(wait_idle=lambda timeout: idle_wait(self, timeout))
+
             def advance_interval(self, *args, **kwargs):
                 if action == 'failure' and len(batches) == 2:
                     raise RuntimeError('test failure with buffered committed records')
@@ -135,6 +140,7 @@ class WorkerRecordBatchingTests(unittest.TestCase):
                     command = dict(type=action, token=0, generation=0)
                     if action == 'inspection_pause':
                         command['inspection_id'] = 'test-inspection'
+                        command['inspection_timeout_s'] = .025
                     if action == 'switch_solver_profile':
                         command.update(profile=dict(id='second'), target_generation=1)
                     if action == 'set_settings':
@@ -215,6 +221,29 @@ class WorkerRecordBatchingTests(unittest.TestCase):
         self.assertEqual(len(batches), 2)
         self.assertTrue(all(m['token'] == 0 for m in packets))
         self.assertEqual(messages[-1]['token'], 1)
+
+    def test_inspection_waits_for_its_parked_child_and_acknowledges_an_idle_timeout(self):
+        for timeout in (False, True):
+            with self.subTest(timeout=timeout):
+                calls = []
+                def idle_wait(session, limit):
+                    from tests import test_execution
+                    self.assertTrue(test_execution.LOCK_HELD)
+                    self.assertTrue(session._parked)
+                    self.assertTrue(session._thread.is_alive())
+                    self.assertFalse(session._cancel.is_set())
+                    self.assertEqual(session.adapter.warmups, [0.])
+                    calls.append(limit)
+                    if timeout:
+                        raise TimeoutError('injected inspection idle timeout')
+                messages, batches = self.run_worker('inspection_pause', idle_wait=idle_wait)
+                self.assert_committed_batches(messages, batches)
+                self.assertEqual(calls, [.025])
+                status = messages[-1]['events'][0]
+                self.assertEqual(status['inspection_pause_id'], 'test-inspection')
+                self.assertEqual(status['inspection_pause_error'],
+                                 'injected inspection idle timeout' if timeout else None)
+                self.assertEqual(status['state'], 'paused')
 
     def test_revision_after_handoff_reclaims_discarded_capture_and_tip(self):
         from solver_exchange import RecordingRing, RING_HEADER

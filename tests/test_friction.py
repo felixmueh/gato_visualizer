@@ -42,7 +42,7 @@ class FrictionTests(unittest.TestCase):
                         _states=np.zeros((3, 14)), _torques=torques, stats=dict(solve_time_ms=1.,step_wall_s=0.))))
                 cleanup.enter_context(patch.object(adapter, "warmup", lambda state, reference: None))
                 cleanup.enter_context(patch.object(adapter, "state_record", lambda version=0: dict(type="state")))
-                session = NativeSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000.))
+                session = NativeSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000., solve_latency_s=0.))
                 cleanup.callback(session.close)
                 # The provider may add inertia/change coefficients. Compare the
                 # scheduler with the exact native configuration it built.

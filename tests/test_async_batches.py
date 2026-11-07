@@ -64,36 +64,38 @@ class AsyncBatchTests(unittest.TestCase):
                           session.pending_solver_reported, session.pending_clipped), tip.interval)
         self.assertFalse(session._batches)
 
-    def test_pause_arriving_after_nonblocking_poll_collects_before_parking(self):
-        adapter, session = self.session(buffered=True, latency=.02)
-        polled, allow_boundary = threading.Event(), threading.Event()
-        result = adapter.remote.result_stream
-
-        def delayed_poll(block=False):
-            answer = result(block)
-            if not block and adapter.remote.stream_pending and session.plant.t > 0 and not polled.is_set():
-                polled.set()
-                if not allow_boundary.wait(2):
-                    raise AssertionError('Pause did not reach delayed poll')
-            return answer
-
-        adapter.remote.result_stream = delayed_poll
-        # Establish the invocation without a second owner competing for batches.
-        with session._condition:
-            session._allowed_until = .2
-            session._publish_at = .01
-            session._thread = threading.Thread(target=session._run, daemon=True)
-            session._thread.start()
-        self.assertTrue(polled.wait(2))
-        with session._condition:
-            session._pause_requested = True
-        allow_boundary.set()
-        records = session.pause()
+    def test_pause_retains_an_outstanding_solve_until_resume_at_the_same_boundary(self):
+        adapter, session = self.session(buffered=True)
+        records = session.advance_interval(.002)
+        invocation = session._thread
+        records.extend(session.pause())
         self.assertTrue(session._parked)
-        self.assertFalse(adapter.remote.stream_pending)
+        self.assertTrue(adapter.remote.stream_pending)
         self.assertAlmostEqual(adapter.t, .002)
-        self.assertEqual(sum(r['type'] == 'plan' for r in records), 1)
+        self.assertFalse(any(r['type'] == 'plan' for r in records))
         self.assertEqual(session.steps, 0)
+        records.extend(session.advance_interval(.004))
+        self.assertIs(session._thread, invocation)
+        self.assertEqual(sum(r['type'] == 'plan' for r in records), 1)
+        self.assertEqual([r['sim_time_s'] for r in records if r['type'] == 'control'], [.002])
+        self.assertEqual(adapter.warmups, [0.])
+        self.assertEqual(session.steps, 2)
+
+    def test_cancel_discards_an_unread_solve_and_replacement_uses_a_fresh_invocation(self):
+        adapter, session = self.session(buffered=True)
+        session.advance_interval(.002)
+        invocation = session._thread
+        session.close()
+        self.assertFalse(invocation.is_alive())
+        self.assertFalse(adapter.remote.stream_pending)
+        self.assertEqual(session.solves, 0)
+        replacement = NativeSession(adapter, dict(DEFAULT_EXECUTION, to_hz=500., solve_latency_s=.002,
+                                                 latency_compensation=False))
+        self.addCleanup(replacement.close)
+        records = replacement.advance_interval(.004)
+        self.assertIsNot(replacement._thread, invocation)
+        self.assertFalse(any(record['type'] == 'plan' for record in records))
+        self.assertEqual(adapter.warmups, [0., .002])
 
     def failed_terminal_session(self):
         adapter, session = self.session(buffered=True, latency=0., to_hz=1.)

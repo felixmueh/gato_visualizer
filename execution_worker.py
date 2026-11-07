@@ -152,8 +152,8 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
     def pause_session():
         nonlocal state_count
         if session is not None:
-            # Publish earlier batches first so waiting for a final solve can
-            # never depend on captures retained by this owner.
+            # Publish earlier batches before parking the invocation; retained
+            # captures must not block its bounded publication queue.
             completed.flush()
             tail = session.pause()
             state_count += sum(record['type'] == 'state' for record in tail)
@@ -358,9 +358,17 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
                             if interval is not None:
                                 emit(dict(kind="records", generation=generation, token=token,
                                           records=[interval], complete=False), token)
+                        error = None
+                        remote = getattr(adapter, "remote", None)
+                        if callable(getattr(remote, "wait_idle", None)):
+                            try:
+                                remote.wait_idle(timeout=command.get("inspection_timeout_s", 15))
+                            except (RuntimeError, TimeoutError) as exc:
+                                error = str(exc)
                         locks.release()
-                        status("paused", "Live calculation paused for solve inspection",
+                        status("paused", error or "Live calculation paused for solve inspection",
                                inspection_pause_id=command["inspection_id"],
+                               inspection_pause_error=error,
                                job_active_override=False, complete=history_complete)
                         continue
                     if kind in ("pause", "cancel"):

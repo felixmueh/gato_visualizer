@@ -20,7 +20,8 @@ functions are CPU-only:
 - `describe()` returns finite JSON descriptors for separate `simulation` and
   `predictor` value scopes, with explicit defaults, parameters and native fields
   owned by each builder. Field shape is fixed; law selection changes visibility.
-- `build_simulation(values, base_sim_config)` returns native `(SimConfig, law)`.
+- `build_simulation(values, base_sim_config)` returns native `(SimConfig, law)`;
+  the law returns `Command | Fault`, retaining requested and applied torque.
 - `build_predictor(values, base_mpc_params)` returns native `MpcParams`.
 
 Builders are only needed for the scopes an adapter claims. The default adapter
@@ -65,7 +66,9 @@ and default external-FF width come from
 `experiments.controller_tuning.TUNED_FEEDFORWARD`; its coefficient-only
 `friction` and separate `evaluation` preserve the existing demo physics.
 Algorithms come from `tiago_mpc` package laws. This adapter requires the
-coefficient-only friction API promoted on 2026-10-28 and that retained preset.
+coefficient-only friction API promoted on 2026-10-28, native `Command | Fault`
+law results and that retained preset. Native wrappers propagate faults; the
+adapter does not convert torque-array results.
 
 Predictor ownership is independent: `armature`, the whole `friction` field and
 its separate `friction_law` evaluator.

@@ -99,29 +99,42 @@ def load_source(selection):
 def require_shared_loop(loops, interfaces, laws):
     """Fail explicitly when a selected source cannot run Live's shared engine."""
     run = getattr(loops, "run_virtual_time", None)
-    required = {"settings", "duration", "message_callbacks", "before_tick", "quiesce_at", "cancelled",
+    required = {"settings", "duration", "compensation", "safety", "effort_handling",
+                "tick_callbacks", "solve_completed_callbacks", "diagnostic_callbacks",
+                "before_tick_callbacks", "cancelled",
                 "start_time_s", "initial_command"}
-    setting_fields = {"command_period", "update_period", "solve_latency_s", "compensation", "max_plan_age_s",
-                      "effort_handling"}
+    setting_fields = {"command_period", "update_period", "solve_latency_s"}
     if not callable(run) or not required <= set(inspect.signature(run).parameters):
         raise ValueError("The visualizer needs tiago_mpc's shared run_virtual_time API "
-                         "(settings, duration, messages, tick boundary, cancellation, "
+                         "(settings, duration, compensation, safety, effort handling, tick, solve-completed and diagnostic "
+                         "callbacks, before-tick callbacks, cancellation, "
                          "start time and initial command); "
                          "select a source with the shared Live loop")
+    if inspect.signature(run).parameters["duration"].default is not inspect.Parameter.empty:
+        raise ValueError("The visualizer needs run_virtual_time with a required finite duration")
     settings = getattr(loops, "VirtualTimeSettings", None)
     if not inspect.isclass(settings) or not is_dataclass(settings) or not setting_fields <= {
             field.name for field in fields(settings)}:
-        raise ValueError("The visualizer needs tiago_mpc.loops.VirtualTimeSettings with command/update periods, "
-                         "solve latency, compensation, plan age and effort handling")
-    completed = getattr(interfaces, "SolveCompleted", None)
-    if not is_dataclass(completed) or not {"request_time_s", "initial", "reference", "updates", "plan", "wall_s"} <= {
-            field.name for field in fields(completed)}:
-        raise ValueError("The visualizer needs tiago_mpc.interfaces.SolveCompleted from the shared Live loop")
-    tick = getattr(interfaces, "Tick", None)
-    if not is_dataclass(tick) or not {"requested_command", "clipped"} <= {field.name for field in fields(tick)}:
-        raise ValueError("The visualizer needs tiago_mpc.interfaces.Tick command-policy metadata")
-    if not all(callable(getattr(laws, name, None)) for name in ("EffortClip", "RejectOnEffort")):
-        raise ValueError("The visualizer needs tiago_mpc.laws.EffortClip and RejectOnEffort")
+        raise ValueError("The visualizer needs tiago_mpc.loops.VirtualTimeSettings with command/update periods "
+                         "and solve latency")
+    safety = getattr(laws, "ExecutionSafety", None)
+    if (not inspect.isclass(safety) or not is_dataclass(safety) or
+            "max_plan_age_s" not in {field.name for field in fields(safety)} or
+            not callable(getattr(safety, "validate", None)) or
+            not {"plan", "t", "state"} <= set(inspect.signature(safety.validate).parameters)):
+        raise ValueError("The visualizer needs tiago_mpc.laws.ExecutionSafety(max_plan_age_s=...) "
+                         "with validate(plan, t, state)")
+    payload_fields = {
+        "SolveCompleted": {"request_time_s", "initial", "reference", "updates", "plan"},
+        "Tick": {"t", "state", "command", "plan", "plan_activated", "update", "requested_command", "clipped"},
+        "Diagnostic": {"t", "kind", "message", "data"},
+    }
+    for name, required_fields in payload_fields.items():
+        payload = getattr(interfaces, name, None)
+        if not is_dataclass(payload) or not required_fields <= {field.name for field in fields(payload)}:
+            raise ValueError(f"The visualizer needs tiago_mpc.interfaces.{name} from the shared Live loop")
+    if not callable(getattr(laws, "EffortClip", None)):
+        raise ValueError("The visualizer needs tiago_mpc.laws.EffortClip")
 
 
 def variant(mpc, n, friction):

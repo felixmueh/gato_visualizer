@@ -130,7 +130,10 @@ class FrictionAdapterTests(unittest.TestCase):
                 states = np.arange(42.).reshape(3, 14) / 100
                 plan = tm.Plan(1., .03, states, np.arange(14.).reshape(2, 7), measured_t=1.)
                 observed = tm.State(.99, np.linspace(-.1, .1, 7), np.full(7, -.1))
-                np.testing.assert_array_equal(law(plan, 1.039, observed), expected(plan, 1.039, observed))
+                actual, wanted = law(plan, 1.039, observed), expected(plan, 1.039, observed)
+                self.assertIsInstance(actual, tm.Command)
+                np.testing.assert_array_equal(actual.requested, wanted.requested)
+                np.testing.assert_array_equal(actual.applied, wanted.applied)
                 self.assertEqual(tm.from_dict(json.loads(json.dumps(tm.to_dict(plant)))), plant)
                 self.assertEqual(tm.from_dict(json.loads(json.dumps(tm.to_dict(law)))), law)
 
@@ -177,7 +180,10 @@ class FrictionAdapterTests(unittest.TestCase):
         self.assertEqual(plant.friction_law, base.friction_law)
         plan = tm.Plan(1., .03, np.arange(42.).reshape(3, 14) / 100, np.arange(14.).reshape(2, 7), measured_t=1.)
         observed = tm.State(.99, np.linspace(-.1, .1, 7), np.full(7, -.1))
-        np.testing.assert_array_equal(law(plan, 1.039, observed), expected(plan, 1.039, observed))
+        actual, wanted = law(plan, 1.039, observed), expected(plan, 1.039, observed)
+        self.assertIsInstance(actual, tm.Command)
+        np.testing.assert_array_equal(actual.requested, wanted.requested)
+        np.testing.assert_array_equal(actual.applied, wanted.applied)
         self.assertEqual(tm.from_dict(json.loads(json.dumps(tm.to_dict(law)))), law)
 
     def test_code_owned_vectors_are_rejected_by_normal_backend_value_validation(self):

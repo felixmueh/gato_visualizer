@@ -2,7 +2,7 @@
 
 The native package owns every numerical decision. Detached batches and committed
 snapshots pass to the owner without parking for ordinary reporting. Explicit
-pause/end boundaries quiesce the solver and retain the native invocation.
+pause/end boundaries retain the native invocation and any unread solver reply.
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass
 import math
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -41,6 +42,7 @@ class _SnapshotMpc:
         # loop only needs its friction availability for composition checks.
         self.params = SimpleNamespace(friction=(configuration or {}).get("friction"))
         self.pending = self.record = None
+        self.foreground_wall = 0.
 
     def warmup(self, state, reference):
         self.adapter.warmup(state, reference)
@@ -52,6 +54,7 @@ class _SnapshotMpc:
             raise RuntimeError("An MPC request is already pending")
         if updates:
             raise ValueError("Live task updates must be resolved in the selected solver settings")
+        self.session._begin_request()
         started = self.session.clock()
         self.record = self.adapter.solve_snapshot("play", self.session.version,
                                                   initial=state, reference=reference)
@@ -73,6 +76,7 @@ class _SnapshotMpc:
             stats = dict(wall_s=recorded["step_wall_s"], solve_time_us=recorded["solve_time_ms"]*1000)
         self.pending = Plan(state.t, self.dt, self.record["_states"], self.record["_torques"],
                             dict(stats), measured_t=getattr(state, "measured_t", state.t))
+        self.foreground_wall += self.session.clock()-started
 
     def result(self, block=False):
         plan, self.pending = self.pending, None
@@ -92,6 +96,7 @@ class _BufferedMpc:
         self.params = SimpleNamespace(friction=self.adapter.problem_configuration.get("friction"))
         self.record = None
         self.published = True
+        self.foreground_wall = 0.
         self.remote.start_stream(self.N, self.dt, recording=getattr(self.adapter, "record_solves", True),
             max_sqp_iters=self.adapter.problem_configuration.get('solver',{}).get('max_sqp_iters',5))
 
@@ -101,10 +106,19 @@ class _BufferedMpc:
     def request(self, state, reference, updates=None):
         if updates:
             raise ValueError("Live task updates belong in the selected solver configuration")
-        self.remote.submit_stream(state, reference)
+        self.session._begin_request()
+        started = self.session.clock()
+        try:
+            self.remote.submit_stream(state, reference)
+        finally:
+            self.foreground_wall += self.session.clock()-started
 
     def result(self, block=False):
-        result = self.remote.result_stream(block)
+        started = self.session.clock()
+        try:
+            result = self.remote.result_stream(block)
+        finally:
+            self.foreground_wall += self.session.clock()-started
         if result is None:
             return None
         plan, locator = result
@@ -150,7 +164,7 @@ class _ObservedPlant:
         plant.step_callback = self._step
 
     def _step(self, state):
-        from tiago_mpc.interfaces import Event
+        from tiago_mpc.interfaces import Diagnostic
         s = self.session
         s.steps += 1
         if not np.isfinite(state.q).all() or not np.isfinite(state.qd).all():
@@ -158,7 +172,7 @@ class _ObservedPlant:
         breaches = s.watch.state(state.q, state.qd) if s.watch else []
         if not breaches:
             return ()
-        return (Event(state.t, "limit_breach", s._breach_message(state.t, breaches),
+        return (Diagnostic(state.t, "limit_breach", s._breach_message(state.t, breaches),
                       dict(breaches=breaches, q=state.q.tolist(), qd=state.qd.tolist())),)
 
     def start(self, clock):
@@ -172,8 +186,8 @@ class _ObservedPlant:
         self.session.adapter.u = np.array(command, copy=True)
         self.session.adapter.applied_torque = np.array(command, copy=True)
 
-    def take_events(self):
-        return self.plant.take_events()
+    def take_diagnostics(self):
+        return self.plant.take_diagnostics()
 
     def advance(self, t):
         s = self.session
@@ -198,15 +212,18 @@ class NativeSession:
     those lifecycle boundaries and transfers two bounded batches; reporting
     never substitutes another invocation or mutates numerical state.
     """
-    def __init__(self, adapter, execution, version=0, clock=time.perf_counter):
+    def __init__(self, adapter, execution, version=0, clock=time.perf_counter, *, duration_s=sys.float_info.max):
         from execution_session import LimitWatch, breach_message, validate_execution
-        from tiago_mpc.laws import EffortClip, SampleKnot
+        from tiago_mpc.laws import EffortClip, ExecutionSafety, SampleKnot
         from tiago_mpc.loops import VirtualTimeSettings
         from tiago_mpc.prediction import LatencyCompensation
         from tiago_mpc.record import to_dict
 
         self.adapter, self.execution, self.version, self.clock = adapter, validate_execution(execution), version, clock
         self.origin = float(adapter.t)
+        if duration_s is None or not math.isfinite(duration_s) or duration_s < 0:
+            raise ValueError("duration must be finite nonnegative seconds")
+        self.duration_s = float(duration_s)
         self._reach_target = (np.array(adapter.target_world_at(self.origin),copy=True)
                               if callable(getattr(adapter,'target_world_at',None)) and
                               getattr(adapter,'task',{}).get('kind','reach')=='reach' else None)
@@ -215,20 +232,21 @@ class NativeSession:
         handling = getattr(adapter, "limit_handling", None)
         self.watch = None if handling is None else LimitWatch(**handling, x=adapter.x)
         self.law = getattr(adapter, "law", None) or SampleKnot()
-        effort_handling = (EffortClip(effort=tuple(self.watch.effort))
-                           if self.watch and self.watch.clip else None)
+        self.effort_handling = (EffortClip(effort=tuple(self.watch.effort))
+                                if self.watch and self.watch.clip else None)
         latency = self.execution["solve_latency_s"]
-        compensation = (LatencyCompensation(latency_s="previous" if latency == "measured" else latency)
-                        if self.execution["latency_compensation"] else None)
+        self.compensation = (LatencyCompensation(latency_s="previous" if latency == "measured" else latency)
+                             if self.execution["latency_compensation"] else None)
+        self.safety = ExecutionSafety(max_plan_age_s=self.execution["max_plan_age_s"])
         self.settings = VirtualTimeSettings(
             command_period=1/self.execution["control_hz"],
             update_period=1/self.execution["to_hz"] if self.execution["to_hz"] else 0.,
-            solve_latency_s=latency, compensation=compensation,
-            max_plan_age_s=self.execution["max_plan_age_s"], effort_handling=effort_handling)
+            solve_latency_s=latency)
         if hasattr(adapter, "effective_settings"):
             adapter.effective_settings.update(law=to_dict(self.law),
-                                              effort_handling=to_dict(self.settings.effort_handling),
-                                              compensation=to_dict(self.settings.compensation))
+                                              safety=to_dict(self.safety),
+                                              effort_handling=to_dict(self.effort_handling),
+                                              compensation=to_dict(self.compensation))
         self.initial_command = (None if adapter.applied_torque is None else np.array(adapter.applied_torque, copy=True))
         self.startup_command_source = "held_command" if self.initial_command is not None else "position_hold"
         if self.initial_command is None and np.any(np.abs(adapter.x[7:]) > 1e-12):
@@ -321,7 +339,11 @@ class NativeSession:
             self._batches.append((records, self._snapshot()))
             self._condition.notify_all()
 
-    def _quiesce_at(self, state):
+    def _pause_at(self, state):
+        # A finite run's final boundary belongs to native termination, including
+        # its terminal Tick and any outstanding solve returned after that Tick.
+        if state.t-self.origin >= self.duration_s-1e-9:
+            return False
         return self._pause_requested or self._breached or state.t >= self._allowed_until-1e-12
 
     def target_world_at(self, timestamp):
@@ -367,6 +389,16 @@ class NativeSession:
     def _start_timing(self):
         self._compute_started = self.clock()
 
+    def _begin_request(self):
+        # A delayed result can arrive after several physics ticks. Close the
+        # preceding interval at this actual request boundary, after charging
+        # its result wait, rather than at the old solve's request timestamp.
+        self._stop_timing()
+        interval = self.flush_interval()
+        if interval is not None:
+            self._records.append(interval)
+        self._start_timing()
+
     def _before_tick(self, state):
         a = self.adapter
         a.t, a.x = float(state.t), np.concatenate((state.q,state.qd))
@@ -374,11 +406,9 @@ class NativeSession:
             self._records.append(self._state())
             self._last_state_time = state.t
         self._stop_timing()
-        # Pause may arrive after the native loop's nonblocking result poll.
-        # Never park until that loop has collected the pending solve. Its
-        # post-Tick quiescence check then revisits this same boundary.
-        pending = isinstance(self._mpc, _BufferedMpc) and self._mpc.remote.stream_pending
-        if not self._stopping() and (not self._quiesce_at(state) or pending):
+        # Native calls this gate before result collection. Preserve outstanding
+        # work and its unread reply while paused; resume collects it normally.
+        if not self._stopping() and not self._pause_at(state):
             if state.t >= self._publish_at-1e-12:
                 self._publish()
                 self._publish_at = state.t+self._window()
@@ -390,7 +420,7 @@ class NativeSession:
                 self._records.append(interval)
         with self._condition:
             self._publish()
-            while not self._stopping() and self._quiesce_at(state):
+            while not self._stopping() and self._pause_at(state):
                 self._parked = True
                 self._condition.notify_all()
                 self._condition.wait(timeout=.05)
@@ -399,111 +429,114 @@ class NativeSession:
             self._publish_at = state.t+self._window()
             self._start_timing()
 
-    def _message(self, message):
-        from tiago_mpc.interfaces import Event, SolveCompleted, Tick
-        if isinstance(message, SolveCompleted):
-            at = float(message.request_time_s)
-            interval = self.flush_interval(at)
-            if interval is not None:
-                self._records.append(interval)
-            buffered = isinstance(self._mpc,_BufferedMpc)
-            record = self._mpc.record if buffered else dict(self._mpc.record)
-            if not buffered:
-                record.update(request_time_s=at, sim_time_s=at)
-                record.update(_reference=message.reference, _states=message.plan.states,
-                              _torques=message.plan.torques,
-                              initial_state=dict(q=message.initial.q.tolist(), qd=message.initial.qd.tolist(),
-                                  time_s=message.initial.t,
-                                  measured_time_s=getattr(message.initial, "measured_t", message.initial.t)))
-            elif "_recording" not in record:
-                record["_reference"] = message.reference
+    def _solve_completed(self, message):
+        at = float(message.request_time_s)
+        buffered = isinstance(self._mpc,_BufferedMpc)
+        record = self._mpc.record if buffered else dict(self._mpc.record)
+        if not buffered:
+            record.update(request_time_s=at, sim_time_s=at)
+            record.update(_reference=message.reference, _states=message.plan.states,
+                          _torques=message.plan.torques,
+                          initial_state=dict(q=message.initial.q.tolist(), qd=message.initial.qd.tolist(),
+                              time_s=message.initial.t,
+                              measured_time_s=getattr(message.initial, "measured_t", message.initial.t)))
+        elif "_recording" not in record:
+            record["_reference"] = message.reference
+        if buffered:
+            self._mpc.published = True
+        latency = (message.plan.stats["wall_s"] if self.execution["solve_latency_s"] == "measured"
+                   else self.execution["solve_latency_s"])
+        if buffered:
+            record['_schedule']=(at,latency,self.origin,self.execution['control_hz'],message.plan.stats['wall_s'])
+        else:
+            available = at+latency
+            activation = max(available, message.plan.t0)
+            rate = self.execution["control_hz"]
+            record.update(available_time_s=available, solve_latency_s=latency,
+                          scheduled_activation_time_s=self.origin+math.ceil((activation-self.origin-1e-9)*rate)/rate,
+                          latency_overrun=bool(0 < latency < message.plan.stats["wall_s"]))
+        # Retain the Plan too: otherwise Python can reuse a freed object's
+        # id while an older cache entry with that id is still present.
+        self._plans[id(message.plan)] = (message.plan, record)
+        while len(self._plans) > 3:
+            self._plans.pop(next(iter(self._plans)))
+        self.pending_plan = record
+        self.solves += 1
+        foreground, self._mpc.foreground_wall = self._mpc.foreground_wall, 0.
+        self.pending_solve_wall += message.plan.stats.get("controller_wall_s", max(foreground, message.plan.stats["wall_s"]))
+        self.pending_foreground_wall += foreground
+        self.pending_solver_reported += message.plan.stats.get("solve_time_us", 0.)/1e6
+        self._records.append(record)
+
+    def _tick(self, message):
+        if message.command is not None:
+            record = self._plans[id(message.plan)][1]
+            self.plan, self.native_plan, self.pending_plan = record, message.plan, None
+            self.plan_origin = message.plan.t0
+            self.control_updates += 1
+            clipped = message.clipped
+            self.pending_clipped += clipped
+            elapsed = max(0., message.t-message.plan.t0)
+            knot = message.plan.index(elapsed)
+            command = np.asarray(message.command)
+            requested = np.asarray(message.requested_command)
+            buffered = isinstance(self._mpc, _BufferedMpc)
             if buffered:
-                self._mpc.published = True
-            latency = (message.plan.stats["wall_s"] if self.execution["solve_latency_s"] == "measured"
-                       else self.execution["solve_latency_s"])
-            if buffered:
-                record['_schedule']=(at,latency,self.origin,self.execution['control_hz'],message.plan.stats['wall_s'])
+                self._records.append(dict(type='control',sim_time_s=message.t,_numerical=True,
+                    _control=(self.adapter.applied_torque,message.plan.torques[knot],requested.copy(),
+                              record['seq'],elapsed,message.plan_activated,clipped)))
             else:
-                available = at+latency
-                activation = max(available, message.plan.t0)
-                rate = self.execution["control_hz"]
-                record.update(available_time_s=available, solve_latency_s=latency,
-                              scheduled_activation_time_s=self.origin+math.ceil((activation-self.origin-1e-9)*rate)/rate,
-                              latency_overrun=bool(0 < latency < message.plan.stats["wall_s"]))
-            # Retain the Plan too: otherwise Python can reuse a freed object's
-            # id while an older cache entry with that id is still present.
-            self._plans[id(message.plan)] = (message.plan, record)
-            while len(self._plans) > 3:
-                self._plans.pop(next(iter(self._plans)))
-            self.pending_plan = record
-            self.solves += 1
-            self.pending_solve_wall += message.plan.stats.get("controller_wall_s", max(message.wall_s, message.plan.stats["wall_s"]))
-            self.pending_foreground_wall += message.wall_s
-            self.pending_solver_reported += message.plan.stats.get("solve_time_us", 0.)/1e6
-            self._records.append(record)
-        elif isinstance(message, Tick):
-            if message.command is not None:
-                record = self._plans[id(message.plan)][1]
-                self.plan, self.native_plan, self.pending_plan = record, message.plan, None
-                self.plan_origin = message.plan.t0
-                self.control_updates += 1
-                clipped = message.clipped
-                self.pending_clipped += clipped
-                elapsed = max(0., message.t-message.plan.t0)
-                knot = message.plan.index(elapsed)
-                command = np.asarray(message.command)
-                requested = np.asarray(message.requested_command)
-                buffered = isinstance(self._mpc, _BufferedMpc)
-                if buffered:
-                    self._records.append(dict(type='control',sim_time_s=message.t,_numerical=True,
-                        _control=(self.adapter.applied_torque,message.plan.torques[knot],requested.copy(),
-                                  record['seq'],elapsed,message.new,clipped)))
-                else:
-                    self._records.append(dict(type="control", sim_time_s=message.t,
-                    torque_nm=command if buffered else command.tolist(),
-                    mpc_torque_nm=message.plan.torques[knot] if buffered else message.plan.torques[knot].tolist(),
-                    requested_torque_nm=requested if buffered else requested.tolist(),
-                    law_sample_time_s=message.t, plan_seq=record["seq"], plan_elapsed_s=elapsed,
-                    plan_activated=message.new, horizon_exhausted=False, plan_exhausted=False,
-                    **(dict(_numerical=True) if buffered else {}),
-                    **(dict(planned_torque_nm=requested.tolist()) if message.clipped else {})))
-                breaches = self.watch.torque(command) if self.watch else []
-                if breaches:
-                    self._records.append(dict(type="breach", sim_time_s=message.t, breaches=breaches,
-                                              message=self._breach_message(message.t, breaches)))
-                    self._breached = True  # Native loop quiesces before entering its callback gate.
-        elif isinstance(message, Event):
-            if message.kind == "limit_breach":
-                data = message.data
-                if message.t > self._last_state_time+1e-12:
-                    self._records.append(dict(type="state", sim_time_s=message.t,
-                        _x=np.r_[data["q"], data["qd"]], settings_version=self.version,
-                        torque_nm=self.adapter.applied_torque.tolist(),
-                        target_xyz=self.adapter.target_world_at(message.t).tolist(),
-                        control_updates=self.control_updates, horizon_exhausted=False, plan_exhausted=False,
-                        **(dict(plan_seq=self.plan["seq"]) if self.plan else {})))
-                    self._last_state_time = message.t
-                self._records.append(dict(type="breach", sim_time_s=message.t, breaches=data["breaches"],
-                                          message=message.message))
-                self._breached = True
-            elif message.kind == "command_rejected":
-                self._records.append(dict(type="command_rejected", sim_time_s=message.t,
-                                          message=message.message, **message.data))
-            else:
-                self._records.append(dict(type="event", sim_time_s=message.t, event_kind=message.kind,
-                                          message=message.message, data=deepcopy(message.data)))
+                self._records.append(dict(type="control", sim_time_s=message.t,
+                torque_nm=command.tolist(),
+                mpc_torque_nm=message.plan.torques[knot].tolist(),
+                requested_torque_nm=requested.tolist(),
+                law_sample_time_s=message.t, plan_seq=record["seq"], plan_elapsed_s=elapsed,
+                plan_activated=message.plan_activated, horizon_exhausted=False, plan_exhausted=False,
+                **(dict(planned_torque_nm=requested.tolist()) if message.clipped else {})))
+            breaches = self.watch.torque(command) if self.watch else []
+            if breaches:
+                self._records.append(dict(type="breach", sim_time_s=message.t, breaches=breaches,
+                                          message=self._breach_message(message.t, breaches)))
+                self._breached = True  # The gate parks at the next command boundary.
+
+    def _diagnostic(self, message):
+        if message.kind == "limit_breach":
+            data = message.data
+            if message.t > self._last_state_time+1e-12:
+                self._records.append(dict(type="state", sim_time_s=message.t,
+                    _x=np.r_[data["q"], data["qd"]], settings_version=self.version,
+                    torque_nm=self.adapter.applied_torque.tolist(),
+                    target_xyz=self.adapter.target_world_at(message.t).tolist(),
+                    control_updates=self.control_updates, horizon_exhausted=False, plan_exhausted=False,
+                    **(dict(plan_seq=self.plan["seq"]) if self.plan else {})))
+                self._last_state_time = message.t
+            self._records.append(dict(type="breach", sim_time_s=message.t, breaches=data["breaches"],
+                                      message=message.message))
+            self._breached = True
+        elif message.kind == "command_rejected":
+            self._records.append(dict(type="command_rejected", sim_time_s=message.t,
+                                      message=message.message, **message.data))
+        else:
+            self._records.append(dict(type="event", sim_time_s=message.t, event_kind=message.kind,
+                                      message=message.message, data=deepcopy(message.data)))
 
     def _run(self):
-        from tiago_mpc.loops import run_virtual_time
+        from tiago_mpc import loops
+        # Live streams its records and retains this invocation across Pause.
+        # Relax the experiment-only duration guard in this simulation process;
+        # cancellation still ends the run, with an explicit finite duration.
+        if self.duration_s > 60*loops.MAX_RUNTIME_MIN:
+            loops.MAX_RUNTIME_MIN = math.inf
         try:
             self._mpc = (_BufferedMpc(self) if callable(getattr(getattr(self.adapter, "remote", None), "start_stream", None))
                          else _SnapshotMpc(self))
-            self.outcome = run_virtual_time(_ObservedPlant(self, self.plant), self._mpc,
+            self.outcome = loops.run_virtual_time(_ObservedPlant(self, self.plant), self._mpc,
                 _Task(self.adapter, self.origin), self.law,
-                settings=self.settings, duration=None,
+                settings=self.settings, duration=self.duration_s,
+                compensation=self.compensation, safety=self.safety, effort_handling=self.effort_handling,
                 start_time_s=self.origin, initial_command=self.initial_command,
-                message_callbacks=(self._message,), before_tick=self._before_tick,
-                quiesce_at=self._quiesce_at,
+                tick_callbacks=(self._tick,), solve_completed_callbacks=(self._solve_completed,),
+                diagnostic_callbacks=(self._diagnostic,), before_tick_callbacks=(self._before_tick,),
                 cancelled=self._stopping)
         except BaseException as error:
             self._error = error
@@ -530,7 +563,8 @@ class NativeSession:
         During execution only progress is readable by the owner; adapter and
         numerical counters belong to the native thread. Pause before other RPCs.
         """
-        if end_time is not None and end_time <= self.progress.t+1e-12:
+        terminal = self.progress.t-self.origin >= self.duration_s-1e-9
+        if end_time is not None and end_time <= self.progress.t+1e-12 and not terminal:
             return []
         if cancelled():
             self.close()
@@ -564,7 +598,7 @@ class NativeSession:
             return []
 
     def pause(self):
-        """Drain committed batches and wait for an idle retained invocation."""
+        """Drain committed batches and park before native result collection."""
         records = []
         committed = self.progress
         with self._condition:

@@ -23,6 +23,7 @@ import numpy as np
 from runtime_files import ended_owner, runtime_directory
 
 CONTROL_HEADER = struct.Struct('!QddddddQ')
+CONTROL_BUSY_OFFSET = CONTROL_HEADER.size
 RING_HEADER = struct.Struct('!QQQQ')  # retired, occupied, slot bytes, producer PID
 SLOT_HEADER = struct.Struct('!QQ')  # request id (0: free), bytes (0: reserved)
 # Conservative minimum also used by the numerical/reporting batch thresholds.
@@ -109,6 +110,17 @@ class ControlArrays:
         self.reference[:] = reference
         self.expected = identifier, state.t, getattr(state, 'measured_t', state.t)
         CONTROL_HEADER.pack_into(self.mapping, 0, *self.expected, 0., 0., 0., self.dt, self.n)
+        self.mark_busy()
+
+    @property
+    def busy(self):
+        return bool(self.mapping[CONTROL_BUSY_OFFSET])
+
+    def mark_busy(self):
+        self.mapping[CONTROL_BUSY_OFFSET] = 1
+
+    def mark_idle(self):
+        self.mapping[CONTROL_BUSY_OFFSET] = 0
 
     def read_request(self, identifier):
         from tiago_mpc.interfaces import Prediction, State

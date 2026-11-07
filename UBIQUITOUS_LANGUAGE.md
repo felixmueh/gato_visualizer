@@ -32,8 +32,8 @@
 | **Keyframe** | A time at which a ghost arm is drawn. | Frame (a coordinate frame here) |
 | **Ghost arm** | A translucent right arm at a recorded state other than the solid robot’s displayed state. | Preview (a Live preview solve) |
 | **Simulation time** | The task/plant clock recorded with robot states, independent of time spent computing them. | Solver time, wall time |
-| **Virtual-time settings** | Native `VirtualTimeSettings`: command/update periods, solve latency, compensation, maximum plan age and effort handling, passed through required `settings=` to `run_virtual_time`. Duration and callbacks belong to the invocation. | `VirtualTime` (removed class name), split loop configuration arguments |
-| **Simulation frequency** | The nominal plant integration rate (RK4 or semi-implicit Euler), with steps split at control or replanning boundaries. | Display rate |
+| **Virtual-time settings** | Native `VirtualTimeSettings`: command/update periods and solve latency, passed through required `settings=` to `run_virtual_time`. Compensation, safety, effort handling, duration and callbacks are separate invocation arguments. | `VirtualTime` (removed class name), combined execution settings |
+| **Simulation frequency** | The nominal plant integration rate (RK4 or semi-implicit Euler). The native plant takes substeps up to each command tick, shortening the final substep when needed. | Display rate |
 | **Control frequency** | The rate at which the current prediction supplies a held actuator command. | MPC frequency, replanning frequency |
 | **TO frequency** | The trajectory-optimization request-slot rate. Requests start at command ticks with no solve pending; missed slots are skipped. Zero means back-to-back. | Control frequency, reporting frequency |
 | **Solve latency** | The delay from a solve request to plan availability: measured solver host wall time by default, or declared seconds. The first eligible command tick activates it; plan age remains measured from its input state. | CUDA time, RPC wall time, prediction knot spacing |
@@ -53,7 +53,7 @@
 | **Simulator source** | The selected checkout providing the fixed plant (`tiago_mpc`'s `SimPlant`), robot assets, initial state and task geometry. | Solver profile |
 | **Solver profile** | A named checkout/interpreter/cache selection providing a compatible predictor and optimizer. | Simulator source, warm-state checkpoint |
 | **Compiled module** | The GATO module `tiago_mpc` compiles for one `MpcParams` variant (knot count N, predictor friction). `find_binary` finds it; only an explicit Build compiles it. | Prebuilt binary, compatible binary |
-| **Clip effort** | The simulation setting selecting native `EffortClip` in `VirtualTimeSettings.effort_handling` after the command law returns its torque array. The forecast uses the same law and effort handling; the robot path retains its own checks. | Torque saturation of the MPC, effort bound (the MPC's `effort_fraction` row) |
+| **Clip effort** | The simulation setting selecting native `EffortClip` through the loop's `effort_handling` argument after the command law returns a `Command`. Laws and handlers may return `Fault`; the forecast uses the same law and effort handling. The robot path retains its own checks. | Torque saturation of the MPC, effort bound (the MPC's `effort_fraction` row) |
 | **Limit breach** | A simulated position, velocity or applied torque that starts to exceed its raw URDF limit. Physics detects it every substep and queues it for delivery/pause at the next command boundary, retaining exact detection time/state. Planned knots never breach. | Limit use near/at (presentation states), MPC bound violation |
 | **Native coordinates** | The canonical robot joint coordinates used by plant states, portable replays and public Live predictions. | GPU coordinates |
 

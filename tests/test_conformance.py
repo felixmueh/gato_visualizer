@@ -43,6 +43,7 @@ class ConformanceTests(unittest.TestCase):
     def test_native_reference_records_every_tick_and_plan_without_arriving_or_compiling(self):
         from experiments.reach import Reach
         from tiago_mpc.clock import VirtualClock
+        from tiago_mpc.interfaces import Diagnostic
         from tiago_mpc.record import from_dict
         from tiago_mpc.sim import SimConfig
         for _ in range(2):
@@ -50,6 +51,8 @@ class ConformanceTests(unittest.TestCase):
                 mpc = NativeLoopMpc()
                 config = SimConfig(substep=.001)
                 plant = reference_plant(config)
+                plant.step_callback = lambda state: [Diagnostic(state.t, 'physics', 'substep observed',
+                                                                {'q': state.q.tolist()})]
                 task = Reach(position_tol_m=0.)
                 try:
                     record = run_reference(plant, mpc, task, Path(directory) / 'reference', .02)
@@ -63,17 +66,54 @@ class ConformanceTests(unittest.TestCase):
                     self.assertEqual(arrays['command'].shape, (7, 7))
                     self.assertEqual(arrays['plan_states'].shape, (2, 3, 14))
                     self.assertEqual(arrays['plan_torques'].shape, (2, 2, 7))
+                    np.testing.assert_array_equal(record.plans['wall_s'], [.001, .001])
+                    np.testing.assert_array_equal(record.ticks['plan'][:3], [-1, -1, -1])
+                    np.testing.assert_array_equal(record.ticks['plan'][3:8], [0] * 5)
+                    np.testing.assert_array_equal(record.ticks['plan'][8:], [1] * 3)
+                    self.assertTrue(record.diagnostics)
+                    self.assertAlmostEqual(record.diagnostics[0].t, .007)
+                    self.assertEqual(record.diagnostics[0].kind, 'physics')
+                    events = json.loads((record.out / 'events.json').read_text())
+                    self.assertEqual(events[0], dict(t=record.diagnostics[0].t, kind='physics',
+                                                    message='substep observed', data=record.diagnostics[0].data))
                     self.assertEqual(len(mpc.warmups), 1)
                     np.testing.assert_allclose(mpc.requests, [0., .01], rtol=0, atol=1e-12)
                     summary = json.loads((record.out / 'summary.json').read_text())
                     self.assertEqual(summary['config']['params']['type'], 'MpcParams')
                     self.assertEqual(from_dict(summary['config']['params']), mpc.params)
-                    self.assertEqual(summary['config']['timing']['type'], 'VirtualTimeSettings')
-                    self.assertEqual(summary['config']['timing']['solve_latency_s'], SOLVE_LATENCY_S)
+                    self.assertEqual(summary['config']['settings']['type'], 'VirtualTimeSettings')
+                    self.assertEqual(summary['config']['settings']['solve_latency_s'], SOLVE_LATENCY_S)
+                    self.assertEqual(set(summary['config']['settings']),
+                                     {'type', 'command_period', 'update_period', 'solve_latency_s'})
+                    self.assertEqual(summary['config']['loop'], 'run_virtual_time')
+                    self.assertEqual(summary['config']['safety'],
+                                     {'type': 'ExecutionSafety', 'max_plan_age_s': None})
+                    self.assertEqual(summary['config']['effort_handling']['type'], 'EffortClip')
+                    self.assertIsNone(summary['config']['compensation'])
                     self.assertTrue((record.out / 'ticks.npz').is_file())
                     self.assertTrue((record.out / 'plans.npz').is_file())
                 finally:
                     plant.close()
+
+    def test_reference_records_returned_plan_after_terminal_tick_without_activation(self):
+        from experiments.reach import Reach
+        from tiago_mpc.sim import SimConfig
+        with tempfile.TemporaryDirectory() as directory:
+            mpc = NativeLoopMpc()
+            plant = reference_plant(SimConfig(substep=.001))
+            try:
+                record = run_reference(plant, mpc, Reach(position_tol_m=0.), Path(directory) / 'reference', .004)
+                ticks, arrays = reference_arrays(record)
+                np.testing.assert_allclose(ticks, [0., .002, .004], rtol=0, atol=1e-12)
+                np.testing.assert_array_equal(record.ticks['plan'], [-1, -1, -1])
+                self.assertEqual(arrays['command'].shape, (0, 7))
+                self.assertEqual(arrays['plan_states'].shape, (1, 3, 14))
+                self.assertEqual(arrays['plan_torques'].shape, (1, 2, 7))
+                with np.load(record.out / 'plans.npz') as plans:
+                    self.assertEqual(plans['states'].shape, (1, 3, 14))
+                    np.testing.assert_array_equal(plans['wall_s'], [.001])
+            finally:
+                plant.close()
 
     def test_reference_preserves_native_failure_record_before_reraising(self):
         from experiments.reach import Reach

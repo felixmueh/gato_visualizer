@@ -19,9 +19,49 @@ class VirtualTimeSettings:
     command_period: float = .002
     update_period: float = .01
     solve_latency_s: object = "measured"
-    compensation: object = None
-    max_plan_age_s: object = None
-    effort_handling: object = None
+
+
+@dataclass(frozen=True)
+class ExecutionSafety:
+    max_plan_age_s: object = .1
+
+    def validate(self, plan, t, state):
+        return None
+
+
+@dataclass(frozen=True)
+class SolveCompleted:
+    request_time_s: float
+    initial: object
+    reference: object
+    updates: object
+    plan: object
+
+
+@dataclass(frozen=True)
+class Tick:
+    t: float
+    state: object
+    command: object
+    plan: object
+    plan_activated: bool
+    update: bool
+    requested_command: object
+    clipped: bool
+
+
+@dataclass(frozen=True)
+class Diagnostic:
+    t: float
+    kind: str
+    message: str
+    data: dict
+
+
+def run_virtual_time(*, settings, duration, compensation=None, safety=None, effort_handling=None,
+                     tick_callbacks=(), solve_completed_callbacks=(), diagnostic_callbacks=(),
+                     before_tick_callbacks=(), cancelled=None, start_time_s=0, initial_command=None):
+    pass
 
 
 def checkout(root):
@@ -319,21 +359,6 @@ class DisplaySourceTests(unittest.TestCase):
                 torques: object
                 stats: object
             @dataclass(frozen=True)
-            class SolveCompleted:
-                request_time_s: float
-                initial: object
-                reference: object
-                updates: object
-                plan: object
-                wall_s: float
-            @dataclass(frozen=True)
-            class Tick:
-                requested_command: object
-                clipped: bool
-            def run_virtual_time(*, settings, duration, message_callbacks=(), before_tick=None, quiesce_at=None,
-                                 cancelled=None, start_time_s=0, initial_command=None):
-                pass
-            @dataclass(frozen=True)
             class MpcParams:
                 friction_law: object = None
             from tests.tiago_mpc_source import live_probe
@@ -343,9 +368,9 @@ class DisplaySourceTests(unittest.TestCase):
                                   TIAGO=SimpleNamespace(max_sqp_time_s=.01, solver=SolverSettings(), cost=default_cost()),
                                   Mpc=SimpleNamespace(warmup=3, request=4, result=5), find_binary=4, compile_binary=5,
                                   SimPlant=Plant, SimConfig=Config, VirtualClock=object, State=State, Plan=Plan,
-                                  SolveCompleted=SolveCompleted, Tick=Tick, run_virtual_time=run_virtual_time,
+                                  SolveCompleted=SolveCompleted, Tick=Tick, Diagnostic=Diagnostic, run_virtual_time=run_virtual_time,
                                   VirtualTimeSettings=VirtualTimeSettings,
-                                  EffortClip=lambda: None, RejectOnEffort=lambda: None,
+                                  EffortClip=lambda: None, ExecutionSafety=ExecutionSafety,
                                   to_dict=lambda value: value, from_dict=lambda value: value, provenance=lambda: {})
             assets, kinematics = Mock(), Mock()
             with patch('live_mpc.import_tiago', return_value=tiago) as imported, \
@@ -392,26 +417,11 @@ class DisplaySourceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'lacks compile_binary'):
                     script.load_source(selection)
 
-    def test_shared_loop_probe_rejects_missing_native_hooks_and_messages(self):
+    def test_shared_loop_probe_rejects_missing_native_hooks_and_payloads(self):
         script = load_script('source_probe_shared_loop_test')
-        @dataclass(frozen=True)
-        class SolveCompleted:
-            request_time_s: float
-            initial: object
-            reference: object
-            updates: object
-            plan: object
-            wall_s: float
-        @dataclass(frozen=True)
-        class Tick:
-            requested_command: object
-            clipped: bool
-        def run_virtual_time(*, settings, duration, message_callbacks=(), before_tick=None, quiesce_at=None,
-                             cancelled=None, start_time_s=0, initial_command=None):
-            pass
         loops = SimpleNamespace(run_virtual_time=run_virtual_time, VirtualTimeSettings=VirtualTimeSettings)
-        interfaces = SimpleNamespace(SolveCompleted=SolveCompleted, Tick=Tick)
-        laws = SimpleNamespace(EffortClip=lambda: None, RejectOnEffort=lambda: None)
+        interfaces = SimpleNamespace(SolveCompleted=SolveCompleted, Tick=Tick, Diagnostic=Diagnostic)
+        laws = SimpleNamespace(EffortClip=lambda: None, ExecutionSafety=ExecutionSafety)
         script.require_shared_loop(loops, interfaces, laws)
         with self.assertRaisesRegex(ValueError, 'shared run_virtual_time API'):
             script.require_shared_loop(SimpleNamespace(run_virtual_time=lambda: None), interfaces, laws)
@@ -420,24 +430,48 @@ class DisplaySourceTests(unittest.TestCase):
             pass
         with self.assertRaisesRegex(ValueError, 'settings, duration'):
             script.require_shared_loop(SimpleNamespace(run_virtual_time=old_run), interfaces, laws)
+        def message_run(*, settings, duration, compensation=None, safety=None, effort_handling=None,
+                        message_callbacks=(), before_tick=None, quiesce_at=None,
+                        cancelled=None, start_time_s=0, initial_command=None):
+            pass
+        with self.assertRaisesRegex(ValueError, 'tick, solve-completed and diagnostic callbacks'):
+            script.require_shared_loop(SimpleNamespace(run_virtual_time=message_run), interfaces, laws)
+        def optional_duration(*, settings, duration=None, compensation=None, safety=None, effort_handling=None,
+                              tick_callbacks=(), solve_completed_callbacks=(), diagnostic_callbacks=(),
+                              before_tick_callbacks=(), cancelled=None, start_time_s=0, initial_command=None):
+            pass
+        with self.assertRaisesRegex(ValueError, 'required finite duration'):
+            script.require_shared_loop(SimpleNamespace(run_virtual_time=optional_duration), interfaces, laws)
         with self.assertRaisesRegex(ValueError, 'loops.VirtualTimeSettings'):
             script.require_shared_loop(SimpleNamespace(run_virtual_time=run_virtual_time), interfaces, laws)
         @dataclass(frozen=True)
-        class MissingEffortHandling:
+        class MissingLatency:
             command_period: float = .002
             update_period: float = .01
-            solve_latency_s: object = "measured"
-            compensation: object = None
-            max_plan_age_s: object = None
-        with self.assertRaisesRegex(ValueError, 'plan age and effort handling'):
+        with self.assertRaisesRegex(ValueError, 'and solve latency'):
             script.require_shared_loop(SimpleNamespace(run_virtual_time=run_virtual_time,
-                                                       VirtualTimeSettings=MissingEffortHandling), interfaces, laws)
+                                                       VirtualTimeSettings=MissingLatency), interfaces, laws)
+        def combined_run(*, settings, duration, message_callbacks=(), before_tick=None, quiesce_at=None,
+                         cancelled=None, start_time_s=0, initial_command=None):
+            pass
+        with self.assertRaisesRegex(ValueError, 'compensation, safety, effort handling'):
+            script.require_shared_loop(SimpleNamespace(run_virtual_time=combined_run), interfaces, laws)
+        for safety in (None, SimpleNamespace(max_plan_age_s=.1),
+                       dataclass(type('MissingValidate', (), {'__annotations__': {'max_plan_age_s': float}})),
+                       dataclass(type('MissingAge', (), {'validate': lambda self, plan, t, state: None})),
+                       dataclass(type('OldValidate', (), {'__annotations__': {'max_plan_age_s': float},
+                                                         'validate': lambda self, plan: None}))):
+            with self.subTest(safety=safety), self.assertRaisesRegex(ValueError, 'laws.ExecutionSafety'):
+                script.require_shared_loop(loops, interfaces,
+                                           SimpleNamespace(ExecutionSafety=safety, EffortClip=lambda: None))
         with self.assertRaisesRegex(ValueError, 'interfaces.SolveCompleted'):
             script.require_shared_loop(loops, SimpleNamespace(), laws)
-        with self.assertRaisesRegex(ValueError, 'interfaces.Tick command-policy metadata'):
+        with self.assertRaisesRegex(ValueError, 'interfaces.Tick'):
             script.require_shared_loop(loops, SimpleNamespace(SolveCompleted=SolveCompleted), laws)
-        with self.assertRaisesRegex(ValueError, 'laws.EffortClip and RejectOnEffort'):
-            script.require_shared_loop(loops, interfaces, SimpleNamespace(EffortClip=lambda: None))
+        with self.assertRaisesRegex(ValueError, 'interfaces.Diagnostic'):
+            script.require_shared_loop(loops, SimpleNamespace(SolveCompleted=SolveCompleted, Tick=Tick), laws)
+        with self.assertRaisesRegex(ValueError, 'laws.EffortClip'):
+            script.require_shared_loop(loops, interfaces, SimpleNamespace(ExecutionSafety=ExecutionSafety))
 
 
 if __name__ == "__main__":

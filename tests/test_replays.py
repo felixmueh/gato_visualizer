@@ -96,12 +96,16 @@ class ReplayTests(unittest.TestCase):
         from experiments.reach import Reach
         params = replace(tm.TIAGO, N=3, friction=tm.urdf_friction(), friction_law=tm.Tanh(.03))
         record = tm.RunRecord(self.folder / 'native-run', params=params, task=Reach(),
-                              plant=tm.SimConfig(), timing=tm.VirtualTimeSettings.ideal(), law=tm.SampleKnot())
+                              plant=tm.SimConfig(), settings=tm.VirtualTimeSettings.ideal(),
+                              loop="run_virtual_time", law=tm.SampleKnot(), compensation=None,
+                              safety=tm.ExecutionSafety(), effort_handling=tm.EffortClip())
         states = np.repeat(np.r_[tm.Q_START, np.zeros(7)][None, :], 3, axis=0)
         prediction = tm.Plan(0., params.dt_s, states, np.zeros((2, 7)), measured_t=0.)
+        record.solve_completed(tm.SolveCompleted(0., tm.State(0., tm.Q_START, np.zeros(7)),
+                                                np.zeros((3, 6)), None, prediction))
         for i, t in enumerate([0., .002]):
             record(tm.Tick(t, tm.State(t, tm.Q_START, np.zeros(7)), np.zeros(7), prediction,
-                           i == 0, i == 0, (), None, plan_request_t=0. if i == 0 else None))
+                           i == 0, i == 0))
         path = tools.export_replay(record)
         replay = load_replay(path, model_urdf=MODEL)
         serialized = replay.metadata['provenance']['params']
