@@ -1,14 +1,11 @@
 # Handoff: Live at TO 500 Hz falls behind real time
 
-Current integration, 2026-11-07: native branch
-`integration/shared-loop-consolidation-2` is in
-`../tiago_mpc-shared-loop-integration`; visualizer branch
-`integration/shared-loop-consolidation` is in
-`../tiago_mpc_visualizer-shared-loop-integration`. Their main bases are native
-`221acad` and visualizer `41d7bd3`. Neither main checkout was changed.
-The old loop-events/live-loop trials and redundant refactor branches have been
-retired. Historical summaries and reproduction scripts remain under the current
-worktrees' `_expr_data/shared-loop/`; superseded raw captures were removed.
+Merged, 2026-11-07: native main contains `e25e8b7`, and visualizer main contains
+`bacb5b1`. Both integrations were fast-forwarded from their reviewed main bases
+(`221acad` and `41d7bd3`). Their integration branches and worktrees, the old
+loop-events/live-loop trials and redundant refactor branches are retired.
+Historical summaries and reproduction scripts are retained in each main
+checkout's `_expr_data/shared-loop/`; superseded raw captures were removed.
 Servers mentioned below are historical and have been stopped.
 Current-main orientation/cost-menu settings,
 orientation display/IK and asynchronous-settings Play behavior must survive.
@@ -22,26 +19,21 @@ JavaScript errors. Final checks and the cleanup manifest are in
 `_expr_data/native-api-migration-20261107/`; only the latest identical refactor
 replay remains in the shared `ingest/visualizer-shared-loop` directory.
 
-Integration order:
+The saved visualizer source selects `../tiago_mpc` main and its own environment.
+Its source probe passes, and the main frontend bundle has been rebuilt.
+The separately pinned `visualizer/base` worktree stays at its selected revision;
+advance and sync it explicitly before selecting it with this visualizer API.
 
-1. Retain the prepared GATO dependency. Felix confirmed that the merged setup
-   should use the local armature + collision-cache work until upstream includes
-   it. The native integration selects
-   `../GATO/.worktrees/tiago-combined`, containing the local armature and
-   collision-cache changes. These dependency sources were not changed by this refactor.
-   GRiD remains `../GRiD-tiago-armature-060`. The two repository changes alone
-   do not package those external dependency sources.
-2. Review and merge the native shared-loop change first. Advance the stable
-   `visualizer/base` source explicitly to include it, then sync that checkout's
-   own environment. A source without the required hooks fails the probe.
-3. Review and merge the visualizer change, then select the updated native source.
-   Before merging, the two integration worktrees can be used together explicitly.
-4. If either main advances during review, replay that integration commit onto
-   its new main and repeat the affected checks, native first and visualizer second.
+Retain the prepared GATO dependency until upstream includes the local armature
+and collision-cache work. Native main selects `../GATO/.worktrees/tiago-combined`;
+GRiD remains `../GRiD-tiago-armature-060`. These external dependency sources were
+not changed or removed by the merge. The two repository commits alone do not
+package them.
 
 The initial replay of the preserved trial commits preceded consolidation.
-Native review checkpoints remain in its integration branch history; the final
-loop is committed before the visualizer API migration. No main branch is advanced here.
+Native review checkpoints remain in main's history; the final loop was committed
+before the visualizer API migration. Merge checks and artifact relocation records
+are in `_expr_data/shared-loop-merge-20261107/`.
 
 The consolidation separates `history_store.py` from service orchestration,
 `src/live-history-paging.js` from Live settings/playback state, and
@@ -61,7 +53,7 @@ check ran a 0.4 s orientation-enabled case with 500 Hz simulation/control and
 ASAP TO, retained 201 states, scrubbed and hydrated exact export predictions,
 and reported no JavaScript errors. This is functional/numerical validation,
 not a fresh throughput claim. Logs, source identities, review commit IDs and
-the dependency patch are under each integration worktree's
+the dependency patch are under each main checkout's
 `_expr_data/shared-loop/consolidation/`. These November 3 results describe the
 earlier integration. Final API migration checks are under
 `_expr_data/native-api-migration-20261107/` in the visualizer and
