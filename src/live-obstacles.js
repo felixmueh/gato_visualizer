@@ -1,8 +1,8 @@
 import { Box3, Group, Mesh, MeshBasicMaterial, PlaneGeometry, Quaternion, Raycaster, SphereGeometry, Vector2, Vector3 } from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { coverMaterial, coverMeshes, createArmCover } from './track-scene.js';
-import { createShapeObject, planeRotation, setShapeObject, shapeCentre, shapeExtent, shapeFromWorld, shapeToWorld,
-  translateShape } from './collision-shapes.js';
+import { capsuleRotation, createShapeObject, flipPlane, planeRotation, rotateCapsule, scaleShape, setShapeObject, shapeCentre,
+  shapeExtent, shapeFromWorld, shapeToWorld, translateShape } from './collision-shapes.js';
 import { clampShape } from './shape-layouts.js';
 import { createOrbitLock } from './orbit-lock.js';
 
@@ -100,7 +100,8 @@ export function setupLiveObstacles({ scene, camera, renderer, orbit, orbitLock, 
   const raycaster = new Raycaster(), pointer = new Vector2();
   const label = document.createElement('div'); label.className = 'obstacle-scale-label'; label.hidden = true;
   label.setAttribute('role', 'status'); canvas.parentElement?.append(label);
-  // selected: {path, index}; tool: move, rotate, or a capsule end / box face ({kind, ...}).
+  // selected: {path, index}; tool: move, rotate, scale (capsules and boxes, on their own
+  // axes), or a capsule end / box face ({kind, ...}).
   let interaction = null, selected = null, tool = 'move', drag = null, scaling = null, hovering = false;
   let lastAdded, pendingSelect = null, clipboard = null, lastPointer = null, handleKey;
   // Orbit is disabled through the shared lock (orbit-lock.js): a press on a handle or an
@@ -146,9 +147,10 @@ export function setupLiveObstacles({ scene, camera, renderer, orbit, orbitLock, 
     let position = shapeCentre(shape, world, interaction.reference), quaternion = new Quaternion();
     let mode = 'translate', space = 'world', axes = [true, true, true];
     if (shape === 'plane') { quaternion = planeRotation(world); space = 'local'; axes = [false, false, true]; }
-    if (tool === 'rotate') {
-      mode = 'rotate'; space = 'local';
-      quaternion = shape === 'box' ? new Quaternion(...world.slice(3, 7)) : planeRotation(world);
+    if (tool === 'rotate' || tool === 'scale') {
+      mode = tool; space = 'local';
+      // The shape's own axes: a box's quaternion, a capsule's local y along a→b, a plane's normal.
+      quaternion = shape === 'box' ? new Quaternion(...world.slice(3, 7)) : shape === 'capsule' ? capsuleRotation(world) : planeRotation(world);
       axes = shape === 'plane' ? [true, true, false] : [true, true, true];
     } else if (tool?.kind === 'end') position = world.slice(3 * tool.end, 3 * tool.end + 3);
     else if (tool?.kind === 'face') {
@@ -156,7 +158,7 @@ export function setupLiveObstacles({ scene, camera, renderer, orbit, orbitLock, 
       axes = [0, 1, 2].map(axis => axis === tool.axis);
       position = facePoint(world, tool.axis, tool.sign);
     }
-    anchor.position.fromArray(position); anchor.quaternion.copy(quaternion); anchor.updateMatrixWorld(true);
+    anchor.position.fromArray(position); anchor.quaternion.copy(quaternion); anchor.scale.set(1, 1, 1); anchor.updateMatrixWorld(true);
     if (transform.mode !== mode) transform.setMode(mode);
     if (transform.space !== space) transform.setSpace(space);
     [transform.showX, transform.showY, transform.showZ] = axes;
@@ -169,8 +171,11 @@ export function setupLiveObstacles({ scene, camera, renderer, orbit, orbitLock, 
   function draggedWorld() {
     const shape = drag.shape, world = [...drag.world];
     if (tool === 'move') return translateShape(shape, world, anchor.position.clone().sub(drag.position).toArray());
+    if (tool === 'scale') return scaleShape(shape, world, anchor.scale.toArray());
     if (tool === 'rotate') {
       if (shape === 'box') return [...world.slice(0, 3), ...anchor.quaternion.toArray(), ...world.slice(7)];
+      // The turn since the drag began, about the capsule's centre.
+      if (shape === 'capsule') return rotateCapsule(world, anchor.quaternion.clone().multiply(drag.quaternion.clone().invert()).toArray());
       const normal = new Vector3(0, 0, 1).applyQuaternion(anchor.quaternion), centre = new Vector3(...drag.centre);
       return [...normal.toArray(), normal.dot(centre)];  // turns about the patch centre
     }
@@ -188,7 +193,7 @@ export function setupLiveObstacles({ scene, camera, renderer, orbit, orbitLock, 
     if (event.value && item) {
       lock.hold('live-obstacles');
       drag = { path: selected.path, shape: item.list.shape, start: item.list.values.map(values => [...values]), world: [...item.world],
-        position: anchor.position.clone(), centre: shapeCentre(item.list.shape, item.world, interaction.reference) };
+        position: anchor.position.clone(), quaternion: anchor.quaternion.clone(), centre: shapeCentre(item.list.shape, item.world, interaction.reference) };
       beginGesture();
     } else if (drag) {
       drag = null; lock.release('live-obstacles');
@@ -320,14 +325,29 @@ export function setupLiveObstacles({ scene, camera, renderer, orbit, orbitLock, 
     else if (action === 'remove') {
       const { path, index } = selected; select(null);
       setObstacles(path, item.list.values.filter((_, i) => i !== index), { commit: true });
-    } else if (action === 'scale') { if (item.list.shape === 'plane') handled = false; else startScale(); }
-    else if (action === 'rotate') { if (['box', 'plane'].includes(item.list.shape)) { cancelDrag(); tool = 'rotate'; handleKey = undefined; } else handled = false; }
+    } else if (action === 'scale') {
+      // A sphere scales modally (uniform); capsules and boxes get handles on their own axes.
+      if (item.list.shape === 'sphere') startScale();
+      else if (['capsule', 'box'].includes(item.list.shape)) { cancelDrag(); tool = 'scale'; handleKey = undefined; }
+      else handled = false;
+    }
+    else if (action === 'rotate') { if (['capsule', 'box', 'plane'].includes(item.list.shape)) { cancelDrag(); tool = 'rotate'; handleKey = undefined; } else handled = false; }
     else if (action === 'translate') { cancelDrag(); tool = 'move'; handleKey = undefined; }
     else handled = false;
     // Captured before the task and joint tools' document shortcuts, which share these keys.
     if (handled) { event.preventDefault(); event.stopImmediatePropagation(); }
   }
   const contextMenu = event => { if (scaling) event.preventDefault(); };
+  // Double-clicking a plane's normal arrow flips it: the same plane, the other side free.
+  function doubleClick(event) {
+    const item = current();
+    if (!interaction?.available || item?.list.shape !== 'plane' || tool !== 'move' || !handleAt(event)) return;
+    const values = item.list.values.map(row => [...row]);
+    values[selected.index] = flipPlane(values[selected.index]);
+    setObstacles(selected.path, values, { commit: true }); handleKey = undefined;
+    event.preventDefault(); event.stopImmediatePropagation();
+  }
+  canvas.addEventListener('dblclick', doubleClick, true);
   canvas.addEventListener('pointerdown', pointerDown, true);
   canvas.addEventListener('pointermove', pointerMove);
   canvas.addEventListener('contextmenu', contextMenu);
@@ -488,6 +508,7 @@ export function setupLiveObstacles({ scene, camera, renderer, orbit, orbitLock, 
       window.removeEventListener('keydown', keyDown, true);
       window.removeEventListener('pointermove', trackPointer);
       canvas.removeEventListener('contextmenu', contextMenu);
+      canvas.removeEventListener('dblclick', doubleClick, true);
       removeOrbitGuard(); if (!orbitLock) lock.dispose();
       label.remove();
       for (const objects of drawn.values()) objects.forEach(dispose);

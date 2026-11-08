@@ -91,10 +91,11 @@ SHAPES = (("obstacles", "sphere", "Spheres", "x, y, z and radius"),
           ("boxes", "box", "Boxes", "centre c, orientation as a quaternion q (x, y, z, w) and half-extents h "
                                     "along the box's axes"),
           ("planes", "plane", "Planes", "unit normal n and offset d; the arm stays on the side n.p >= d"))
-EDITING = ("In the viewport, click one to select it: drag its arrows to move it; S scales with the pointer "
-           "(Shift: finer, click or Enter applies, Esc cancels), R rotates boxes and planes; a capsule's end "
-           "and a box's face handles move them alone; Delete removes, Ctrl+C and Ctrl+V copy and paste at the "
-           "pointer, Esc deselects")
+EDITING = ("In the viewport, click one to select it: drag its arrows to move it; S scales (a sphere with the "
+           "pointer, Shift finer, click or Enter applies, Esc cancels; capsules and boxes with handles on their "
+           "own axes), R rotates capsules, boxes and planes, double-clicking a plane's arrow flips it; a "
+           "capsule's end and a box's face handles move them alone; Delete removes, Ctrl+C and Ctrl+V copy and "
+           "paste at the pointer, Esc deselects")
 
 
 def cover_choices(kind: str) -> list[dict[str, Any]]:

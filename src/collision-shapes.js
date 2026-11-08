@@ -63,6 +63,33 @@ export function translateShape(shape, values, delta) {
   return moved;
 }
 
+/** The same half-space with the other side free: n → -n, d → -d. */
+export function flipPlane(values) {
+  return values.map(value => value === 0 ? 0 : -value);
+}
+
+/** A capsule turned about its centre by a quaternion [x, y, z, w]; the radius stays. */
+export function rotateCapsule(values, quaternion) {
+  const q = new Quaternion(...quaternion), a = vector(values.slice(0, 3)), b = vector(values.slice(3, 6));
+  const centre = a.clone().add(b).multiplyScalar(.5);
+  const end = point => point.clone().sub(centre).applyQuaternion(q).add(centre).toArray();
+  return [...end(a), ...end(b), values[6]];
+}
+
+/** An obstacle scaled along its own axes by factors [fx, fy, fz] of its scale gizmo (the
+ * frame of capsuleRotation or the box's quaternion), about its centre. A box scales each
+ * half-extent; a capsule its length with fy (along a→b) and its radius with fx or fz,
+ * whichever changes more; a sphere its radius uniformly with the factor that changes most. */
+export function scaleShape(shape, values, factors) {
+  const most = list => list.reduce((best, value) => Math.abs(value - 1) > Math.abs(best - 1) ? value : best, 1);
+  if (shape === 'box') return [...values.slice(0, 7), ...values.slice(7).map((size, i) => size * factors[i])];
+  if (shape === 'sphere') return [...values.slice(0, 3), values[3] * most(factors)];
+  if (shape !== 'capsule') return [...values];
+  const a = vector(values.slice(0, 3)), b = vector(values.slice(3, 6));
+  const centre = a.clone().add(b).multiplyScalar(.5), half = b.clone().sub(a).multiplyScalar(.5 * factors[1]);
+  return [...centre.clone().sub(half).toArray(), ...centre.clone().add(half).toArray(), values[6] * most([factors[0], factors[2]])];
+}
+
 /** A capsule's world quaternion that turns +y (three.js's capsule axis) onto a→b. */
 export function capsuleRotation(world) {
   const axis = new Vector3(world[3] - world[0], world[4] - world[1], world[5] - world[2]);

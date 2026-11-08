@@ -37,3 +37,25 @@ test('clamping keeps positions, sizes, unit quaternions and planes within the de
   assert.deepEqual(clampShape(plane, [0, 0, 2, -1.2]), [0, 0, 1, -.6]);
   assert.deepEqual(clampShape({ shape: 'sphere', bound: 2, min_size: .005, max_size: .5 }, [.12345, 0, 0, .05]), [.1235, 0, 0, .05]);
 });
+
+test('a plane flips to its other side; a capsule turns about its centre; shapes scale on their own axes', async () => {
+  const { flipPlane, rotateCapsule, scaleShape, capsuleRotation } = await import('./collision-shapes.js');
+  // Flip: the same plane n·p = d, the other side free.
+  close(flipPlane([0, 0, 1, -.6]), [0, 0, -1, .6]);
+  close(flipPlane(flipPlane([.6, 0, .8, .2])), [.6, 0, .8, .2]);
+  // A quarter turn about z through the centre (0, 0, 1): ends along x become ends along y; radius kept.
+  const quarter = [0, 0, Math.SQRT1_2, Math.SQRT1_2];
+  close(rotateCapsule([-.1, 0, 1, .1, 0, 1, .03], quarter), [0, -.1, 1, 0, .1, 1, .03]);
+  // Capsule: fy scales the length about the centre, fx or fz the radius, independently.
+  const capsule = [0, 0, 0, 0, 0, .2, .05];
+  close(scaleShape('capsule', capsule, [1, 2, 1]), [0, 0, -.1, 0, 0, .3, .05]);
+  close(scaleShape('capsule', capsule, [1.5, 1, 1]), [0, 0, 0, 0, 0, .2, .075]);
+  close(scaleShape('capsule', capsule, [1, 1, .5]), [0, 0, 0, 0, 0, .2, .025]);
+  // Its scale gizmo's local y runs along a→b.
+  close(new (await import('three')).Vector3(0, 1, 0).applyQuaternion(capsuleRotation([0, 0, 0, 0, 0, .2, .05])).toArray(), [0, 0, 1]);
+  // Box: each half-extent by its own factor, along the box's axes (orientation and centre kept).
+  const box = [.3, -.4, -.2, 0, 0, Math.sin(.25), Math.cos(.25), .05, .1, .15];
+  close(scaleShape('box', box, [2, 1, .5]), [.3, -.4, -.2, 0, 0, Math.sin(.25), Math.cos(.25), .1, .1, .075]);
+  // Sphere: uniform.
+  close(scaleShape('sphere', [1, 2, 3, .05], [1, 1.4, 1]), [1, 2, 3, .07]);
+});

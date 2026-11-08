@@ -433,14 +433,18 @@ Click an obstacle to select it (its list row is outlined) and drag the world-axi
 arrows to move it; **G** or **T** returns to moving. Per shape:
 
 - **Capsule:** the arrows move the whole capsule; drag one of the two end spheres
-  to move that end alone (then its arrows); **S** scales the radius.
+  to move that end alone (then its arrows); **R** rotates it about its centre with
+  local rings; **S** shows scale handles on its own axes: the one along the
+  segment scales its length about the centre, the two across it the radius.
 - **Box:** the arrows move it; **R** rotates it with local rings; drag one of the six
   face squares to move that face along its normal, the opposite face staying
-  fixed; **S** scales all three half-extents together.
-- **Plane:** a single arrow moves it along its normal (changing d); **R** tilts the
-  normal about the patch centre. A plane has no size.
+  fixed; **S** shows scale handles on the box's own axes, one per half-extent
+  (the centre handle scales all three).
+- **Plane:** a single arrow moves it along its normal (changing d); double-click
+  that arrow to flip the plane (n → −n, d → −d: the same plane, the other side
+  free); **R** tilts the normal about the patch centre. A plane has no size.
 
-**S** scales modally, as in Blender: the size follows the
+A sphere's **S** scales modally, as in Blender: the size follows the
 pointer's screen distance from the shape's centre relative to that distance when
 scaling began (at least a 40 px lever), on a 1 mm grid, with **Shift** a tenth as
 fast; the radius (r) or the largest half-extent (h) shows beside the pointer. A click or **Enter** applies, **Escape**
