@@ -13,7 +13,10 @@ producer side. Run it in the prepared uv environment; its package imports
 include Pinocchio and GATO's Python package, without ROS or a compiled CUDA solver. An experiment
 run writes `<run>/replay.npz` with `export_replay(record)`: execution-time
 states and commands, the task reference (with its orientation target when the
-task has one) and every plan, with `provenance={"params": to_dict(MpcParams)}`. Other producers call
+task has one) and every plan, with `provenance={"params": to_dict(MpcParams)}`. A run with collision rows
+(`MpcParams.collision`) also records its body posture as fixed joints, its
+obstacles and the spheres its rows see ([obstacles and collision
+spheres](#obstacles-and-collision-spheres)). Other producers call
 `save_replay` directly from the `tiago_mpc` checkout:
 
 ```python
@@ -136,7 +139,8 @@ Required metadata:
 requires all seven names exactly once and normalizes the order. Samples are
 never sorted, repaired or dropped; finite joint-limit violations remain visible.
 Optional metadata: `label`, `fixed_joints`, `reference_frame`, `predictions`,
-`provenance` (a JSON object).
+`obstacles`, `obstacle_capsules`, `obstacle_boxes`, `obstacle_planes`,
+`collision_spheres`, `body_capsules`, `body_boxes`, `provenance` (a JSON object).
 References require `reference_frame` to be `base_footprint` or
 `torso_lift_link`; the full model and fixed posture determine the transform.
 
@@ -205,6 +209,47 @@ are not inferred. Recordings made before the migration keep their settings in
 solver the same way. Limit colors describe proximity to the URDF limits; they
 are not a convergence or physical-safety verdict.
 
+## Obstacles and collision spheres
+
+A run with `tiago_mpc`'s collision rows (`MpcParams.collision`) records the
+geometry they work with. Each sphere is `[x, y, z, radius]` in metres, finite,
+with a positive radius:
+
+- `obstacles`: the scene's obstacle spheres (`Collision.obstacles`), in
+  `torso_lift_link` (`tiago_mpc`'s `ROOT_FRAME`).
+- `obstacle_capsules`, `obstacle_boxes`, `obstacle_planes` (optional,
+  2026-11-03, `tiago_mpc` a14b746): `Collision.capsules`
+  `[ax, ay, az, bx, by, bz, r]`, `Collision.boxes`
+  `[cx, cy, cz, qx, qy, qz, qw, hx, hy, hz]` (quaternion xyzw, half-extents)
+  and `Collision.planes` `[nx, ny, nz, d]` (free side n·p ≥ d), in the same
+  frame. Writers include them only when non-empty. Radii and half-extents must
+  be positive, quaternions and normals nonzero.
+- `collision_spheres`: the spheres of the MPC's collision rows,
+  `{"environment": [...], "arm": {"<link>": [...]}}`. `environment` is
+  `Collision.environment()`'s spheres in `torso_lift_link`: the body cover's
+  spheres, then the obstacles. `arm` is the arm's stored sphere cover
+  (`collision.arm_cover`) by link, each in its link's frame; the link names must
+  exist in the displayed model.
+- `body_capsules`, `body_boxes` (optional, 2026-11-07): the capsules and boxes of
+  the body's stored mixed cover (`collision.body_cover`; the rows' environment
+  holds them before the obstacles' capsules and boxes), in `torso_lift_link` and
+  the layouts of `obstacle_capsules` and `obstacle_boxes`. Writers include them
+  only when non-empty.
+
+`torso_lift_link` moves with the torso lift, so the recording's
+`fixed_joints` (the run's body posture) place both lists, like a reference in
+that frame. The exporter writes them only for a collision run; other runs
+export exactly as before. A collision run without obstacles has an empty
+`obstacles` list.
+
+The viewer draws the obstacles of each visible track as solid shapes (a plane
+as a translucent 1.2 m patch with an edge, centred where the root frame's
+origin projects onto it), and
+the collision spheres behind the viewport's collision-spheres toggle, default
+off: the environment and, on each Arm ghost, the arm cover, both translucent
+cyan. The covers are the MPC's conservative approximation;
+the obstacles are the scene's geometry.
+
 ## Library and uploads
 
 `visualizer.json` selects the recursively scanned ingest directory, default
@@ -266,7 +311,11 @@ Removing a browser track does not delete its file. Keep to disk is deferred.
 `id`, `revision`, `label`, `time_basis`, `end_effector_frame`, `fixed_joints`,
 `joint_limits`, `model_warning`, `time_s`, `q`, `ee_xyz`, `reference_time_s`,
 `reference_xyz`, `arm_base` (4×4 row-major world transform of the first arm
-joint's parent), `plan_count` and `provenance`. A recording with an orientation
+joint's parent), `plan_count`, `obstacles`, `obstacle_capsules`,
+`obstacle_boxes`, `obstacle_planes` and `collision_spheres` (null
+when absent; obstacles and environment in the world at the recorded fixed
+joints, the arm's spheres in their link frames; `collision_spheres` also holds
+the body cover's `body_capsules` and `body_boxes` in the world, empty when absent) and `provenance`. A recording with an orientation
 reference adds `reference_rotvec` (world rotation vectors aligned with
 `reference_time_s`, null where a sample has no target) and `ee_rotvec` (the
 recorded end effector's world orientation at each state), from which the track
@@ -283,6 +332,10 @@ knot states/velocities/predicted torques and finite scalar statistics, joint
 limits, end-effector frame and the scene's fixed joints. Preview plans are
 excluded. Live world coordinates derive from the full URDF root,
 `base_footprint`, so this is the reference frame written to the replay.
+A segment with collision rows also writes its obstacles (capsules, boxes and
+planes only when non-empty) and collision
+spheres (environment: body cover, then obstacles; arm cover by link) in
+`torso_lift_link`, which the scene's fixed joints place.
 `provenance.params` carries the problem configuration;
 `provenance.live` carries settings, source/simulator/solver/model identities,
 arrival rule, generation, completion status, freeze timestamp and breaches.

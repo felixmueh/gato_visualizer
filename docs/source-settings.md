@@ -57,6 +57,20 @@ Only `describe()` is mandatory. A role with no extra parameters or claimed
 controls needs no builder; the visualizer preserves its native base object and
 default law. No default values are duplicated in an empty standard adapter.
 
+The second is `adapters/obstacle_avoidance.py` (2026-11-02) for sources with
+`tiago_mpc`'s collision rows (`tiago_mpc.collision`). The predictor claims
+`collision`: rows on/off (`effect: compiled_model`, off is `MpcParams.collision`
+None, the module without rows), enforced (`admm`) or reported only
+(`telemetry`), the arm cover (a stored cover, compiled into the module), the
+body cover (a stored cover in the environment, or Off), margin and the obstacles
+(`shapes`: spheres, capsules, boxes and planes), all runtime except on/off and the
+arm cover. Rho stays the native `Collision` default; the body posture is the body
+cover's (`tiago_mpc.collision.body_posture`). The simulation role chooses the execution law,
+default (plan torque) or PD feedback (`PlanFeedback` with the stored gains, the
+default, as in `tiago_mpc`'s experiments); the plant stays native.
+The native `collision` field itself is one fixed choice (its base value, off) that
+the adapter resolves.
+
 The first real example is `adapters/friction_compensation.py`.
 Laws use native `Command(requested, applied)` results and propagate native
 `Fault` results. A custom wrapper must preserve that contract; torque-array
@@ -69,8 +83,29 @@ them. PD gains also stay in the tuned code preset. It changes no MPC costs or
 timing.
 
 Descriptors use relative dotted `path`, `label`, optional `group`/`unit`/
-`description`, and `kind` (`bool`, `float`, `int`, `choice`, `vector`). A vector
-has a fixed positive `length`. Numeric bounds are `min`/`max`; set
+`description`, and `kind` (`bool`, `float`, `int`, `choice`, `vector`, `shapes`). A vector
+has a fixed positive `length`. A `shapes` value (2026-11-03, for obstacles;
+it replaces the 2026-11-02 `spheres` kind) is a list of rows of one required
+`shape`:
+
+| `shape`   | row                                | meaning                                        |
+|-----------|------------------------------------|------------------------------------------------|
+| `sphere`  | `[x, y, z, r]`                     | centre, radius                                 |
+| `capsule` | `[ax, ay, az, bx, by, bz, r]`      | segment ends, radius                           |
+| `box`     | `[cx, cy, cz, qx, qy, qz, qw, hx, hy, hz]` | centre, orientation (xyzw), half-extents |
+| `plane`   | `[nx, ny, nz, d]`                  | unit normal, offset; the free side is n·p ≥ d  |
+
+Optional `bound` limits |x|, |y|, |z| of centres and ends (and |d|);
+`min_size` (exclusive) and `max_size` limit radii and half-extents;
+`default_size` sizes a new row; `max_count` and `frame` (the coordinates'
+frame, shown in tooltips) as before. Quaternions and normals must be nonzero;
+the browser normalizes them. The panel shows each list as a collapsible
+table, collapsed by default, with a header, one row per shape (capsules and
+boxes on two or three lines), add and remove buttons, and Live draws and edits
+the predictor's lists in the viewport
+([Live obstacles](presentation.md#live-obstacles-and-collision-spheres)).
+Optional `row` (2026-11-03) puts descriptors with the same value side by side in
+one row. Numeric bounds are `min`/`max`; set
 `min_exclusive`/`max_exclusive` to express an open bound such as tanh width > 0.
 A choice contains values or `{value, label}` entries. `visible_if` and
 `enabled_if` map another field in the same scope to an equal value or a list
@@ -138,7 +173,12 @@ apply normally without compiling. The advanced Backend build panel remains
 available for preparing other sources.
 
 Goal position, orientation, task shape, execution timing and simulator/law
-settings never invalidate predictor-model readiness. Native settings marked
+settings never invalidate predictor-model readiness. The server reuses the
+accepted model's availability without a native lookup when a settings change
+keeps the draft's model inputs (`live_mpc.model_inputs`: native params and
+predictor values without the fields annotated `effect: runtime`, as the browser's
+check) and its N is available (2026-11-02). A lookup runs in a fresh
+interpreter and takes seconds where `find_binary` fits the arm's collision cover. Native settings marked
 `effect: runtime` also bypass redundant checks. Runtime edits during an existing
 lookup share its result, and submitting settings reads the latest values.
 Unknown native/predictor fields remain check dependencies. Source, profile,
@@ -216,6 +256,9 @@ That relative sibling layout works on the host and in the container. Its local
 ignore entry is `/_visualizer/` in the TIAGo repository's `info/exclude`; no
 tracked `.gitignore` or package API was changed. Git shares that exclude file
 between linked worktrees. Tracked files would remain tracked despite this rule.
+
+An obstacle demo checkout's ignored `_visualizer/_settings.py` likewise links to
+this repository's `adapters/obstacle_avoidance.py`.
 
 Check with `git check-ignore -v _visualizer/_settings.py` from the checkout.
 Remove the override to use the bundled adapter, then use Source Apply.

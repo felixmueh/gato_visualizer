@@ -122,6 +122,15 @@ starts, including during playback, and keeps it frozen through debouncing and
 the resulting calculation. It does not replace the anchor with arriving
 background states. Figure-eight phase follows `sim_time_s`.
 
+**Obstacle edits keep On Play running (2026-11-02).** A settings edit pauses
+playback, except an edit of the Live obstacles in the viewport (move, resize,
+remove, paste) made while On Play plays;
+typed values in the obstacle list pause as other settings do. A drag or scale submits once, when
+it ends. That edit starts its new segment from the state displayed
+when it is submitted, not when it began, and playback continues: the browser
+follows the new segment's tip, which Play extends as usual. Any other edit
+before the submission makes the transaction an ordinary paused one.
+
 ### Continuation from the displayed state — Felix, 2026-10-21
 
 Domain terms are defined in [UBIQUITOUS_LANGUAGE.md](../UBIQUITOUS_LANGUAGE.md).
@@ -393,7 +402,8 @@ instead of with every record:
              "problem_configuration": {...}, "model_identity": {...},
              "joint_limits": {...}, "mpc_bounds": {...}, "constraint_bounds_native": [...],
              "task": {...}, "task_path_xyz": null, "task_anchors": {...},
-             "end_effector_frame": "...", "position_tol_m": 0.05, "speed_l1_tol_rad_s": 1.0}}
+             "end_effector_frame": "...", "position_tol_m": 0.05, "speed_l1_tol_rad_s": 1.0,
+             "world_from_root": [[...4×4...]], "collision": null}}
 ```
 
 `settings` are the segment's complete effective settings: `config` (`to_dict(MpcParams)`
@@ -402,7 +412,15 @@ with the `plant` group: integrator, plant friction, limit handling and start pos
 checkout's identity. `simulator_identity`, `solver_profile`, `model_identity`,
 `problem_configuration` and the bounds identify the plant, the predictor and the
 installed problem. `task_path_xyz` is the figure-eight path (null for a reach);
-`position_tol_m` and `speed_l1_tol_rad_s` are the arrival rule. State, control,
+`position_tol_m` and `speed_l1_tol_rad_s` are the arrival rule. `world_from_root`
+(row-major) places the reduced arm's root frame (`torso_lift_link`) in the
+display world at Live's body posture. `collision` is null without
+`tiago_mpc`'s collision rows; with them it holds the spheres the rows see,
+`{"arm": {"<link>": [[x, y, z, r], ...]}, "body": [...], "obstacles": [...],
+"capsules", "boxes", "planes", "mechanism", "margin_m", "rho", "posture"}`: the arm's cover in its links'
+frames, the body's cover and the obstacles in the root frame (capsules, boxes
+and planes in `Collision`'s layouts, present only when the source has them), and the body
+posture's joint positions, which must equal Live's drawn body. State, control,
 plan, breach and interval records keep only their own data (a plan keeps its own
 reference window, `reference_native`/`reference_xyz`, and `target_xyz`).
 

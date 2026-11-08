@@ -101,6 +101,11 @@ episode plan immutable; never advance the plant or episode clock, or change
 global Live defaults through this action. Record the implementation/model
 identity actually used, including any difference from the original solve.
 
+The captured bounds are the three installed limit row groups (position,
+velocity, torque). A collision row group that `tiago_mpc` appends after them
+(`MpcParams.collision`) is not captured separately: the captured problem
+configuration installs it again with its environment (2026-11-02).
+
 Offer an editable finite SQP cap and optional wall budget. Record actual
 completed iterations and stop reason separately from the requested cap.
 Preserve existing practical zero-PCG stopping: a cap is an upper bound, not a

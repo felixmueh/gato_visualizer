@@ -6,6 +6,9 @@ the selected `tiago_mpc` package. `friction_compensation.py` supplies the
 experimental armature, plant-friction and execution-law controls for the
 friction-compensation worktree.
 
+`obstacle_avoidance.py` edits `tiago_mpc`'s collision rows and the execution law
+for the obstacle-avoidance demo (below).
+
 A checkout may select a different adapter through its optional, locally ignored
 `_visualizer/_settings.py`; a symlink to this directory selects the experimental
 adapter without copying its code into `tiago_mpc`. The local override takes
@@ -110,3 +113,26 @@ native serialization and commands, scalar widths, descriptor effects,
 and rejection of coefficient/PD gain vectors in API settings. They skip before importing
 the experimental adapter when the selected native source lacks its APIs or
 tuning presets.
+
+## Obstacle-avoidance adapter
+
+`obstacle_avoidance.py` needs a source with `tiago_mpc.collision` (`Collision`,
+`arm_cover`, `body_cover`, `body_posture`). The predictor owns `collision`, the whole
+`MpcParams.collision`: **Collision rows** on/off and the **Arm cover** (a stored
+arm cover, compiled into the GPU URDF) are compiled variants
+(`effect="compiled_model"`; off is `None`, the module without rows); **Rows**
+(enforced `admm` or reported only `telemetry`), **Body cover** (a stored body
+cover in the environment, or Off: obstacles only), **Margin** and the obstacle lists (kind `shapes`
+in `torso_lift_link`, at most 16 each, sizes 5 mm to 0.5 m): **Obstacles**
+(spheres), and **Capsules**, **Boxes** and **Planes** when the source's
+`Collision` has those fields (`tiago_mpc` a14b746, 2026-11-03) are runtime
+values of one module; the solver applies them through
+`set_collision_environment(**Collision.environment())` without a rebuild. Defaults are `Collision()`'s, rows on.
+The covers are chosen by name from `tiago_mpc/data/collision/`; rho stays
+`Collision`'s default (the base's when it already has rows), and the body posture
+is the body cover's (`body_posture`), at which Live draws the body. The simulation owns only `law`: default
+(plan torque, `SampleKnot`) or PD feedback (`PlanFeedback()`, the stored gains),
+which is the default, as in `tiago_mpc`'s experiments. The plant stays native.
+
+Its CPU checks are in `tests/test_obstacle_adapter.py`; run them with
+`TIAGO_MPC_ROOT` set to the collision source and that source's interpreter.

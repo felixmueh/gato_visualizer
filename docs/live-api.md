@@ -298,6 +298,20 @@ another warm-up. Cancel and replacement settings invalidate the run, wake a park
 callback, and let any current solve finish before teardown; its result cannot
 advance the replacement plant or overwrite its history. Reset constructs a fresh
 plant, clock, controller and forecast from the configured start pose.
+**Collision environment updates (2026-11-02).** With `tiago_mpc`'s collision rows
+(`MpcParams.collision`), a configuration that changes only the environment, the
+obstacles or the body cover, keeps the loaded `Mpc` and uploads the new
+environment with GATO's `set_collision_environment`, as `load_controller` does;
+the module, the installed rows and every other setting are unchanged. Any other
+change, the rows' margin and mechanism included, constructs a new `Mpc`. The
+coordinator then reseeds as for every configuration. The solver log has one line
+per configuration with its kind (`environment` or `load`) and wall time. Measured
+on the GTX 1070 with the obstacle scene: an environment update 1–3 ms, a new `Mpc`
+240–310 ms once the solver child has fitted the sphere covers, and 23–25 s for the
+first configuration of a solver child, which fits them (`tiago_mpc` caches them
+per process only). The server likewise skips its native model lookup when an
+accepted settings change alters only fields annotated `effect: runtime`
+([source settings](source-settings.md#compiled-models-and-explicit-build)).
 
 Before constructing, resetting, solving or disposing native solver state, the
 coordinator acquires the canonical experiment locks nonblockingly. While another

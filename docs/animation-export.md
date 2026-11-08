@@ -11,7 +11,20 @@ Top above Right in the right column. **Main camera** offers Current viewport,
 Isometric, Front, Back, Left, Right, and Top. Current viewport preserves the
 camera's framing, adding letterboxing within its output pane when the aspect
 ratios differ. Isometric uses the orientation cube's front-right-top corner.
-Defaults are 1080p, Main view, and Current viewport; choices persist per viewer.
+**Show** selects what the video draws besides the robots (2026-11-03):
+**Collision objects** (obstacles of collision rows: for Live, those of the
+segment in effect at each frame's time, so they change between segments; for
+recordings, their recorded obstacles), **Sphere covers** (the spheres the rows
+see: Live's body cover and its arm cover following the exported arm, and each
+recording's environment and arm covers), **Prediction**, **Paths** (Live's
+simulated path and every track's path) and **Target and reference**. Each
+choice can only hide what the viewport shows; the prediction, for example,
+also follows the viewport's own visibility. Collision objects and sphere covers
+are separate choices because they are different things, the scene's geometry
+and the MPC's conservative approximation of the robot and environment, and
+because the dense translucent covers hide the motion the video usually shows.
+Defaults are 1080p, Main view, Current viewport, and every Show choice except
+Sphere covers; choices persist per viewer.
 **Cancel** or closing the dialog cancels an active export.
 
 ## Capture contract
@@ -29,8 +42,10 @@ export's time scale. Capture uses a separate scene and renderer, leaving the
 interactive cursor, numerical state, and presentation settings unchanged. It
 starts no simulation or solver work and needs no solver GPU lease.
 
-The video includes robot motion, visible track paths, reference geometry, and
-the displayed prediction. It excludes editor handles, panels, and other browser
+The video includes robot motion and, as chosen under Show, collision objects,
+sphere covers, visible track paths, reference geometry, and the displayed
+prediction. Live's collision objects come from the retained segment headers
+(`collision`, `world_from_root`), never from an unsubmitted draft. It excludes editor handles, panels, and other browser
 controls. The capture scene reconstructs presentation geometry; it does not
 promise a pixel-identical copy of all viewport overlays or onion-skin ghosts.
 

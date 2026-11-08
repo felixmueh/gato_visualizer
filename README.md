@@ -400,6 +400,22 @@ no collision check. Holding Shift during grasp translation frees orientation. A 
 frame; its tooltip explains why translation is unavailable. Joint rings remain
 usable. Playback and recorded comparison arms are read-only.
 
+**Obstacles (2026-11-02).** With a `tiago_mpc` source that has collision rows and
+the obstacle adapter (`adapters/obstacle_avoidance.py`, linked as the checkout's
+`_visualizer/_settings.py`), Settings › Collision rows switches the rows
+(a compiled variant), enforced or reported only, avoiding the body, the margin
+and lists the obstacles (spheres, and capsules, boxes and planes where the
+source has them) in collapsed tables, with **+** to add one. Click an
+obstacle in the viewport and drag its arrows; **R** rotates a box or plane,
+a capsule's end spheres and a box's face squares drag ends and faces;
+**S** scales radii and half-extents with the pointer
+(**Shift** finer, click applies, **Escape** cancels), **Delete** removes,
+**Ctrl+C**/**Ctrl+V** copy and paste at the pointer. Edits apply without a
+compile, also while On Play plays. Export animation's **Show** choices include collision objects and
+sphere covers.
+The collision-spheres toggle shows the body's and the arm's sphere covers.
+See [Live obstacles](docs/presentation.md#live-obstacles-and-collision-spheres).
+
 The **Calculation** menu selects how full closed-loop motion is generated:
 
 - **On Play:** Play from an empty run continuously calculates new motion until

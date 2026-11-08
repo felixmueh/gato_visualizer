@@ -30,6 +30,9 @@
 | --- | --- | --- |
 | **Onion skin** | Showing several poses of the displayed motion at once. | Onion skins when naming the feature |
 | **Keyframe** | A time at which a ghost arm is drawn. | Frame (a coordinate frame here) |
+| **Obstacle** | A sphere, capsule, box or plane of a run's scene that `tiago_mpc`'s collision rows keep the arm away from, recorded in the replay and drawn solid; in Live a draft setting edited in the viewport. | Collision sphere (the MPC's approximation) |
+| **Body posture** | The fixed joints (torso lift, head, left arm) at which `tiago_mpc`'s stored body cover was fitted (`body_posture`); Live draws its robot body there for a source with collision rows. | Start pose (the right arm's) |
+| **Collision spheres** | The spheres the MPC's collision rows saw: the environment (body cover and obstacles) and the arm's cover by link; an optional translucent layer. | Obstacles, collision geometry (the meshes) |
 | **Ghost arm** | A translucent right arm at a recorded state other than the solid robot’s displayed state. | Preview (a Live preview solve) |
 | **Simulation time** | The task/plant clock recorded with robot states, independent of time spent computing them. | Solver time, wall time |
 | **Virtual-time settings** | Native `VirtualTimeSettings`: command/update periods and solve latency, passed through required `settings=` to `run_virtual_time`. Compensation, safety, effort handling, duration and callbacks are separate invocation arguments. | `VirtualTime` (removed class name), combined execution settings |

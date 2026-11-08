@@ -169,7 +169,10 @@ Replay mode cancels any active Live calculation, including Manual/Automatic
 precalculation, and blocks new simulation, preview and Live settings submissions.
 Live settings stay visible but inert; target and start-pose editing are unavailable.
 Live's lane, solid right arm, paths and temporal ghosts are hidden. The Live
-track and its history, settings and arm-display choice are preserved.
+track and its history, settings and arm-display choice are preserved. The
+robot's body takes the first visible replay's recorded fixed joints (torso
+lift, head, left arm), where its ghost, obstacles and collision spheres were;
+Live restores its own posture.
 Play, Pause, scrub and speed operate locally over the replay-only span; Reset
 rewinds to its start. No end-of-playback preference extends Live in this mode.
 A subtle amber outline surrounds the viewport and a top-centre
@@ -218,6 +221,19 @@ than Live's white trace. A different reference is dashed in the same colour.
 Ghosts/dots appear in the main, Top and Right views; limit tint belongs only
 to the solid robot. Frame, wall-clock and model-hash mismatches are marked
 once on the lane. Run completeness remains recorded in provenance.
+
+A track recorded with collision rows shows its obstacles as solid coral
+spheres while the track is visible, in Arm and Dot display alike; tracks that
+recorded the same obstacles share one drawing. The viewport's collision-spheres
+toggle appears when a loaded track has recorded collision spheres; it is off by
+default and its tooltip states its state. On, it adds the spheres the MPC's rows
+saw, translucent cyan: the environment (body cover and obstacles), once per
+distinct set, and the arm cover on each Arm track's ghost, following its links.
+Both use the recording's fixed joints, as its ghost base does; in Live the drawn
+body keeps Live's posture, so a recording at another posture shows its body
+cover where its own body was. See
+[obstacles and collision spheres](replay-format.md#obstacles-and-collision-spheres)
+and, for Live's own rows, [Live obstacles](#live-obstacles-and-collision-spheres).
 
 Play, Pause and scrub drive one session clock even without comparison tracks.
 Speed ranges from 0.25× to 4× except while following a growing Live tip, when
@@ -380,3 +396,72 @@ shows an IK badge with the reason in its tooltip; joint rings remain usable.
 `window.__motionStudio.jointEdit` exposes the guard distance, draft, selection,
 grasp tool, achieved/requested position and orientation, both gaps and projected
 handles and rings for browser checks.
+
+## Live obstacles and collision spheres
+
+With a source whose settings adapter edits `tiago_mpc`'s collision rows
+(`adapters/obstacle_avoidance.py`, see [source settings](source-settings.md)),
+Live draws the draft obstacles as solid coral shapes, like a recording's. They
+come from the predictor's lists (Settings › Collision rows › Obstacles,
+Capsules, Boxes, Planes, in `torso_lift_link`; the last three where the
+source's `Collision` has them, [layouts](source-settings.md)), so an edit shows at once, before the
+backend accepts it; the segment's `world_from_root` places them. The rows'
+other settings sit in the same group: on/off (a compiled variant), enforced or
+reported only, the arm cover (a compiled variant), the body cover (or Off) and the margin.
+
+Live's robot body stands at the source's collision posture
+(`tiago_mpc.collision.body_posture()`, the default body cover's; `live_mpc.body_joints`):
+the torso lift, head and left arm at which the body cover was fitted. Live's scene, task geometry,
+FK and coordinate contract all use it, so the body, its cover, the obstacles and
+the targets share one world. A source without collision rows keeps the display
+posture.
+
+The collision-spheres toggle also covers Live: the body's cover from the
+current segment and the arm's cover on a mesh-free copy of the solid arm, which
+follows the drawn arm (states, start-pose drafts, IK drags), both translucent
+cyan. They are the spheres the solver configured for the current segment, not
+the draft.
+
+Each obstacle list is a table, collapsed by default (2026-11-03): its summary keeps
+the caption, the count and **+**; expanded, a header (x, y, z and r, w or d) heads
+one row per obstacle. A capsule row has two lines (end a, end b with the
+radius), a box three (centre, quaternion xyzw, half-extents), a plane one
+(normal and offset d).
+
+A plane is drawn as a translucent 1.2 m square patch with a solid edge, centred
+where the root frame's origin projects onto it, with the obstacle on its far
+side from the normal; the plane itself is unbounded.
+
+Click an obstacle to select it (its list row is outlined) and drag the world-axis
+arrows to move it; **G** or **T** returns to moving. Per shape:
+
+- **Capsule:** the arrows move the whole capsule; drag one of the two end spheres
+  to move that end alone (then its arrows); **S** scales the radius.
+- **Box:** the arrows move it; **R** rotates it with local rings; drag one of the six
+  face squares to move that face along its normal, the opposite face staying
+  fixed; **S** scales all three half-extents together.
+- **Plane:** a single arrow moves it along its normal (changing d); **R** tilts the
+  normal about the patch centre. A plane has no size.
+
+**S** scales modally, as in Blender: the size follows the
+pointer's screen distance from the shape's centre relative to that distance when
+scaling began (at least a 40 px lever), on a 1 mm grid, with **Shift** a tenth as
+fast; the radius (r) or the largest half-extent (h) shows beside the pointer. A click or **Enter** applies, **Escape**
+or the right button cancels. **Delete** or **Backspace** removes, **Escape**
+deselects. **Ctrl+C** copies the selected obstacle of any shape; **Ctrl+V** pastes a copy of the
+same size and orientation where the pointer's ray meets the plane through the copied centre
+normal to the view direction (the last pointer position over the viewport; without
+one, two radii to the right of the original), within the bounds and maximum count,
+and selects it. Cmd works as Ctrl. A drag or scale stays a draft and submits
+once, on release.
+The keys belong to the viewport: inside a text field they keep their usual text
+meaning. A list's **+** adds an obstacle halfway between the displayed grasp
+point and the task target (at the one that exists when the other is missing) and selects it: a 5 cm sphere, a capsule along y
+(±10 cm, radius 3 cm), an axis-aligned box of 5 cm half-extents, or a plane normal to
+the root frame's x axis 25 cm further along +x, its free side towards −x. Obstacle,
+task and joint selections exclude each other; the task anchor's and the joint
+tools' handles keep priority while selected. Obstacles stay editable while On
+Play plays: such an edit continues from the displayed state without pausing
+([execution](execution-api.md#settings-and-commands)).
+`window.__motionStudio.obstacles` exposes the draft, world and screen positions,
+selection, handles and drawn cover counts for browser checks.
