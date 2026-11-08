@@ -14,6 +14,9 @@ import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescrip
 import { sessionSpan } from './session.js';
 import { settingsPatch, rebaseSettings } from './shared-settings.js';
 import { createVectorField, createWorktreeFields, restoreWorktreeSettings, fieldValue, resolvedValueText, validateField, parameterTooltip } from './worktree-fields.js';
+import { worldToRoot } from './live-obstacles.js';
+import { shapeToWorld } from './collision-shapes.js';
+import { clampShape } from './shape-layouts.js';
 import { createModelCompilation, createModelCompilePrompt, modelCheckInputs } from './model-compilation.js';
 import { canonicalTimeUnit, parseTimeValue, configureTimeInput, readTimeInput, setTimeInputValue } from './time-input.js';
 
@@ -257,6 +260,17 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   }
   let modelCompilation, modelPrompt, modelState = { phase: 'idle' };
   let declaredLatencyDraft = .005, fixedToDraft = DEFAULT_EXECUTION.to_hz, maxPlanAgeDraft = .1;
+  // An obstacle edit while On Play plays keeps playing: its settings change starts the
+  // new segment at the displayed state and Play continues there (no pause).
+  let playingEdit = false, obstacleAdded = null;
+  // The recorded state a playing edit continued from: drawn (and the anchor of a further
+  // playing edit) until the new segment's first records arrive, instead of the start pose.
+  let playingHold = null;
+  // A drag or scale of an obstacle is one gesture: it submits once, on release.
+  let obstacleGesture = false, obstacleHighlight = null;
+  // The predictor's obstacle lists (an adapter's descriptors of kind shapes).
+  const shapeSettings = () => schema?.source_settings?.predictor?.parameters?.filter(parameter => parameter.kind === 'shapes') || [];
+  const latestContext = () => segments.get(generation)?.context || [...segments.values()].at(-1)?.context;
   const compilationEnabled = () => Array.isArray(schema?.supported_N) && Boolean(schema.compile_selection);
   const number = (value, precision = 0) => Number.isFinite(value) ? value.toFixed(precision) : '—';
   const message = (text, error = false) => { $('live-message').textContent = text; $('live-message').classList.toggle('error', error); };
@@ -361,6 +375,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     settingsPoll = setTimeout(async () => { await refreshSettings(); scheduleSettingsRefresh(); }, settingsPollMs);
   }
   const atRunStart = item => Math.abs(item?.sim_time_s ?? 0) < 1e-9;
+  // The recorded Live state on display (never a start-pose draft), or the latest one.
+  const displayedRecord = () => [presentedState, state, playingHold].find(value => value && !value.start_pose_draft
+    && Number.isFinite(value.sim_time_s) && Array.isArray(value.q) && Array.isArray(value.qd) && validPoints([value.ee_xyz])) || null;
   const displayedAnchor = () => {
     const value = presentedState || history.at(clock.time)?.state || state;
     return value && Array.isArray(value.q) && Array.isArray(value.qd)
@@ -471,6 +488,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   }
   async function submitSettings() {
     clearTimeout(settingsTimer);
+    if (obstacleGesture) return false;  // the gesture submits once, when it ends
     if (mode !== 'live' || replayOnly || !liveReady || profileSwitching || profileUnavailable || (!compilationEnabled() && profileNError)) return false;
     const request = ++submission;
     let next = readSettings(true);
@@ -497,12 +515,18 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     expectedVersion = Math.max(expectedVersion ?? 0, settingsVersion ?? 0) + 1;
     // A new start pose starts a new run at t = 0 from it, as Reset.
     const resetting = initialResetPending || !settingValuesEqual(startPoseValue(next.config), acceptedStartPose);
-    const anchor = resetting ? undefined : frozenAnchor || displayedAnchor();
+    // An edit made while playing continues from the recorded state displayed now, not from
+    // where the edit began; that state stays drawn until the new segment's history arrives.
+    const keepPlaying = playingEdit && clock.playing && !resetting; playingEdit = false;
+    const shown = keepPlaying ? displayedRecord() : null;
+    playingHold = shown;
+    const anchor = resetting ? undefined : shown ? { sim_time_s: shown.sim_time_s, q: [...shown.q], qd: [...shown.qd] }
+      : frozenAnchor || displayedAnchor();
     controlsEnabled(); refreshPlanLabel();
     message(next.execution.calculation === 'automatic' ? 'Replacing calculation from the displayed starting state…' : 'Updating one-horizon preview…');
     const transaction = patch && !initialResetPending ? { type: 'patch_settings', patch } : { type: 'set_settings', ...next };
     if (serverSettingsVersion != null) transaction.expected_settings_version = serverSettingsVersion;
-    const trackedRequest = { version: expectedVersion, settings: cloneSettings(next) };
+    const trackedRequest = { version: expectedVersion, settings: cloneSettings(next), keepPlaying };
     settingsRequests.push(trackedRequest); if (settingsRequests.length > 16) settingsRequests.shift();
     const accepted = await send({ ...transaction, ...(resetting ? { reset: true } : anchor ? { anchor } : {}) });
     if (Number.isInteger(accepted?.settings_version)) trackedRequest.version = accepted.settings_version;
@@ -514,7 +538,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       if (resetting) { initialResetPending = false; onReset(); }
       acceptedStartPose = startPoseValue(next.config);
       if (Number.isInteger(accepted.settings_version)) expectedVersion = settingsVersion = accepted.settings_version;
-      if (accepted.generation != null) useGeneration(accepted.generation, true);
+      // A playing edit keeps a generation its events already switched to (and its records).
+      if (accepted.generation != null) useGeneration(accepted.generation, !keepPlaying);
       pending = !plan || plan.settings_version < expectedVersion;
       // A short job can finish before the POST response reaches this browser.
       // Reconcile its cached notices instead of waiting for another SSE event.
@@ -612,10 +637,12 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     change();
   }
   const unavailableFrictionMessage = () => compilationEnabled() ? 'This predictor model is not compiled. Use Compile above the viewport; the active settings are unchanged.' : `N=${settings.config.N} is not compiled for this predictor. Choose a compiled N or build the current predictor in Settings › Backend.`;
-  function change() {
+  function change({ keepPlaying = false } = {}) {
     if (replayOnly) return;
     const wasCompatible = !profileNError, obsoleteWork = job.job_active || pending || extensionPending;
-    if (!dirty && !pending) frozenAnchor = displayedAnchor();
+    // Only an edit that keeps playing (obstacles) leaves On Play running; any other edit pauses.
+    playingEdit = keepPlaying && clock.playing && settings?.execution.calculation === 'on_play' && (playingEdit || !dirty);
+    if (!dirty && !pending && !playingEdit) frozenAnchor = displayedAnchor();
     syncPlantFriction();
     const next = readSettings();
     const sourceChanged = next && !settingValuesEqual(next.source_settings, acceptedSettings?.source_settings);
@@ -629,7 +656,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (compilationEnabled() && !next) modelCompilation?.check();
     refreshFrictionAvailability();
     calculationControls();
-    dirty = true; renderDirty = true; pausePlayback(); refreshPlanLabel();
+    dirty = true; renderDirty = true; if (!playingEdit) pausePlayback(); refreshPlanLabel();
     controlsEnabled();
     resetIndicators.update();
     const missingModel = profileNError && (!compilationEnabled() || modelState.phase === 'missing');
@@ -638,8 +665,29 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     // obsolete numerical work. Cancel it now; keep the frozen edit anchor and
     // let authoritative status report completion rather than a late HTTP reply.
     if (wasCompatible && profileNError && obsoleteWork && mode === 'live' && transportConnected()) send({ type: 'cancel' });
-    else if (sourceChanged && obsoleteWork && mode === 'live' && transportConnected()) send({ type: 'cancel' });
+    else if (sourceChanged && obsoleteWork && !playingEdit && mode === 'live' && transportConnected()) send({ type: 'cancel' });
     clearTimeout(settingsTimer); if (!profileSwitching && !profileUnavailable) settingsTimer = setTimeout(submitSettings, 350);
+  }
+  // The viewport's selected obstacle, outlined in the list (also after a repopulation).
+  function outlineObstacle() {
+    for (const parameter of shapeSettings()) sourceFields?.field('predictor', parameter.path)?.highlight?.(
+      obstacleHighlight?.path === parameter.path ? obstacleHighlight.index : null);
+  }
+  // A new obstacle, in the rows' root frame, around the point halfway between the displayed
+  // grasp point and the task target (without both, ahead of the torso): a sphere, a capsule
+  // along y, an upright box, or a plane: a wall ahead of that point, free towards the robot.
+  // Selected in the viewport once added.
+  function newObstacle(parameter) {
+    const transform = latestContext()?.world_from_root, shown = presentedState || state;
+    const target = desiredReference?.target_xyz, size = parameter.default_size ?? .05;
+    // Halfway between the displayed grasp point and the target, else whichever of them exists.
+    const points = [shown?.ee_xyz, target].filter(point => validPoints([point]));
+    const [x, y, z] = transform && points.length
+      ? worldToRoot(transform, [0, 1, 2].map(i => points.reduce((sum, point) => sum + point[i], 0) / points.length)) : [.4, -.4, -.3];
+    obstacleAdded = { path: parameter.path, serial: (obstacleAdded?.serial ?? 0) + 1 };
+    const created = { sphere: [x, y, z, size], capsule: [x, y - .1, z, x, y + .1, z, size * .6],
+      box: [x, y, z, 0, 0, 0, 1, size, size, size], plane: [-1, 0, 0, -(x + .25)] }[parameter.shape];
+    return created && clampShape(parameter, created);
   }
   function populate() {
     const groupsOpen = new Map([...($('live-settings').querySelectorAll?.('details') || [])].map(group => [group.querySelector('summary')?.textContent, group.open]));
@@ -750,7 +798,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       getValue: () => $('live-task').value, getDefault: () => defaultSettings.task.kind,
       reset: value => { $('live-task').value = value; $('live-task').dispatchEvent(new Event('change', { bubbles: true })); } });
     if (schema.source_settings) sourceFields = createWorktreeFields({ container: sourceHost, schema,
-      values: settings.source_settings, groupsOpen, onChange: change, onResetBinding: options => resetIndicators.bind(options) });
+      values: settings.source_settings, groupsOpen, onChange: change, onResetBinding: options => resetIndicators.bind(options),
+      newShape: newObstacle });
+    outlineObstacle();
     const groups = new Map(), rows = new Map();
     const horizonRow = document.createElement('div'); horizonRow.className = 'horizon-row';
     ($('live-horizon-settings') || $('live-settings')).append(horizonRow);
@@ -778,8 +828,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
         : parameter.group === 'Limits' ? 'MPC bounds' : parameter.group || 'Settings';
       const isHorizon = ['N', 'dt_s'].includes(parameter.path);
       if (!groups.has(name)) {
-        const role = name === 'Plant dynamics' ? 'simulation' : name === 'Predictor dynamics' ? 'predictor' : null;
-        const existing = role && sourceFields?.groupFields(role, name);
+        // A native field shares its adapter's group (e.g. the resolved Collision row).
+        const existing = sourceFields?.groupFields(name === 'Plant dynamics' ? 'simulation' : 'predictor', name)
+          || sourceFields?.groupFields('simulation', name);
         if (existing) groups.set(name, existing);
       }
       if (!isHorizon && !groups.has(name)) {
@@ -864,7 +915,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       host.append(label); inputs.push({ parameter, input });
       bindReset(input, parameter, () => readPath(defaultSettings.config, parameter.path), { key: `config.${parameter.path}` });
     }
-    const groupOrder = ['Plant dynamics', 'Plant limit handling', 'Execution controller', 'Execution law', 'Predictor dynamics', 'MPC bounds', 'Costs', 'Solver', 'ADMM'];
+    const groupOrder = ['Plant dynamics', 'Plant limit handling', 'Execution controller', 'Execution law', 'Predictor dynamics', 'Collision rows', 'MPC bounds', 'Costs', 'Solver', 'ADMM'];
     const groupContainer = schema.source_settings ? sourceHost : $('live-settings');
     const details = [...sourceHost.children, ...$('live-settings').children].filter(node => node.tagName?.toLowerCase() === 'details');
     const order = node => { const index = groupOrder.indexOf(node.children[0]?.textContent); return index < 0 ? groupOrder.length : index; };
@@ -1014,7 +1065,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (Number.isInteger(batch.next_cursor)) cursor = batch.next_cursor;
     historyComplete = Boolean(batch.complete);
     if (extensionPending && historyComplete && history.bounds[1] > extensionStartTime + 1e-8) extensionPending = false;
-    if (appliedRecords) historyRevision++; renderDirty = true;
+    if (appliedRecords) { historyRevision++; playingHold = null; } renderDirty = true;
     if (!clock.playing && clock.time == null && history.length) clock.seek(history.bounds[0]);
     syncSession();
   }
@@ -1148,7 +1199,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   function renderView() {
     const selected = presentation.interpolate ? history.interpolateAt(clock.time, { trace: false }) : history.at(clock.time, { trace: false });
     if (traceRevision !== historyRevision) { displayPath = history.displayPath(); traceRevision = historyRevision; }
-    let shownState = selected?.state || state;
+    let shownState = selected?.state || state || playingHold;
     let shownPlan = inspectingPreview ? inspectionPlan || plan : selected?.plan || (plan && !('available_time_s' in plan) ? plan : null);
     if (shownPlan?.summary) {
       const window = livePredictionWindow(shownPlan, history, clock);
@@ -1419,7 +1470,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (replayOnly) { seek(sessionBounds()[0]); return; }
     clearTimeout(settingsTimer); pausePlayback(); frozenAnchor = undefined;
     if (dirty && !await submitSettings()) return;
-    history.clear(); historyRevision++; plan = null; state = undefined; presentedState = undefined; clock.seek(null); onReset();
+    history.clear(); historyRevision++; plan = null; state = undefined; presentedState = undefined; playingHold = null; clock.seek(null); onReset();
     const result = await send({ type: 'reset' }); if (result?.generation != null) useGeneration(result.generation); renderView();
   });
   $('live-history').addEventListener('input', event => { if (!event.target.disabled) seek(Number(event.target.value)); });
@@ -1570,6 +1621,45 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       });
       change(); return this.targetInteraction;
     },
+    // The draft obstacles (an adapter's sphere list in the rows' root frame) and the rows'
+    // spheres of the current segment, for the viewport. Editable whenever Live settings
+    // are, also while playing: such an edit keeps On Play running.
+    get obstacleInteraction() {
+      const parameters = shapeSettings();
+      if (!parameters.length || mode !== 'live' || replayOnly || !settings) return null;
+      const context = latestContext(), transform = context?.world_from_root;
+      // As the settings fields: an edit made while the GPU is busy waits like any other.
+      const available = Boolean(transform) && liveReady && !profileSwitching && !profileUnavailable
+        && source?.readyState === EventSource.OPEN;
+      const lists = parameters.map(parameter => {
+        const values = fieldValue(settings.source_settings?.predictor, parameter.path) || [];
+        return { path: parameter.path, shape: parameter.shape, parameter, values,
+          world: transform ? values.map(item => shapeToWorld(parameter.shape, item, transform)) : [] };
+      });
+      return { available, lists, world_from_root: transform || null, added: obstacleAdded,
+        reference: transform ? [transform[0][3], transform[1][3], transform[2][3]] : [0, 0, 0],
+        collision: context?.collision || null };
+    },
+    /** Replace one list's draft obstacles (root frame); commit submits at once instead of after the debounce. */
+    setObstacles(path, values, { commit = false } = {}) {
+      const parameter = shapeSettings().find(item => item.path === path);
+      if (!parameter || !this.obstacleInteraction?.available || !sourceFields) return false;
+      try { validateField(parameter, values); } catch { return false; }
+      sourceFields.setValue('predictor', path, values);
+      change({ keepPlaying: true });
+      if (commit) this.commitSettings();
+      return true;
+    },
+    commitSettings() { if (dirty && !replayOnly && !obstacleGesture) { clearTimeout(settingsTimer); submitSettings(); } },
+    /** A drag or scale: its edits stay a draft, submitted once (commit) when it ends. */
+    beginObstacleGesture() { obstacleGesture = true; },
+    endObstacleGesture({ commit = true } = {}) { obstacleGesture = false; if (commit) this.commitSettings(); },
+    // Each retained segment's collision rows (null without) and root placement, for exports.
+    get collisionSegments() {
+      return [...segments.values()].map(record => ({ generation: record.generation,
+        world_from_root: record.context?.world_from_root || null, collision: record.context?.collision || null }));
+    },
+    highlightObstacle(selection) { obstacleHighlight = selection ?? null; outlineObstacle(); },
     // Editable in Live at the run start (t = 0), where the Joints tab shows the start
     // pose; the Joints lock decides whether it is edited. null outside Live.
     get startPose() {

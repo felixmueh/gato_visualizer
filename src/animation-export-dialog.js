@@ -1,19 +1,29 @@
 import { createFloatingDialog } from './floating-dialog.js';
+import { EXPORT_SHOW_DEFAULTS } from './animation-export.js';
 
 const STORAGE_KEY = 'animation-export-settings';
 const RESOLUTIONS = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160]];
 const ORIENTATIONS = ['current', 'isometric', 'front', 'back', 'left', 'right', 'top'];
-const DEFAULTS = { width: 1920, height: 1080, views: 'main', orientation: 'current' };
+const DEFAULTS = { width: 1920, height: 1080, views: 'main', orientation: 'current', show: { ...EXPORT_SHOW_DEFAULTS } };
+// The Show choices: what the video draws besides the robots, as the viewport can show it.
+const SHOW = [
+  ['collision', 'Collision objects', 'Obstacles of collision rows: Live\'s at each frame\'s segment, and each recording\'s'],
+  ['covers', 'Sphere covers', 'The spheres the collision rows see: body cover and the arm\'s cover, translucent'],
+  ['prediction', 'Prediction', 'The displayed prediction, as in the viewport'],
+  ['paths', 'Paths', 'Recorded tool paths: Live\'s simulated path and each track\'s'],
+  ['reference', 'Target and reference', 'The task target and its reference path'],
+];
 
 /** Export settings only. The caller freezes the session and camera in onExport. */
 export function createAnimationExportDialog({ getContext = () => ({ canExport: true }), onExport, storage = globalThis.localStorage } = {}) {
   if (typeof onExport !== 'function') throw new Error('Animation export needs an onExport callback.');
   let saved;
   try { saved = JSON.parse(storage?.getItem(STORAGE_KEY) || 'null'); } catch { /* Viewer preferences are optional. */ }
-  const initial = { ...DEFAULTS };
+  const initial = { ...DEFAULTS, show: { ...DEFAULTS.show } };
   if (RESOLUTIONS.some(([width, height]) => saved?.width === width && saved?.height === height)) { initial.width = saved.width; initial.height = saved.height; }
   if (['main', 'main-principal'].includes(saved?.views)) initial.views = saved.views;
   if (ORIENTATIONS.includes(saved?.orientation)) initial.orientation = saved.orientation;
+  for (const [key] of SHOW) if (typeof saved?.show?.[key] === 'boolean') initial.show[key] = saved.show[key];
 
   const form = document.createElement('form'); form.className = 'animation-export-form';
   form.innerHTML = `
@@ -28,6 +38,9 @@ export function createAnimationExportDialog({ getContext = () => ({ canExport: t
       <option value="front">Front</option><option value="back">Back</option><option value="left">Left</option>
       <option value="right">Right</option><option value="top">Top</option>
     </select></label>
+    <fieldset class="animation-export-show"><legend>Show</legend>
+      ${SHOW.map(([key, label, title]) => `<label title="${title}"><input type="checkbox" name="show-${key}">${label}</label>`).join('')}
+    </fieldset>
     <div class="animation-export-progress" hidden><progress max="1" value="0" aria-label="Export progress"></progress><span></span></div>
     <p class="animation-export-message" role="status" aria-live="polite"></p>
     <div class="animation-export-actions"><button type="button" data-action="cancel">Cancel</button><button type="submit" data-action="export">Export MP4</button></div>`;
@@ -36,6 +49,8 @@ export function createAnimationExportDialog({ getContext = () => ({ canExport: t
     for (const option of select.options) option.selected = false;
     [...select.options].find(option => option.value === value).selected = true;
   }
+  const showInputs = SHOW.map(([key]) => [key, form.querySelector(`[name="show-${key}"]`)]);
+  for (const [key, input] of showInputs) input.checked = initial.show[key];
   const exportButton = form.querySelector('[data-action="export"]'), cancelButton = form.querySelector('[data-action="cancel"]');
   const message = form.querySelector('.animation-export-message'), progressBox = form.querySelector('.animation-export-progress');
   const progress = progressBox.querySelector('progress'), progressText = progressBox.querySelector('span');
@@ -46,7 +61,8 @@ export function createAnimationExportDialog({ getContext = () => ({ canExport: t
 
   function options() {
     const [width, height] = RESOLUTIONS.find(([, height]) => String(height) === resolution.value) || RESOLUTIONS[1];
-    return { width, height, views: views.value, orientation: orientation.value };
+    return { width, height, views: views.value, orientation: orientation.value,
+      show: Object.fromEntries(showInputs.map(([key, input]) => [key, input.checked])) };
   }
   function refresh() {
     if (controller) return;
@@ -57,7 +73,7 @@ export function createAnimationExportDialog({ getContext = () => ({ canExport: t
     message.dataset.error = 'false';
   }
   function setBusy(busy) {
-    for (const field of [resolution, views, orientation]) field.disabled = busy;
+    for (const field of [resolution, views, orientation, ...showInputs.map(([, input]) => input)]) field.disabled = busy;
     exportButton.disabled = busy;
     form.setAttribute('aria-busy', String(busy));
     cancelButton.textContent = 'Cancel'; cancelButton.disabled = false;

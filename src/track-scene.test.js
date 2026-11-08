@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BoxGeometry, Group, Mesh, MeshStandardMaterial, Scene } from 'three';
-import { URDFJoint } from 'urdf-loader/src/URDFClasses.js';
+import { BoxGeometry, Group, Mesh, MeshStandardMaterial, Scene, Vector3 } from 'three';
+import { URDFJoint, URDFLink } from 'urdf-loader/src/URDFClasses.js';
 import { createTrackScene, trackDisplayPath, trackReferencesDiffer, TRACK_OPACITY, TRACK_OUTSIDE_OPACITY } from './track-scene.js';
 
 function fixture({ gripper = false } = {}) {
@@ -139,4 +139,35 @@ test('a recording with an orientation reference shows its held goal and interpol
   tracks.update({ tracks: [oriented], time: 3.5 });
   assert.equal(tracks.snapshot.glyphs[0].goal, null);  // the reference has no target from 3 s on
   tracks.dispose();
+});
+
+test('obstacles show once per recorded scene; the collision spheres follow their toggle and each arm', () => {
+  const { tracks, scene, robot } = fixture(), link = new URDFLink();
+  link.urdfName = 'arm_right_1_link'; robot.joints.arm_right_1_joint.add(link);
+  const recorded = { obstacles: [[1, 2, 3, .05], [1, 2, 3.2, .05]],
+    collision_spheres: { environment: [[0, 0, 1, .1]], arm: { arm_right_1_link: [[1, 0, 0, .05]] } } };
+  const on = track('on'), off = track('off', { display: 'dot' }), plain = track('plain');
+  for (const item of [on, off]) Object.assign(item.motion, structuredClone(recorded), { q: [[0], [Math.PI / 2]] });
+  tracks.update({ tracks: [plain], time: 5 });
+  assert.equal(tracks.coversAvailable, false); assert.equal(tracks.snapshot.obstacleCount, 0);
+  tracks.update({ tracks: [plain, on, off], time: 5 });
+  assert.equal(tracks.coversAvailable, true);
+  assert.equal(tracks.snapshot.obstacleCount, 2); assert.equal(tracks.snapshot.coverCount, 0);
+  const obstacle = scene.getObjectByName('track-obstacles').children[1];
+  assert.deepEqual(obstacle.position.toArray(), [1, 2, 3.2]); assert.equal(obstacle.scale.x, .05);
+  tracks.update({ tracks: [plain, on, off], time: 5, covers: true });
+  assert.equal(tracks.snapshot.coverCount, 2); // The shared environment once, and only the Arm track's cover.
+  scene.updateMatrixWorld(true);
+  const sphere = scene.getObjectByName('track-arm-cover-link').children[0];
+  const at = () => new Vector3().setFromMatrixPosition(sphere.matrixWorld).toArray().map(v => Math.round(v * 1e9) / 1e9);
+  assert.deepEqual(at(), [0, 1, 0]); // The track's end, a quarter turn about z.
+  tracks.update({ tracks: [plain, on, off], time: 3, covers: true }); scene.updateMatrixWorld(true);
+  assert.deepEqual(at(), [1, 0, 0]);
+  assert.equal(robot.joints.arm_right_1_joint.jointValue[0], 0);
+  on.visible = false; tracks.update({ tracks: [plain, on, off], time: 3, covers: true });
+  assert.equal(tracks.snapshot.obstacleCount, 2); assert.equal(tracks.snapshot.coverCount, 1);
+  off.visible = false; tracks.update({ tracks: [plain, on, off], time: 3, covers: true });
+  assert.equal(tracks.snapshot.obstacleCount, 0); assert.equal(tracks.snapshot.coverCount, 0);
+  assert.equal(scene.getObjectByName('track-obstacles'), undefined);
+  tracks.dispose(); assert.equal(scene.getObjectByName('track-environment'), undefined);
 });

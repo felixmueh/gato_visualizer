@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseHTML } from 'linkedom';
 import { createAnimationExportDialog } from './animation-export-dialog.js';
+import { EXPORT_SHOW_DEFAULTS } from './animation-export.js';
+const show = { ...EXPORT_SHOW_DEFAULTS };
 
 function harness(t, settings = {}) {
   const { document, Event } = parseHTML('<html><body></body></html>');
@@ -28,11 +30,11 @@ test('visible defaults and settings produce exact export options and persist', a
   const h = harness(t, { storage, onExport: async options => calls.push(options) });
   h.ui.open();
   assert.equal(h.ui.isOpen, true);
-  assert.deepEqual(h.ui.options, { width: 1920, height: 1080, views: 'main', orientation: 'current' });
+  assert.deepEqual(h.ui.options, { width: 1920, height: 1080, views: 'main', orientation: 'current', show });
   assert.equal(h.field('resolution').value, '1080');
   h.choose('resolution', '2160'); h.choose('views', 'main-principal'); h.choose('orientation', 'right');
   h.submit(); await settle();
-  assert.deepEqual(calls, [{ width: 3840, height: 2160, views: 'main-principal', orientation: 'right' }]);
+  assert.deepEqual(calls, [{ width: 3840, height: 2160, views: 'main-principal', orientation: 'right', show }]);
   assert.equal(h.ui.isOpen, false);
   const second = createAnimationExportDialog({ storage, onExport: async () => {} });
   assert.deepEqual(second.options, calls[0]); second.destroy();
@@ -71,5 +73,24 @@ test('closing aborts active export; export failure is visible and can be retried
 
 test('malformed or unsupported saved settings use visible defaults', t => {
   const h = harness(t, { storage: { getItem: () => '{"width":3,"height":5,"views":"unknown","orientation":"unknown"}' }, onExport: async () => {} });
-  assert.deepEqual(h.ui.options, { width: 1920, height: 1080, views: 'main', orientation: 'current' });
+  assert.deepEqual(h.ui.options, { width: 1920, height: 1080, views: 'main', orientation: 'current', show });
+});
+
+test('Show choices default to the viewport geometry without covers, persist, and lock while busy', async t => {
+  const saved = new Map(), calls = [];
+  const storage = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value) };
+  let finish;
+  const h = harness(t, { storage, onExport: options => { calls.push(options); return new Promise(done => { finish = done; }); } });
+  assert.deepEqual(h.ui.options.show, { collision: true, covers: false, prediction: true, paths: true, reference: true });
+  const box = name => h.field(`show-${name}`);
+  box('covers').checked = true; box('prediction').checked = false;
+  box('covers').dispatchEvent(new (box('covers').ownerDocument.defaultView.Event)('change', { bubbles: true }));
+  h.ui.open(); h.submit();
+  assert.deepEqual(calls[0].show, { collision: true, covers: true, prediction: false, paths: true, reference: true });
+  assert.equal(box('collision').disabled, true);
+  finish(); await settle(); assert.equal(box('collision').disabled, false);
+  const second = createAnimationExportDialog({ storage, onExport: async () => {} });
+  assert.deepEqual(second.options.show, calls[0].show); second.destroy();
+  const malformed = createAnimationExportDialog({ storage: { getItem: () => '{"show":{"covers":"yes","paths":false}}' }, onExport: async () => {} });
+  assert.deepEqual(malformed.options.show, { ...show, paths: false }); malformed.destroy();
 });

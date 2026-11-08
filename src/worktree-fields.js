@@ -1,5 +1,6 @@
 // Settings declared by the selected Python worktree. No source-provided JS.
 import { canonicalTimeUnit, configureTimeInput, readTimeInput } from './time-input.js';
+import { LINE_TITLES, SHAPE_LAYOUTS, shapeValid } from './shape-layouts.js';
 const roles = ['simulation', 'predictor'];
 const clone = value => JSON.parse(JSON.stringify(value));
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -31,6 +32,10 @@ export function validateField(parameter, value) {
     if (typeof value !== 'boolean') throw new Error(`${label} needs a boolean.`);
   } else if (parameter.kind === 'choice') {
     if (!(parameter.choices || []).some(choice => equal(choiceValue(choice), value))) throw new Error(`${label} needs an available choice.`);
+  } else if (parameter.kind === 'shapes') {
+    if (!Array.isArray(value) || value.length > (parameter.max_count ?? Infinity) || !value.every(item => shapeValid(parameter, item))) {
+      throw new Error(`${label} needs at most ${parameter.max_count ?? 'any number of'} ${parameter.shape}s: positions within ±${parameter.bound ?? Infinity}, sizes in (${parameter.min_size ?? 0}, ${parameter.max_size ?? Infinity}].`);
+    }
   } else {
     const values = parameter.kind === 'vector' ? value : [value];
     if (!Array.isArray(values) || (parameter.kind === 'vector' && values.length !== parameter.length)) throw new Error(`${label} needs ${parameter.length} values.`);
@@ -61,6 +66,11 @@ export function restoreWorktreeSettings(schema, saved) {
 
 export function resolvedValueText(value) {
   if (value === null) return 'off';
+  if (value && typeof value === 'object' && value.type === 'Collision') {
+    // Every obstacle the rows see: spheres, and capsules, boxes and planes where the source has them.
+    const obstacles = ['obstacles', 'capsules', 'boxes', 'planes'].reduce((sum, name) => sum + (value[name]?.length ?? 0), 0);
+    return `${value.mechanism} · margin ${value.margin_m} m · rho ${value.rho} · ${value.body ? 'body + ' : ''}${obstacles} obstacle${obstacles === 1 ? '' : 's'}`;
+  }
   if (Array.isArray(value)) return value.join(', ');
   if (value && typeof value === 'object' && 'coulomb_nm' in value) {
     const law = value.law || {}, name = law.type || 'friction';
@@ -93,8 +103,104 @@ export function createVectorField(parameter, value, onInput) {
   };
 }
 
-export function createWorktreeFields({ container, schema, values, groupsOpen, onChange, onResetBinding }) {
-  const entries = [], groups = new Map(), start = restoreWorktreeSettings(schema, values);
+// Whether an obstacle list is expanded, per role and path, for this page: collapsed by default
+// and kept across the panel's repopulation after each accepted settings change.
+const shapeListsOpen = new Map();
+// A list of obstacles of one shape (descriptor kind shapes, shape-layouts.js): a collapsible
+// table, collapsed by default, whose summary keeps the caption, the count and the add button.
+// Under a four-column header each obstacle takes its layout's lines (a capsule's ends a and
+// b, a box's c, q and h), with a remove button. The add button asks newShape for the values.
+// Rows are rebuilt on set(); edits report through onInput.
+export function createShapesField(parameter, value, onInput, { newShape, dataset = {}, caption, key = parameter.path } = {}) {
+  const layout = SHAPE_LAYOUTS[parameter.shape];
+  const element = document.createElement('details'); element.className = 'parameter-spheres';
+  element.dataset.shape = parameter.shape;
+  element.open = shapeListsOpen.get(key) ?? false;
+  const summary = document.createElement('summary');
+  const count = document.createElement('span'); count.className = 'sphere-count';
+  const add = document.createElement('button'); add.type = 'button'; add.className = 'sphere-add'; add.textContent = '+';
+  add.title = `Add a ${parameter.shape}`; add.setAttribute('aria-label', add.title);
+  summary.append(...(caption ? [caption] : []), count, add);
+  const table = document.createElement('div'); table.className = 'parameter-sphere-table';
+  const header = document.createElement('div'); header.className = 'parameter-sphere-header';
+  header.append(document.createElement('span'), ...layout.header.map(axis => {
+    const cell = document.createElement('span'); cell.textContent = axis;
+    cell.title = `${axis}${parameter.unit && axis !== 'w' ? ` (${parameter.unit})` : ''}${parameter.frame ? ` in ${parameter.frame}` : ''}`;
+    return cell;
+  }), document.createElement('span'));
+  const list = document.createElement('div'); list.className = 'parameter-sphere-list';
+  table.append(header, list); element.append(summary, table);
+  let rows = [], disabled = false, selected = null;
+  const name = parameter.label?.replace(/s$/, '') || parameter.shape;
+  function row(item, index) {
+    const block = document.createElement('div'); block.className = 'parameter-sphere'; block.dataset.sphereIndex = String(index);
+    const inputs = new Array(layout.width);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'sphere-remove'; remove.textContent = '×';
+    remove.title = `Remove ${name.toLowerCase()} ${index + 1}`; remove.setAttribute('aria-label', remove.title);
+    layout.lines.forEach(([lineCaption, columns], line) => {
+      const label = document.createElement('span'); label.className = 'parameter-sphere-line'; label.textContent = lineCaption;
+      if (lineCaption) label.title = LINE_TITLES[lineCaption] || lineCaption;
+      block.append(label);
+      columns.forEach((column, slot) => {
+        if (column == null) { block.append(document.createElement('span')); return; }
+        const input = document.createElement('input'); input.type = 'number'; input.step = 'any'; input.required = true;
+        input.value = String(item[column]); input.dataset.sphereAxis = `${lineCaption}${layout.header[slot]}`;
+        Object.assign(input.dataset, dataset, { vectorIndex: `${index}:${column}` });  // focus survives a repopulation
+        input.title = `${name} ${index + 1} · ${lineCaption ? `${LINE_TITLES[lineCaption] || lineCaption} ` : ''}${layout.header[slot]}`;
+        input.setAttribute('aria-label', input.title);
+        inputs[column] = input; block.append(input);
+      });
+      block.append(line === 0 ? remove : document.createElement('span'));
+    });
+    block.classList.toggle('selected', index === selected);
+    return { item: block, inputs, remove };
+  }
+  function set(next) {
+    rows = (next || []).map(row);
+    list.replaceChildren(...rows.map(entry => entry.item));
+    count.textContent = String(rows.length); count.title = `${rows.length} ${parameter.label?.toLowerCase() || 'obstacles'}`;
+    header.hidden = !rows.length;
+    disable(disabled);
+  }
+  function read() {
+    return validateField(parameter, rows.map(entry => entry.inputs.map(input => input.value.trim() === '' ? NaN : Number(input.value))));
+  }
+  function disable(next) {
+    disabled = next;
+    for (const entry of rows) [...entry.inputs, entry.remove].forEach(control => { control.disabled = next; });
+    add.disabled = next || rows.length >= (parameter.max_count ?? Infinity);
+  }
+  const changed = event => {
+    if (event.type === 'click') {
+      const target = event.target.closest?.('button');
+      if (!target) return;
+      // The add button sits in the summary: adding must not also fold the list.
+      if (target === add) event.preventDefault();
+      let next;
+      try { next = read(); } catch { return; }
+      if (target === add) {
+        const created = newShape?.(parameter, next);
+        if (!created) return;
+        next.push(created);
+      } else next.splice(Number(target.closest('[data-sphere-index]').dataset.sphereIndex), 1);
+      set(next);
+    }
+    onInput(event);
+  };
+  const toggled = () => shapeListsOpen.set(key, element.open);
+  element.addEventListener('input', changed); element.addEventListener('click', changed); element.addEventListener('toggle', toggled);
+  set(value);
+  return {
+    element, add, get inputs() { return rows.flatMap(entry => entry.inputs); },
+    get focus() { return rows[0]?.inputs[0] || add; },
+    read, set, disable,
+    highlight(index) { selected = index; rows.forEach((entry, i) => entry.item.classList.toggle('selected', i === index)); },
+    destroy() { element.removeEventListener('input', changed); element.removeEventListener('click', changed); element.removeEventListener('toggle', toggled); },
+  };
+}
+
+export function createWorktreeFields({ container, schema, values, groupsOpen, onChange, onResetBinding, newShape }) {
+  const entries = [], groups = new Map(), pairs = new Map(), start = restoreWorktreeSettings(schema, values);
   let disabled = false;
   const read = () => {
     const next = clone(start);
@@ -128,8 +234,11 @@ export function createWorktreeFields({ container, schema, values, groupsOpen, on
       const fields = document.createElement('div'); fields.className = 'settings-fields';
       details.append(summary, fields); container.append(details); groups.set(key, { details, fields, rows: [], role, selector: false });
     }
-    const row = document.createElement(parameter.kind === 'vector' ? 'div' : 'label');
-    row.className = `parameter-row${parameter.kind === 'vector' ? ' vector-row' : parameter.kind === 'choice' ? ' source-choice-row' : ''}`;
+    const block = ['vector', 'shapes'].includes(parameter.kind);
+    // Descriptors with the same row share one grid row, side by side (e.g. body and margin).
+    const paired = parameter.row && !block;
+    const row = document.createElement(block ? 'div' : 'label');
+    row.className = paired ? 'pair-cell' : `parameter-row${parameter.kind === 'vector' ? ' vector-row' : parameter.kind === 'shapes' ? ' spheres-row' : parameter.kind === 'choice' ? ' source-choice-row' : ''}`;
     row.dataset.sourceRole = role; row.dataset.sourcePath = parameter.path;
     const caption = document.createElement('span'); caption.textContent = `${parameter.label || parameter.path}${parameter.unit ? ` (${parameter.unit})` : ''}`;
     caption.title = parameterTooltip(parameter);
@@ -137,11 +246,14 @@ export function createWorktreeFields({ container, schema, values, groupsOpen, on
       const badge = document.createElement('span'); badge.className = 'setting-model-badge'; badge.textContent = 'Model';
       badge.title = compiledModelHelp; badge.setAttribute('aria-label', 'Compiled model variant'); caption.append(' ', badge);
     }
-    row.append(caption);
+    if (parameter.kind !== 'shapes') row.append(caption);
     const value = fieldValue(start[role], parameter.path);
     let field;
     if (parameter.kind === 'vector') field = createVectorField(parameter, value, changed);
-    else {
+    else if (parameter.kind === 'shapes') {
+      field = createShapesField(parameter, value, changed, { newShape, caption, key: `${role}:${parameter.path}`,
+        dataset: { sourceRole: role, sourcePath: parameter.path } });
+    } else {
       const input = document.createElement(parameter.kind === 'choice' ? 'select' : 'input');
       if (parameter.kind === 'choice') {
         for (const [index, item] of parameter.choices.entries()) {
@@ -169,8 +281,16 @@ export function createWorktreeFields({ container, schema, values, groupsOpen, on
         read: () => validateField(parameter, parameter.kind === 'bool' ? input.checked : parameter.kind === 'choice' ? choiceValue(parameter.choices[Number(input.value)]) : timeUnit ? readTimeInput(input, { ...parameter, unit: timeUnit }) : input.value.trim() === '' ? NaN : Number(input.value)),
         disable: value => { input.disabled = value; }, destroy: () => input.removeEventListener('input', changed) };
     }
-    field.inputs.forEach((input, index) => { input.dataset.sourceRole = role; input.dataset.sourcePath = parameter.path; if (parameter.kind === 'vector') input.dataset.vectorIndex = String(index); });
-    row.append(field.element); groups.get(key).fields.append(row); groups.get(key).rows.push(row);
+    if (parameter.kind !== 'shapes') field.inputs.forEach((input, index) => { input.dataset.sourceRole = role; input.dataset.sourcePath = parameter.path; if (parameter.kind === 'vector') input.dataset.vectorIndex = String(index); });
+    row.append(field.element); groups.get(key).rows.push(row);
+    if (paired) {
+      const pairKey = `${key}:${parameter.row}`;
+      if (!pairs.has(pairKey)) {
+        const pair = document.createElement('div'); pair.className = 'parameter-row source-pair-row';
+        groups.get(key).fields.append(pair); pairs.set(pairKey, pair);
+      }
+      pairs.get(pairKey).append(row);
+    } else groups.get(key).fields.append(row);
     if (parameter.kind === 'choice') groups.get(key).selector = true;
     const entry = { ...field, role, parameter, row, visibilityHost: row };
     entries.push(entry);
@@ -184,8 +304,12 @@ export function createWorktreeFields({ container, schema, values, groupsOpen, on
   for (const role of roles) [...groups.values()].filter(group => group.role === role)
     .forEach(group => container.append(group.details));
   visibility();
+  const entryAt = (role, path) => entries.find(entry => entry.role === role && entry.parameter.path === path);
   return { read, refresh: visibility,
     groupFields(role, name) { return groups.get(`${role}:${name}`)?.fields; },
+    /** Replace one field's value without an input event; the caller reports the change. */
+    setValue(role, path, next) { const entry = entryAt(role, path); if (!entry) return false; entry.set(next); visibility(); return true; },
+    field(role, path) { return entryAt(role, path) || null; },
     setModelMissing(next) { entries.forEach(entry => entry.row.classList.toggle('model-uncompiled', next && entry.parameter.effect === 'compiled_model')); },
     setDisabled(next) { disabled = next; visibility(); },
     destroy() { entries.forEach(entry => entry.destroy()); groups.forEach(({ details }) => details.remove()); },

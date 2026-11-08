@@ -10,3 +10,7 @@
 .animation-export-message { margin: 0; color: #9fb0c2; line-height: 1.5; }
 .animation-export-message:empty { display: none; }
 .animation-export-message[data-error="true"] { color: #efac92; }
+.animation-export-show { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 0; padding: 0; border: 0; }
+.animation-export-show legend { padding: 0 0 6px; color: #a4b5c6; font-size: 10px; }
+.animation-export-show label { display: flex; align-items: center; gap: 6px; color: #c7d4e0; font-size: 11px; }
+.animation-export-show input { accent-color: #68d9ce; margin: 0; }

@@ -35,6 +35,7 @@ import { createGraspGlyph, setGlyphColor, setGlyphPose } from "./grasp-glyph.js"
 import { setupIkPreview } from "./ik-preview.js";
 import { quaternionToRotvec } from "./rotations.js";
 import { setupJointEditor } from "./joint-editor.js";
+import { setupLiveObstacles } from "./live-obstacles.js";
 import { setupViewCube } from "./view-cube.js";
 import { fitPerspectivePoints, objectWorldPoints, trajectoryFitPoints, TRAJECTORY_FIT_PADDING } from "./camera-fit.js";
 import { createPathLine, setPathPoints, setPathPointCount, pathLineInfo } from "./path-lines.js";
@@ -68,6 +69,7 @@ const icons = {
   video: '<rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3M7 9l5 3-5 3Z"/>',
   onion: '<path d="M3 20a17 17 0 0 1 17-17M8 20A12 12 0 0 1 20 8M13 20a7 7 0 0 1 7-7"/>',
   ik: '<path d="M4 20h5l3-7 5-3"/><circle cx="19.5" cy="8.5" r="2.5"/>',
+  spheres: '<circle cx="9" cy="10" r="6"/><circle cx="16.5" cy="16" r="4.5"/>',
   chevron: '<path d="m8 5 7 7-7 7"/>',
 };
 const icon = (name) =>
@@ -95,6 +97,7 @@ let controls;
 let viewCube;
 let targetGizmo;
 let jointEditor, jointPoseOwned = false, jointDraftKey, orbitLock;
+let liveObstacles;
 let scene;
 let robotBounds;
 let ready = false;
@@ -104,6 +107,14 @@ let lastAnimationExport = null;
 // Replay mode inspects the first visible recording; Live retains its own focus.
 const focusedTrack = () => live?.mode !== 'live' ? null : session?.replayOnly
   ? session.activeTracks.find(track => track.visible !== false) || null : session?.focused;
+// The recorded spheres of the MPC's collision rows; obstacles are always shown.
+let collisionSpheresShown = false;
+$('collision-spheres').addEventListener('click', event => {
+  collisionSpheresShown = !collisionSpheresShown;
+  event.currentTarget.setAttribute('aria-pressed', String(collisionSpheresShown));
+  event.currentTarget.title = `Collision spheres the MPC avoids · ${collisionSpheresShown ? 'on' : 'off'}`;
+  auxiliaryViews?.invalidate();
+});
 let solverProfiles;
 const backendWatch = watchBackend({ onRestart: () => {
   try { sessionStorage.setItem('source-restart-live-settings', JSON.stringify(live?.settings)); } catch {}
@@ -190,7 +201,8 @@ const animationExportDialog = createAnimationExportDialog({ getContext: animatio
       predictionVisible: source.replayOnly ? Boolean(line?.visible) : !jointEditor?.dragging,
       predictionColor: line?.material.color.getHex() ?? pathColor, predictionOpacity: line?.material.opacity,
       ghostOpacity: presentationSettings.settings.ghost_start_opacity_percent / 100,
-      interpolate: presentationSettings.settings.interpolate, mainMaterialStyles: mainMaterials });
+      interpolate: presentationSettings.settings.interpolate, mainMaterialStyles: mainMaterials,
+      liveSegments: source.replayOnly ? [] : live.collisionSegments });
     try {
       if (!source.replayOnly && snapshot.predictionVisible && !explicit) {
         onProgress({ progress: 0, message: 'Loading recorded predictions…' });
@@ -655,6 +667,8 @@ function animate(timestamp) {
   jointEditor?.update();
   updateLiveGlyphs();  // after every change of the displayed arm in this frame
   ikPreview?.update();
+  liveObstacles?.update({ covers: collisionSpheresShown,
+    armVisible: !session?.replayOnly && session?.track('live')?.display !== 'hidden' });
   const ownsPose = Boolean(jointEditor?.ownsPose);
   if (ownsPose) {
     const pose = live.startPose, key = JSON.stringify([pose.value, pose.planning]);
@@ -791,9 +805,25 @@ async function start() {
     // One owner of controls.enabled for both gizmos (the camera bug of 2026-10-30).
     orbitLock = createOrbitLock(controls, renderer.domElement);
     targetGizmo = setupTargetGizmo({ scene, camera, renderer, orbit: controls, orbitLock, getTarget: () => live.targetInteraction,
-      moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note'), onSelect: () => jointEditor?.deselect() });
+      moveTarget: position => live.setTargetWorld(position), transformTarget: pose => live.setTaskTransform(pose), button: $('target-move'), note: $('target-move-note'), onSelect: () => { jointEditor?.deselect(); liveObstacles?.deselect(); } });
+    // Live obstacles (a collision source's adapter): picked before the joint tools, after the task anchor.
+    liveObstacles = setupLiveObstacles({ scene, camera, renderer, orbit: controls, orbitLock, robot, jointNames: defaultData.joint_names,
+      getInteraction: () => live.obstacleInteraction, setObstacles: (path, values, options) => live.setObstacles(path, values, options),
+      commit: () => live.commitSettings(), highlight: index => live.highlightObstacle(index),
+      beginGesture: () => live.beginObstacleGesture(), endGesture: options => live.endObstacleGesture(options),
+      onSelect: () => { targetGizmo.deselect(); jointEditor?.deselect(); }, onChange: () => auxiliaryViews?.invalidate() });
+    // The joint tools defer to both handle sets: the task anchor's and the obstacles'.
+    const viewportGizmos = {
+      deselect() { targetGizmo.deselect(); liveObstacles.deselect(); },
+      get interactionActive() { return targetGizmo.interactionActive || liveObstacles.interactionActive; },
+      setPickGuard(guard) {
+        targetGizmo.setPickGuard(event => guard?.(event) || liveObstacles.handleAt(event));
+        liveObstacles.setPickGuard(event => guard?.(event) || targetGizmo.interactionActive);
+      },
+      setKeyGuard(guard) { targetGizmo.setKeyGuard(guard); },
+    };
     jointEditor = setupJointEditor({ scene, camera, renderer, orbit: controls, orbitLock, robot, jointNames: defaultData.joint_names,
-      links: limitTint.links, taskGizmo: targetGizmo, guardBadge: $('grasp-frame-warning'), gapLabel: $('grasp-orientation-gap'), hint: $('grasp-handle-hint'),
+      links: limitTint.links, taskGizmo: viewportGizmos, guardBadge: $('grasp-frame-warning'), gapLabel: $('grasp-orientation-gap'), hint: $('grasp-handle-hint'),
       getPose: () => {
         const pose = live.startPose;
         if (!pose) return null;
@@ -803,7 +833,7 @@ async function start() {
           reference: state && !state.start_pose_draft ? { q: state.q, world: state.ee_xyz, frame: context?.end_effector_frame, generation: live.generation } : null };
       },
       previewPose: q => live.previewStartPose(q), commitPose: q => live.setStartPose(q),
-      onSelect: () => targetGizmo.deselect(), getGhostHit: raycaster => onionSkin.pick(raycaster) });
+      onSelect: () => { targetGizmo.deselect(); liveObstacles.deselect(); }, getGhostHit: raycaster => onionSkin.pick(raycaster) });
     ikPreview = setupIkPreview({ robot, scene, jointNames: defaultData.joint_names, button: $('live-ik-preview'),
       getContext: liveReachContext, onReachability: showReachability });
     replayLibrary = setupReplayLibrary({ onScene: loadReplayScene, initialName: 'Start pose',
@@ -830,6 +860,7 @@ async function start() {
       get comparisons() { return comparisonPlots.snapshot; },
       get workbench() { return { activeTab: workbench.activeTab, auxiliaryVisible: workbench.auxiliaryVisible }; },
       get targetGizmo() { return targetGizmo?.snapshot; },
+      get obstacles() { return liveObstacles?.snapshot; },
       get jointEdit() { return jointEditor?.snapshot; },
       get library() { return replayLibrary; },
       get replayScene() { return data; },
@@ -1232,14 +1263,28 @@ function setMainDimmed(dimmed) {
   });
 }
 
+let shownPosture;
 function updateSessionScene() {
   if (!session || !trackScene) return;
   const main = session.track('live'), replayOnly = session.replayOnly;
+  // Replay mode shows the body at the first visible replay's recorded posture, where
+  // its ghost, obstacles and collision spheres were; Live keeps its own. The solid
+  // arm keeps the pose its view set.
+  const posture = (replayOnly && focusedTrack()?.motion) || defaultData;
+  if (posture !== shownPosture) {
+    shownPosture = posture;
+    const arm = new Set(defaultData.joint_names);
+    applyFixedJoints({ fixed_joints: Object.fromEntries(Object.entries(posture.fixed_joints || {}).filter(([name]) => !arm.has(name))) });
+    auxiliaryViews?.invalidate();
+  }
   armVisibility?.setVisible(!replayOnly && main.display !== 'hidden');
   if (replayOnly || main.display === 'hidden') $('limit-tint-tooltip').hidden = true;
   if (liveGroup) liveGroup.visible = live?.mode === 'live' && !replayOnly;
   trackScene.update({ tracks: session.tracks, time: session.cursor, mainReference: main?.reference,
-    visible: live?.mode === 'live', ...(replayOnly ? { mainReference: null } : {}), opacity: presentationSettings.settings.ghost_start_opacity_percent / 100 });
+    visible: live?.mode === 'live', ...(replayOnly ? { mainReference: null } : {}), opacity: presentationSettings.settings.ghost_start_opacity_percent / 100,
+    covers: collisionSpheresShown });
+  const toggle = $('collision-spheres'), coversAvailable = trackScene.coversAvailable || Boolean(liveObstacles?.coversAvailable);
+  if (toggle.hidden === coversAvailable) toggle.hidden = !coversAvailable;
   setMainDimmed(Boolean(!replayOnly && main && !main.empty && outsideSpan(main, session.cursor)));
   if (replayOnly) {
     const track = focusedTrack(), motion = track?.motion;

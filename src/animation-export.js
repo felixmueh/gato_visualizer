@@ -1,6 +1,7 @@
-import { Box3, Mesh, MeshBasicMaterial, OrthographicCamera, Scene, SphereGeometry, Vector3, WebGLRenderer, SRGBColorSpace, ACESFilmicToneMapping } from 'three';
+import { Box3, Group, Mesh, MeshBasicMaterial, OrthographicCamera, Scene, SphereGeometry, Vector3, WebGLRenderer, SRGBColorSpace, ACESFilmicToneMapping } from 'three';
 import { aggregateSpan } from './expanded-timeline.js';
-import { createTrackScene, trackDisplayPath } from './track-scene.js';
+import { coverMaterial, coverMeshes, createArmCover, createTrackScene, trackDisplayPath } from './track-scene.js';
+import { SHAPE_LISTS, createShapesGroup, shapeToWorld } from './collision-shapes.js';
 import { createArmVisibility } from './arm-visibility.js';
 import { createPathLine, setPathPoints, setPathPointCount } from './path-lines.js';
 import { fitAuxiliaryCamera } from './auxiliary-views.js';
@@ -8,6 +9,28 @@ import { viewDirection } from './view-cube.js';
 import { outsideSpan } from './session.js';
 
 export const ANIMATION_FPS = 30;
+// What an export draws besides the robots (the dialog's Show choices). Each hides one kind of
+// geometry the viewport shows: obstacles and sphere covers of collision rows, the displayed
+// prediction, the recorded tool paths, and the task target with its reference.
+export const EXPORT_SHOW_DEFAULTS = Object.freeze({ collision: true, covers: false, prediction: true, paths: true, reference: true });
+
+/** Live's segments with collision rows: generation to the obstacles of every shape
+ * ({obstacles, capsules, boxes, planes}) and the body cover in the world (placed by the
+ * segment's world_from_root), the arm cover by link and the root origin (plane patches). */
+export function collisionSegmentsInWorld(segments = []) {
+  const result = new Map();
+  for (const { generation, collision, world_from_root: matrix } of segments) {
+    if (!collision || !matrix) continue;
+    const lists = Object.fromEntries(Object.entries(SHAPE_LISTS).map(([list, shape]) =>
+      [list, (collision[list] || []).map(values => shapeToWorld(shape, values, matrix))]));
+    result.set(generation, Object.freeze({ key: `${generation}`, lists, obstacles: lists.obstacles,
+      body: (collision.body || []).map(values => shapeToWorld('sphere', values, matrix)),
+      bodyCapsules: (collision.body_capsules || []).map(values => shapeToWorld('capsule', values, matrix)),
+      bodyBoxes: (collision.body_boxes || []).map(values => shapeToWorld('box', values, matrix)), arm: collision.arm || {},
+      reference: [matrix[0][3], matrix[1][3], matrix[2][3]] }));
+  }
+  return result;
+}
 
 // Regular 1/30 s samples, followed by the exact endpoint if it is off-grid.
 // The final frame holds for one encoded frame; a zero-length span is one frame.
@@ -82,7 +105,7 @@ export function disposeCaptureScene(scene) {
 /** Call once, synchronously, when Export is pressed. No playback/Live methods. */
 export function freezeAnimationSnapshot({ session, robot, scene, camera, cameraTarget, jointNames = [], liveHistory = [], liveState = null,
   mainReference = null, prediction = null, predictionVisible = true, predictionColor = 0x34d8d4, predictionOpacity = .95,
-  ghostOpacity = .35, interpolate = true, mainMaterialStyles } = {}) {
+  ghostOpacity = .35, interpolate = true, mainMaterialStyles, liveSegments = [] } = {}) {
   if (!session || !robot || !scene || !camera) throw new Error('The scene is not ready to export.');
   const tracks = Object.freeze(session.activeTracks.filter(track => track.visible !== false).map(track => Object.freeze({
     id: track.id, kind: track.kind, motion: track.motion, span: Object.freeze([...track.span]),
@@ -122,6 +145,7 @@ export function freezeAnimationSnapshot({ session, robot, scene, camera, cameraT
     scene: captureScene, robot: captureRobot, camera: camera.clone(), cameraTarget: cameraTarget?.clone?.() ?? new Vector3(0, 0, .8),
     jointNames: Object.freeze([...jointNames]), liveHistory: Object.freeze(liveHistory.map(({ state, plan }) => Object.freeze({ state, plan }))),
     liveState, livePlan: session.track?.('live')?.plan ?? null, mainReference, prediction,
+    liveCollision: collisionSegmentsInWorld(liveSegments),
     predictionVisible: Boolean(predictionVisible), predictionColor, predictionOpacity, ghostOpacity, interpolate });
 }
 
@@ -141,6 +165,7 @@ export function letterboxViewport(viewport, aspect) {
 
 export function createAnimationCapture(snapshot, options, { rendererFactory = settings => new WebGLRenderer(settings) } = {}) {
   const { width, height, views = 'main', orientation = 'current' } = options;
+  const show = { ...EXPORT_SHOW_DEFAULTS, ...options.show };
   const { scene, robot } = snapshot;
   const tracks = createTrackScene({ robot, scene, jointNames: snapshot.jointNames });
   const arm = createArmVisibility(robot);
@@ -156,6 +181,33 @@ export function createAnimationCapture(snapshot, options, { rendererFactory = se
   const reference = createPathLine(snapshot.mainReference?.points || [], { color: 0xffb547, dashed: true, name: 'export-reference' }); scene.add(reference);
   const marker = new Mesh(new SphereGeometry(.011, 16, 12), new MeshBasicMaterial({ color: 0xffffff, depthTest: false })); scene.add(marker);
   const target = new Mesh(new SphereGeometry(.022, 16, 12), new MeshBasicMaterial({ color: 0xffb547, wireframe: true, depthTest: false })); scene.add(target);
+  // Live's collision objects at each frame: the obstacles (and covers) of that frame's segment.
+  const collision = new Group(); collision.name = 'export-live-collision'; scene.add(collision);
+  const liveCollision = snapshot.liveCollision || new Map(), lastSegment = [...liveCollision.keys()].at(-1);
+  let collisionKey, armCover = null;
+  function showCollision(segment, shown) {
+    const key = shown && segment && (show.collision || show.covers) ? segment.key : null;
+    if (key !== collisionKey) {
+      collisionKey = key; armCover = null;
+      collision.children.slice().forEach(object => { object.traverse(item => { item.geometry?.dispose(); item.material?.dispose?.(); }); object.removeFromParent(); });
+      if (key) {
+        if (show.collision && Object.values(segment.lists).some(list => list.length)) {
+          collision.add(createShapesGroup(segment.lists, { name: 'export-obstacles', reference: segment.reference }));
+        }
+        if (show.covers && (segment.body.length || segment.bodyCapsules.length || segment.bodyBoxes.length)) {
+          collision.add(coverMeshes({ spheres: segment.body, capsules: segment.bodyCapsules, boxes: segment.bodyBoxes },
+            coverMaterial(), 'export-body-cover'));
+        }
+        if (show.covers && robot.joints?.arm_right_1_joint) { armCover = createArmCover(robot, segment.arm); collision.add(armCover.holder); }
+      }
+    }
+    if (armCover) {
+      // The arm cover follows the exported Live arm.
+      robot.joints.arm_right_1_joint.parent.updateWorldMatrix(true, false);
+      armCover.holder.matrix.copy(robot.joints.arm_right_1_joint.parent.matrixWorld);
+      for (const name of snapshot.jointNames) armCover.joints.get(name)?.setJointValue(robot.joints[name]?.angle ?? 0);
+    }
+  }
   const armStyles = new Map();
   robot.joints?.arm_right_1_joint?.traverse(object => {
     if (!object.isMesh) return;
@@ -163,7 +215,8 @@ export function createAnimationCapture(snapshot, options, { rendererFactory = se
   });
   let previousPrediction, disposed = false;
   function update(time) {
-    tracks.update({ tracks: snapshot.tracks, time, mainReference: snapshot.replayOnly ? null : snapshot.mainReference, opacity: snapshot.ghostOpacity });
+    tracks.update({ tracks: snapshot.tracks, time, mainReference: snapshot.replayOnly ? null : snapshot.mainReference, opacity: snapshot.ghostOpacity,
+      covers: show.covers, layers: { obstacles: show.collision, paths: show.paths, references: show.reference } });
     const selected = sampleAnimationHistory(snapshot.liveHistory, time, snapshot.interpolate);
     const state = selected?.state || snapshot.liveState;
     const shown = Boolean(main && !snapshot.replayOnly);
@@ -173,16 +226,18 @@ export function createAnimationCapture(snapshot, options, { rendererFactory = se
     let low = 0, high = traceIndices.length;
     while (low < high) { const middle = (low + high) >>> 1; if (traceIndices[middle] <= (selected?.index ?? -1)) low = middle + 1; else high = middle; }
     setPathPointCount(trace, low);
-    trace.visible = shown && !state?.start_pose_draft && trace.geometry.instanceCount > 0;
+    trace.visible = show.paths && shown && !state?.start_pose_draft && trace.geometry.instanceCount > 0;
     marker.visible = shown && Boolean(state?.ee_xyz) && !state?.start_pose_draft;
     if (marker.visible) marker.position.fromArray(state.ee_xyz);
-    reference.visible = shown && reference.userData.path.segmentCount > 0;
+    reference.visible = show.reference && shown && reference.userData.path.segmentCount > 0;
     const targetPoint = state?.target_xyz || snapshot.mainReference?.target_xyz;
-    target.visible = shown && Boolean(targetPoint);
+    target.visible = show.reference && shown && Boolean(targetPoint);
     if (target.visible) target.position.fromArray(targetPoint);
     const plan = snapshot.prediction || (shown ? (selected ? selected.plan : snapshot.livePlan) : null);
     if (plan !== previousPrediction) { setPathPoints(prediction, plan?.ee_xyz || []); previousPrediction = plan; }
-    prediction.visible = snapshot.predictionVisible && Boolean(plan?.ee_xyz?.length > 1);
+    prediction.visible = show.prediction && snapshot.predictionVisible && Boolean(plan?.ee_xyz?.length > 1);
+    scene.updateMatrixWorld(true);
+    showCollision(liveCollision.get(selected?.state?.generation ?? lastSegment), shown);
     scene.updateMatrixWorld(true);
   }
   update(snapshot.span[0]);
@@ -196,6 +251,10 @@ export function createAnimationCapture(snapshot, options, { rendererFactory = se
   }
   if (snapshot.predictionVisible) for (const point of snapshot.prediction?.ee_xyz || []) bounds.expandByPoint(new Vector3(...point));
   update(snapshot.span[1]); bounds.union(new Box3().setFromObject(robot)).union(tracks.bounds);
+  if (show.collision && !snapshot.replayOnly && main) for (const segment of liveCollision.values()) {
+    const shapes = createShapesGroup({ ...segment.lists, planes: [] });  // a plane is unbounded: no fitting extent
+    bounds.union(new Box3().setFromObject(shapes)); disposeCaptureScene(shapes);
+  }
   const cameras = animationLayout(width, height, views).map(viewport => {
     if (viewport.name === 'main') {
       const camera = snapshot.camera;
