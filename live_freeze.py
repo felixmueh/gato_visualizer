@@ -121,6 +121,19 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
     if goal is not None:
         # The segment's orientation goal at every state time, a world-frame rotation vector.
         arguments["reference_rotvec_rad"] = np.tile(np.asarray(goal, dtype=float), (len(states), 1))
+    collision = header.get("collision")
+    if collision is not None:
+        # The segment's collision rows, as tiago_mpc's exporter records them: obstacles and
+        # the environment (body cover, then obstacles) in ROOT_FRAME, the arm cover by link.
+        arguments.update(obstacles=deepcopy(collision["obstacles"]),
+                         collision_spheres=dict(environment=deepcopy(collision["body"] + collision["obstacles"]),
+                                                arm=deepcopy(collision["arm"])))
+        # Capsules, boxes and planes as tiago_mpc's exporter writes them: only when present;
+        # so are the body cover's capsules and boxes.
+        arguments.update({f"obstacle_{name}": deepcopy(collision[name])
+                          for name in ("capsules", "boxes", "planes") if collision.get(name)})
+        arguments.update({name: deepcopy(collision[name]) for name in ("body_capsules", "body_boxes")
+                          if collision.get(name)})
     if sent:
         arguments.update(torque_nm=np.asarray([record["torque_nm"] for record in sent]),
                          torque_time_s=np.asarray([record["sim_time_s"] for record in sent]))

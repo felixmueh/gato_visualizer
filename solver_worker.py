@@ -78,22 +78,88 @@ def solver_state(state):
     return x
 
 
+# Collision fields that only change GATO's runtime environment: the obstacles and the body cover.
+ENVIRONMENT_FIELDS = ("obstacles", "capsules", "boxes", "planes", "body")
+
+
+def environment_arguments(collision):
+    """set_collision_environment's arguments: Collision.environment() is a dict of them
+    (spheres, capsules, cuboids, planes), or the spheres alone in a source before capsules,
+    boxes and planes."""
+    environment = collision.environment()
+    return dict(environment) if isinstance(environment, dict) else dict(spheres=environment)
+
+
+def environment_only(current, params):
+    """Whether params differ from the loaded current only in the collision environment:
+    MpcParams.collision's obstacles and body cover (GATO's runtime environment).
+    The arm cover, posture, margin, mechanism and rho are compiled into the module or
+    installed with the rows, so they need a new Mpc."""
+    before, after = getattr(current, "collision", None), getattr(params, "collision", None)
+    if before is None or after is None:
+        return False
+    def strip(value, collision):
+        fields = {name: (None if name == "body" else ()) for name in ENVIRONMENT_FIELDS if hasattr(collision, name)}
+        return replace(value, collision=replace(collision, **fields))
+    return strip(current, before) == strip(params, after)
+
+
+def gpu_urdf_path(tiago, module, params, binary):
+    """The GPU URDF that Mpc loaded for params (tiago_mpc.mpc._plant): with collision rows
+    the arm's sphere cover replaces its collision meshes. Checked against the loaded
+    module's plant name, which hashes that file's bytes."""
+    collision = getattr(params, "collision", None)
+    if collision is None:
+        path = tiago.runtime_urdf(params.friction)
+    else:
+        from tiago_mpc.collision import arm_cover
+        path = tiago.runtime_urdf(params.friction, arm_cover(collision.arm))
+    name = Path(binary).name
+    if name.startswith("bsqpN"):  # a GATO module's name carries its plant, which hashes this file
+        plant = module.plant_name(path, params.friction, params.armature, params.friction_law)
+        if not name.startswith(f"bsqpN{params.N}_{plant}."):
+            raise ValueError(f"The GPU URDF {path} does not belong to the loaded module {name}")
+    return path
+
+
+def collision_spheres(params):
+    """The shapes of GATO's collision rows for display: the arm's cover by link (in the
+    links' frames), the body's cover (ROOT_FRAME: spheres, and body_capsules and body_boxes
+    where the stored cover has them) and the obstacles (ROOT_FRAME; spheres, and capsules,
+    boxes and planes in Collision's layouts where the source has them); None without rows.
+    The covers are tiago_mpc's stored ones (tiago_mpc/data/collision/)."""
+    collision = getattr(params, "collision", None)
+    if collision is None:
+        return None
+    from tiago_mpc.collision import arm_cover, body_cover, body_posture
+    spheres = lambda values: [[float(item) for item in sphere] for sphere in values]
+    body = dict(spheres=(), capsules=(), boxes=()) if collision.body is None else body_cover(collision.body)
+    return dict(arm={link: spheres(group) for link, group in arm_cover(collision.arm).items()},
+                body=spheres(body["spheres"]), body_capsules=spheres(body["capsules"]), body_boxes=spheres(body["boxes"]),
+                obstacles=spheres(collision.obstacles),
+                **{name: spheres(getattr(collision, name)) for name in ("capsules", "boxes", "planes") if hasattr(collision, name)},
+                mechanism=collision.mechanism,
+                margin_m=float(collision.margin_m), rho=float(collision.rho),
+                posture=body_posture(collision.body))
+
+
 class SolverSession:
     """tiago_mpc's Mpc for the configured MpcParams, and what the coordinator records."""
 
     def __init__(self, root):
-        from live_mpc import import_tiago
+        from live_mpc import body_joints, import_tiago
         from server import RobotKinematics
         self.tiago = import_tiago(root)
         self.root = Path(root).resolve()
         self.module = importlib.import_module("tiago_mpc.mpc")
         arm = self.tiago.arm_urdf()
-        self.kinematics = RobotKinematics(self.tiago.FULL_URDF, end_effector_frame=self.tiago.GRASP_FRAME,
+        self.kinematics = RobotKinematics(self.tiago.FULL_URDF, body_joints(root), end_effector_frame=self.tiago.GRASP_FRAME,
                                           reduced_urdf=arm)
         digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
         self.model_identity = dict(full_urdf_sha256=digest(self.tiago.FULL_URDF),
                                    native_urdf_sha256=digest(arm))
-        self.mpc = None
+        self.mpc = self.binary = self.requested = None
+        self.binary_sha256 = (None, None)  # (path, SHA256) of the loaded module, hashed once per module
         self.restarted = True
         self.seed = None  # (state, reference) of the last reseed while no solve followed
 
@@ -101,10 +167,16 @@ class SolverSession:
         return dict(contract=model_contract(self.kinematics, self.tiago), model_identity=self.model_identity)
 
     def configure(self, params, max_sqp_iters=None, source_settings=None, settings_module=None):
-        """Mpc(params, find_binary(params)): loads a compiled module, never compiles."""
+        """Mpc(params, find_binary(params)): loads a compiled module, never compiles.
+
+        A change of only the collision environment (MpcParams.collision's obstacles or body
+        cover) keeps the loaded Mpc and uploads the new environment, as load_controller
+        does (GATO's set_collision_environment, callable between solves): the module, the
+        rows and every other setting are the same. The coordinator reseeds afterwards."""
         from inspection_problem import capture_constraint_bounds
         from live_mpc import LIMIT_KEYS, mpc_bounds_from_rows, urdf_joint_limits
         from tiago_mpc.record import to_dict
+        started = time.perf_counter()
         m = self.module
         from native_cost import native_params, validate_native_cost
         params = native_params(params)
@@ -119,33 +191,49 @@ class SolverSession:
         if max_sqp_iters is not None:
             params = replace(params, solver=replace(params.solver, max_sqp_iters=max_sqp_iters))
         validate_native_cost(params)
-        binary = m.find_binary(params)
-        if binary is None:
-            raise ValueError(f"Not compiled: N={params.N} {'with' if params.friction else 'without'} predictor "
-                             "friction. Build it in Settings › Backend (Build selected N).")
-        self.mpc = self.seed = None  # release previous buffers only after valid model lookup
-        self.mpc = m.Mpc(params, binary)
-        self.restarted = True
+        # Compared with the requested params: Mpc.params holds GATO's resolved values.
+        if self.mpc is not None and self.requested != params and environment_only(self.requested, params):
+            # The binary and installed rows stay; only GATO's runtime environment changes.
+            self.mpc.controller.solver.set_collision_environment(**environment_arguments(params.collision))
+            self.mpc.params = replace(self.mpc.params, collision=params.collision)
+            self.seed, kind, binary = None, "environment", self.binary
+        else:
+            binary = m.find_binary(params)
+            if binary is None:
+                raise ValueError(f"Not compiled: N={params.N} {'with' if params.friction else 'without'} predictor "
+                                 f"friction{'' if getattr(params, 'collision', None) is None else ' and with collision rows'}. "
+                                 "Build it in Settings › Backend (Build selected N).")
+            self.mpc = self.seed = None  # release previous buffers only after valid model lookup
+            self.mpc = m.Mpc(params, binary)
+            self.binary, kind = binary, "load"
+            if self.binary_sha256[0] != str(binary):
+                self.binary_sha256 = (str(binary), hashlib.sha256(Path(binary).read_bytes()).hexdigest())
+            # The module's GPU URDF; an environment update keeps both.
+            self.gpu_urdf_sha256 = hashlib.sha256(gpu_urdf_path(self.tiago, m, params, binary).read_bytes()).hexdigest()
+        self.requested, self.restarted = params, True
         solver = self.mpc.controller.solver
         rows = capture_constraint_bounds(solver)
         configuration = to_dict(params)
-        gpu_urdf = self.tiago.runtime_urdf(params.friction)
         self.configuration = configuration
-        self.model_identity = dict(self.model_identity, gpu_urdf_sha256=hashlib.sha256(gpu_urdf.read_bytes()).hexdigest(),
+        self.model_identity = dict(self.model_identity, gpu_urdf_sha256=self.gpu_urdf_sha256,
                                    end_effector_frame=self.tiago.GRASP_FRAME,
                                    armature=list(getattr(params, "armature", (0.,)*7)),
                                    friction=to_dict(params.friction))
         capture = (bool(getattr(solver.lib, "ITERATION_CAPTURE_AVAILABLE", False)) and
                    "capture_iterations" in inspect.signature(solver.solve).parameters)
-        return dict(capabilities=dict(iteration_capture=capture, exact_resume=False),
-                    binary=dict(path=str(binary), sha256=hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
-                                native_source_id=getattr(solver.lib, "NATIVE_SOURCE_ID", None)),
-                    joint_limits=urdf_joint_limits(self.tiago.limits()),
-                    mpc_bounds=mpc_bounds_from_rows(rows, {key: configuration[key] for key in LIMIT_KEYS}),
-                    constraint_bounds_native=rows, configuration=configuration, settings_resolution=resolution,
-                    resolved=to_dict(self.mpc.params),  # what GATO resolved, None followed its default
-                    model_identity=self.model_identity, prediction_friction=configuration["friction"],
-                    prediction_friction_law=configuration["friction_law"], armature=configuration["armature"])
+        result = dict(capabilities=dict(iteration_capture=capture, exact_resume=False),
+                      binary=dict(path=str(binary), sha256=self.binary_sha256[1],
+                                  native_source_id=getattr(solver.lib, "NATIVE_SOURCE_ID", None)),
+                      joint_limits=urdf_joint_limits(self.tiago.limits()),
+                      mpc_bounds=mpc_bounds_from_rows(rows, {key: configuration[key] for key in LIMIT_KEYS}),
+                      constraint_bounds_native=rows, configuration=configuration, settings_resolution=resolution,
+                      resolved=to_dict(self.mpc.params),  # what GATO resolved, None followed its default
+                      model_identity=self.model_identity, prediction_friction=configuration["friction"],
+                      prediction_friction_law=configuration["friction_law"], armature=configuration["armature"],
+                      collision=collision_spheres(params), configure=dict(kind=kind, wall_s=time.perf_counter()-started))
+        # Diagnostics log: one line per configuration (solver_process keeps the log).
+        print(f"configure ({kind}): {1e3 * result['configure']['wall_s']:.1f} ms", file=sys.stderr, flush=True)
+        return result
 
     def reset(self, state, time_s, reference):
         """Reseed the controller from a native state and the task reference for a request

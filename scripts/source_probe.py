@@ -92,7 +92,9 @@ def load_source(selection):
     # full model/assets and grasp-frame binding the restarted backend will construct.
     from server import RobotKinematics, canonical_model_assets
     canonical_model_assets(root)
-    kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.arm_urdf())
+    from live_mpc import body_joints
+    kinematics = RobotKinematics(tiago.FULL_URDF, body_joints(root), end_effector_frame=tiago.GRASP_FRAME,
+                                 reduced_urdf=tiago.arm_urdf())
     return tiago, mpc, kinematics, tiago.urdf_friction()
 
 

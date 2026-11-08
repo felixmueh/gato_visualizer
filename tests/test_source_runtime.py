@@ -382,7 +382,7 @@ class DisplaySourceTests(unittest.TestCase):
                 self.assertIs(loaded[3], friction)
                 imported.assert_called_once_with(root)
                 assets.assert_called_once_with(root)
-                kinematics.assert_called_once_with(root/'full.urdf', end_effector_frame='grasp', reduced_urdf=root/'reduced.urdf')
+                kinematics.assert_called_once_with(root/'full.urdf', {}, end_effector_frame='grasp', reduced_urdf=root/'reduced.urdf')
                 self.assertEqual(os.environ['GATO_CACHE_DIR'], str(root/'cache'))
                 del mpc.Mpc.request
                 with self.assertRaisesRegex(ValueError, 'lacks Mpc.request or Mpc.result'):

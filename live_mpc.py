@@ -108,6 +108,42 @@ def start_pose_spec(tiago):
                 upper=np.asarray(limits.upper, dtype=float).tolist())
 
 
+def body_joints(mpc_root):
+    """The fixed joints of Live's robot body: the posture at which the source's body cover
+    was fitted (tiago_mpc.collision.body_posture(), the default cover's), so the drawn body,
+    its cover and the obstacles line up. Empty for a source without collision rows: the
+    display's own posture (server.FIXED_DISPLAY_JOINTS)."""
+    if not (Path(mpc_root).expanduser() / "tiago_mpc/collision.py").is_file():
+        return {}
+    import_tiago(mpc_root)
+    posture = getattr(importlib.import_module("tiago_mpc.collision"), "body_posture", None)
+    return {} if posture is None else {name: float(value) for name, value in posture().items()}
+
+
+def model_inputs(config, predictor_values, schema):
+    """What the native model lookup of a Live draft depends on: its native config and
+    predictor adapter values without the fields annotated effect runtime (as the
+    browser's modelCheckInputs). Equal inputs reuse the accepted model's availability."""
+    def without(values, specs):
+        result = deepcopy(values)
+        for spec in specs:
+            if spec.get("effect") != "runtime":
+                continue
+            *parents, last = spec["path"].split(".")
+            parent = result
+            for key in parents:
+                parent = parent.get(key) if isinstance(parent, dict) else None
+            if isinstance(parent, dict):
+                parent.pop(last, None)
+        return result
+    predictor = schema.get("source_settings", {}).get("predictor", {}).get("parameters", [])
+    # The viewer's convenience cost weights stay as such (runtime); the menu they build
+    # depends otherwise only on N. A custom native menu is compared whole.
+    native = {key: value for key, value in config.items() if key != "plant"}
+    return (without(native, [spec for spec in schema["parameters"] if not spec["path"].startswith("plant.")]),
+            without(predictor_values or {}, predictor))
+
+
 def end_effector_spec(tiago):
     """The simulator's grasp frame and its local origin on the full display model."""
     from robot_frames import fixed_frame_spec
@@ -131,18 +167,24 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
     if "friction_law" in config:
         choices["friction_law"] = [dict(value=deepcopy(config["friction_law"]),
                                         label=f"tanh {config['friction_law']['width_rad_s']:g} rad/s")]
+    if "collision" in config:
+        # MpcParams.collision (a source with GATO's collision rows): the base value stays
+        # fixed; a source settings adapter that claims it resolves the rows.
+        choices["collision"] = [dict(value=deepcopy(config["collision"]),
+                                     label="Off" if config["collision"] is None else "Configured")]
     specs = []
     def visit(value, path=""):
         for key, item in value.items():
             if key == "type" or (not path and key == "cost"):
                 continue  # native serialization metadata, not a user parameter
             name = f"{path}.{key}" if path else key
-            if isinstance(item, dict) and name not in ("friction", "friction_law"):
+            if isinstance(item, dict) and name not in ("friction", "friction_law", "collision"):
                 visit(item, name)
                 continue
             spec = dict(path=name, label=LABELS.get(name, LABELS.get(key, key.replace("_", " ").capitalize())),
                         group="Friction" if name in FRICTION_PATHS else "Costs" if key.endswith("cost") or name.startswith("cost_weights.") else (
                             "Limit handling" if name.startswith(("plant.clip_effort", "plant.stop_on_breach.")) else
+                            "Collision rows" if name == "collision" else
                             "ADMM" if name.startswith("admm.") else "Limits" if name in LIMIT_KEYS else "Solver"),
                         scale="linear", effect="runtime" if name.startswith("plant.") else PARAMETER_EFFECTS.get(name, "compiled_model"))
             if name in DESCRIPTIONS:
@@ -448,6 +490,9 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_s
         if any(native == owner or native.startswith(owner + ".") for owner in role_settings[role]["controls"]):
             spec.update(controlled_by_source=True, source_role=role,
                         effective_path=("plant." if role == "simulation" else "params.") + native)
+            # The adapter resolves it: neither fixed nor edited here.
+            if spec.pop("disabled", False):
+                spec["label"] = spec["label"].removesuffix(" (fixed)")
     grasp = end_effector if end_effector is not None else end_effector_spec(import_tiago(mpc_root))
     return dict(available_N_by_friction=by_mode, available_N=available, friction=friction,
                 **({"supported_N": offered} if "supported_N" in probe else {}),

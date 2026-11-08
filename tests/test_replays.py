@@ -17,8 +17,9 @@ import numpy as np
 
 from replay_format import JOINT_NAMES, ReplayError, load_replay, model_sha256
 from replay_library import ReplayLibrary, UploadConflict
-from server import RobotKinematics, load_scene, make_server, replay_scene
+from server import RobotKinematics, load_scene, make_server, replay_motion, replay_scene
 
+from live_mpc import import_tiago
 from tiago_mpc_source import MODEL, MPC_ROOT, REPLAY_EXPORTER, replay_exporter, start_pose
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -272,7 +273,36 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(scene["fixed_joints"]["torso_lift_joint"], .15)
         self.assertEqual(recorded["metadata"]["time_basis"], "wall")
         self.assertEqual(plan["metadata"]["recorded_start_s"], .015)
-        self.assertEqual(self.base_scene["fixed_joints"]["torso_lift_joint"], 0)
+        from live_mpc import body_joints  # Live's body posture (display posture without collision rows)
+        self.assertEqual(self.base_scene["fixed_joints"]["torso_lift_joint"], body_joints(MPC_ROOT).get("torso_lift_joint", 0))
+
+    def test_obstacles_and_environment_move_with_the_recorded_torso_and_arm_spheres_keep_their_links(self):
+        # An obstacle at the flange in torso_lift_link (the reduced arm's root) is at the
+        # full model's flange, with the recorded torso lift.
+        flange = import_tiago(MPC_ROOT).fk(self.q[0], "arm_right_tool_joint").tolist()
+        arm = {"arm_right_7_link": [[0, 0, .1, .04]]}
+        path = self.folder / "spheres.npz"
+        path.write_bytes(self.rewritten(metadata=dict(
+            fixed_joints=dict(torso_lift_joint=.15), obstacles=[[*flange, .05]],
+            collision_spheres=dict(environment=[[*flange, .1]], arm=arm), body_capsules=[[*flange, *flange, .02]],
+            body_boxes=[[*flange, 0., 0., 0., 1., .1, .1, .1]])).getvalue())
+        motion = replay_motion(load_replay(path, model_urdf=MODEL), path, MPC_ROOT, self.base_scene)
+        world = RobotKinematics(MODEL, fixed_joints=dict(torso_lift_joint=.15),
+                                end_effector_frame="arm_right_tool_joint").ee_positions(self.q[:1])[0]
+        np.testing.assert_allclose(motion["obstacles"], [[*world, .05]], atol=1e-12)
+        np.testing.assert_allclose(motion["collision_spheres"]["environment"], [[*world, .1]], atol=1e-12)
+        self.assertEqual(motion["collision_spheres"]["arm"], arm)
+        np.testing.assert_allclose(motion["collision_spheres"]["body_capsules"], [[*world, *world, .02]], atol=1e-12)
+        np.testing.assert_allclose(motion["collision_spheres"]["body_boxes"][0][:3], world, atol=1e-12)
+        plain = replay_motion(load_replay(self.path, model_urdf=MODEL), self.path, MPC_ROOT, self.base_scene)
+        self.assertEqual((plain["obstacles"], plain["collision_spheres"]), (None, None))
+        for metadata, message in ((dict(obstacles=[[0, 0, 0, 0]]), "positive radii"),
+                                  (dict(obstacles=[[0, 0, 0]]), "spheres"),
+                                  (dict(collision_spheres=dict(arm={})), "environment and arm"),
+                                  (dict(body_boxes=[[0.] * 10]), "body_boxes"),
+                                  (dict(collision_spheres=dict(environment=[], arm=dict(arm_right_9_link=[]))), "link")):
+            with self.assertRaisesRegex(ReplayError, message):
+                load_replay(self.rewritten(metadata=metadata), model_urdf=MODEL)
 
     def test_object_arrays_and_lying_npy_headers_are_rejected_before_allocation(self):
         with self.assertRaisesRegex(ReplayError, "Object/pickle"):

@@ -401,7 +401,13 @@ class ProcessLiveService:
                                                                   check_available=not exact_model)
             request["source_settings"] = validate_source_settings(self.schema, request.get("source_settings",
                 getattr(self, "source_settings", None)))
-            if exact_model and not presentation_only:
+            # Edits of fields annotated runtime keep the accepted model: no native lookup
+            # (a fresh interpreter, seconds when it fits collision covers) on each edit.
+            from live_mpc import model_inputs
+            same_model = (model_inputs(request["config"], request["source_settings"]["predictor"], self.schema)
+                          == model_inputs(self.config, getattr(self, "source_settings", {}).get("predictor"), self.schema)
+                          and request["config"]["N"] in self.schema.get("available_N", []))
+            if exact_model and not presentation_only and not same_model:
                 from source_runtime import probe_selection
                 role = self.schema["source_settings"]["predictor"]
                 checked_model = probe_selection(self.active_profile, params=mpc_params(request["config"]),

@@ -47,7 +47,9 @@ def live_probe():
         from solver_process import model_contract
         tiago = import_tiago(MPC_ROOT)
         mpc = importlib.import_module("tiago_mpc.mpc")
-        kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME, reduced_urdf=tiago.arm_urdf())
+        from live_mpc import body_joints
+        kinematics = RobotKinematics(tiago.FULL_URDF, body_joints(MPC_ROOT), end_effector_frame=tiago.GRASP_FRAME,
+                                     reduced_urdf=tiago.arm_urdf())
         from tiago_mpc.record import to_dict
         from worktree_settings import describe_settings, resolve_predictor
         description = describe_settings(MPC_ROOT)

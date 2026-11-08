@@ -41,12 +41,28 @@ class SourceDefinedTests(unittest.TestCase):
                 requested["predictor"]["armature_on"] = False
             unavailable = dict(compatible=True, available_N=[], available_N_by_friction=dict(off=[], on=[]),
                                exact_availability=True, effective_settings=dict(params=deepcopy(before["config"])))
+            # Predictor friction is a compiled variant: the draft needs a native lookup.
+            friction = next(spec for spec in live.schema["parameters"] if spec["path"] == "friction")["choices"][1]["value"]
             with patch("source_runtime.probe_selection", return_value=unavailable) as probe:
                 with self.assertRaisesRegex(ValueError, "Not compiled.*requested predictor"):
-                    live.command(dict(type="patch_settings", patch=dict(source_settings=requested)))
+                    live.command(dict(type="patch_settings", patch=dict(source_settings=requested,
+                                                                         config=dict(friction=friction))))
             self.assertEqual(live.settings_snapshot(), before)
             self.assertEqual(probe.call_args.kwargs["source_settings"], requested["predictor"])
             self.assertIn("source_settings_module", probe.call_args.kwargs)
+        finally:
+            live.close()
+
+    def test_runtime_only_edits_reuse_the_accepted_model_without_a_lookup(self):
+        live = ProcessLiveService(MPC_ROOT, adapter_factory=FakeAdapter, schema_factory=exact_fake_schema,
+                                  worker_target=fake_worker, render_factory=FakeRenderer)
+        try:
+            before = live.settings_snapshot()
+            with patch("source_runtime.probe_selection") as probe:
+                live.command(dict(type="patch_settings", patch=dict(config=dict(cost_weights=dict(position=5.)))))
+                probe.assert_not_called()
+            self.assertEqual(live.settings_snapshot()["config"]["cost_weights"]["position"], 5.)
+            self.assertEqual(live.settings_snapshot()["available_N"], before["available_N"])
         finally:
             live.close()
 

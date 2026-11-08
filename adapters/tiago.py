@@ -15,7 +15,7 @@ LABELS = {"N": "Knot points", "dt_s": "Knot interval (s)", "cost_weights.positio
           "warmup": "Warm-up solve", "max_sqp_time_s": "SQP time limit (s)",
           "plant.clip_effort": "Clip effort", "plant.stop_on_breach.position": "Joint limits",
           "plant.stop_on_breach.velocity": "Velocity", "plant.stop_on_breach.torque": "Torque",
-          "plant.start_pose_rad": "Start pose"}
+          "plant.start_pose_rad": "Start pose", "collision": "Collision"}
 
 DESCRIPTIONS = {
     "cost_weights.orientation": "Running grasp orientation weight on ½·w·|log(R_goalᵀ R)|²; disabled at knots without a target.",
@@ -36,7 +36,9 @@ DESCRIPTIONS = {
     "plant.stop_on_breach.torque": "Pause where the torque applied to the simulated plant (after clipping) "
                                    "exceeds its URDF effort limit",
     "plant.start_pose_rad": "Native joint positions the simulated arm starts from at t = 0, velocities zero; "
-                            "within the URDF position limits"}
+                            "within the URDF position limits",
+    "collision": "GATO's collision rows against the body and obstacles (MpcParams.collision); off: none. "
+                 "A source settings adapter may set them"}
 
 RANGES = {"dt_s": (.001, .1), "solver.max_sqp_iters": (1, 100000), "solver.max_pcg_iters": (1, 1000000),
           "solver.pcg_tol": (1e-8, 1), "solver.solve_ratio": (.001, 1), "solver.mu": (1e-6, 1e5),

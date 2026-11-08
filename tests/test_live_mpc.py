@@ -115,7 +115,7 @@ class SettingsTests(unittest.TestCase):
         self.assertNotIn("ee_frame", config)
         self.assertEqual(set(specs), {"N", "dt_s", "warm_start", "reset_rho_each_step", "admm_linsys",
             "admm_threshold", "linsys", "bdsv_threshold", "reseed_threshold", "joint_margin_rad", "velocity_fraction", "effort_fraction", "friction", "friction_law", "warmup", "max_sqp_time_s",
-            *(["armature"] if "armature" in config else []),
+            *(["armature"] if "armature" in config else []), *(["collision"] if "collision" in config else []),
             "plant.integrator", "plant.friction", "plant.coulomb_law", "plant.friction_width_rad_s", "plant.clip_effort", "plant.stop_on_breach.position", "plant.stop_on_breach.velocity",
             "plant.stop_on_breach.torque", "plant.start_pose_rad", *(f"cost_weights.{key}" for key in config.get("cost_weights", {})), *(f"solver.{key}" for key in config["solver"] if key != "type"), *(f"admm.{key}" for key in config["admm"] if key != "type")})
         gato_default = dict(value=None, label="GATO default")  # MpcParams' None follows GATO

@@ -87,13 +87,22 @@ def run_again_capability(plan):
     return dict(available=True, reason=None, initialization="cold_state")
 
 
+# gato.rowkinds.KIND_COLLISION: GATO's collision clearance rows (tiago_mpc's
+# MpcParams.collision), appended after the three limit groups.
+COLLISION_KIND = 5
+
+
 def capture_constraint_bounds(solver):
-    """Retain the actual installed rows once after configuration, in native units."""
+    """Retain the actual installed limit rows once after configuration, in native units.
+
+    A collision row group may follow them. It is not captured here: MpcParams.collision
+    in the captured problem configuration installs it again, with its environment."""
     result = []
     groups = solver.get_row_groups()
-    if len(groups) != 3:
-        raise ValueError("Inspection supports exactly the configured position/velocity/torque box rows")
-    for i, group in enumerate(groups):
+    if len(groups) < 3 or any(int(group["kind"]) != COLLISION_KIND for group in groups[3:]):
+        raise ValueError("Inspection supports exactly the configured position/velocity/torque box rows"
+                         " and collision rows")
+    for i, group in enumerate(groups[:3]):
         if int(group["kind"]) != i or int(group["n_rows"]) != 7:
             raise ValueError("Unexpected configured constraint row topology")
         native = deepcopy(dict(group))

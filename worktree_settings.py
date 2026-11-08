@@ -48,6 +48,30 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+# Obstacle layouts (descriptor kind shapes, tiago_mpc.collision.Collision): sphere (x, y, z,
+# r), capsule (ax, ay, az, bx, by, bz, r), box (cx, cy, cz, qx, qy, qz, qw, hx, hy, hz;
+# quaternion xyzw, half-extents) and plane (nx, ny, nz, d; free side n.p >= d).
+SHAPE_WIDTHS = {"sphere": 4, "capsule": 7, "box": 10, "plane": 4}
+
+
+def _shape_valid(spec, item):
+    """Finite values of the shape's width; positions (and a plane's d) within bound, sizes in
+    (min_size, max_size], a nonzero quaternion or normal."""
+    shape = spec["shape"]
+    if not isinstance(item, list) or len(item) != SHAPE_WIDTHS[shape] or not all(_number(value) for value in item):
+        return False
+    bound, low, high = spec.get("bound", math.inf), spec.get("min_size", 0), spec.get("max_size", math.inf)
+    sized = lambda values: all(low < value <= high for value in values)
+    within = lambda values: all(abs(value) <= bound for value in values)
+    if shape == "sphere":
+        return within(item[:3]) and sized(item[3:])
+    if shape == "capsule":
+        return within(item[:6]) and sized(item[6:])
+    if shape == "box":
+        return within(item[:3]) and math.hypot(*item[3:7]) > 1e-9 and sized(item[7:])
+    return math.hypot(*item[:3]) > 1e-9 and within(item[3:])
+
+
 def _check_value(spec, value):
     kind = spec["kind"]
     if kind == "bool":
@@ -55,6 +79,9 @@ def _check_value(spec, value):
     elif kind == "choice":
         valid = any(type(value) is type(choice) and value == choice
                     for choice in map(choice_value, spec["choices"]))
+    elif kind == "shapes":
+        valid = isinstance(value, list) and len(value) <= spec.get("max_count", math.inf) and all(
+            _shape_valid(spec, item) for item in value)
     elif value is None:
         valid = bool(spec.get("nullable")) and kind != "vector"
     else:
@@ -107,8 +134,18 @@ def validate_description(value):
                 raise ValueError(f"{role}: duplicate parameter {spec['path']}")
             paths.add(spec["path"])
             kind = spec.get("kind")
-            if kind not in ("bool", "float", "int", "choice", "vector"):
+            if kind not in ("bool", "float", "int", "choice", "vector", "shapes"):
                 raise ValueError(f"{role}.{spec['path']}: unsupported kind {kind!r}")
+            if kind == "shapes":
+                # A list of obstacles of one shape (SHAPE_WIDTHS): positions within ±bound,
+                # sizes (radius, half-extent) in (min_size, max_size], at most max_count.
+                if spec.get("shape") not in SHAPE_WIDTHS:
+                    raise ValueError(f"{role}.{spec['path']}: shape must be one of {sorted(SHAPE_WIDTHS)}")
+                for key in ("bound", "min_size", "max_size", "default_size"):
+                    if key in spec and (not _number(spec[key]) or spec[key] < 0):
+                        raise ValueError(f"{role}.{spec['path']}: {key} must be finite and nonnegative")
+                if "max_count" in spec and (type(spec["max_count"]) is not int or spec["max_count"] < 1):
+                    raise ValueError(f"{role}.{spec['path']}: max_count must be a positive integer")
             if spec.get("effect", "runtime") not in ("runtime", "compiled_model"):
                 raise ValueError(f"{role}.{spec['path']}: effect must be runtime or compiled_model")
             for key in ("min", "max"):

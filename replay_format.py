@@ -175,6 +175,52 @@ def _fixed_joints(value, model_urdf):
         _number(angle, f"fixed_joints.{name}")
 
 
+def _spheres(value, name):
+    if (not isinstance(value, list) or any(not isinstance(s, list) or len(s) != 4 for s in value)
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for s in value for v in s)
+            or any(s[3] <= 0 for s in value)):
+        raise ReplayError(f"{name} must be a list of spheres [x, y, z, radius] with finite values and positive radii")
+
+
+# Further obstacles (tiago_mpc.collision.Collision's layouts): row width and the columns
+# that are sizes (positive): capsules (ax, ay, az, bx, by, bz, r), boxes (cx, cy, cz, qx,
+# qy, qz, qw, hx, hy, hz), planes (nx, ny, nz, d) with a nonzero normal.
+OBSTACLE_SHAPES = {"obstacle_capsules": (7, (6,)), "obstacle_boxes": (10, (7, 8, 9)), "obstacle_planes": (4, ())}
+# The body cover's capsules and boxes of an MPC's collision rows, in the same layouts.
+BODY_SHAPES = {"body_capsules": (7, (6,)), "body_boxes": (10, (7, 8, 9))}
+
+
+def _primitives(value, name, width, sizes):
+    if (not isinstance(value, list) or any(not isinstance(row, list) or len(row) != width for row in value)
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for row in value for v in row)
+            or any(row[i] <= 0 for row in value for i in sizes)
+            or (name in ("obstacle_boxes", "body_boxes") and any(math.hypot(*row[3:7]) < 1e-9 for row in value))
+            or (name == "obstacle_planes" and any(math.hypot(*row[:3]) < 1e-9 for row in value))):
+        raise ReplayError(f"{name} must be a list of rows of {width} finite values with positive sizes")
+
+
+def _collision(metadata, model_urdf):
+    """Optional obstacles (spheres, capsules, boxes, planes), collision_spheres and the body
+    cover's capsules and boxes: in torso_lift_link, the arm's in its links' frames, whose
+    names the displayed model must have."""
+    if "obstacles" in metadata:
+        _spheres(metadata["obstacles"], "obstacles")
+    for name, (width, sizes) in {**OBSTACLE_SHAPES, **BODY_SHAPES}.items():
+        if name in metadata:
+            _primitives(metadata[name], name, width, sizes)
+    if "collision_spheres" not in metadata:
+        return
+    value = metadata["collision_spheres"]
+    if not isinstance(value, dict) or set(value) != {"environment", "arm"} or not isinstance(value["arm"], dict):
+        raise ReplayError("collision_spheres must be an object with environment and arm")
+    _spheres(value["environment"], "collision_spheres.environment")
+    links = {link.get("name") for link in ET.parse(model_urdf).getroot().findall("link")}
+    for link, spheres in value["arm"].items():
+        if link not in links:
+            raise ReplayError(f"collision_spheres.arm names a link the model does not have: {link}")
+        _spheres(spheres, f"collision_spheres.arm.{link}")
+
+
 def _telemetry(archive, times, order, qd_key=None, torque_key=None, torque_time_key=None):
     qd = None if qd_key is None else _numeric(archive, qd_key, (len(times), 7))[:, order]
     if torque_key is None:
@@ -300,6 +346,7 @@ def load_replay(source, *, model_urdf):
                 or not metadata["end_effector_frame"].strip()):
             raise ReplayError("end_effector_frame must be a nonempty fixed-joint name")
         _fixed_joints(metadata.get("fixed_joints", {}), model_urdf)
+        _collision(metadata, model_urdf)
         times = _times(archive, "time_s")
         q = _numeric(archive, "q", (len(times), 7))[:, order]
         qd, torque, torque_times = _telemetry(archive, times, order,

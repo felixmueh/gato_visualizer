@@ -95,9 +95,10 @@ class LiveRenderer:
         end_effector_frame = context["end_effector_frame"] if captured is not None else None
         if captured is not None and (self.kinematics is None or
                 self.kinematics.end_effector_frame != end_effector_frame):
+            from live_mpc import body_joints
             from server import RobotKinematics
             self.kinematics = RobotKinematics(self.mpc_root / "models/tiago_pro/tiago_pro.urdf",
-                                             end_effector_frame=end_effector_frame)
+                                             body_joints(self.mpc_root), end_effector_frame=end_effector_frame)
         result = []
         if plan is not None:
             result.append(render_plan(plan, self.kinematics))

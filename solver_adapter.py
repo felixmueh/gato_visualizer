@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from live_mpc import (POSITION_TOL_M, REACH_DEFAULT_TASK, SPEED_L1_TOL_RAD_S, figure8_reference,
+from live_mpc import (POSITION_TOL_M, REACH_DEFAULT_TASK, SPEED_L1_TOL_RAD_S, body_joints, figure8_reference,
                       end_effector_spec, import_tiago, mpc_params, orientation_goal, source_identity, start_pose_spec)
 from live_presentation import mutable, snapshot
 from solver_process import SolverProcess, model_contract, reference_to_wire, validate_contract
@@ -33,7 +33,8 @@ class SimulatorAdapter:
         self.mpc_root = Path(mpc_root).resolve()
         self.tiago = tiago = import_tiago(self.mpc_root)
         arm = tiago.arm_urdf()
-        self.kinematics = RobotKinematics(tiago.FULL_URDF, end_effector_frame=tiago.GRASP_FRAME,
+        # Live's body stays at the source's collision posture (live_mpc.body_joints).
+        self.kinematics = RobotKinematics(tiago.FULL_URDF, body_joints(self.mpc_root), end_effector_frame=tiago.GRASP_FRAME,
                                           reduced_urdf=arm)
         self.contract = model_contract(self.kinematics, tiago)
         digest = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -146,6 +147,12 @@ class SimulatorAdapter:
         self.settings = dict(config=deepcopy(config), task=deepcopy(task), source_settings=deepcopy(values))
         self.configure_task(predictor["configuration"]["N"], predictor["configuration"]["dt_s"], task)
         self.joint_limits, self.mpc_bounds = predictor["joint_limits"], predictor["mpc_bounds"]
+        # The spheres the rows see, for display and freezes (solver_worker.collision_spheres):
+        # body cover and obstacles in ROOT_FRAME, which world_from_root places at Live's
+        # body posture; the arm's cover by link. None without rows.
+        self.collision = deepcopy(predictor.get("collision"))
+        if self.collision is not None and self.collision["posture"] != body_joints(self.mpc_root):
+            raise ValueError("The collision rows' body posture differs from Live's drawn body (live_mpc.body_joints)")
         self.profile_identity = dict(profile=deepcopy(self.profile), process_epoch=self.remote.epoch,
             predictor=predictor, simulator=self.simulator_identity, coordinate_contract=self.contract,
             friction_differs=self.simulator_identity["friction"] != predictor["prediction_friction"],
@@ -161,7 +168,8 @@ class SimulatorAdapter:
             constraint_bounds_native=predictor["constraint_bounds_native"],
             simulator_identity=self.simulator_identity, solver_profile=self.profile_identity,
             position_tol_m=POSITION_TOL_M, speed_l1_tol_rad_s=SPEED_L1_TOL_RAD_S,
-            source=self.model_identity["source"]))
+            source=self.model_identity["source"], world_from_root=self.contract["world_from_reference"],
+            collision=self.collision))
         self._resolved_plant(1/self.execution.get("simulation_hz", 1000.))
         self.controller.reset(self.x)
 

@@ -268,6 +268,8 @@ def load_scene(mpc_root, start_pose=None):
     if len(start_pose) != len(JOINT_NAMES):
         raise SourceError("The start pose needs one position per right-arm joint")
     fixed_joints.update(zip(JOINT_NAMES, map(float, start_pose)))
+    from live_mpc import body_joints
+    fixed_joints.update(body_joints(mpc_root))  # Live's body at the source's collision posture
     urdf = Path(mpc_root) / "models/tiago_pro/tiago_pro.urdf"
     scene = dict(robot_url="/assets/robot.urdf", joint_names=JOINT_NAMES,
                  joint_limits=canonical_joint_limits(urdf),
@@ -296,9 +298,46 @@ def _reference_world(reference, kinematics):
     return points
 
 
+def obstacles_in_world(name, rows, transform):
+    """Recorded obstacles (tiago_mpc.collision layouts) from torso_lift_link into the world
+    by transform (a pin.SE3): sphere centres, capsule ends, a box's centre and orientation
+    (quaternion xyzw), a plane's normal (made unit) and offset."""
+    from scipy.spatial.transform import Rotation
+    rows = np.asarray(rows, dtype=float).reshape(-1, {"obstacles": 4, "obstacle_capsules": 7,
+                                                      "obstacle_boxes": 10, "obstacle_planes": 4}[name])
+    R, t = transform.rotation, transform.translation
+    point = lambda values: values @ R.T + t
+    if name == "obstacles":
+        return np.column_stack([point(rows[:, :3]), rows[:, 3]]).tolist()
+    if name == "obstacle_capsules":
+        return np.column_stack([point(rows[:, :3]), point(rows[:, 3:6]), rows[:, 6]]).tolist()
+    if name == "obstacle_boxes":
+        quaternions = (Rotation.from_matrix(R) * Rotation.from_quat(rows[:, 3:7])).as_quat() if len(rows) else rows[:, 3:7]
+        return np.column_stack([point(rows[:, :3]), quaternions, rows[:, 7:]]).tolist()
+    norms = np.linalg.norm(rows[:, :3], axis=1)
+    normals = rows[:, :3] / norms[:, None] @ R.T
+    return np.column_stack([normals, rows[:, 3] / norms + normals @ t]).tolist()
+
+
+def _collision_world(metadata, kinematics):
+    """The recorded obstacles and collision shapes for display: obstacles (spheres, capsules,
+    boxes, planes), the environment's spheres and the body cover's capsules and boxes from
+    torso_lift_link into the world at the recorded fixed joints; the arm's spheres stay in
+    their links' frames."""
+    transform = kinematics.world_from_torso
+    obstacles = {name: obstacles_in_world(name, metadata[name], transform) if name in metadata else None
+                 for name in ("obstacles", "obstacle_capsules", "obstacle_boxes", "obstacle_planes")}
+    spheres = metadata.get("collision_spheres")
+    body = {name: obstacles_in_world(f"obstacle_{name[5:]}", metadata.get(name, []), transform)
+            for name in ("body_capsules", "body_boxes")}
+    return obstacles, (None if spheres is None else dict(environment=obstacles_in_world("obstacles", spheres["environment"], transform),
+                                                          arm=deepcopy(spheres["arm"]), **body))
+
+
 def replay_motion(replay, path, mpc_root, base_scene):
     """A comparison track has recorded motion and no FK for saved predictions."""
     fixed, frame, kinematics = _replay_geometry(replay, mpc_root, base_scene)
+    obstacles, collision_spheres = _collision_world(replay.metadata, kinematics)
     result = dict(label=replay.metadata.get("label", path.stem), time_basis=replay.metadata["time_basis"],
                   end_effector_frame=frame, fixed_joints=fixed,
                   joint_limits=(replay.joint_limits or canonical_joint_limits(
@@ -306,6 +345,7 @@ def replay_motion(replay, path, mpc_root, base_scene):
                   model_warning=deepcopy(replay.model_warning), time_s=replay.time_s.tolist(), q=replay.q.tolist(),
                   ee_xyz=kinematics.ee_positions(replay.q).tolist(), reference_time_s=None, reference_xyz=None,
                   arm_base=kinematics.arm_base.tolist(), plan_count=len(replay.predictions),
+                  **obstacles, collision_spheres=collision_spheres,
                   provenance=deepcopy(replay.metadata.get("provenance", {})))
     if replay.reference is not None:
         points = _reference_world(replay.reference, kinematics)
