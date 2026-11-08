@@ -80,18 +80,19 @@ class WorktreeSettingsTests(unittest.TestCase):
         description = describe_settings(self.root)
         self.assertEqual(description["module"], dict(path=str(BUNDLED_ADAPTER),
                          sha256=hashlib.sha256(BUNDLED_ADAPTER.read_bytes()).hexdigest(), origin="bundled"))
-        # The standard adapter owns only the collision rows, off by default (MpcParams' default).
+        # The standard adapter's predictor settings (armature, friction, collision rows) default
+        # to the native values.
         self.assertTrue(has_predictor_settings(description))
-        self.assertEqual(description["predictor"]["controls"], ["collision"])
-        params = Params()
-        values = default_values(description)["predictor"]
-        actual, captured = resolve_predictor(self.root, values, params, serialized, expected_module=description["module"])
-        self.assertEqual(actual, params)
-        base, law = SimConfig(), DefaultLaw()
-        actual, actual_law, captured = resolve_simulation(self.root, {}, base, law, serialized)
-        self.assertIs(actual, base)
-        self.assertIs(actual_law, law)
-        self.assertEqual(captured["effective"]["plant"], serialized(base))
+        self.assertEqual(description["predictor"]["controls"], ["armature", "friction", "friction_law", "collision"])
+        import tiago_mpc as tm
+        values = default_values(description)
+        actual, captured = resolve_predictor(self.root, values["predictor"], tm.TIAGO, tm.to_dict,
+                                             expected_module=description["module"])
+        self.assertEqual(actual, tm.TIAGO)
+        base = tm.SimConfig()
+        actual, actual_law, captured = resolve_simulation(self.root, values["simulation"], base, tm.SampleKnot(), tm.to_dict)
+        self.assertEqual(actual, base)
+        self.assertEqual(actual_law, tm.SampleKnot())
 
     def test_local_override_wins_over_bundled_and_uses_its_own_identity(self):
         path = self.provider("def describe(): return {}\n")

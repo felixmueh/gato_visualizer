@@ -337,9 +337,8 @@ independently. The simulated plant defaults to semi-implicit Euler with the
 selected source's URDF friction and the constraint Coulomb law; the predictor
 defaults to loss-free. Euler also simulates plant friction with a tanh, sign or constraint Coulomb law
 (default constraint). Predictor friction and its separate `friction_law` select
-a compiled variant. The standard control fixes tanh width at 0.03 rad/s; the
-experimental friction adapter exposes its configured width and independent
-armature toggles. See [friction](docs/friction.md).
+a compiled variant. The standard adapter exposes the predictor's tanh width
+(default the native one) and independent plant/predictor armature toggles. See [friction](docs/friction.md).
 
 **Limit handling** (Felix, 2026-10-23): **Clip effort** (on by default) clips
 each command to ± the URDF effort limit before it reaches the simulated plant;

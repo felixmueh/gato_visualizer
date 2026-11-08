@@ -88,8 +88,9 @@ create portable recording fixtures.
 functions belong to this visualizer repository (`adapters/`). Features, such as
 the collision rows (2026-11-08), go into the bundled standard adapter
 `adapters/tiago.py`. An optional locally ignored `<checkout>/_visualizer/_settings.py`
-override remains only for a local experiment with a modified checkout; the current
-friction override is a relative symlink to `adapters/friction_compensation.py`.
+override remains only for a local experiment with a modified checkout. The friction
+controls (armature, predictor friction, execution laws) were folded into the
+standard adapter on 2026-11-08.
 Keep native algorithms/defaults in `tiago_mpc`; require no tracked visualizer
 hook or tests there. Preserve resolved values, actual adapter path/hash and
 explicit model availability/Build checks. See `docs/source-settings.md`.

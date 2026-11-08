@@ -137,7 +137,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(config["friction_law"], dict(type="Tanh", width_rad_s=width))
         self.assertEqual(specs["friction_law"]["choices"], [dict(value=config["friction_law"], label=f"tanh {width:g} rad/s")])
         self.assertEqual(specs["friction_law"]["effect"], "compiled_model")
-        self.assertTrue(specs["friction_law"]["disabled"])
+        self.assertTrue(specs["friction_law"]["controlled_by_source"])  # the standard adapter's width
         self.assertEqual(specs["solver.defect_exit"]["min"], 0.)
         self.assertEqual(config["solver"]["defect_exit"], 0.)
         self.assertEqual({key: specs["max_sqp_time_s"][key] for key in ("kind", "nullable", "min", "max")},

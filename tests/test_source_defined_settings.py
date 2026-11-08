@@ -249,8 +249,7 @@ class NativeProviderTests(unittest.TestCase):
         supplied = tm.ARMATURE_KG_M2
         self.assertEqual(plant.armature, supplied)
         self.assertIsInstance(plant.friction_law, tm.StickSlip)
-        prior = importlib.import_module("experiments.controller_tuning").TUNED_FEEDFORWARD.friction
-        self.assertEqual(plant.friction.coulomb_nm, prior.coulomb_nm)
+        self.assertEqual(plant.friction, base.friction)  # the plant keeps its own coefficients
         self.assertIsInstance(law, tm.FrictionFeedforward)
         self.assertIsInstance(law.base_law, tm.PlanFeedback)
         self.assertEqual(tm.from_dict(captured_sim["effective"]["law"]), law)

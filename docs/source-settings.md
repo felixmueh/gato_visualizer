@@ -18,13 +18,11 @@ it adds no tracked TIAGo files. The underscore prevents the plotter loader from
 importing it as a plot. An invalid file or broken symlink is a visible source
 error; the loader never silently falls back from a requested override.
 
-The friction adapter and its tests live in this repository:
-`adapters/friction_compensation.py` and `tests/test_friction_adapter.py`.
-The current friction worktree's ignored override is a relative symlink to that
-adapter, giving the code one owner. A local experiment can instead supply its
-own ordinary Python file. When its native feature becomes standard, promote
-the reviewed descriptors/builders into the bundled adapter and remove the
-local override. Controller algorithms, physics, native defaults and experiment
+The friction controls (2026-11-08, formerly `adapters/friction_compensation.py`)
+are part of the standard adapter; their tests are `tests/test_friction_adapter.py`.
+A local experiment can supply its own ordinary Python file as override; when its
+feature is wanted, promote the reviewed descriptors/builders into the bundled
+adapter and remove the local override. Controller algorithms, physics, native defaults and experiment
 presets stay in `tiago_mpc`; the browser receives ordinary JSON.
 
 ## Module API
@@ -69,7 +67,7 @@ the body posture is the body cover's (`tiago_mpc.collision.body_posture`). The
 native `collision` field itself is one fixed choice (its base value) that the
 adapter resolves.
 
-The first real example is `adapters/friction_compensation.py`.
+The standard adapter's simulation and friction controls:
 Laws use native `Command(requested, applied)` results and propagate native
 `Fault` results. A custom wrapper must preserve that contract; torque-array
 return values have no compatibility fallback. Execution safety and effort
@@ -79,6 +77,9 @@ scalar smoothing widths and default/PD/friction-FF/both. The per-joint armature
 and friction coefficients stay in code; effective native objects still record
 them. PD gains also stay in the tuned code preset. It changes no MPC costs or
 timing.
+The plant keeps its own friction coefficients (the URDF's when plant friction is on);
+feedforward uses the tuned friction prior. (The former friction adapter also set
+the plant's coefficients to that prior.)
 
 Descriptors use relative dotted `path`, `label`, optional `group`/`unit`/
 `description`, and `kind` (`bool`, `float`, `int`, `choice`, `vector`, `shapes`). A vector
@@ -248,10 +249,7 @@ new/unsupported fields. Historical segments and replays are never rewritten.
 
 ## Local setup
 
-The current friction checkout's ignored `_visualizer/_settings.py` points to
-`../../tiago_mpc_visualizer-friction-compensation/adapters/friction_compensation.py`.
-That relative sibling layout works on the host and in the container. Its local
-ignore entry is `/_visualizer/` in the TIAGo repository's `info/exclude`; no
+A local override's ignore entry is `/_visualizer/` in the TIAGo repository's `info/exclude`; no
 tracked `.gitignore` or package API was changed. Git shares that exclude file
 between linked worktrees. Tracked files would remain tracked despite this rule.
 

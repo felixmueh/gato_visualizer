@@ -138,11 +138,14 @@ class CollisionSourceTests(unittest.TestCase):
         checked = validate_description(description)
         native = self.collision.Collision()
         self.assertIsNone(self.tm.TIAGO.collision)  # the native default: no rows
-        self.assertEqual(checked["predictor"]["defaults"], dict(enabled=False, mechanism=native.mechanism, arm="exact",
+        defaults = {key: value for key, value in checked["predictor"]["defaults"].items()
+                    if key not in ("armature_on", "friction_on", "friction_width_rad_s")}
+        self.assertEqual(defaults, dict(enabled=False, mechanism=native.mechanism, arm="exact",
                                                                 body="balanced", margin_m=native.margin_m, obstacles=[],
                                                                 capsules=[], boxes=[], planes=[]))
-        self.assertEqual(checked["predictor"]["controls"], ["collision"])
-        effects = {spec["path"]: spec["effect"] for spec in checked["predictor"]["parameters"]}
+        self.assertEqual(checked["predictor"]["controls"], ["armature", "friction", "friction_law", "collision"])
+        effects = {spec["path"]: spec["effect"] for spec in checked["predictor"]["parameters"]
+                   if spec["path"] not in ("armature_on", "friction_on", "friction_width_rad_s")}
         self.assertEqual(effects, dict(enabled="compiled_model", mechanism="runtime", arm="compiled_model", body="runtime",
                                        margin_m="runtime", obstacles="runtime", capsules="runtime", boxes="runtime",
                                        planes="runtime"))
@@ -151,11 +154,11 @@ class CollisionSourceTests(unittest.TestCase):
         self.assertEqual(choices, dict(arm=["exact"], body=["balanced", "tighter", None]))  # the stored covers
         shapes = {spec["path"]: spec["shape"] for spec in checked["predictor"]["parameters"] if spec["kind"] == "shapes"}
         self.assertEqual(shapes, dict(obstacles="sphere", capsules="capsule", boxes="box", planes="plane"))
-        self.assertEqual(checked["simulation"], dict(defaults={}, parameters=[], controls=[]))  # SampleKnot stays
 
     def test_values_build_the_native_collision_rows_and_off_is_no_rows(self):
         tm = self.tm
-        values = dict(enabled=True, mechanism="telemetry", arm="exact", body=None, margin_m=.01, obstacles=OBSTACLES,
+        values = dict(armature_on=True, friction_on=False, friction_width_rad_s=tm.TIAGO.friction_law.width_rad_s,
+                      enabled=True, mechanism="telemetry", arm="exact", body=None, margin_m=.01, obstacles=OBSTACLES,
                       capsules=[[.3, -.5, -.2, .3, -.3, -.2, .04]], boxes=[[.3, -.4, -.2, 0., 0., 0., 1., .05, .1, .15]],
                       planes=[[0., 0., 2., -1.2]])
         params = self.adapter.build_predictor(values, tm.TIAGO)

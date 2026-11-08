@@ -157,14 +157,14 @@ simulator source, predictor settings to the active solver profile. Claimed nativ
 fields display actual resolved values read-only. Requested values, effective
 objects and provider identity are recorded. Source Apply reloads provider code.
 
-The actual friction adapter is `adapters/friction_compensation.py`; its tests
-also live in this visualizer repo. The friction worktree selects it through a
-locally ignored relative symlink, without tracked TIAGo integration files.
+The friction controls are part of the standard adapter `adapters/tiago.py`
+since 2026-11-08 (formerly `adapters/friction_compensation.py`, selected by a
+local override); its tests also live in this visualizer repo.
 New settings within these plant, predictor and law hooks can use an ignored
 worktree file. New widget kinds or scheduler behavior still require visualizer changes.
 No selected-source JavaScript is loaded. Main has the timing work only.
 See [the contract](docs/source-settings.md) and
-[the adapter](adapters/friction_compensation.py).
+[the adapter](adapters/tiago.py).
 
 ## Verification and remaining limitation
 

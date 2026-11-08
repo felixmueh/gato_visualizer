@@ -1,7 +1,6 @@
-"""CPU-only native construction for the experimental friction adapter.
+"""CPU-only native construction for the standard adapter's friction, armature and law controls.
 
-Run with the selected TIAGo checkout's interpreter and TIAGO_MPC_ROOT. Stable
-sources without the experimental native APIs skip before importing the adapter.
+Run with the selected TIAGo checkout's interpreter and TIAGO_MPC_ROOT.
 Joint coefficients and PD gains are code-owned; only widths and enable/law choices
 are accepted as scoped values.
 """
@@ -25,46 +24,38 @@ class FrictionAdapterTests(unittest.TestCase):
     def setUpClass(cls):
         import_tiago(MPC_ROOT)
         cls.tm = importlib.import_module("tiago_mpc")
-        required = ("PlanFeedback", "FrictionFeedforward", "inertia_gains")
-        missing = [name for name in required if not hasattr(cls.tm, name)]
-        for name in ("SimConfig", "MpcParams"):
-            for attribute in ("armature", "friction_law"):
-                if attribute not in {field.name for field in fields(getattr(cls.tm, name))}:
-                    missing.append(name + "." + attribute)
-        if missing:
-            raise unittest.SkipTest("Selected native source lacks experimental APIs: " + ", ".join(missing))
         preset_path = MPC_ROOT / "experiments/controller_tuning.py"
-        if not preset_path.is_file():
-            raise unittest.SkipTest("Selected source has no controller_tuning presets for this adapter")
         cls.presets = importlib.import_module("experiments.controller_tuning")
         if Path(cls.presets.__file__).resolve() != preset_path:
             raise RuntimeError("Controller-tuning presets did not import from the selected TIAGo source")
-        cls.settings = importlib.import_module("adapters.friction_compensation")
+        cls.settings = importlib.import_module("adapters.tiago")
 
     def test_fixed_descriptors_are_finite_complete_and_have_separate_native_ownership(self):
         tm, settings = self.tm, self.settings
         description = settings.describe()
         json.dumps(description, allow_nan=False)
         validate_description(description)
-        self.assertEqual(description["simulation"]["controls"], [
-            "armature", "friction.coulomb_nm", "friction.viscous_nm_s_per_rad", "law"])
-        self.assertEqual(description["predictor"]["controls"], ["armature", "friction", "friction_law"])
+        self.assertEqual(description["simulation"]["controls"], ["armature", "law"])
+        self.assertEqual(description["predictor"]["controls"], ["armature", "friction", "friction_law", "collision"])
         self.assertEqual(set(description["simulation"]["defaults"]),
                          {"armature_on", "law", "ff_width_rad_s"})
-        self.assertEqual(set(description["predictor"]["defaults"]),
-                         {"armature_on", "friction_on", "friction_width_rad_s"})
+        self.assertTrue({"armature_on", "friction_on", "friction_width_rad_s"} <= set(description["predictor"]["defaults"]))
+        friction_paths = ("armature_on", "friction_on", "friction_width_rad_s")
         for role in ("simulation", "predictor"):
             parameters = description[role]["parameters"]
             self.assertEqual({field["path"] for field in parameters}, description[role]["defaults"].keys())
             self.assertTrue(all(field.get("group") for field in parameters))
-            self.assertTrue(all(field["length"] == 7 and field["unit"]
-                                for field in parameters if field["kind"] == "vector"))
-            effect = "runtime" if role == "simulation" else "compiled_model"
-            self.assertTrue(all(field["effect"] == effect for field in parameters))
-            vectors = {field["path"] for field in parameters if field["kind"] == "vector"}
-            self.assertEqual(vectors, set())
+            if role == "simulation":
+                self.assertTrue(all(field["effect"] == "runtime" for field in parameters))
+            else:
+                self.assertTrue(all(field["effect"] == "compiled_model" for field in parameters if field["path"] in friction_paths))
+            self.assertEqual({field["path"] for field in parameters if field["kind"] == "vector"}, set())
         predictor = {field["path"]: field for field in description["predictor"]["parameters"]}
-        self.assertEqual(description["predictor"]["defaults"]["friction_width_rad_s"], .2)
+        # Defaults are the native ones: TIAGO's armature, no predictor friction, its tanh width.
+        defaults = description["predictor"]["defaults"]
+        self.assertEqual((defaults["armature_on"], defaults["friction_on"], defaults["friction_width_rad_s"]),
+                         (True, False, tm.TIAGO.friction_law.width_rad_s))
+        self.assertEqual(settings.build_predictor(defaults, tm.TIAGO), tm.TIAGO)
         self.assertNotIn("visible_if", predictor["friction_width_rad_s"])
         self.assertEqual(predictor["friction_width_rad_s"]["enabled_if"], {"friction_on": True})
         for role, path in (("simulation", "ff_width_rad_s"), ("predictor", "friction_width_rad_s")):
@@ -93,11 +84,9 @@ class FrictionAdapterTests(unittest.TestCase):
                 plant, law = settings.build_simulation(values, base)
                 self.assertEqual(plant.armature, tm.ARMATURE_KG_M2)
                 self.assertIsInstance(law, tm.SampleKnot)
-                self.assertEqual(plant.friction.coulomb_nm, self.presets.TUNED_FEEDFORWARD.friction.coulomb_nm)
-                self.assertEqual(plant.friction.viscous_nm_s_per_rad,
-                                 self.presets.TUNED_FEEDFORWARD.friction.viscous_nm_s_per_rad)
+                self.assertEqual(plant.friction, base.friction)  # the plant's own coefficients stay
                 self.assertIs(plant.friction_law, physical_law)
-                self.assertEqual(replace(plant, armature=base.armature, friction=base.friction), base)
+                self.assertEqual(replace(plant, armature=base.armature), base)
                 self.assertEqual(base.friction.coulomb_nm, (.4,) * 7)
                 self.assertEqual(tm.from_dict(json.loads(json.dumps(tm.to_dict(plant)))), plant)
 
@@ -111,7 +100,7 @@ class FrictionAdapterTests(unittest.TestCase):
         params = settings.build_predictor(predictor, replace(tm.TIAGO, friction=tm.urdf_friction()))
         self.assertEqual(plant.armature, (0.,) * 7)
         self.assertEqual(params.armature, (0.,) * 7)
-        self.assertIsNone(plant.friction)
+        self.assertIsNone(plant.friction)  # a loss-free base plant stays loss-free
         self.assertIsNone(params.friction)
         self.assertNotIn("armature", simulation)
         self.assertNotIn("armature", predictor)
@@ -161,8 +150,7 @@ class FrictionAdapterTests(unittest.TestCase):
             self.assertEqual(tm.from_dict(json.loads(json.dumps(tm.to_dict(params)))), params)
         plant, _ = settings.build_simulation(settings.describe()["simulation"]["defaults"],
                                               tm.SimConfig(friction=tm.urdf_friction(), integrator="euler"))
-        self.assertEqual(plant.friction.coulomb_nm[:4], (2.01, 2.39, 2.03, 1.91))
-        self.assertNotEqual(plant.friction.coulomb_nm, params.friction.coulomb_nm)
+        self.assertEqual(plant.friction, tm.urdf_friction())
 
     def test_requested_width_preserves_fixed_pd_gains_and_model_coefficients(self):
         tm, settings = self.tm, self.settings
@@ -176,7 +164,7 @@ class FrictionAdapterTests(unittest.TestCase):
         self.assertEqual(law, expected)
         self.assertEqual(law.base_law, tm.PlanFeedback())
         self.assertEqual(plant.armature, tm.ARMATURE_KG_M2)
-        self.assertEqual(plant.friction, prior)
+        self.assertEqual(plant.friction, base.friction)
         self.assertEqual(plant.friction_law, base.friction_law)
         plan = tm.Plan(1., .03, np.arange(42.).reshape(3, 14) / 100, np.arange(14.).reshape(2, 7), measured_t=1.)
         observed = tm.State(.99, np.linspace(-.1, .1, 7), np.full(7, -.1))

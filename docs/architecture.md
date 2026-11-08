@@ -18,7 +18,7 @@ This experimental branch also supports [visualizer-owned settings adapters](sour
 `adapters/tiago.py` owns standard display metadata and the standard controls
 (including the collision rows), with an optional ignored checkout-local override
 for local experiments with a modified checkout.
-The friction adapter and its tests live in this repository. This worktree
+Its friction tests are `tests/test_friction_adapter.py`. This worktree
 follows `tiago_mpc` main; older checkouts fail without fallbacks
 (AGENTS.md, Felix 2026-11-08).
 

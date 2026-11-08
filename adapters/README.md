@@ -1,14 +1,14 @@
 # TIAGo settings adapters
 
 The visualizer owns standard display metadata and settings adaptation in this
-directory. `tiago.py` is the default adapter: native settings remain those of
-the selected `tiago_mpc` package. `friction_compensation.py` supplies the
-experimental armature, plant-friction and execution-law controls for the
-friction-compensation worktree.
+directory. `tiago.py` is the standard adapter: native settings and defaults remain
+those of the selected `tiago_mpc` package; it adds the plant/predictor armature
+toggles, predictor friction and its tanh width, the execution law
+(plan torque, PD, friction feedforward, both) and the collision rows (2026-11-08).
 
 A checkout may select a different adapter through its optional, locally ignored
-`_visualizer/_settings.py`; a symlink to this directory selects the experimental
-adapter without copying its code into `tiago_mpc`. The local override takes
+`_visualizer/_settings.py`, only for a local experiment with a modified checkout;
+features go into `tiago.py`. The local override takes
 precedence over `tiago.py`. Source Apply reloads changed code and captures the
 resolved adapter's actual path and hash. See [source settings](../docs/source-settings.md)
 for loader, ownership and explicit Build behavior. Plot modules remain separate;
@@ -24,8 +24,8 @@ functions are CPU-only:
   the law returns `Command | Fault`, retaining requested and applied torque.
 - `build_predictor(values, base_mpc_params)` returns native `MpcParams`.
 
-Builders are only needed for the scopes an adapter claims. The default adapter
-returns no extra scopes, so ordinary native objects and `SampleKnot` are kept.
+Builders are only needed for the scopes an adapter claims. With its defaults the
+standard adapter resolves to the native objects (`TIAGO`, the base `SimConfig`) and `SampleKnot`.
 No adapter registry or installation into the selected environment is required.
 
 Pass complete values based on that scope's `defaults`; apply edits to a copy.
