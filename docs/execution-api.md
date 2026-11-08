@@ -124,7 +124,7 @@ background states. Figure-eight phase follows `sim_time_s`.
 
 **Obstacle edits keep On Play running (2026-11-02).** A settings edit pauses
 playback, except an edit of the Live obstacles in the viewport (move, resize,
-remove, paste) made while On Play plays;
+remove, paste) or a settings undo or redo (Ctrl+Z) made while On Play plays;
 typed values in the obstacle list pause as other settings do. A drag or scale submits once, when
 it ends. That edit starts its new segment from the state displayed
 when it is submitted, not when it began, and playback continues: the browser

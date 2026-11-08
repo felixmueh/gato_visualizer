@@ -36,6 +36,7 @@ import { setupIkPreview } from "./ik-preview.js";
 import { quaternionToRotvec } from "./rotations.js";
 import { setupJointEditor } from "./joint-editor.js";
 import { setupLiveObstacles } from "./live-obstacles.js";
+import { historyShortcut } from "./settings-history.js";
 import { setupViewCube } from "./view-cube.js";
 import { fitPerspectivePoints, objectWorldPoints, trajectoryFitPoints, TRAJECTORY_FIT_PADDING } from "./camera-fit.js";
 import { createPathLine, setPathPoints, setPathPointCount, pathLineInfo } from "./path-lines.js";
@@ -711,6 +712,14 @@ $("timeline").addEventListener("input", (event) => {
 $("trajectory-select").addEventListener("change", (event) =>
   selectTrajectory(event.target.value),
 );
+// Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y: the Live settings history, outside text fields and never
+// during a drag or scale (start pose, task anchor, obstacle).
+document.addEventListener("keydown", (event) => {
+  const action = historyShortcut(event);
+  if (!action || live?.mode !== "live" || session?.replayOnly) return;
+  if (jointEditor?.dragging || liveObstacles?.dragging || targetGizmo?.snapshot?.dragging) return;
+  if (action === "undo" ? live.undoSettings() : live.redoSettings()) event.preventDefault();
+});
 $("camera-home").addEventListener("click", () => setCamera("robot"));
 $("camera-arm").addEventListener("click", () => setCamera("trajectory"));
 document.addEventListener("keydown", (event) => {

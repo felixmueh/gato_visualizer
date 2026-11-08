@@ -454,7 +454,7 @@ same size and orientation where the pointer's ray meets the plane through the co
 normal to the view direction (the last pointer position over the viewport; without
 one, two radii to the right of the original), within the bounds and maximum count,
 and selects it. Cmd works as Ctrl. A drag or scale stays a draft and submits
-once, on release.
+once, on release, so it is one [settings undo](#settings-undo-and-redo) step.
 The keys belong to the viewport: inside a text field they keep their usual text
 meaning. A list's **+** adds an obstacle halfway between the displayed grasp
 point and the task target (at the one that exists when the other is missing) and selects it: a 5 cm sphere, a capsule along y
@@ -466,3 +466,26 @@ Play plays: such an edit continues from the displayed state without pausing
 ([execution](execution-api.md#settings-and-commands)).
 `window.__motionStudio.obstacles` exposes the draft, world and screen positions,
 selection, handles and drawn cover counts for browser checks.
+
+## Settings undo and redo
+
+**Ctrl+Z** (Cmd+Z) undoes, **Ctrl+Shift+Z** or **Ctrl+Y** redoes, a whole Live
+settings change (2026-11-03): the settings document that `/api/live/settings`
+versions, `config` (with the plant group and start pose), `task` (with its
+target), `execution` and `source_settings`. The browser keeps one entry per
+accepted settings version, whoever made it: a panel field, the viewport (start
+pose, task anchor, obstacles), another viewer or an agent. Undo makes the
+previous version's document the draft and submits it like any edit, with the
+same anchor, model check and Compile prompt, and the start-pose rule (a different
+start pose starts a new run at zero); when that version is accepted, the history
+moves back instead of adding an entry, so redo goes forward again. A new edit
+drops what was undone. The edits are not instrumented one by one; the history is
+of the accepted documents (`src/settings-history.js`).
+
+The keys are ignored inside text fields, which keep their own undo, and during a
+drag or scale. Undo and redo keep On Play playing as viewport obstacle edits do
+([execution](execution-api.md#settings-and-commands)). Each viewer has its own
+position in a history of up to 200 versions; a solver profile switch clears it.
+Not part of the history: presentation and view state (camera, panels, UI
+preferences), source and solver-profile selection, the transport and the tracks.
+`scripts/control.py` has no undo; an agent re-patches an earlier `get live`.

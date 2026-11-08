@@ -412,7 +412,9 @@ a capsule's end spheres and a box's face squares drag ends and faces;
 **S** scales radii and half-extents with the pointer
 (**Shift** finer, click applies, **Escape** cancels), **Delete** removes,
 **Ctrl+C**/**Ctrl+V** copy and paste at the pointer. Edits apply without a
-compile, also while On Play plays. Export animation's **Show** choices include collision objects and
+compile, also while On Play plays. **Ctrl+Z** undoes any Live settings change
+(**Ctrl+Shift+Z** or **Ctrl+Y** redoes), see
+[settings undo](docs/presentation.md#settings-undo-and-redo). Export animation's **Show** choices include collision objects and
 sphere covers.
 The collision-spheres toggle shows the body's and the arm's sphere covers.
 See [Live obstacles](docs/presentation.md#live-obstacles-and-collision-spheres).

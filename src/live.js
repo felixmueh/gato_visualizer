@@ -17,6 +17,7 @@ import { createVectorField, createWorktreeFields, restoreWorktreeSettings, field
 import { worldToRoot } from './live-obstacles.js';
 import { shapeToWorld } from './collision-shapes.js';
 import { clampShape } from './shape-layouts.js';
+import { createSettingsHistory } from './settings-history.js';
 import { createModelCompilation, createModelCompilePrompt, modelCheckInputs } from './model-compilation.js';
 import { canonicalTimeUnit, parseTimeValue, configureTimeInput, readTimeInput, setTimeInputValue } from './time-input.js';
 
@@ -268,6 +269,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   let playingHold = null;
   // A drag or scale of an obstacle is one gesture: it submits once, on release.
   let obstacleGesture = false, obstacleHighlight = null;
+  // Undo and redo: one entry per accepted settings version (settings-history.js). A drag or
+  // scale of an obstacle submits once, on release, so it is one entry.
+  const settingsHistory = createSettingsHistory({ equal: settingValuesEqual });
   // The predictor's obstacle lists (an adapter's descriptors of kind shapes).
   const shapeSettings = () => schema?.source_settings?.predictor?.parameters?.filter(parameter => parameter.kind === 'shapes') || [];
   const latestContext = () => segments.get(generation)?.context || [...segments.values()].at(-1)?.context;
@@ -337,6 +341,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (serverSettingsVersion === item.settings_version && settingValuesEqual(acceptedSettings, remote)) return;
     const numericalChange = serverSettingsVersion != null && item.settings_version !== serverSettingsVersion;
     const ownRequest = settingsRequests.find(request => request.version === item.settings_version && settingValuesEqual(request.settings, remote));
+    // Every accepted version, also another viewer's or an agent's, is one undo entry.
+    if (item.settings_version > 0) settingsHistory.accept(item.settings_version, remote);
     const before = ownRequest?.settings || acceptedSettings || submittedSettings || defaultSettings;
     const next = initial && item.settings_version > 0 ? cloneSettings(remote) : rebaseSettings(before, settings, remote);
     acceptedSettings = remote; serverSettingsVersion = item.settings_version; refreshGatoDefaults();
@@ -672,6 +678,16 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   function outlineObstacle() {
     for (const parameter of shapeSettings()) sourceFields?.field('predictor', parameter.path)?.highlight?.(
       obstacleHighlight?.path === parameter.path ? obstacleHighlight.index : null);
+  }
+  // An earlier settings document becomes the draft and is submitted as an ordinary edit:
+  // the same anchor, model check, Compile prompt and start-pose rule; Play keeps playing.
+  function applySettingsDocument(doc) {
+    if (!doc || mode !== 'live' || replayOnly || !liveReady || profileSwitching || profileUnavailable || obstacleGesture) return false;
+    settings = cloneSettings({ ...settings, ...doc }); poseDraft = null;
+    taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
+    populate(); change({ keepPlaying: true });
+    clearTimeout(settingsTimer); submitSettings();
+    return true;
   }
   // A new obstacle, in the rows' root frame, around the point halfway between the displayed
   // grasp point and the task target (without both, ahead of the torso): a sphere, a capsule
@@ -1511,6 +1527,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       const nextSettings = solverProfileSettings(nextSchema, settings);
       const retainedDrafts = [...taskDrafts];
       schema = nextSchema; effectiveSettings = schema.effective_settings || null;
+      settingsHistory.clear();  // documents of the previous profile need not fit this one
       modelCompilation?.invalidate();
       acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = nextSettings;
       taskDrafts.clear();
@@ -1660,6 +1677,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
         world_from_root: record.context?.world_from_root || null, collision: record.context?.collision || null }));
     },
     highlightObstacle(selection) { obstacleHighlight = selection ?? null; outlineObstacle(); },
+    /** Undo or redo one accepted settings version; false when there is none or an obstacle gesture runs. */
+    undoSettings() { return !obstacleGesture && applySettingsDocument(settingsHistory.undo()); },
+    redoSettings() { return !obstacleGesture && applySettingsDocument(settingsHistory.redo()); },
+    get settingsHistory() { return settingsHistory.snapshot; },
     // Editable in Live at the run start (t = 0), where the Joints tab shows the start
     // pose; the Joints lock decides whether it is edited. null outside Live.
     get startPose() {
