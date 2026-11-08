@@ -111,13 +111,10 @@ def start_pose_spec(tiago):
 def body_joints(mpc_root):
     """The fixed joints of Live's robot body: the posture at which the source's body cover
     was fitted (tiago_mpc.collision.body_posture(), the default cover's), so the drawn body,
-    its cover and the obstacles line up. Empty for a source without collision rows: the
-    display's own posture (server.FIXED_DISPLAY_JOINTS)."""
-    if not (Path(mpc_root).expanduser() / "tiago_mpc/collision.py").is_file():
-        return {}
+    its cover and the obstacles line up."""
     import_tiago(mpc_root)
-    posture = getattr(importlib.import_module("tiago_mpc.collision"), "body_posture", None)
-    return {} if posture is None else {name: float(value) for name, value in posture().items()}
+    from tiago_mpc.collision import body_posture
+    return {name: float(value) for name, value in body_posture().items()}
 
 
 def model_inputs(config, predictor_values, schema):
@@ -167,11 +164,10 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
     if "friction_law" in config:
         choices["friction_law"] = [dict(value=deepcopy(config["friction_law"]),
                                         label=f"tanh {config['friction_law']['width_rad_s']:g} rad/s")]
-    if "collision" in config:
-        # MpcParams.collision (a source with GATO's collision rows): the base value stays
-        # fixed; a source settings adapter that claims it resolves the rows.
-        choices["collision"] = [dict(value=deepcopy(config["collision"]),
-                                     label="Off" if config["collision"] is None else "Configured")]
+    # MpcParams.collision: the base value stays fixed; the standard adapter, which claims
+    # it, resolves the rows.
+    choices["collision"] = [dict(value=deepcopy(config["collision"]),
+                                 label="Off" if config["collision"] is None else "Configured")]
     specs = []
     def visit(value, path=""):
         for key, item in value.items():

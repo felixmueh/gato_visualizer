@@ -374,6 +374,7 @@ class DisplaySourceTests(unittest.TestCase):
                                   to_dict=lambda value: value, from_dict=lambda value: value, provenance=lambda: {})
             assets, kinematics = Mock(), Mock()
             with patch('live_mpc.import_tiago', return_value=tiago) as imported, \
+                 patch('live_mpc.body_joints', return_value={}), \
                  patch.object(script.importlib, 'import_module', return_value=mpc), \
                  patch.dict(sys.modules, {'server': SimpleNamespace(canonical_model_assets=assets, RobotKinematics=kinematics)}), \
                  patch.dict(os.environ):

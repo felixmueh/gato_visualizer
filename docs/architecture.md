@@ -15,11 +15,12 @@ GATO's cost menu, including the upstream gaps for exact cost curvature and
 optimizer inspection/continuation. It is a proposal, not the current contract.
 
 This experimental branch also supports [visualizer-owned settings adapters](source-settings.md):
-`adapters/tiago.py` owns standard display metadata, with an optional ignored
-checkout-local override for extra controls and native plant/law/predictor builders.
+`adapters/tiago.py` owns standard display metadata and the standard controls
+(including the collision rows), with an optional ignored checkout-local override
+for local experiments with a modified checkout.
 The friction adapter and its tests live in this repository. This worktree
-requires shared-loop hooks in the selected native source; older checkouts
-fail the source probe without a second scheduler fallback.
+follows `tiago_mpc` main; older checkouts fail without fallbacks
+(AGENTS.md, Felix 2026-11-08).
 
 The shared Live compilation UI uses a read-only selected-interpreter model check
 before accepting a draft. Supported N choices are independent of cached N.
@@ -122,7 +123,7 @@ The lifetime rules are part of these boundaries:
 | Browser scene and interaction wiring | [src/main.js](../src/main.js), [src/workbench-ui.js](../src/workbench-ui.js), [src/transport-popover.js](../src/transport-popover.js) | [README workspace](../README.md#workspace), [presentation](presentation.md) |
 | Solid arm visibility without hiding ghost clones | [src/arm-visibility.js](../src/arm-visibility.js) | [Session and tracks](presentation.md#session-and-tracks) |
 | Viewport start-pose joint rings and grasp translation | [src/joint-editor.js](../src/joint-editor.js), [src/arm-kinematics.js](../src/arm-kinematics.js), [robot_frames.py](../robot_frames.py) | [Viewport start-pose editing](presentation.md#viewport-start-pose-editing), [Live grasp metadata](live-api.md) |
-| Live obstacles and collision spheres: viewport drawing and editing, rows adapter, body posture | [src/live-obstacles.js](../src/live-obstacles.js), [adapters/obstacle_avoidance.py](../adapters/obstacle_avoidance.py), [solver_worker.py](../solver_worker.py) | [Live obstacles](presentation.md#live-obstacles-and-collision-spheres), [source settings](source-settings.md) |
+| Live obstacles and collision spheres: viewport drawing and editing, rows adapter, body posture | [src/live-obstacles.js](../src/live-obstacles.js), [adapters/tiago.py](../adapters/tiago.py), [solver_worker.py](../solver_worker.py) | [Live obstacles](presentation.md#live-obstacles-and-collision-spheres), [source settings](source-settings.md) |
 | Browser Live history, playback, settings | [src/live.js](../src/live.js), [src/live-history.js](../src/live-history.js), [src/live-execution.js](../src/live-execution.js), [src/presentation-settings.js](../src/presentation-settings.js) | [Execution](execution-api.md), [presentation](presentation.md) |
 | Browser history HTTP paging and stale-response rejection | [src/live-history-paging.js](../src/live-history-paging.js) | [Execution](execution-api.md) |
 | Prediction display/export selection and bounded downloads | [src/live-prediction.js](../src/live-prediction.js), [src/live-plan-cache.js](../src/live-plan-cache.js) | [Presentation](presentation.md) |

@@ -69,6 +69,13 @@ the configurable path (`--mpc-root` / `TIAGO_MPC_ROOT`, default
 `../tiago_mpc-visualizer-base`). Do not add a submodule or move this repository unless Felix
 decides so.
 
+**Sources follow tiago_mpc main — Felix, 2026-11-08.** The visualizer supports
+`tiago_mpc` main and branches based on it; it keeps no backwards compatibility with
+older `tiago_mpc` interfaces (no detection, no fallbacks; an older source may fail
+loudly). Selecting another checkout (Source / Build, `--mpc-root`) is for comparing
+minor modifications of the code, not different interfaces: an interface change
+lands on `tiago_mpc` main first, and the visualizer follows it.
+
 The producer-side replay exporter is the explicitly requested exception:
 `tiago_mpc/experiments/replay.py` (`export_replay`, `save_replay`; it moved
 there from `experiments/tools.py` with the 2026-10-22 `tiago_mpc` refactor).
@@ -78,9 +85,10 @@ create portable recording fixtures.
 ### The tiago_mpc API the visualizer uses — Felix, 2026-10-22
 
 **Settings ownership — Felix, 2026-10-27:** descriptors and UI-to-native adapter
-functions belong to this visualizer repository (`adapters/`). Use the bundled
-standard adapter for compatible checkouts; an optional locally ignored
-`<checkout>/_visualizer/_settings.py` overrides it for an experiment. The current
+functions belong to this visualizer repository (`adapters/`). Features, such as
+the collision rows (2026-11-08), go into the bundled standard adapter
+`adapters/tiago.py`. An optional locally ignored `<checkout>/_visualizer/_settings.py`
+override remains only for a local experiment with a modified checkout; the current
 friction override is a relative symlink to `adapters/friction_compensation.py`.
 Keep native algorithms/defaults in `tiago_mpc`; require no tracked visualizer
 hook or tests there. Preserve resolved values, actual adapter path/hash and

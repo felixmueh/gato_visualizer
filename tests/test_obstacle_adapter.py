@@ -1,9 +1,8 @@
-"""CPU-only checks of Live's collision rows: the obstacle adapter, the sphere-list
-descriptor kind, the solver's environment-only update, the captured limit rows with
+"""CPU-only checks of Live's collision rows: the standard adapter's collision
+descriptors, the shapes descriptor kind, the solver's environment-only update, the captured limit rows with
 an appended collision group, runtime-only model reuse and freezes of collision runs.
 
-Run with a tiago_mpc source that has collision rows (tiago_mpc.collision), via
-TIAGO_MPC_ROOT; other sources skip the native checks.
+The selected tiago_mpc (TIAGO_MPC_ROOT) must have tiago_mpc.collision.
 No cover is fitted and no module is loaded.
 """
 from copy import deepcopy
@@ -119,7 +118,7 @@ class FreezeTests(unittest.TestCase):
         self.assertEqual((arguments["obstacle_capsules"], arguments["obstacle_planes"]),
                          ([[0., 0., 0., 0., .2, 0., .05]], [[0., 0., 1., -.6]]))
         self.assertNotIn("obstacle_boxes", arguments)  # as tiago_mpc's exporter: only non-empty lists
-        context.pop("collision")
+        context["collision"] = None  # rows off
         self.assertNotIn("obstacles", freeze_arguments(records, generation=1, complete=False, fixed_joints={},
                                                        world_frame="base_footprint", label="Freeze"))
 
@@ -128,12 +127,9 @@ class CollisionSourceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import_tiago(MPC_ROOT)
-        try:
-            cls.collision = importlib.import_module("tiago_mpc.collision")
-        except ModuleNotFoundError:
-            raise unittest.SkipTest("The selected tiago_mpc has no collision rows")
+        cls.collision = importlib.import_module("tiago_mpc.collision")
         cls.tm = importlib.import_module("tiago_mpc")
-        cls.adapter = importlib.import_module("adapters.obstacle_avoidance")
+        cls.adapter = importlib.import_module("adapters.tiago")
         cls.worker = importlib.import_module("solver_worker")
 
     def test_descriptors_validate_and_defaults_are_the_native_collision_defaults(self):
@@ -141,7 +137,8 @@ class CollisionSourceTests(unittest.TestCase):
         json.dumps(description, allow_nan=False)
         checked = validate_description(description)
         native = self.collision.Collision()
-        self.assertEqual(checked["predictor"]["defaults"], dict(enabled=True, mechanism=native.mechanism, arm="exact",
+        self.assertIsNone(self.tm.TIAGO.collision)  # the native default: no rows
+        self.assertEqual(checked["predictor"]["defaults"], dict(enabled=False, mechanism=native.mechanism, arm="exact",
                                                                 body="balanced", margin_m=native.margin_m, obstacles=[],
                                                                 capsules=[], boxes=[], planes=[]))
         self.assertEqual(checked["predictor"]["controls"], ["collision"])
@@ -154,7 +151,7 @@ class CollisionSourceTests(unittest.TestCase):
         self.assertEqual(choices, dict(arm=["exact"], body=["balanced", "tighter", None]))  # the stored covers
         shapes = {spec["path"]: spec["shape"] for spec in checked["predictor"]["parameters"] if spec["kind"] == "shapes"}
         self.assertEqual(shapes, dict(obstacles="sphere", capsules="capsule", boxes="box", planes="plane"))
-        self.assertEqual(checked["simulation"]["defaults"], dict(law="pd"))
+        self.assertEqual(checked["simulation"], dict(defaults={}, parameters=[], controls=[]))  # SampleKnot stays
 
     def test_values_build_the_native_collision_rows_and_off_is_no_rows(self):
         tm = self.tm
@@ -173,9 +170,6 @@ class CollisionSourceTests(unittest.TestCase):
         for bad in (dict(body="missing"), dict(arm="greedy")):
             with self.assertRaises(ValueError):
                 self.adapter.build_predictor(dict(values, **bad), params)
-        plant, law = self.adapter.build_simulation(dict(law="pd"), tm.SimConfig())
-        self.assertEqual((plant, law), (tm.SimConfig(), tm.PlanFeedback()))
-        self.assertEqual(self.adapter.build_simulation(dict(law="default"), tm.SimConfig())[1], tm.SampleKnot())
 
     def test_only_obstacles_and_body_are_an_environment_update(self):
         tm, Collision = self.tm, self.collision.Collision

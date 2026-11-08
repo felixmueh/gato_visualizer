@@ -67,7 +67,7 @@ export function restoreWorktreeSettings(schema, saved) {
 export function resolvedValueText(value) {
   if (value === null) return 'off';
   if (value && typeof value === 'object' && value.type === 'Collision') {
-    // Every obstacle the rows see: spheres, and capsules, boxes and planes where the source has them.
+    // Every obstacle the rows see: spheres, capsules, boxes and planes.
     const obstacles = ['obstacles', 'capsules', 'boxes', 'planes'].reduce((sum, name) => sum + (value[name]?.length ?? 0), 0);
     return `${value.mechanism} · margin ${value.margin_m} m · rho ${value.rho} · ${value.body ? 'body + ' : ''}${obstacles} obstacle${obstacles === 1 ? '' : 's'}`;
   }

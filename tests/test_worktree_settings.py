@@ -1,11 +1,12 @@
-"""CPU checks for descriptor/builder ownership, independent of any tiago_mpc environment."""
+"""CPU checks for descriptor/builder ownership; the bundled adapter's descriptors need
+the selected tiago_mpc (its collision covers)."""
 from dataclasses import dataclass, fields, is_dataclass
 import hashlib
 from pathlib import Path
 import tempfile
 import unittest
 
-from worktree_settings import (BUNDLED_ADAPTER, describe_settings, has_predictor_settings,
+from worktree_settings import (BUNDLED_ADAPTER, default_values, describe_settings, has_predictor_settings,
                                resolve_predictor, resolve_simulation,
                                validate_description, validate_values)
 
@@ -26,6 +27,7 @@ def serialized(value):
 class Params:
     armature: tuple = (0., 0.)
     cost: float = 4.
+    collision: object = None
 
 
 @dataclass(frozen=True)
@@ -73,13 +75,18 @@ class WorktreeSettingsTests(unittest.TestCase):
         return path
 
     def test_absent_module_keeps_native_objects_and_ordinary_law(self):
+        from tests.tiago_mpc_source import live_probe
+        live_probe()  # the bundled adapter reads the selected tiago_mpc's stored covers
         description = describe_settings(self.root)
         self.assertEqual(description["module"], dict(path=str(BUNDLED_ADAPTER),
                          sha256=hashlib.sha256(BUNDLED_ADAPTER.read_bytes()).hexdigest(), origin="bundled"))
-        self.assertFalse(has_predictor_settings(description))
+        # The standard adapter owns only the collision rows, off by default (MpcParams' default).
+        self.assertTrue(has_predictor_settings(description))
+        self.assertEqual(description["predictor"]["controls"], ["collision"])
         params = Params()
-        actual, captured = resolve_predictor(self.root, {}, params, serialized, expected_module=description["module"])
-        self.assertIs(actual, params)
+        values = default_values(description)["predictor"]
+        actual, captured = resolve_predictor(self.root, values, params, serialized, expected_module=description["module"])
+        self.assertEqual(actual, params)
         base, law = SimConfig(), DefaultLaw()
         actual, actual_law, captured = resolve_simulation(self.root, {}, base, law, serialized)
         self.assertIs(actual, base)

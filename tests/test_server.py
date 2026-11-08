@@ -128,7 +128,7 @@ class CanonicalSourceTests(unittest.TestCase):
         self.assertEqual(len(urls), 35)
         # Live's body: the display posture, or a collision source's body posture.
         from live_mpc import body_joints
-        self.assertEqual(self.scene["fixed_joints"]["torso_lift_joint"], body_joints(MPC_ROOT).get("torso_lift_joint", 0))
+        self.assertEqual(self.scene["fixed_joints"]["torso_lift_joint"], body_joints(MPC_ROOT)["torso_lift_joint"])
 
     def test_http_routes_and_path_allowlist(self):
         with tempfile.TemporaryDirectory() as temporary:

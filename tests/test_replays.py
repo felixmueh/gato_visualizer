@@ -274,7 +274,7 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(recorded["metadata"]["time_basis"], "wall")
         self.assertEqual(plan["metadata"]["recorded_start_s"], .015)
         from live_mpc import body_joints  # Live's body posture (display posture without collision rows)
-        self.assertEqual(self.base_scene["fixed_joints"]["torso_lift_joint"], body_joints(MPC_ROOT).get("torso_lift_joint", 0))
+        self.assertEqual(self.base_scene["fixed_joints"]["torso_lift_joint"], body_joints(MPC_ROOT)["torso_lift_joint"])
 
     def test_obstacles_and_environment_move_with_the_recorded_torso_and_arm_spheres_keep_their_links(self):
         # An obstacle at the flange in torso_lift_link (the reduced arm's root) is at the
@@ -415,7 +415,10 @@ class ReplayTests(unittest.TestCase):
         fresh = self.folder / "fresh-checkout"
         (fresh / "models").mkdir(parents=True)
         (fresh / "models/tiago_pro").symlink_to(MODEL.parent, target_is_directory=True)
-        scene, _, _ = load_scene(fresh, start_pose()["default"])
+        from live_mpc import body_joints
+        posture = body_joints(MPC_ROOT)  # the fresh checkout is no tiago_mpc package
+        with patch("live_mpc.body_joints", return_value=posture):
+            scene, _, _ = load_scene(fresh, start_pose()["default"])
         self.assertTrue(scene["source"]["bootstrap"])
         self.assertEqual(scene["trajectories"], [])
         self.assertTrue(all(name in scene["fixed_joints"] for name in JOINT_NAMES))

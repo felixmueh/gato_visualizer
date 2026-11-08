@@ -32,7 +32,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_new_predictor_fields_are_checked_until_runtime_effect_is_explicit(self):
         from live_mpc import parameter_specs
-        config = dict(dt_s=.02, N=32, future_model_feature=True,
+        config = dict(dt_s=.02, N=32, future_model_feature=True, collision=None,
                       solver=dict(mu=10., future_solver_feature=True),
                       plant=dict(future_cpu_setting=True))
         effects = {field['path']: field['effect'] for field in parameter_specs(config, [32], self.friction, {})}

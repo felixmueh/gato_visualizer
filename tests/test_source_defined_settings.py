@@ -135,15 +135,17 @@ class BundledAdapterTests(unittest.TestCase):
         self.script = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.script)
 
-    def test_bundled_identity_preserves_explicit_legacy_friction_build(self):
+    def test_bundled_adapter_builds_its_resolved_defaults_exactly(self):
+        # The standard adapter owns the collision rows, so builds are exact: its defaults
+        # resolve to TIAGO (no rows); the legacy friction flag no longer selects a variant.
         friction = self.tm.urdf_friction()
         events = []
         with patch.object(self.mpc, "compile_binary", return_value=Path("mock.so")) as compile_native, \
                 patch.object(self.script, "probe", return_value={}):
             self.script.build(self.selection, (None, self.mpc, None, friction), [16], events.append,
                               prediction_friction=True)
-        self.assertEqual(compile_native.call_args.args[0], replace(with_knot_count(self.mpc.TIAGO, 16), friction=friction))
-        self.assertFalse(events[0]["exact_availability"])
+        self.assertEqual(compile_native.call_args.args[0], with_knot_count(self.mpc.TIAGO, 16))
+        self.assertTrue(events[0]["exact_availability"])
 
     def test_explicit_bundled_values_and_pin_remain_exact_in_probe(self):
         description = describe_settings(self.selection["mpc_root"])
@@ -153,7 +155,8 @@ class BundledAdapterTests(unittest.TestCase):
                 patch("solver_process.model_contract", return_value={}):
             result = self.script.probe(self.selection, importlib.import_module("tiago_mpc.tiago"),
                                        self.mpc, None, self.tm.urdf_friction(),
-                                       source_settings={}, source_settings_module=description["module"])
+                                       source_settings=description["predictor"]["defaults"],
+                                       source_settings_module=description["module"])
         self.assertTrue(result["exact_availability"])
         self.assertEqual(find.call_count, 1)
         self.assertEqual(find.call_args.args[0], with_knot_count(self.mpc.TIAGO, 16))

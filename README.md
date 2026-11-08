@@ -9,7 +9,9 @@ Agents can read and patch the current settings through
 and presentation changes. See the [agent API guide](docs/agent-api.md).
 
 This experimental branch keeps settings integration in visualizer-owned
-`adapters/`, with an optional locally ignored checkout override. No tracked
+`adapters/` (the standard `adapters/tiago.py`, with an optional locally ignored
+checkout override for local experiments). It follows `tiago_mpc` main without
+compatibility for older interfaces. No tracked
 visualizer hook is required in `tiago_mpc`. See [settings adapters](docs/source-settings.md).
 
 Live can select uncompiled knot counts and predictor models. Missing combinations
@@ -400,12 +402,11 @@ no collision check. Holding Shift during grasp translation frees orientation. A 
 frame; its tooltip explains why translation is unavailable. Joint rings remain
 usable. Playback and recorded comparison arms are read-only.
 
-**Obstacles (2026-11-02).** With a `tiago_mpc` source that has collision rows and
-the obstacle adapter (`adapters/obstacle_avoidance.py`, linked as the checkout's
-`_visualizer/_settings.py`), Settings › Collision rows switches the rows
-(a compiled variant), enforced or reported only, avoiding the body, the margin
-and lists the obstacles (spheres, and capsules, boxes and planes where the
-source has them) in collapsed tables, with **+** to add one. Click an
+**Obstacles (2026-11-02).** The source must have `tiago_mpc.collision`. Settings ›
+Collision rows (standard adapter, `adapters/tiago.py`) switches the rows
+(a compiled variant, off by default as `MpcParams.collision`), enforced or
+reported only, the arm and body covers, the margin and lists the obstacles
+(spheres, capsules, boxes and planes) in collapsed tables, with **+** to add one. Click an
 obstacle in the viewport and drag its arrows; **R** rotates a box or plane,
 a capsule's end spheres and a box's face squares drag ends and faces;
 **S** scales radii and half-extents with the pointer

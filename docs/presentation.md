@@ -399,12 +399,10 @@ handles and rings for browser checks.
 
 ## Live obstacles and collision spheres
 
-With a source whose settings adapter edits `tiago_mpc`'s collision rows
-(`adapters/obstacle_avoidance.py`, see [source settings](source-settings.md)),
-Live draws the draft obstacles as solid coral shapes, like a recording's. They
+The standard adapter edits `tiago_mpc`'s collision rows
+(`adapters/tiago.py`, see [source settings](source-settings.md)); Live draws the draft obstacles as solid coral shapes, like a recording's. They
 come from the predictor's lists (Settings › Collision rows › Obstacles,
-Capsules, Boxes, Planes, in `torso_lift_link`; the last three where the
-source's `Collision` has them, [layouts](source-settings.md)), so an edit shows at once, before the
+Capsules, Boxes, Planes, in `torso_lift_link`, [layouts](source-settings.md)), so an edit shows at once, before the
 backend accepts it; the segment's `world_from_root` places them. The rows'
 other settings sit in the same group: on/off (a compiled variant), enforced or
 reported only, the arm cover (a compiled variant), the body cover (or Off) and the margin.
@@ -413,8 +411,7 @@ Live's robot body stands at the source's collision posture
 (`tiago_mpc.collision.body_posture()`, the default body cover's; `live_mpc.body_joints`):
 the torso lift, head and left arm at which the body cover was fitted. Live's scene, task geometry,
 FK and coordinate contract all use it, so the body, its cover, the obstacles and
-the targets share one world. A source without collision rows keeps the display
-posture.
+the targets share one world.
 
 The collision-spheres toggle also covers Live: the body's cover from the
 current segment and the arm's cover on a mesh-free copy of the solid arm, which

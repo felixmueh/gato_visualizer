@@ -121,7 +121,7 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
     if goal is not None:
         # The segment's orientation goal at every state time, a world-frame rotation vector.
         arguments["reference_rotvec_rad"] = np.tile(np.asarray(goal, dtype=float), (len(states), 1))
-    collision = header.get("collision")
+    collision = header.get("collision")  # None: rows off
     if collision is not None:
         # The segment's collision rows, as tiago_mpc's exporter records them: obstacles and
         # the environment (body cover, then obstacles) in ROOT_FRAME, the arm cover by link.

@@ -83,11 +83,8 @@ ENVIRONMENT_FIELDS = ("obstacles", "capsules", "boxes", "planes", "body")
 
 
 def environment_arguments(collision):
-    """set_collision_environment's arguments: Collision.environment() is a dict of them
-    (spheres, capsules, cuboids, planes), or the spheres alone in a source before capsules,
-    boxes and planes."""
-    environment = collision.environment()
-    return dict(environment) if isinstance(environment, dict) else dict(spheres=environment)
+    """set_collision_environment's arguments (spheres, capsules, cuboids, planes)."""
+    return dict(collision.environment())
 
 
 def environment_only(current, params):
@@ -95,11 +92,11 @@ def environment_only(current, params):
     MpcParams.collision's obstacles and body cover (GATO's runtime environment).
     The arm cover, posture, margin, mechanism and rho are compiled into the module or
     installed with the rows, so they need a new Mpc."""
-    before, after = getattr(current, "collision", None), getattr(params, "collision", None)
+    before, after = current.collision, params.collision
     if before is None or after is None:
         return False
     def strip(value, collision):
-        fields = {name: (None if name == "body" else ()) for name in ENVIRONMENT_FIELDS if hasattr(collision, name)}
+        fields = {name: (None if name == "body" else ()) for name in ENVIRONMENT_FIELDS}
         return replace(value, collision=replace(collision, **fields))
     return strip(current, before) == strip(params, after)
 
@@ -108,7 +105,7 @@ def gpu_urdf_path(tiago, module, params, binary):
     """The GPU URDF that Mpc loaded for params (tiago_mpc.mpc._plant): with collision rows
     the arm's sphere cover replaces its collision meshes. Checked against the loaded
     module's plant name, which hashes that file's bytes."""
-    collision = getattr(params, "collision", None)
+    collision = params.collision
     if collision is None:
         path = tiago.runtime_urdf(params.friction)
     else:
@@ -126,9 +123,9 @@ def collision_spheres(params):
     """The shapes of GATO's collision rows for display: the arm's cover by link (in the
     links' frames), the body's cover (ROOT_FRAME: spheres, and body_capsules and body_boxes
     where the stored cover has them) and the obstacles (ROOT_FRAME; spheres, and capsules,
-    boxes and planes in Collision's layouts where the source has them); None without rows.
+    boxes and planes in Collision's layouts); None without rows.
     The covers are tiago_mpc's stored ones (tiago_mpc/data/collision/)."""
-    collision = getattr(params, "collision", None)
+    collision = params.collision
     if collision is None:
         return None
     from tiago_mpc.collision import arm_cover, body_cover, body_posture
@@ -137,7 +134,7 @@ def collision_spheres(params):
     return dict(arm={link: spheres(group) for link, group in arm_cover(collision.arm).items()},
                 body=spheres(body["spheres"]), body_capsules=spheres(body["capsules"]), body_boxes=spheres(body["boxes"]),
                 obstacles=spheres(collision.obstacles),
-                **{name: spheres(getattr(collision, name)) for name in ("capsules", "boxes", "planes") if hasattr(collision, name)},
+                **{name: spheres(getattr(collision, name)) for name in ("capsules", "boxes", "planes")},
                 mechanism=collision.mechanism,
                 margin_m=float(collision.margin_m), rho=float(collision.rho),
                 posture=body_posture(collision.body))
@@ -201,7 +198,7 @@ class SolverSession:
             binary = m.find_binary(params)
             if binary is None:
                 raise ValueError(f"Not compiled: N={params.N} {'with' if params.friction else 'without'} predictor "
-                                 f"friction{'' if getattr(params, 'collision', None) is None else ' and with collision rows'}. "
+                                 f"friction{'' if params.collision is None else ' and with collision rows'}. "
                                  "Build it in Settings › Backend (Build selected N).")
             self.mpc = self.seed = None  # release previous buffers only after valid model lookup
             self.mpc = m.Mpc(params, binary)

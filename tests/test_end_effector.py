@@ -53,8 +53,8 @@ class EndEffectorTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def expected(self, frame):
-        kinematics = RobotKinematics(self.full)
+    def expected(self, frame, fixed_joints=None):
+        kinematics = RobotKinematics(self.full, fixed_joints)
         model = pin.buildModelFromUrdf(str(self.reduced))
         data = model.createData()
         frame_id = model.getFrameId(frame)
@@ -131,9 +131,13 @@ class EndEffectorTests(unittest.TestCase):
             np.testing.assert_allclose(scene["trajectories"][0]["ee_xyz"], self.expected(frame), atol=1e-10)
 
     def test_live_renderer_uses_the_frame_in_compute_snapshots(self):
+        from live_mpc import body_joints
+        posture = body_joints(MPC_ROOT)  # Live's body; this test checkout is not a tiago_mpc package
         renderer = LiveRenderer(self.root)
+        patcher = patch("live_mpc.body_joints", return_value=posture)
+        patcher.start(); self.addCleanup(patcher.stop)
         for frame in ("arm_right_tool_joint", "test_grasp_joint"):
-            target = self.expected(frame)[0]
+            target = self.expected(frame, posture)[0]
             state = snapshot(dict(type="state", _x=np.r_[self.q[0], np.zeros(7)], target_xyz=target.tolist()))
             context = dict(end_effector_frame=frame, task=dict(kind="reach"), position_tol_m=.05, speed_l1_tol_rad_s=1.)
             rendered = renderer((None, state, []), context)[0]

@@ -414,12 +414,12 @@ checkout's identity. `simulator_identity`, `solver_profile`, `model_identity`,
 installed problem. `task_path_xyz` is the figure-eight path (null for a reach);
 `position_tol_m` and `speed_l1_tol_rad_s` are the arrival rule. `world_from_root`
 (row-major) places the reduced arm's root frame (`torso_lift_link`) in the
-display world at Live's body posture. `collision` is null without
-`tiago_mpc`'s collision rows; with them it holds the spheres the rows see,
+display world at Live's body posture. `collision` is null while
+`tiago_mpc`'s collision rows are off; with them it holds the spheres the rows see,
 `{"arm": {"<link>": [[x, y, z, r], ...]}, "body": [...], "obstacles": [...],
 "capsules", "boxes", "planes", "mechanism", "margin_m", "rho", "posture"}`: the arm's cover in its links'
 frames, the body's cover and the obstacles in the root frame (capsules, boxes
-and planes in `Collision`'s layouts, present only when the source has them), and the body
+and planes in `Collision`'s layouts), and the body
 posture's joint positions, which must equal Live's drawn body. State, control,
 plan, breach and interval records keep only their own data (a plan keeps its own
 reference window, `reference_native`/`reference_xyz`, and `target_xyz`).

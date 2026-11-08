@@ -8,11 +8,12 @@ position, terminal position, joint velocity, torque, orientation and terminal
 orientation. They build `MpcParams.cost` using `tiago_mpc.default_cost`, including
 when the horizon changes. The native cost menu is retained in effective settings
 and recordings. Custom menus are preserved and do not receive the convenience
-weight controls. It works with every compatible checkout,
-without a visualizer file in `tiago_mpc` or special treatment of a branch name.
+weight controls. It follows `tiago_mpc` main (no compatibility with older
+interfaces), without a visualizer file in `tiago_mpc` or special treatment of a
+branch name. Features go into this standard adapter.
 
 An optional `<selected-tiago>/_visualizer/_settings.py` overrides the bundled
-adapter. Keep this directory locally ignored through Git's `info/exclude`, so
+adapter for a local experiment with a modified checkout, not to add features. Keep this directory locally ignored through Git's `info/exclude`, so
 it adds no tracked TIAGo files. The underscore prevents the plotter loader from
 importing it as a plot. An invalid file or broken symlink is a visible source
 error; the loader never silently falls back from a requested override.
@@ -57,19 +58,16 @@ Only `describe()` is mandatory. A role with no extra parameters or claimed
 controls needs no builder; the visualizer preserves its native base object and
 default law. No default values are duplicated in an empty standard adapter.
 
-The second is `adapters/obstacle_avoidance.py` (2026-11-02) for sources with
-`tiago_mpc`'s collision rows (`tiago_mpc.collision`). The predictor claims
-`collision`: rows on/off (`effect: compiled_model`, off is `MpcParams.collision`
-None, the module without rows), enforced (`admm`) or reported only
-(`telemetry`), the arm cover (a stored cover, compiled into the module), the
-body cover (a stored cover in the environment, or Off), margin and the obstacles
-(`shapes`: spheres, capsules, boxes and planes), all runtime except on/off and the
-arm cover. Rho stays the native `Collision` default; the body posture is the body
-cover's (`tiago_mpc.collision.body_posture`). The simulation role chooses the execution law,
-default (plan torque) or PD feedback (`PlanFeedback` with the stored gains, the
-default, as in `tiago_mpc`'s experiments); the plant stays native.
-The native `collision` field itself is one fixed choice (its base value, off) that
-the adapter resolves.
+The standard adapter `adapters/tiago.py` claims the predictor's `collision`
+(GATO's collision rows; the source must have `tiago_mpc.collision`): rows on/off
+(`effect: compiled_model`, off is `MpcParams.collision` None, the native default),
+enforced (`admm`) or reported only (`telemetry`), the arm cover (a stored cover,
+compiled into the module), the body cover (a stored cover in the environment, or
+Off), margin and the obstacles (`shapes`: spheres, capsules, boxes and planes), all
+runtime except on/off and the arm cover. Rho stays the native `Collision` default;
+the body posture is the body cover's (`tiago_mpc.collision.body_posture`). The
+native `collision` field itself is one fixed choice (its base value) that the
+adapter resolves.
 
 The first real example is `adapters/friction_compensation.py`.
 Laws use native `Command(requested, applied)` results and propagate native
@@ -256,9 +254,6 @@ That relative sibling layout works on the host and in the container. Its local
 ignore entry is `/_visualizer/` in the TIAGo repository's `info/exclude`; no
 tracked `.gitignore` or package API was changed. Git shares that exclude file
 between linked worktrees. Tracked files would remain tracked despite this rule.
-
-An obstacle demo checkout's ignored `_visualizer/_settings.py` likewise links to
-this repository's `adapters/obstacle_avoidance.py`.
 
 Check with `git check-ignore -v _visualizer/_settings.py` from the checkout.
 Remove the override to use the bundled adapter, then use Source Apply.
