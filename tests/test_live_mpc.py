@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import source_runtime
 from live_mpc import (GPULocks, POSITION_TOL_M, SPEED_L1_TOL_RAD_S, build_schema, figure8_reference, mpc_bounds_from_rows,
                       FIGURE8_DEFAULT_TASK, REACH_DEFAULT_TASK, validate_settings)
 from server import make_server
@@ -128,7 +129,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(specs["reseed_threshold"]["gato_none"], "off")
         for fixed in ("solver.exact_hessian", "solver.cost_curvature", "solver.linsys"):
             self.assertTrue(specs[fixed]["disabled"], fixed)
-        self.assertEqual(specs["N"]["choices"], [16, 32])
+        self.assertEqual(specs["N"]["choices"], list(source_runtime.KNOT_COUNTS))  # supported; compiled ones are listed separately
         self.assertNotIn("disabled", specs["N"])
         self.assertEqual(specs["friction"]["choices"], [dict(value=None, label="Loss-free"), dict(
             value=self.friction, label="URDF coefficients")])

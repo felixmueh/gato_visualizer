@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { orientationGoal, taskReference, taskReferencePoint } from './task-reference.js';
 
-const task = { kind: 'figure8', target_offset_m: [.1, -.2, .3], width_m: .24, height_m: .16, period_s: 8 };
+const task = { kind: 'figure8', target_offset_m: [.1, -.2, .3], width_m: .24, height_m: .16, period_s: 8, orientation_xyzw: [0, 0, 0, 1] };
 const close = (actual, expected) => actual.forEach((value, i) => assert(Math.abs(value - expected[i]) < 1e-12));
 
 test('local figure-eight matches the backend phase geometry and rotates around the translated fixed start', () => {

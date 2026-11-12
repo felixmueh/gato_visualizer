@@ -7,7 +7,7 @@ export function taskReferencePoint(task, base, time_s = 0) {
   const anchor = base.map((value, i) => value + offset[i]);
   if (task.kind === 'reach') return anchor;
   if (task.kind !== 'figure8' || ![task.width_m, task.height_m].every(value => Number.isFinite(value) && value > 0)) return null;
-  const q = task.orientation_xyzw || [0, 0, 0, 1];
+  const q = task.orientation_xyzw;
   if (!Array.isArray(q) || q.length !== 4 || !q.every(Number.isFinite)) return null;
   const norm = Math.hypot(...q);
   if (!Number.isFinite(norm) || norm < 1e-12) return null;

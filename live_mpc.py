@@ -308,9 +308,7 @@ def validate_settings(config, task, schema, *, check_available=True):
         if kind == "bool":
             valid = isinstance(value, bool)
         elif path == "N" and "available_N_by_friction" in schema:
-            offered = schema.get("supported_N")
-            valid = type(value) is int and (offered is None or value in offered)
-            # Legacy schemas only publish cached choices; those are not the supported-N domain.
+            valid = type(value) is int and value in schema["supported_N"]
         elif kind == "choice":
             valid = any(type(value) is type(choice) and value == choice
                         for choice in map(choice_value, spec["choices"]))
@@ -469,7 +467,7 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_s
     if simulation_settings is not None:
         role_settings["simulation"] = deepcopy(simulation_settings)
     source_values = {role: deepcopy(role_settings[role]["defaults"]) for role in ROLES}
-    offered = list(probe.get("supported_N", available))
+    offered = list(probe["supported_N"])
     custom_cost = defaults.get("cost") is not None and weights is None
     if custom_cost:
         offered = [defaults["N"]]
@@ -491,7 +489,7 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_s
                 spec["label"] = spec["label"].removesuffix(" (fixed)")
     grasp = end_effector if end_effector is not None else end_effector_spec(import_tiago(mpc_root))
     return dict(available_N_by_friction=by_mode, available_N=available, friction=friction,
-                **({"supported_N": offered} if "supported_N" in probe else {}),
+                supported_N=offered,
                 exact_availability=modules["exact_availability"], source_settings=role_settings,
                 orientation_goal_supported=isinstance(defaults.get("cost"), dict) and defaults["cost"].get("type") == "CostMenu",
                 **({"fixed_horizon_N": defaults["N"]} if custom_cost else {}),

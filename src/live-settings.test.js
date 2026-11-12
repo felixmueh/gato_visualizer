@@ -83,7 +83,7 @@ function harness() {
     ],
     tasks: [
       { kind: 'reach', label: 'Reach', defaults: { kind: 'reach', target_offset_m: [.15, .2, .2] } },
-      { kind: 'figure8', label: 'Figure eight', defaults: { kind: 'figure8', target_offset_m: [0, 0, 0], width_m: .24, height_m: .16, period_s: 8 }, parameters: ['width_m', 'height_m', 'period_s'].map(path => ({ path, label: path, kind: 'float', min: .001 })) },
+      { kind: 'figure8', label: 'Figure eight', defaults: { kind: 'figure8', target_offset_m: [0, 0, 0], width_m: .24, height_m: .16, period_s: 8, orientation_xyzw: [0, 0, 0, 1] }, parameters: ['width_m', 'height_m', 'period_s'].map(path => ({ path, label: path, kind: 'float', min: .001 })) },
     ],
   };
   const fixtureGroups = value => ({ config: structuredClone(value.config), task: structuredClone(value.task), execution: structuredClone(value.execution), source_settings: structuredClone(value.source_settings || {}) });

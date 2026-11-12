@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from visualizer_config import DEFAULT_MPC_ROOT
 from execution_session import DEFAULT_EXECUTION
+import source_runtime
 
 # Complete execution settings for tests: the visualizer's own fields plus the native
 # timing a schema supplies from tiago_mpc's defaults (fixed here for the schedulers).
@@ -61,7 +62,7 @@ def live_probe():
         from scripts.source_probe import experiment_defaults
         description = describe_settings(MPC_ROOT)
         effective, captured = resolve_predictor(MPC_ROOT, description["predictor"]["defaults"], mpc.TIAGO, to_dict)
-        _PROBE = dict(compatible=True, available_N=[], available_N_by_friction=dict(off=[], on=[]), modules=[],
+        _PROBE = dict(compatible=True, supported_N=list(source_runtime.KNOT_COUNTS), available_N=[], available_N_by_friction=dict(off=[], on=[]), modules=[],
                       source_settings={role: dict(description[role], module=description["module"])
                                        for role in ("simulation", "predictor")},
                       effective_settings=dict(params=to_dict(effective), modules=dict(predictor=captured["module"])),
