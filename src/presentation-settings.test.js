@@ -70,25 +70,12 @@ test('ghost opacity endpoints apply and persist independently without changing n
   }
 });
 
-test('legacy scalar opacity migrates to start/end while explicit endpoint preferences take precedence', () => {
-  const legacy = { ghost_opacity_percent: 70 }, migrated = validatePresentation(legacy);
-  assert.equal(migrated.ghost_start_opacity_percent, 70); assert.equal(migrated.ghost_end_opacity_percent, 70 * (25 / 55));
-  assert.equal('ghost_opacity_percent' in migrated, false); assert.deepEqual(legacy, { ghost_opacity_percent: 70 });
-  const explicit = validatePresentation({ ...legacy, ghost_start_opacity_percent: 80, ghost_end_opacity_percent: 10 });
-  assert.equal(explicit.ghost_start_opacity_percent, 80); assert.equal(explicit.ghost_end_opacity_percent, 10);
-  assert.equal(validatePresentation({ ...legacy, ghost_start_opacity_percent: 80 }).ghost_end_opacity_percent, migrated.ghost_end_opacity_percent);
-  assert.equal(validatePresentation({ ...legacy, ghost_end_opacity_percent: 10 }).ghost_start_opacity_percent, 70);
+test('ghost opacity endpoints are validated and unknown keys, such as the former scalar opacity, are rejected', () => {
   for (const name of ['ghost_start_opacity_percent', 'ghost_end_opacity_percent']) for (const value of [-1, 101, NaN, Infinity, false, '25', null]) {
     assert.throws(() => validatePresentation({ [name]: value }));
   }
   assert.throws(() => validatePresentation({ extra: 1 }), /Unknown/);
-});
-
-test('a legacy endpoint response loads as two fields and the next save posts only new endpoint keys', async t => {
-  const h = await harness(t, { store: { ghost_opacity_percent: 70 } });
-  assert.equal(h.ui.settings.ghost_start_opacity_percent, 70); assert.equal(h.ui.settings.ghost_end_opacity_percent, 70 * (25 / 55));
-  h.field('ghost_end_opacity_percent').value = '12'; h.field('ghost_end_opacity_percent').listeners.change(); h.tick(400); await settle();
-  assert.equal(h.posts.at(-1).ghost_end_opacity_percent, 12); assert.equal('ghost_opacity_percent' in h.posts.at(-1), false);
+  assert.throws(() => validatePresentation({ ghost_opacity_percent: 70 }), /Unknown/);
 });
 
 test('presentation loads from its own endpoint and has no Save button', async t => {

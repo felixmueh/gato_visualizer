@@ -13,7 +13,7 @@ from contextlib import contextmanager
 
 import numpy as np
 
-from execution_session import DEFAULT_EXECUTION
+from tests.tiago_mpc_source import EXECUTION
 from native_session import NativeSession
 from live_presentation import render_plan
 from solver_adapter import SimulatorAdapter
@@ -182,7 +182,7 @@ with fake_gpu(),socket.socket(fileno=int(sys.argv[sys.argv.index('--fd')+1])) as
     def test_close_reclaims_queued_captures_but_preserves_handed_off_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.child_adapter(directory, '') as (adapter, remote):
-                execution = dict(DEFAULT_EXECUTION, simulation_hz=100000., control_hz=100000.,
+                execution = dict(EXECUTION, simulation_hz=100000., control_hz=100000.,
                                  to_hz=100000., solve_latency_s=0., latency_compensation=False)
                 session = NativeSession(adapter, execution)
                 try:
@@ -257,7 +257,7 @@ def delayed_put(self,*args,**kwargs):
 RecordingRing.put=delayed_put
 ''' % str(marker)
             with self.child_adapter(directory, code) as (adapter, remote):
-                session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=.002,
+                session = NativeSession(adapter, dict(EXECUTION, solve_latency_s=.002,
                                                       latency_compensation=False))
                 try:
                     records = session.advance_interval(.002)
@@ -440,7 +440,7 @@ RecordingRing.put=fail_once
         adapter = self.buffered_adapter()
         adapter.limit_handling = dict(limits=dict(WIDE_LIMITS,effort=np.ones(7)),clip_effort=False,
                                      stop_on_breach=dict(position=False,velocity=False,torque=True))
-        session = NativeSession(adapter,dict(DEFAULT_EXECUTION,to_hz=500.,solve_latency_s=.002,latency_compensation=False))
+        session = NativeSession(adapter,dict(EXECUTION,to_hz=500.,solve_latency_s=.002,latency_compensation=False))
         try:
             records = session.advance_interval(.01)
             self.assertAlmostEqual(adapter.t,.004)
@@ -454,7 +454,7 @@ RecordingRing.put=fail_once
 
     def test_terminal_fault_records_the_drained_solve_even_when_its_plan_never_activates(self):
         adapter = self.buffered_adapter()
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, to_hz=100., solve_latency_s=.03,
+        session = NativeSession(adapter, dict(EXECUTION, to_hz=100., solve_latency_s=.03,
                                               latency_compensation=False))
         self.addCleanup(session.close)
         records = []
@@ -474,7 +474,7 @@ RecordingRing.put=fail_once
     def test_finite_duration_drains_the_final_solve_and_completes_at_the_anchored_endpoint(self):
         adapter = self.buffered_adapter()
         adapter.t = .05
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, to_hz=100., solve_latency_s=.03,
+        session = NativeSession(adapter, dict(EXECUTION, to_hz=100., solve_latency_s=.03,
                                               latency_compensation=False), duration_s=.004)
         self.addCleanup(session.close)
         records = []
@@ -497,7 +497,7 @@ RecordingRing.put=fail_once
         clock = FakeClock()
         adapter = self.buffered_adapter(clock)
         adapter.clock, adapter.applied_torque = clock,np.zeros(7)
-        session = NativeSession(adapter,dict(DEFAULT_EXECUTION,to_hz=500.,solve_latency_s=.002,latency_compensation=False),clock=clock)
+        session = NativeSession(adapter,dict(EXECUTION,to_hz=500.,solve_latency_s=.002,latency_compensation=False),clock=clock)
         try:
             records = session.advance_interval(.006)
             intervals = [r for r in records if r['type']=='interval']
@@ -603,7 +603,7 @@ with fake_gpu(),socket.socket(fileno=int(sys.argv[sys.argv.index('--fd')+1])) as
             session = None
             try:
                 remote.request('bootstrap')
-                execution = dict(DEFAULT_EXECUTION, to_hz=500., solve_latency_s=.002, latency_compensation=True)
+                execution = dict(EXECUTION, to_hz=500., solve_latency_s=.002, latency_compensation=True)
                 adapter.configure(config(), dict(kind='reach',target_offset_m=[0.,0.,0.]), execution=execution)
                 original_plant = adapter.new_plant
                 def observed(substep):

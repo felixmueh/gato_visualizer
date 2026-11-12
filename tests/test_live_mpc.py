@@ -340,11 +340,10 @@ class Figure8Tests(SettingsTests):
         np.testing.assert_allclose(rotated, expected, atol=1e-14)
         np.testing.assert_allclose(rotated[0], pivot, atol=1e-15)
         np.testing.assert_allclose(np.ptp(rotated, axis=0), [.24, 0., .16], atol=1e-14)
-        legacy = deepcopy(FIGURE8_DEFAULT_TASK)
-        del legacy["orientation_xyzw"]
-        validate_settings(self.config, legacy, self.schema)
-        np.testing.assert_array_equal(figure8_reference(times, start, legacy),
-                                      figure8_reference(times, start, FIGURE8_DEFAULT_TASK))
+        unrotated = deepcopy(FIGURE8_DEFAULT_TASK)
+        del unrotated["orientation_xyzw"]
+        with self.assertRaisesRegex(ValueError, "complete reach or figure8"):
+            validate_settings(self.config, unrotated, self.schema)  # the orientation is required
         for invalid in ([0, 0, 0, 0], [0, 0, 0, 2], [True, 0, 0, 0], [0, 0, float("nan"), 1], [0, 0, 1]):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "unit quaternion"):
                 validate_settings(self.config, {**task, "orientation_xyzw": invalid}, self.schema)

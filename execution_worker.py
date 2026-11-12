@@ -12,7 +12,6 @@ import time
 import traceback
 import numpy as np
 
-from execution_session import DEFAULT_EXECUTION
 from native_session import NativeSession
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 from solver_exchange import SLOTS

@@ -10,23 +10,9 @@ const LIMIT_MESSAGES = {
   limit_at_torque_percent: 'Torque at-tolerance must be between 0 and 10 % of effort.',
 };
 
-export function migratePresentation(value) {
-  if (value == null) return {};
-  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('Presentation settings must be an object.');
-  const next = { ...value };
-  if ('ghost_opacity_percent' in next) {
-    const legacy = next.ghost_opacity_percent; delete next.ghost_opacity_percent;
-    if (!('ghost_start_opacity_percent' in next) || !('ghost_end_opacity_percent' in next)) {
-      if (!Number.isFinite(legacy) || legacy < 0 || legacy > 100) throw new Error('Ghost opacity must be between 0 and 100 %.');
-      if (!('ghost_start_opacity_percent' in next)) next.ghost_start_opacity_percent = legacy;
-      if (!('ghost_end_opacity_percent' in next)) next.ghost_end_opacity_percent = legacy * (25 / 55);
-    }
-  }
-  return next;
-}
-
 export function validatePresentation(value) {
-  const next = { ...DEFAULT_PRESENTATION, ...migratePresentation(value) };
+  if (value != null && (typeof value !== 'object' || Array.isArray(value))) throw new Error('Presentation settings must be an object.');
+  const next = { ...DEFAULT_PRESENTATION, ...value };
   if (Object.keys(next).some(name => !Object.hasOwn(DEFAULT_PRESENTATION, name))) throw new Error('Unknown presentation setting.');
   if (!Number.isFinite(next.report_hz) || next.report_hz < 1 || next.report_hz > 120) throw new Error('Reporting Hz must be between 1 and 120.');
   if (!Number.isFinite(next.buffer_ms) || next.buffer_ms < 0 || next.buffer_ms > 10000) throw new Error('Playback buffer must be between 0 and 10000 ms.');

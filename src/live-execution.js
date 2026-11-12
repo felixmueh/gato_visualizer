@@ -1,5 +1,8 @@
-// Mirrors execution_session.DEFAULT_EXECUTION: commands at 500 Hz.
-export const DEFAULT_EXECUTION = { simulation_hz: 1000, control_hz: 500, to_hz: 100, solve_latency_s: 'measured', latency_compensation: false, max_plan_age_s: null, calculation: 'on_play', duration_s: 10, continue_at_end: false };
+// Mirrors execution_session: the visualizer's own execution fields. Control and TO
+// rates, solve latency and latency compensation come from the schema, which takes
+// them from the selected tiago_mpc's run_virtual_time defaults.
+export const DEFAULT_EXECUTION = { simulation_hz: 1000, max_plan_age_s: null, calculation: 'on_play', duration_s: 10, continue_at_end: false };
+export const EXECUTION_FIELDS = [...Object.keys(DEFAULT_EXECUTION), 'control_hz', 'to_hz', 'solve_latency_s', 'latency_compensation'];
 
 export function parseSolveLatency(value) {
   const text = String(value).trim();
@@ -10,7 +13,9 @@ export function parseSolveLatency(value) {
 }
 
 export function validateExecution(value) {
-  const next = { ...DEFAULT_EXECUTION, ...value };
+  const missing = EXECUTION_FIELDS.filter(key => !Object.hasOwn(value || {}, key));
+  if (missing.length) throw new Error(`Execution settings need ${missing.join(', ')}.`);
+  const next = { ...value };
   for (const key of ['simulation_hz', 'control_hz', 'duration_s']) {
     if (!Number.isFinite(next[key]) || next[key] <= 0) throw new Error(`${key.replaceAll('_', ' ')} must be positive.`);
   }

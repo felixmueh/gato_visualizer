@@ -9,7 +9,7 @@
  "limit_at_velocity_rad_s":0.01,"limit_at_torque_percent":0.2}
 ```
 
-These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, `interpolate` a boolean, `limit_tint` a boolean, both ghost opacity percentages within 0–100, `limit_near_percent` within 1–100, `limit_at_position_rad` within 0–0.1, `limit_at_velocity_rad_s` within 0–1 and `limit_at_torque_percent` within 0–10. A saved `presentation` key without any of these fields takes their defaults. Legacy `ghost_opacity_percent` migrates to start opacity and an end opacity scaled by 25/55; explicit new endpoints take precedence. Source, build, plotting and replay preferences are preserved when saving this key.
+These are also the defaults when the local `visualizer.json` has no `presentation` key. The endpoint remains available when Live MPC is unavailable. POST requires same-origin JSON; invalid values return HTTP 400. `report_hz` must be finite within 1–120, `buffer_ms` finite within 0–10000, `interpolate` a boolean, `limit_tint` a boolean, both ghost opacity percentages within 0–100, `limit_near_percent` within 1–100, `limit_at_position_rad` within 0–0.1, `limit_at_velocity_rad_s` within 0–1 and `limit_at_torque_percent` within 0–10. A saved `presentation` key without any of these fields takes their defaults. Source, build, plotting and replay preferences are preserved when saving this key.
 
 Timing fields accept explicit units, keeping canonical API values: reporting can
 be `20 Hz` or `50 ms`, buffer can be `200 ms` or `0.2 s`, and ghost spacing can

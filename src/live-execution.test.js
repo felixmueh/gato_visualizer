@@ -3,34 +3,46 @@ import assert from 'node:assert/strict';
 import { DEFAULT_EXECUTION, validateExecution, parseSolveLatency, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
 import { createLiveHistory } from './live-history.js';
 
+// The schema supplies the native timing fields (tiago_mpc's run_virtual_time defaults).
+const EXECUTION = { ...DEFAULT_EXECUTION, control_hz: 500, to_hz: 100, solve_latency_s: .01, latency_compensation: true };
+const execution = value => validateExecution({ ...EXECUTION, ...value });
+
 test('execution rates are independent of knot spacing and ordered physics ≥ control ≥ TO', () => {
-  assert.deepEqual(validateExecution({ simulation_hz: 1000, control_hz: 200, to_hz: 33.5 }).to_hz, 33.5);
-  for (const value of [{ simulation_hz: 10, control_hz: 20 }, { control_hz: 20, to_hz: 30 }, { duration_s: 0 }, { to_hz: NaN }, { calculation: 'other' }]) assert.throws(() => validateExecution(value));
+  assert.deepEqual(execution({ simulation_hz: 1000, control_hz: 200, to_hz: 33.5 }).to_hz, 33.5);
+  for (const value of [{ simulation_hz: 10, control_hz: 20 }, { control_hz: 20, to_hz: 30 }, { duration_s: 0 }, { to_hz: NaN }, { calculation: 'other' }]) assert.throws(() => execution(value));
 });
 
-test('solve latency defaults to measured, declared seconds and TO zero round-trip', () => {
-  assert.equal(DEFAULT_EXECUTION.solve_latency_s, 'measured');
-  assert.equal(validateExecution({ to_hz: 0 }).to_hz, 0);
+test('the visualizer has no default for native timing: every execution field is required', () => {
+  for (const key of ['control_hz', 'to_hz', 'solve_latency_s', 'latency_compensation']) {
+    assert.equal(key in DEFAULT_EXECUTION, false);
+    const { [key]: _, ...missing } = EXECUTION;
+    assert.throws(() => validateExecution(missing), /need/);
+  }
+  assert.throws(() => validateExecution({}), /need/);
+  assert.equal('record_every' in DEFAULT_EXECUTION, false);
+});
+
+test('solve latency accepts measured, declared seconds and TO zero round-trip', () => {
+  assert.equal(execution({ to_hz: 0 }).to_hz, 0);
+  assert.equal(execution({ solve_latency_s: 'measured' }).solve_latency_s, 'measured');
   assert.equal(parseSolveLatency(' measured '), 'measured');
   for (const value of ['0', '.0055', '1e-2']) assert.equal(parseSolveLatency(value), Number(value));
   for (const value of ['', '-1', 'NaN', 'ideal']) assert.throws(() => parseSolveLatency(value));
-  for (const value of [null, true, '0.01', -1, NaN, Infinity]) assert.throws(() => validateExecution({ solve_latency_s: value }));
+  for (const value of [null, true, '0.01', -1, NaN, Infinity]) assert.throws(() => execution({ solve_latency_s: value }));
 });
 
-test('latency compensation is one optional execution toggle with an off default', () => {
-  assert.equal(DEFAULT_EXECUTION.latency_compensation, false);
-  assert.equal(validateExecution({}).latency_compensation, false);
-  assert.equal(validateExecution({ latency_compensation: true }).latency_compensation, true);
-  for (const value of [0, 1, 'true', null]) assert.throws(() => validateExecution({ latency_compensation: value }));
+test('latency compensation is one boolean execution toggle', () => {
+  assert.equal(execution({ latency_compensation: false }).latency_compensation, false);
+  assert.equal(execution({ latency_compensation: true }).latency_compensation, true);
+  for (const value of [0, 1, 'true', null]) assert.throws(() => execution({ latency_compensation: value }));
 });
 
 test('plan age expiry is disabled by default and accepts positive finite seconds', () => {
   assert.equal(DEFAULT_EXECUTION.max_plan_age_s, null);
-  assert.equal(validateExecution({}).max_plan_age_s, null);
-  assert.equal(validateExecution({ max_plan_age_s: .25 }).max_plan_age_s, .25);
-  assert.equal(validateExecution({ max_plan_age_s: null }).max_plan_age_s, null);
+  assert.equal(execution({ max_plan_age_s: .25 }).max_plan_age_s, .25);
+  assert.equal(execution({ max_plan_age_s: null }).max_plan_age_s, null);
   for (const value of [0, -1, true, '0.1', NaN, Infinity]) {
-    assert.throws(() => validateExecution({ max_plan_age_s: value }), /Maximum plan age/);
+    assert.throws(() => execution({ max_plan_age_s: value }), /Maximum plan age/);
   }
 });
 
@@ -163,10 +175,6 @@ test('pause and seek cancel buffer waits; finite recordings and zero buffer play
   assert(Math.abs(clock.tick(30010, [0, .9], { growing: true }).time - .22) < 1e-12);
 });
 
-test('commands default to 500 Hz; recording has no setting', () => {
-  assert.deepEqual([DEFAULT_EXECUTION.simulation_hz, DEFAULT_EXECUTION.control_hz, DEFAULT_EXECUTION.to_hz], [1000, 500, 100]);
-  assert.equal('record_every' in DEFAULT_EXECUTION, false);
-});
 
 test('interval descriptions count the commands clipped to the effort limit', () => {
   assert.match(intervalDescription({ severity: 'none', clipped_commands: 3, start_time_s: 0, end_time_s: .01 }), /^Within budget · 3 commands clipped to the effort limit · MPC/);

@@ -6,6 +6,6 @@
     "interpolate": false
   },
   "source": {
-    "mpc_root": "/workspace/tiago_mpc"
+    "mpc_root": "/workspace/tiago_mpc/.worktrees/visualizer-base"
   }
 }

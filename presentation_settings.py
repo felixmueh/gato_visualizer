@@ -12,24 +12,6 @@ DEFAULT_PRESENTATION = dict(report_hz=20, buffer_ms=200, interpolate=False, limi
                             **LIMIT_DEFAULTS)
 
 
-def migrate_presentation(value):
-    """Normalize saved scalar ghost opacity without writing the config on load."""
-    if not isinstance(value, dict):
-        raise ValueError('presentation must be an object')
-    result = dict(value)
-    if 'ghost_opacity_percent' not in result:
-        return result
-    legacy = result.pop('ghost_opacity_percent')
-    endpoints = ('ghost_start_opacity_percent', 'ghost_end_opacity_percent')
-    if any(name not in result for name in endpoints):
-        if (isinstance(legacy, bool) or not isinstance(legacy, (int, float))
-                or not math.isfinite(legacy) or not 0 <= legacy <= 100):
-            raise ValueError('ghost_opacity_percent must be finite within [0, 100]')
-        result.setdefault(endpoints[0], legacy)
-        result.setdefault(endpoints[1], legacy * (25 / 55))
-    return result
-
-
 def validate_presentation(value):
     if not isinstance(value, dict) or set(value) != set(DEFAULT_PRESENTATION):
         raise ValueError('presentation requires ' + ', '.join(DEFAULT_PRESENTATION))

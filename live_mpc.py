@@ -242,7 +242,7 @@ def figure8_reference(times, start_xyz, task):
     local = np.zeros_like(xyz)
     local[:, 0] = .5*task["width_m"]*(1-np.cos(phase))
     local[:, 1] = .5*task["height_m"]*np.sin(2*phase)
-    x, y, z, w = task.get("orientation_xyzw", [0., 0., 0., 1.])
+    x, y, z, w = task["orientation_xyzw"]
     rotation = np.array([[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)],
                          [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)],
                          [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
@@ -334,14 +334,11 @@ def validate_settings(config, task, schema, *, check_available=True):
                          "friction. Build it in Settings › Backend (Build selected N).")
     task_kind = task.get("kind")
     required_task_fields = (set(REACH_DEFAULT_TASK) if task_kind == "reach" else
-                            (set(FIGURE8_DEFAULT_TASK) - {"orientation_xyzw"}) if task_kind == "figure8" else None)
-    supplied_task_fields = set(task)
-    if task_kind == "figure8":
-        supplied_task_fields.discard("orientation_xyzw")  # Legacy unrotated tasks remain valid.
-    if required_task_fields is None or supplied_task_fields != required_task_fields:
+                            set(FIGURE8_DEFAULT_TASK) if task_kind == "figure8" else None)
+    if required_task_fields is None or set(task) != required_task_fields:
         raise ValueError("task requires a complete reach or figure8 object")
     if task_kind == "figure8":
-        quaternion = task.get("orientation_xyzw", [0., 0., 0., 1.])
+        quaternion = task["orientation_xyzw"]
         if (not isinstance(quaternion, list) or len(quaternion) != 4 or
                 any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in quaternion) or
                 abs(sum(x*x for x in quaternion) - 1.) > 1e-6):

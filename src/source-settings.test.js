@@ -27,7 +27,7 @@ test('backend reload restores only supported typed settings and fresh defaults f
     parameters: [{ path: 'N', kind: 'choice', choices: [48, 96] }, { path: 'dt_s', kind: 'float', min: .001, max: .1 }, { path: 'solver_params.max_sqp_iters', kind: 'int', min: 1, max: 100 }, { path: 'solver_params.q_cost', kind: 'float', min: 0, max: 100 }],
     tasks: [{ kind: 'reach', defaults: { target_offset_m: [0, 0, 0] } }],
   };
-  const saved = { config: { N: 32, dt_s: .02, solver_params: { max_sqp_iters: 12.5, q_cost: 9 } }, task: { kind: 'reach', target_offset_m: [.1, .2, .3] }, execution: { simulation_hz: 1000, control_hz: 80, to_hz: 40, duration_s: 7, calculation: 'manual' } };
+  const saved = { config: { N: 32, dt_s: .02, solver_params: { max_sqp_iters: 12.5, q_cost: 9 } }, task: { kind: 'reach', target_offset_m: [.1, .2, .3] }, execution: { simulation_hz: 1000, control_hz: 80, to_hz: 40, solve_latency_s: .01, latency_compensation: true, max_plan_age_s: null, duration_s: 7, calculation: 'manual', continue_at_end: false } };
   const restored = restoreCompatibleSettings(schema, saved);
   assert.equal(restored.config.N, 48);
   assert.equal(typeof restored.config.N, 'number');

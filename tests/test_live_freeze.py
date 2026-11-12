@@ -19,7 +19,7 @@ import numpy as np
 
 from execution_bridge import LiveFreezeConflict, ProcessLiveService
 from history_store import HistoryGenerationError, HistoryStore
-from execution_session import DEFAULT_EXECUTION
+from tests.tiago_mpc_source import EXECUTION
 from live_freeze import committed_records, export_freeze, freeze_arguments
 from replay_format import JOINT_NAMES, ReplayError, load_replay
 from replay_library import ReplayLibrary
@@ -288,7 +288,7 @@ class LiveFreezeTests(unittest.TestCase):
         self.assertFalse(captured[-1])
         self.live._freeze_interrupted = False
         self.live.latest["status"] = dict(state="paused", generation=7, job_active=False)
-        self.live.execution, self.live.config, self.live.task = DEFAULT_EXECUTION, {}, {}
+        self.live.execution, self.live.config, self.live.task = EXECUTION, {}, {}
         self.live.next_version = 0
         self.live._generation_start = dict(kind="current")
         self.live._process = SimpleNamespace(is_alive=lambda: True)
@@ -299,7 +299,7 @@ class LiveFreezeTests(unittest.TestCase):
         self.assertFalse(captured[-1])
 
     def test_consumed_play_command_refuses_stale_idle_status_until_idle_acknowledgement(self):
-        self.live.execution, self.live.config, self.live.task = DEFAULT_EXECUTION, {}, {}
+        self.live.execution, self.live.config, self.live.task = EXECUTION, {}, {}
         self.live.next_version = 0
         self.live._generation_start = dict(kind="current")
         self.live._process = SimpleNamespace(is_alive=lambda: True)

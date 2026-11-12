@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from execution_session import DEFAULT_EXECUTION
+from tests.tiago_mpc_source import EXECUTION
 from native_session import NativeSession
 from tests.test_execution import FakeAdapter
 from tests.test_solver_exchange import DeferredRemote
@@ -17,7 +17,7 @@ class AsyncBatchTests(unittest.TestCase):
         if buffered:
             adapter.problem_configuration = dict(friction=None)
             adapter.remote = DeferredRemote(adapter)
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, to_hz=to_hz, solve_latency_s=latency,
+        session = NativeSession(adapter, dict(EXECUTION, to_hz=to_hz, solve_latency_s=latency,
                                               latency_compensation=False))
         self.addCleanup(session.close)
         return adapter, session
@@ -89,7 +89,7 @@ class AsyncBatchTests(unittest.TestCase):
         self.assertFalse(invocation.is_alive())
         self.assertFalse(adapter.remote.stream_pending)
         self.assertEqual(session.solves, 0)
-        replacement = NativeSession(adapter, dict(DEFAULT_EXECUTION, to_hz=500., solve_latency_s=.002,
+        replacement = NativeSession(adapter, dict(EXECUTION, to_hz=500., solve_latency_s=.002,
                                                  latency_compensation=False))
         self.addCleanup(replacement.close)
         records = replacement.advance_interval(.004)

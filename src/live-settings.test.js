@@ -5,6 +5,8 @@ import { setupLive as createLive, restoreCompatibleSettings } from './live.js';
 // presentation is covered explicitly below without changing their clocks.
 const setupLive = options => createLive({ presentationSettings: { report_hz: 20, buffer_ms: 0, interpolate: true }, ...options });
 import { DEFAULT_EXECUTION } from './live-execution.js';
+// The schema's execution defaults: the visualizer's own fields plus tiago_mpc's timing.
+const SCHEMA_EXECUTION = { ...DEFAULT_EXECUTION, control_hz: 500, to_hz: 100, solve_latency_s: 'measured', latency_compensation: false };
 import { createSession } from './session.js';
 import { bindStopPreference } from './workbench-ui.js';
 import { settingsPatch } from './shared-settings.js';
@@ -73,7 +75,7 @@ function harness() {
     },
   };
   const schema = {
-    defaults: { execution: { ...DEFAULT_EXECUTION }, config: { N: 32, solver_params: { q_cost: 4, max_sqp_iters: 5, max_pcg_iters: 120 }, unlisted: { preserved: true } }, task: { kind: 'reach', target_offset_m: [.15, .2, .2] } },
+    defaults: { execution: { ...SCHEMA_EXECUTION }, config: { N: 32, solver_params: { q_cost: 4, max_sqp_iters: 5, max_pcg_iters: 120 }, unlisted: { preserved: true } }, task: { kind: 'reach', target_offset_m: [.15, .2, .2] } },
     available_N: [16, 32, 64],
     parameters: [
       { path: 'N', kind: 'int' },
@@ -2242,7 +2244,7 @@ test('separate measured and back-to-back checkboxes submit native modes and pres
     h.$('live-to-asap').checked = false; h.$('live-to-asap').emit('change');
     assert.equal(h.$('live-to-hz').disabled, false);
     h.$('live-preview').emit('click'); await flush();
-    assert.equal(h.commands.findLast(command => command.type === 'patch_settings').patch.execution.to_hz, DEFAULT_EXECUTION.to_hz);
+    assert.equal(h.commands.findLast(command => command.type === 'patch_settings').patch.execution.to_hz, SCHEMA_EXECUTION.to_hz);
   });
 });
 

@@ -4,17 +4,19 @@ from copy import deepcopy
 import math
 import numpy as np
 
-# Commands at 500 Hz, as tiago_mpc's experiments (Felix, 2026-10-23).
-DEFAULT_EXECUTION = dict(simulation_hz=1000., control_hz=500., to_hz=100.,
-                         solve_latency_s="measured", latency_compensation=False, max_plan_age_s=None,
-                         calculation="on_play", duration_s=10., continue_at_end=False)
+# The visualizer's own execution settings. Control and TO rates, solve latency and
+# latency compensation have no visualizer default: they come from the selected
+# tiago_mpc's run_virtual_time defaults (scripts/source_probe.experiment_defaults).
+DEFAULT_EXECUTION = dict(simulation_hz=1000., max_plan_age_s=None, calculation="on_play",
+                         duration_s=10., continue_at_end=False)
+NATIVE_EXECUTION = ("control_hz", "to_hz", "solve_latency_s", "latency_compensation")
+EXECUTION_FIELDS = frozenset(DEFAULT_EXECUTION) | frozenset(NATIVE_EXECUTION)
 
 
 def validate_execution(value):
-    if not isinstance(value, dict) or set(value) - set(DEFAULT_EXECUTION) or set(DEFAULT_EXECUTION) - {"solve_latency_s", "latency_compensation", "max_plan_age_s"} - set(value):
-        raise ValueError("execution requires simulation_hz, control_hz, to_hz, solve_latency_s, calculation, duration_s and continue_at_end")
-    # Existing saved browser settings acquire the new realistic default.
-    value = dict(DEFAULT_EXECUTION, **deepcopy(value))
+    if not isinstance(value, dict) or set(value) != EXECUTION_FIELDS:
+        raise ValueError("execution requires exactly " + ", ".join(sorted(EXECUTION_FIELDS)))
+    value = deepcopy(value)
     for field, lo, hi in (("simulation_hz", 1, 100000), ("control_hz", .01, 100000),
                            ("to_hz", 0, 100000), ("duration_s", .001, 120)):
         number = value[field]

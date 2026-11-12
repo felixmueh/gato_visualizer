@@ -18,7 +18,7 @@ from urllib.error import HTTPError
 import numpy as np
 
 from execution_bridge import ProcessLiveService
-from execution_session import DEFAULT_EXECUTION
+from tests.tiago_mpc_source import EXECUTION
 from native_session import NativeSession
 from live_mpc import PLANT_DEFAULTS, import_tiago
 from solver_process import SolverProcess, validate_contract, send_lease, receive_leased_message
@@ -495,7 +495,7 @@ with socket.socket(fileno=fd) as channel:
         plan = dict(_states=np.zeros((3, 14)), _torques=torques, N=3, dt_s=.02,
                     seq=1, stats=dict(solve_time_ms=0.,step_wall_s=0.), sim_time_s=0., type="plan")
         adapter.solve_snapshot = lambda origin, version, **kwargs: deepcopy(plan)
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION,
+        session = NativeSession(adapter, dict(EXECUTION,
             simulation_hz=100., control_hz=100., to_hz=100., solve_latency_s=0.))
         self.addCleanup(session.close)
         records = session.advance_interval(.01)

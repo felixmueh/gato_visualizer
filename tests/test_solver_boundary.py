@@ -138,7 +138,7 @@ def config(**changes):
 
 class BoundaryTests(unittest.TestCase):
     def test_native_session_rejects_internally_consistent_but_wrong_solver_replies(self):
-        from execution_session import DEFAULT_EXECUTION
+        from tests.tiago_mpc_source import EXECUTION
         from native_session import NativeSession
         from tests.test_execution import FakeAdapter
         malformed = (
@@ -153,7 +153,7 @@ class BoundaryTests(unittest.TestCase):
                 def solve(*args, **kwargs):
                     return dict(original(*args, **kwargs), **changes)
                 adapter.solve_snapshot = solve
-                session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+                session = NativeSession(adapter, dict(EXECUTION, solve_latency_s=0.))
                 try:
                     with self.assertRaisesRegex(ValueError, 'Solver reply|Unexpected plan layout'):
                         session.advance_interval(.002)
@@ -163,7 +163,7 @@ class BoundaryTests(unittest.TestCase):
                     session.close()
 
     def test_native_session_runs_the_real_rpc_adapter_with_observed_and_predicted_initial_states(self):
-        from execution_session import DEFAULT_EXECUTION
+        from tests.tiago_mpc_source import EXECUTION
         from native_session import NativeSession
         for compensation in (False, True):
             with self.subTest(compensation=compensation), fake_gpu():
@@ -175,7 +175,7 @@ class BoundaryTests(unittest.TestCase):
                 session = None
                 try:
                     remote.request('bootstrap')
-                    execution = dict(DEFAULT_EXECUTION, to_hz=500., solve_latency_s=.002,
+                    execution = dict(EXECUTION, to_hz=500., solve_latency_s=.002,
                                      latency_compensation=compensation)
                     adapter.configure(config(), dict(kind='reach', target_offset_m=[0., 0., 0.]),
                                       execution=execution)

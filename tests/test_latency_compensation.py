@@ -5,7 +5,8 @@ import unittest
 
 import numpy as np
 
-from execution_session import DEFAULT_EXECUTION, validate_execution
+from tests.tiago_mpc_source import EXECUTION
+from execution_session import validate_execution
 from native_session import NativeSession
 from live_mpc import import_tiago
 from tests.tiago_mpc_source import MPC_ROOT
@@ -62,7 +63,7 @@ class ProjectionAdapter:
 
 
 def run_projection(adapter, *, latency=.0055, end=.06):
-    session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=latency,
+    session = NativeSession(adapter, dict(EXECUTION, solve_latency_s=latency,
                                              latency_compensation=True))
     # Matching propagation is an explicit test configuration, not a Live invariant.
     session.compensation = replace(session.compensation,
@@ -81,13 +82,14 @@ def run_projection(adapter, *, latency=.0055, end=.06):
 
 
 class LatencyCompensationTests(unittest.TestCase):
-    def test_missing_toggle_defaults_off_and_non_boolean_values_are_rejected(self):
-        old = dict(DEFAULT_EXECUTION)
+    def test_missing_toggle_and_non_boolean_values_are_rejected(self):
+        old = dict(EXECUTION)
         del old["latency_compensation"]
-        self.assertIs(validate_execution(old)["latency_compensation"], False)
+        with self.assertRaises(ValueError):
+            validate_execution(old)
         for value in (0, 1, None, "true"):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "latency_compensation"):
-                validate_execution(dict(DEFAULT_EXECUTION, latency_compensation=value))
+                validate_execution(dict(EXECUTION, latency_compensation=value))
 
     def test_future_initial_condition_matches_clipped_physical_execution_for_all_four_laws(self):
         import_tiago(MPC_ROOT)

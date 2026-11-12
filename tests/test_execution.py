@@ -10,7 +10,8 @@ import numpy as np
 
 from execution_bridge import ProcessLiveService
 from history_store import HistoryStore, HistoryGenerationError
-from execution_session import DEFAULT_EXECUTION, breach_message, interval_record, validate_execution
+from tests.tiago_mpc_source import EXECUTION
+from execution_session import breach_message, interval_record, validate_execution
 from native_session import NativeSession
 from execution_worker import estimated_states, worker_main
 from server import make_server
@@ -249,7 +250,7 @@ class SchedulerTests(unittest.TestCase):
         return session
     def test_native_horizon_expiry_stops_without_an_implicit_final_hold(self):
         adapter=FakeAdapter()
-        session=self.session(adapter,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
+        session=self.session(adapter,dict(EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
         records=self.run_until(session,.1)
         controls=[r for r in records if r['type']=='control']
         self.assertEqual([round(r['sim_time_s'],9) for r in controls],[0.])
@@ -261,7 +262,7 @@ class SchedulerTests(unittest.TestCase):
 
     def test_reporting_boundaries_round_to_the_native_command_grid(self):
         adapter=FakeAdapter();adapter.N=16
-        session=self.session(adapter,dict(DEFAULT_EXECUTION,simulation_hz=70.,control_hz=23.,to_hz=11.,solve_latency_s=0.))
+        session=self.session(adapter,dict(EXECUTION,simulation_hz=70.,control_hz=23.,to_hz=11.,solve_latency_s=0.))
         records=[]
         for endpoint in (.035,.07,.15,.231):
             while session.progress.t < endpoint-1e-12 and not session.finished:
@@ -282,7 +283,7 @@ class SchedulerTests(unittest.TestCase):
             plan['_torques'][:] = a.sequence*10
             return plan
         a.solve_snapshot=production_like_solve
-        session=self.session(a,dict(DEFAULT_EXECUTION,simulation_hz=1000.,control_hz=23.,to_hz=11.))
+        session=self.session(a,dict(EXECUTION,simulation_hz=1000.,control_hz=23.,to_hz=11.))
         records=[]
         while session.progress.t < .12-1e-12:
             records.extend(session.advance_interval(.12))
@@ -292,7 +293,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(all(r['torque_nm']==[10.]*7 for r in after))
     def test_reporting_chunks_accumulate_one_to_interval(self):
         adapter=FakeAdapter();adapter.N=64
-        session=self.session(adapter,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=10.,to_hz=1.))
+        session=self.session(adapter,dict(EXECUTION,simulation_hz=100.,control_hz=10.,to_hz=1.))
         records=[]
         for endpoint in (.1,.2,.3):
             records.extend(session.advance_interval(endpoint,emit_partial=False))
@@ -306,7 +307,7 @@ class SchedulerTests(unittest.TestCase):
 
     def run_recorded(self, end, **rates):
         a=FakeAdapter();a.N=16
-        session=self.session(a,dict(DEFAULT_EXECUTION,solve_latency_s=0.,**rates))
+        session=self.session(a,dict(EXECUTION,solve_latency_s=0.,**rates))
         records=[session.initial_state()]
         while session.progress.t < end-1e-12 and not session.finished:
             records.extend(session.advance_interval(min(end,session.chunk_end(.1))))
@@ -323,9 +324,9 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(len(kind('plan')),len(kind('interval')))
         self.assertEqual(len(kind('plan')),25)
         self.assertTrue(all('record_every' not in r for r in records))
-        self.assertLessEqual(len(ticks),estimated_states(dict(DEFAULT_EXECUTION,simulation_hz=1000.,control_hz=500.,to_hz=100.),.25))
+        self.assertLessEqual(len(ticks),estimated_states(dict(EXECUTION,simulation_hz=1000.,control_hz=500.,to_hz=100.),.25))
     def test_noncommensurate_requests_and_recording_follow_command_ticks(self):
-        execution=dict(DEFAULT_EXECUTION,simulation_hz=70.,control_hz=23.,to_hz=11.)
+        execution=dict(EXECUTION,simulation_hz=70.,control_hz=23.,to_hz=11.)
         a,session,records=self.run_recorded(.5,**{k:execution[k] for k in ('simulation_hz','control_hz','to_hz')})
         times=[r['sim_time_s'] for r in records if r['type']=='state']
         events=[k/23 for k in range(13)]
@@ -337,7 +338,7 @@ class SchedulerTests(unittest.TestCase):
     def test_chunks_end_on_a_command_tick(self):
         a=FakeAdapter()
         a.t=.0123
-        session=self.session(a,dict(DEFAULT_EXECUTION,control_hz=500.))
+        session=self.session(a,dict(EXECUTION,control_hz=500.))
         end=session.chunk_end(.1)
         self.assertGreater(end,.1123-1e-12)
         self.assertAlmostEqual((end-a.t)*500,round((end-a.t)*500),places=9)
@@ -359,7 +360,7 @@ class SchedulerTests(unittest.TestCase):
         from tiago_mpc.record import to_dict
         a=self.limited(dict(effort=np.full(7,1.5)),clip_effort=True)
         a.law, a.effective_settings = SampleKnot(), {}
-        session=self.session(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
+        session=self.session(a,dict(EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
         self.assertIs(session.law,a.law)
         self.assertEqual(session.effort_handling,EffortClip(effort=(1.5,)*7))
         self.assertEqual(a.effective_settings['law'],to_dict(a.law))
@@ -381,7 +382,7 @@ class SchedulerTests(unittest.TestCase):
     def test_torque_breach_parks_at_the_next_boundary_and_rearms_within_the_limit(self):
         a=self.limited(dict(effort=np.full(7,1.5)))
         a.effective_settings = {}
-        session=self.session(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
+        session=self.session(a,dict(EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
         self.assertIsNone(session.effort_handling)
         self.assertIsNone(a.effective_settings['effort_handling'])
         records=self.run_until(session,.5)
@@ -401,19 +402,19 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual([round(r['sim_time_s'],9) for r in records if r['type']=='breach'],[.16])
         self.assertAlmostEqual(a.t,.20)
         stopped=self.limited(dict(effort=np.full(7,1.5)),torque=False)
-        session=self.session(stopped,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
+        session=self.session(stopped,dict(EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
         self.assertFalse(any(r['type']=='breach' for r in self.run_until(session,.3)))
         self.assertAlmostEqual(stopped.t,.32)
     def test_substep_breaches_retain_detection_time_and_deliver_at_command_tick(self):
         adapter=self.limited(dict(velocity=np.full(7,.015)));adapter.N=16
-        session=self.session(adapter,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
+        session=self.session(adapter,dict(EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
         records=self.run_until(session,.5)
         breach=next(r for r in records if r['type']=='breach')
         self.assertAlmostEqual(breach['sim_time_s'],.02)
         self.assertEqual(breach['breaches'][0]['quantity'],'velocity')
         self.assertAlmostEqual(adapter.t,.04)
         adapter=self.limited(dict(upper=np.full(7,.025)));adapter.N=16
-        session=self.session(adapter,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
+        session=self.session(adapter,dict(EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.,solve_latency_s=0.))
         breach=next(r for r in self.run_until(session,.5) if r['type']=='breach')
         self.assertAlmostEqual(breach['sim_time_s'],.03)
         self.assertEqual((breach['breaches'][0]['quantity'],breach['breaches'][0]['limit']),('position',.025))
@@ -428,22 +429,25 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(breach_message(.03,found).startswith('Limit breach at 0.030 s: joint 7 torque 371.7 Nm beyond its effort limit 26 Nm (+1 more)'))
     def test_a_value_beyond_its_limit_at_the_start_does_not_stop(self):
         a=self.limited(dict(upper=np.full(7,-.1)))
-        session=self.session(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.))
+        session=self.session(a,dict(EXECUTION,simulation_hz=100.,control_hz=25.,to_hz=10.))
         self.assertFalse(any(r['type']=='breach' for r in self.run_until(session,.3)))
-    def test_execution_has_no_recording_setting(self):
-        self.assertEqual(DEFAULT_EXECUTION['control_hz'],500.)
+    def test_execution_has_no_recording_setting_and_no_native_timing_default(self):
+        from execution_session import DEFAULT_EXECUTION
         self.assertNotIn('record_every',DEFAULT_EXECUTION)
-        self.assertEqual(DEFAULT_EXECUTION['solve_latency_s'],'measured')
+        for key in ('control_hz','to_hz','solve_latency_s','latency_compensation'):
+            self.assertNotIn(key,DEFAULT_EXECUTION)
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                validate_execution({k:v for k,v in EXECUTION.items() if k!=key})
         with self.assertRaises(ValueError):
-            validate_execution(dict(DEFAULT_EXECUTION,record_every=2))
-        self.assertEqual(validate_execution(dict(DEFAULT_EXECUTION,to_hz=0))['to_hz'],0)
+            validate_execution(dict(EXECUTION,record_every=2))
+        self.assertEqual(validate_execution(dict(EXECUTION,to_hz=0))['to_hz'],0)
         for latency in (-1, True, None, float('nan'), float('inf'), 'ideal'):
             with self.subTest(latency=latency), self.assertRaises(ValueError):
-                validate_execution(dict(DEFAULT_EXECUTION,solve_latency_s=latency))
+                validate_execution(dict(EXECUTION,solve_latency_s=latency))
 
     def test_delayed_activation_uses_native_wall_and_original_plan_age(self):
         a=FakeAdapter(); a.N=16; a.clock=FakeClock(); a.plan_wall_s=.025
-        session=self.session(a,dict(DEFAULT_EXECUTION,simulation_hz=100.,control_hz=50.,to_hz=25.),clock=a.clock)
+        session=self.session(a,dict(EXECUTION,simulation_hz=100.,control_hz=50.,to_hz=25.),clock=a.clock)
         records=self.run_until(session,.08)
         controls=[r for r in records if r['type']=='control']
         self.assertEqual([round(r['sim_time_s'],9) for r in controls],[.04,.06])
@@ -467,7 +471,7 @@ class SchedulerTests(unittest.TestCase):
 
         adapter = CostedAdapter()
         adapter.clock, adapter.captures = FakeClock(), 0
-        session = self.session(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.), clock=adapter.clock)
+        session = self.session(adapter, dict(EXECUTION, solve_latency_s=0.), clock=adapter.clock)
         records = session.advance_interval(.01)
         first_cost = session.compute_wall
         adapter.clock.value += 10.  # Deliberate wall time while the native callback is parked.
@@ -479,7 +483,7 @@ class SchedulerTests(unittest.TestCase):
 
     def test_long_delay_keeps_old_plan_and_skips_slots_without_catchup(self):
         a=FakeAdapter();a.N=16
-        session=self.session(a,dict(DEFAULT_EXECUTION,solve_latency_s=.025))
+        session=self.session(a,dict(EXECUTION,solve_latency_s=.025))
         records=self.run_until(session,.085)
         plans=[r for r in records if r['type']=='plan']
         controls=[r for r in records if r['type']=='control']
@@ -490,7 +494,7 @@ class SchedulerTests(unittest.TestCase):
 
     def test_back_to_back_reporting_preserves_pending_plan(self):
         adapter=FakeAdapter()
-        session=self.session(adapter,dict(DEFAULT_EXECUTION,to_hz=0,solve_latency_s=.0055))
+        session=self.session(adapter,dict(EXECUTION,to_hz=0,solve_latency_s=.0055))
         first=session.advance_interval(.003)
         self.assertFalse(any(r['type']=='plan' for r in first))
         self.assertEqual(session.solves,0)
@@ -515,13 +519,13 @@ class SchedulerTests(unittest.TestCase):
 
     def test_resume_holds_committed_torque_and_moving_anchor_uses_explicit_zero(self):
         a=FakeAdapter(); a.t=4.; a.x[7:]=.2; a.applied_torque=np.full(7,3.)
-        session=self.session(a,dict(DEFAULT_EXECUTION,solve_latency_s=.01))
+        session=self.session(a,dict(EXECUTION,solve_latency_s=.01))
         self.assertEqual(session.initial_state()['startup_command_source'],'held_command')
         session.advance_interval(4.005)
         np.testing.assert_allclose(a.x[:7],.018)
         np.testing.assert_allclose(a.applied_torque,3)
         a=FakeAdapter(); a.t=4.; a.x[7:]=.2
-        session=self.session(a,dict(DEFAULT_EXECUTION,solve_latency_s=.01))
+        session=self.session(a,dict(EXECUTION,solve_latency_s=.01))
         self.assertEqual(session.initial_state()['startup_command_source'],'zero_effort_moving_anchor')
         np.testing.assert_array_equal(a.applied_torque,np.zeros(7))
         session.advance_interval(4.005)
@@ -572,7 +576,7 @@ class SchedulerTests(unittest.TestCase):
                     requests.append(a.t)
                     p=solve(origin,version,**kwargs); p['_torques']*=.01; return p
                 a.solve_snapshot=scaled
-                session=self.session(a,dict(DEFAULT_EXECUTION,to_hz=to_hz,solve_latency_s=latency))
+                session=self.session(a,dict(EXECUTION,to_hz=to_hz,solve_latency_s=latency))
                 records=self.run_until(session,.08)
                 commands=[r for r in records if r['type']=='control']
                 sent=[t for t in ticks if t.command is not None]
@@ -592,10 +596,10 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(interval_record(0,.01,.1,.001,.001,.003)['severity'],'none')
         for changes in (dict(control_hz=2000),dict(to_hz=1001),dict(simulation_hz=True),dict(duration_s=121)):
             with self.assertRaises(ValueError):
-                validate_execution(dict(DEFAULT_EXECUTION,**changes))
+                validate_execution(dict(EXECUTION,**changes))
     def test_cancel_after_solve_finishes_the_admitted_tick_and_discards_its_uncommitted_output(self):
         a=FakeAdapter()
-        session=self.session(a,dict(DEFAULT_EXECUTION,solve_latency_s=0.))
+        session=self.session(a,dict(EXECUTION,solve_latency_s=0.))
         self.assertEqual(session.advance_interval(.01,cancelled=lambda:session.solves>0),[])
         session.close()
         self.assertAlmostEqual(session.plant.t,.002)
@@ -636,7 +640,7 @@ class SpawnTests(unittest.TestCase):
                 self.fail(f'Condition timed out: {self.service.latest}')
     def settings(self, **execution):
         return dict(type='set_settings',config=deepcopy(self.service.config),task=deepcopy(self.service.task),
-                    execution=dict(DEFAULT_EXECUTION,calculation='manual',duration_s=.125,**execution))
+                    execution=dict(EXECUTION,calculation='manual',duration_s=.125,**execution))
     def records(self):
         records=[];cursor=0
         while True:

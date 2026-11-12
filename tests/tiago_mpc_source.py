@@ -4,6 +4,12 @@ import os
 from pathlib import Path
 import sys
 from visualizer_config import DEFAULT_MPC_ROOT
+from execution_session import DEFAULT_EXECUTION
+
+# Complete execution settings for tests: the visualizer's own fields plus the native
+# timing a schema supplies from tiago_mpc's defaults (fixed here for the schedulers).
+EXECUTION = dict(DEFAULT_EXECUTION, control_hz=500., to_hz=100., solve_latency_s="measured",
+                 latency_compensation=False)
 
 MPC_ROOT = Path(os.environ.get("TIAGO_MPC_ROOT") or DEFAULT_MPC_ROOT).resolve()
 MODEL = MPC_ROOT / "models/tiago_pro/tiago_pro.urdf"

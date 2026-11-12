@@ -116,43 +116,19 @@ class PresentationConfigTests(unittest.TestCase):
             self.assertEqual(DEFAULT_PRESENTATION['limit_at_velocity_rad_s'], .01)
             self.assertEqual(DEFAULT_PRESENTATION['limit_at_torque_percent'], .2)
 
-    def test_legacy_scalar_ghost_opacity_migrates_on_load_without_writing_and_saves_new_endpoints(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder)/'visualizer.json'
-            legacy = dict(source=dict(mpc_root='/source'), presentation=dict(ghost_opacity_percent=70))
-            path.write_text(json.dumps(legacy))
-            before = path.read_bytes(), path.stat().st_mtime_ns
-            value = load_visualizer_config(path).presentation
-            self.assertEqual(value['ghost_start_opacity_percent'], 70)
-            self.assertAlmostEqual(value['ghost_end_opacity_percent'], 70 * (25 / 55))
-            self.assertNotIn('ghost_opacity_percent', value)
-            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), before)
-            service = PresentationSettings(path)
-            self.assertEqual(service.settings(), value)
-            changed = dict(value, ghost_end_opacity_percent=12)
-            service.update(changed)
-            self.assertEqual(json.loads(path.read_text()), dict(legacy, presentation=changed))
-            self.assertEqual(load_visualizer_config(path).presentation, changed)
-            for endpoint in ('ghost_start_opacity_percent', 'ghost_end_opacity_percent'):
-                incomplete = dict(DEFAULT_PRESENTATION)
-                incomplete.pop(endpoint)
-                with self.assertRaises(ValueError):
-                    validate_presentation(incomplete)
+    def test_ghost_endpoints_are_required_and_the_former_scalar_is_rejected(self):
+        for endpoint in ('ghost_start_opacity_percent', 'ghost_end_opacity_percent'):
+            incomplete = dict(DEFAULT_PRESENTATION)
+            incomplete.pop(endpoint)
             with self.assertRaises(ValueError):
-                validate_presentation(dict(DEFAULT_PRESENTATION, ghost_opacity_percent=70))
-
-    def test_explicit_ghost_endpoints_override_legacy_scalar_and_missing_endpoints_derive_from_it(self):
+                validate_presentation(incomplete)
+        with self.assertRaises(ValueError):
+            validate_presentation(dict(DEFAULT_PRESENTATION, ghost_opacity_percent=70))
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/'visualizer.json'
-            for new, start, end in ((dict(ghost_start_opacity_percent=80, ghost_end_opacity_percent=10), 80, 10),
-                                    (dict(ghost_start_opacity_percent=80), 80, 70 * (25 / 55)),
-                                    (dict(ghost_end_opacity_percent=10), 70, 10)):
-                with self.subTest(new=new):
-                    path.write_text(json.dumps(dict(presentation=dict(ghost_opacity_percent=70, **new))))
-                    value = load_visualizer_config(path).presentation
-                    self.assertEqual(value['ghost_start_opacity_percent'], start)
-                    self.assertAlmostEqual(value['ghost_end_opacity_percent'], end)
-                    self.assertNotIn('ghost_opacity_percent', value)
+            path.write_text(json.dumps(dict(presentation=dict(ghost_opacity_percent=70))))
+            with self.assertRaises(ValueError):
+                load_visualizer_config(path)
 
     def test_api_persists_without_live_and_rejects_invalid_or_foreign_origin(self):
         with tempfile.TemporaryDirectory() as folder:

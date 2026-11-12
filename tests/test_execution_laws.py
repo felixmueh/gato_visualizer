@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 import tiago_mpc as tm
-from execution_session import DEFAULT_EXECUTION
+from tests.tiago_mpc_source import EXECUTION
 from native_session import NativeSession
 from tests.test_execution import FakeAdapter, TIGHT_EFFORT
 
@@ -13,7 +13,7 @@ class ExecutionLawTests(unittest.TestCase):
     def test_age_limit_uses_the_separate_native_safety_object(self):
         adapter = FakeAdapter()
         adapter.N, adapter.effective_settings = 32, {}
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0., max_plan_age_s=.003))
+        session = NativeSession(adapter, dict(EXECUTION, solve_latency_s=0., max_plan_age_s=.003))
         self.addCleanup(session.close)
         records = session.advance_interval(.01)
         self.assertEqual(adapter.effective_settings['safety'],
@@ -25,7 +25,7 @@ class ExecutionLawTests(unittest.TestCase):
     def test_custom_law_fault_is_reported_without_sending_a_command(self):
         adapter = FakeAdapter()
         adapter.law = lambda plan, t, state: tm.Fault('custom_law_fault')
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+        session = NativeSession(adapter, dict(EXECUTION, solve_latency_s=0.))
         self.addCleanup(session.close)
         records = session.advance_interval(.002)
         self.assertFalse(any(r['type'] == 'control' for r in records))
@@ -36,7 +36,7 @@ class ExecutionLawTests(unittest.TestCase):
     def test_pd_uses_current_feedback_between_solves(self):
         adapter = FakeAdapter()
         adapter.law = tm.PlanFeedback(kp=2., kd=.5)
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+        session = NativeSession(adapter, dict(EXECUTION, solve_latency_s=0.))
         self.addCleanup(session.close)
         commands = [r for r in session.advance_interval(.006) if r['type'] == 'control']
         np.testing.assert_allclose(commands[0]['torque_nm'], np.ones(7))
@@ -57,7 +57,7 @@ class ExecutionLawTests(unittest.TestCase):
 
         adapter.solve_snapshot = solve
         adapter.law = tm.FrictionFeedforward(tm.Friction((.5,)*7, (.2,)*7), tm.SampleKnot(), evaluation=tm.Tanh(.01))
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=.0055))
+        session = NativeSession(adapter, dict(EXECUTION, solve_latency_s=.0055))
         self.addCleanup(session.close)
         records = session.advance_interval(.01)
         first = next(r for r in records if r['type'] == 'control')
@@ -81,7 +81,7 @@ class ExecutionLawTests(unittest.TestCase):
         adapter.law = tm.FrictionFeedforward(tm.Friction((3.,)*7, (0.,)*7), evaluation=tm.Tanh(.01))
         adapter.limit_handling = dict(limits=TIGHT_EFFORT, clip_effort=True,
                                       stop_on_breach=dict(position=True, velocity=True, torque=True))
-        session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=0.))
+        session = NativeSession(adapter, dict(EXECUTION, solve_latency_s=0.))
         self.addCleanup(session.close)
         command = next(r for r in session.advance_interval(.002) if r['type'] == 'control')
         self.assertTrue(np.min(command['requested_torque_nm']) > 3.9)
@@ -91,7 +91,7 @@ class ExecutionLawTests(unittest.TestCase):
     def test_default_law_reports_native_horizon_expiry_without_a_terminal_torque(self):
         adapter = FakeAdapter()
         adapter.law = tm.SampleKnot()
-        settings = dict(DEFAULT_EXECUTION, simulation_hz=100., control_hz=25., to_hz=10., solve_latency_s=0.)
+        settings = dict(EXECUTION, simulation_hz=100., control_hz=25., to_hz=10., solve_latency_s=0.)
         session = NativeSession(adapter, settings)
         self.addCleanup(session.close)
         records = []
@@ -113,7 +113,7 @@ class ExecutionLawTests(unittest.TestCase):
             return tm.Command(command.requested+5, command.applied+5)
 
         adapter.law = law
-        settings = dict(DEFAULT_EXECUTION, simulation_hz=100., control_hz=25., to_hz=10., solve_latency_s=0.)
+        settings = dict(EXECUTION, simulation_hz=100., control_hz=25., to_hz=10., solve_latency_s=0.)
         session = NativeSession(adapter, settings)
         self.addCleanup(session.close)
         records = []

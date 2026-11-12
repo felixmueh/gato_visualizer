@@ -42,6 +42,8 @@ every TO period, its plan in effect one period later), here those of `tiago_mpc`
 }
 ```
 
+Every execution field is required; the visualizer fills in none and keeps no default for the
+native timing fields (control and TO rates, solve latency, latency compensation).
 Simulation and command rates are positive and obey `simulation_hz >= control_hz >= to_hz`.
 `to_hz=0` means back-to-back requests; a positive TO rate sets request slots.
 `solve_latency_s` is `"measured"` or finite nonnegative seconds.

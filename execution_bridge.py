@@ -11,7 +11,7 @@ import threading
 import time
 import traceback
 
-from execution_session import DEFAULT_EXECUTION, validate_anchor, validate_execution
+from execution_session import validate_anchor, validate_execution
 from history_store import HistoryGenerationError, HistoryStore, NO_SEGMENT
 from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 from runtime_files import runtime_directory
@@ -109,7 +109,7 @@ class ProcessLiveService:
             raise
         self.config = deepcopy(self.schema["defaults"]["config"])
         self.task = deepcopy(self.schema["defaults"]["task"])
-        self.execution = deepcopy(self.schema["defaults"].get("execution", DEFAULT_EXECUTION))
+        self.execution = deepcopy(self.schema["defaults"]["execution"])
         self.source_settings = deepcopy(self.schema["defaults"].get("source_settings", dict(simulation={}, predictor={})))
         self.effective_settings = deepcopy(self.schema.get("effective_settings", {}))
         self.schema["execution"] = dict(defaults=deepcopy(self.execution),
@@ -605,7 +605,7 @@ class ProcessLiveService:
                             self.schema["compile_selection"] = {key: self.active_profile.get(key)
                                 for key in ("mpc_root", "python", "cache", "effective_cache")}
                             self.schema["compile_profile_id"] = self.active_profile_id
-                            self.schema["execution"]["defaults"] = deepcopy(self.schema["defaults"].get("execution", DEFAULT_EXECUTION))
+                            self.schema["execution"]["defaults"] = deepcopy(self.schema["defaults"]["execution"])
                             install_task_defaults(self.schema)
                             self._task_overrides = {
                                 kind: compatible_overrides(defaults, self._task_overrides.get(kind, {}))

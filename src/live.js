@@ -13,7 +13,7 @@ import { createTimelineIntervalIndex } from './timeline-intervals.js';
 import { createLiveHistoryPaging } from './live-history-paging.js';
 import { createLivePlanCache } from './live-plan-cache.js';
 import { livePredictionWindow, hydrateLiveAnimationHistory } from './live-prediction.js';
-import { DEFAULT_EXECUTION, validateExecution, intervalDescription, createHistoryClock } from './live-execution.js';
+import { validateExecution, intervalDescription, createHistoryClock } from './live-execution.js';
 import { sessionSpan } from './session.js';
 import { settingsPatch, rebaseSettings } from './shared-settings.js';
 import { createVectorField, createWorktreeFields, restoreWorktreeSettings, fieldValue, resolvedValueText, validateField, parameterTooltip } from './worktree-fields.js';
@@ -277,7 +277,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     }
   }
   let modelCompilation, modelPrompt, modelState = { phase: 'idle' };
-  let declaredLatencyDraft = .005, fixedToDraft = DEFAULT_EXECUTION.to_hz, maxPlanAgeDraft = .1;
+  let declaredLatencyDraft = .005, fixedToDraft = null, maxPlanAgeDraft = .1;
   // An obstacle edit while On Play plays keeps playing: its settings change starts the
   // new segment at the displayed state and Play continues there (no pause).
   let playingEdit = false, obstacleAdded = null;
@@ -575,7 +575,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
         }
         return value;
       });
-      const execution = { ...DEFAULT_EXECUTION, ...next.execution };
+      const execution = { ...next.execution };
       for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['duration_s', 'live-duration']]) {
         execution[key] = readTimeInput($(id), { unit: key.endsWith('_hz') ? 'Hz' : 's', min: 0, minExclusive: true, label: key.replaceAll('_', ' ') });
       }
@@ -1059,15 +1059,16 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       const input = $(`target-offset-${i}`); input.value = value; listen(input, 'input', change);
       bindReset(input, { kind: 'float', path: `target_offset_m.${i}`, label: `target ${['X', 'Y', 'Z'][i]}`, min: -1, max: 1 }, () => activeTaskDefaults().target_offset_m[i], { key: `task.target_offset_m.${i}` });
     });
-    settings.execution = validateExecution({ ...DEFAULT_EXECUTION, ...(settings.execution || schema.defaults.execution || {}) });
+    settings.execution = validateExecution(settings.execution || schema.defaults.execution);
     $('live-to-asap').checked = settings.execution.to_hz === 0;
     if (settings.execution.to_hz > 0) fixedToDraft = settings.execution.to_hz;
+    fixedToDraft ??= defaultSettings.execution.to_hz;
     for (const [key, id] of [['simulation_hz', 'live-simulation-hz'], ['control_hz', 'live-control-hz'], ['to_hz', 'live-to-hz'], ['duration_s', 'live-duration'], ['calculation', 'live-calculation']]) {
       const input = $(id), unit = key.endsWith('_hz') ? 'Hz' : 's';
       if (key === 'calculation') input.value = settings.execution[key];
       else { configureTimeInput(input, { unit }); setTimeInputValue(input, key === 'to_hz' ? fixedToDraft : settings.execution[key], { unit }); }
       listen(input, 'input', change);
-      const baseline = { ...DEFAULT_EXECUTION, ...defaultSettings.execution };
+      const baseline = defaultSettings.execution;
       if (key === 'calculation') resetIndicators.bind({ key: `execution.${key}`, name: 'calculation mode', input,
         getValue: () => input.value, getDefault: () => baseline[key], reset: value => resetInput(input, value) });
       else if (key === 'to_hz') resetIndicators.bind({ key: 'execution.to_hz', name: 'TO rate', input,
@@ -1086,7 +1087,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     listen(latencyInput, 'input', change);
     listen(measured, 'change', change);
     resetIndicators.bind({ key: 'execution.solve_latency_s', name: 'solve latency', input: latencyInput,
-      getValue: () => measured.checked ? 'measured' : readTimeInput(latencyInput, { unit: 's', min: 0 }), getDefault: () => defaultSettings.execution?.solve_latency_s ?? DEFAULT_EXECUTION.solve_latency_s,
+      getValue: () => measured.checked ? 'measured' : readTimeInput(latencyInput, { unit: 's', min: 0 }), getDefault: () => defaultSettings.execution.solve_latency_s,
       reset: value => { measured.checked = value === 'measured'; if (!measured.checked) { declaredLatencyDraft = value; setTimeInputValue(latencyInput, value, { unit: 's', min: 0, force: true }); } change(); } });
     const ageInput = $('live-max-plan-age'), ageEnabled = $('live-plan-age-enabled');
     ageEnabled.checked = settings.execution.max_plan_age_s !== null;
@@ -1097,7 +1098,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     listen(ageEnabled, 'change', change);
     resetIndicators.bind({ key: 'execution.max_plan_age_s', name: 'maximum plan age', input: ageInput,
       getValue: () => ageEnabled.checked ? readTimeInput(ageInput, { unit: 's', min: 0, minExclusive: true }) : null,
-      getDefault: () => defaultSettings.execution?.max_plan_age_s ?? DEFAULT_EXECUTION.max_plan_age_s,
+      getDefault: () => defaultSettings.execution.max_plan_age_s,
       reset: value => { ageEnabled.checked = value !== null; if (ageEnabled.checked) { maxPlanAgeDraft = value; setTimeInputValue(ageInput, value, { unit: 's', min: 0, minExclusive: true, force: true }); } change(); } });
     const compensationInput = $('live-latency-compensation');
     compensationInput.checked = settings.execution.latency_compensation;
@@ -1358,8 +1359,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     $('live-orientation-stat').hidden = !Number.isFinite(angle) && !orientationGoal(settings?.task);
     $('live-orientation-error').textContent = Number.isFinite(angle) ? `${number(angle * 180 / Math.PI, 1)}°` : '—';
     $('live-arrival').textContent = shownState?.arrived ? 'Arrival flag reached · holding target' : 'Following task reference';
-    const execution = settings?.execution || DEFAULT_EXECUTION;
-    $('live-rates').textContent = `Nominal simulated Hz: TO ${number(execution.to_hz)} · control ${number(execution.control_hz)} · physics ${number(execution.simulation_hz)}. Achieved per calculation-wall second: TO ${number(job.mpc_hz, 1)} · control ${number(job.control_hz, 1)} · physics ${number(job.simulation_hz, 1)}.`;
+    const execution = settings?.execution;
+    if (execution) $('live-rates').textContent = `Nominal simulated Hz: TO ${number(execution.to_hz)} · control ${number(execution.control_hz)} · physics ${number(execution.simulation_hz)}. Achieved per calculation-wall second: TO ${number(job.mpc_hz, 1)} · control ${number(job.control_hz, 1)} · physics ${number(job.simulation_hz, 1)}.`;
     $('live-play').classList.toggle('compute-limited', clock.playing && continueAtEnd() && clock.time >= history.bounds[1] - .001 && Boolean(job.job_active) && job.calculation_rtf < .99);
     refreshPlanLabel(shownPlan); refreshHistoryControls();
     // Callbacks (including Joints) read the public displayed state and start
