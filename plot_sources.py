@@ -299,10 +299,6 @@ def scene_records(scene):
                 plan["diagnostics"] = plan["stats"]["diagnostics"]
             if "iterations" in plan["stats"]:
                 plan["iterations"] = plan["stats"]["iterations"]
-            captured = retained_live.get("inspection_inputs", {}).get(plan["id"])
-            if captured is not None:
-                plan.update(retained_live["inspection_context"])
-                plan.update(captured, problem_configuration=provenance["params"])
             raw["plans"].append(plan)
             plan["joint_limits"] = raw["joint_limits"]
             plan["mpc_bounds"] = raw["mpc_bounds"]
@@ -428,7 +424,7 @@ def inspect_source(raw, selection=None, analysis=None):
                 "mode", "snapshot_count", "solves_run", "max_sqp_cap", "stop_reason", "solver_profile", "model_identity",
                 "original_solver_profile", "original_model_identity")} if trace is not None else None),
             capabilities=dict(continue_sqp=False, continue_reason=CONTINUE_REASON,
-                run_again=run_again_capability(selected),
+                run_again=run_again_capability(selected, replay_scene=raw.get("scene")),
                 iteration_predictions=trace is not None or any(i.get("prediction") is not None for i in selected["iterations"]),
                 iteration_paths=trace is not None))
     return selected, serializable(info)

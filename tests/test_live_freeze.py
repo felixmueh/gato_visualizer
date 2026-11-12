@@ -139,25 +139,100 @@ class LiveFreezeTests(unittest.TestCase):
         scene = replay_scene(replay, self.folder / 'freeze.npz', MPC_ROOT, self.scene)
         self.assertEqual(len(scene['trajectories'][0]['orientation_error_rad']), 3)
 
-    def test_freeze_preserves_exact_inputs_for_later_capped_inspection(self):
+    def inspection_records(self, task=None):
         from tests.test_solve_inspections import plan as captured_plan
-        from inspection_problem import captured_problem
-        from plot_sources import scene_records
         source = captured_plan()
         records = deepcopy(self.records)
         context = records[0]['context']
         for key in ('problem_configuration', 'constraint_bounds_native', 'model_identity', 'solver_profile'):
             context[key] = deepcopy(source[key])
-        context['settings']['task'] = deepcopy(source['task'])
+        context['settings']['task'] = task or deepcopy(source['task'])
+        kinematics = RobotKinematics(MODEL, {'torso_lift_joint': .12})
+        context['solver_profile'] = dict(
+            predictor=dict(constraint_bounds_native=deepcopy(source['constraint_bounds_native'])),
+            coordinate_contract=dict(world_from_reference=kinematics.world_from_torso.homogeneous.tolist()))
         records[2]['initial_state'] = deepcopy(source['initial_state'])
         records[2]['reference_native'] = [[.1, .2, .3, None, None, None]] * 3
+        return records
+
+    def test_freeze_reconstructs_cold_inspection_without_duplicate_inputs(self):
+        from inspection_problem import captured_problem
+        from plot_sources import scene_records, inspect_source
+        records = self.inspection_records(dict(kind='reach', orientation_rad=[.1, -.2, .3]))
+        for record in records:
+            if record['type'] == 'state':
+                record['target_xyz'] = [.3, -.2, .5]
         replay = load_replay(self.export(records=records), model_urdf=MODEL)
-        raw = scene_records(replay_scene(replay, self.folder / 'freeze.npz', MPC_ROOT, self.scene))
-        problem = captured_problem(raw['plans'][0])
-        self.assertEqual(problem['initial_state'], source['initial_state'])
-        self.assertEqual(problem['reference_native'], records[2]['reference_native'])
-        self.assertEqual(problem['constraint_bounds_native'], source['constraint_bounds_native'])
-        self.assertEqual(problem['problem_configuration'], source['problem_configuration'])
+        live = replay.metadata['provenance']['live']
+        self.assertNotIn('inspection_inputs', live)
+        self.assertNotIn('inspection_context', live)
+        scene = replay_scene(replay, self.folder / 'freeze.npz', MPC_ROOT, self.scene)
+        raw = scene_records(scene)
+        selected, info = inspect_source(raw, dict(solve_id='live-1'))
+        self.assertTrue(info['selected_solve']['capabilities']['run_again']['available'])
+        problem = captured_problem(selected, replay_scene=scene)
+        self.assertEqual(problem['initial_state'], dict(q=records[2]['q'][0], qd=records[2]['qd_rad_s'][0],
+                                                      time_s=3., measured_time_s=3.))
+        kinematics = RobotKinematics(MODEL, {'torso_lift_joint': .12})
+        expected = np.r_[kinematics.world_from_torso.actInv(np.array([.3, -.2, .5])),
+                         kinematics.rotation_to_torso([.1, -.2, .3])]
+        np.testing.assert_allclose(problem['reference_native'], np.tile(expected, (3, 1)))
+        self.assertEqual(problem['constraint_bounds_native'], records[0]['context']['constraint_bounds_native'])
+        self.assertEqual(problem['problem_configuration'], records[0]['context']['problem_configuration'])
+
+    def test_frozen_figure8_inspection_regenerates_future_reference_after_recording_end(self):
+        from inspection_problem import captured_problem
+        from live_mpc import FIGURE8_DEFAULT_TASK, figure8_reference
+        from plot_sources import SourceReader, inspect_source
+        from replay_library import _signature
+        from solve_inspections import InspectionService
+        task = dict(FIGURE8_DEFAULT_TASK, period_s=4., target_offset_m=[.1, -.2, .05],
+                    orientation_xyzw=[0., 0., np.sin(.3), np.cos(.3)])
+        records = self.inspection_records(task)
+        anchor = [.4, -.3, .2]
+        for record in records:
+            if record['type'] == 'state':
+                record['target_xyz'] = figure8_reference([record['sim_time_s']], anchor, task)[0].tolist()
+        # A future-origin plan from a nonzero episode start, with no executed
+        # reference samples at its knots. Inspection must regenerate that future.
+        records[2].update(plan_origin_time_s=3.1, request_time_s=3., measured_time_s=3.)
+        path = self.export(records=records)
+        reader = SourceReader(MPC_ROOT, self.scene)
+        descriptor = dict(kind='replay', path=str(path), revision='fixture', signature=list(_signature(path)))
+        raw = reader.read(descriptor)
+        selected, info = inspect_source(raw, dict(solve_id='live-1'))
+        self.assertTrue(info['selected_solve']['capabilities']['run_again']['available'])
+        problem = captured_problem(selected, replay_scene=raw['scene'])
+        self.assertEqual(problem['initial_state']['time_s'], 3.1)
+        self.assertEqual(problem['initial_state']['measured_time_s'], 3.)
+        kinematics = RobotKinematics(MODEL, {'torso_lift_joint': .12})
+        expected = [kinematics.world_from_torso.actInv(point) for point in
+                    figure8_reference(3.1 + np.asarray(records[2]['knot_time_s']), anchor, task)]
+        np.testing.assert_allclose(np.asarray(problem['reference_native'], dtype=float)[:, :3], expected, atol=1e-12)
+        self.assertEqual([row[3:] for row in problem['reference_native']], [[None]*3]*3)
+        service = InspectionService.__new__(InspectionService)
+        service.reader, service.reader_lock = reader, threading.RLock()
+        submitted, identifier = service._problem(dict(descriptor=descriptor,
+                                                    body=dict(selection=dict(solve_id='live-1'))))
+        self.assertEqual(identifier, 'live-1')
+        self.assertEqual(submitted, problem)
+
+    def test_long_freeze_does_not_export_per_solve_inspection_horizons(self):
+        records = self.inspection_records()
+        n = 128
+        context = records[0]['context']
+        context['problem_configuration']['N'] = n
+        template = dict(records[2], knot_time_s=(np.arange(n)*.01).tolist(),
+                        q=[records[2]['q'][0]]*n, qd_rad_s=[[.2]*7]*n,
+                        torque_nm=[[4.]*7]*(n-1), torque_time_s=(np.arange(n-1)*.01).tolist(),
+                        reference_native=[[.123456789012345, .234567890123456, .345678901234567, None, None, None]]*n)
+        records = [records[0], records[1], *[
+            dict(template, seq=i+1, sim_time_s=3.+i*.01) for i in range(800)],
+            dict(records[-2], sim_time_s=11.)]
+        replay = load_replay(self.export(records=records), model_urdf=MODEL)
+        self.assertEqual(len(replay.predictions), 800)
+        self.assertEqual(len(replay.predictions[-1].q), n)
+        self.assertLess(len(json.dumps(replay.metadata))*4, 16*1024*1024)
 
     def test_compensated_freeze_preserves_future_origin_and_actual_request_time_for_plots(self):
         from plot_sources import SourceReader

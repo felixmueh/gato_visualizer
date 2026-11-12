@@ -158,7 +158,7 @@ from the explicit origin, and each plan has at least two samples. A plan's
 reference follows the same static/moving array shapes. No solver dt is inferred.
 
 The viewer accepts at most 64 MiB compressed, 256 MiB expanded, 65,536 arrays,
-16 MiB of JSON metadata (stored as UCS-4, about 0.8 KiB per plan), 10,000
+16 MiB of JSON metadata (stored as UCS-4, four bytes per character), 10,000
 prediction descriptors and 200,000 total trajectory/reference samples. A default
 figure eight (2400 plans, 12,008 arrays) fits. Excess files receive an explicit error; samples are not filtered.
 Object arrays and malformed NPY headers are rejected before loading.
@@ -342,10 +342,14 @@ arrival rule, generation, completion status, freeze timestamp and breaches.
 
 Accepted v1 omissions: timing intervals (no freeze timing plots/bands), command
 records (plan sequence, planned unclipped torque and plan exhaustion), state
-`distance_m`/`arrived`, playback breach stops and Run again problem inputs
-(`constraint_bounds_native`, `reference_native`, `initial_state`). Applied
-torque remains; breaches and the arrival rule remain in provenance. Run again
-is unavailable as for any replay without captured inputs. Format limits apply:
+`distance_m`/`arrived` and playback breach stops. Applied torque remains;
+breaches and the arrival rule remain in provenance. Run again reconstructs its
+cold state from the saved prediction's first q/qd knot and regenerates the
+reference from the recorded task and clock. Installed bounds and identities use
+the existing shared provenance. Per-solve `initial_state`/`reference_native`
+copies and a separate inspection context are not exported. See
+[inspection](inspection.md#fresh-inspection-service-and-binary-data-flow).
+Format limits apply:
 200,000 total samples, 10,000 predictions and 64 MiB compressed. Total samples
 include recorded states, reference samples and prediction knots. Oversized runs
 are refused with the limit named; no export subsampling is performed.

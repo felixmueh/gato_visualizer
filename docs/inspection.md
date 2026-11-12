@@ -208,10 +208,17 @@ before the migration to `tiago_mpc` main carry the old configuration shape
 (`solver_params`, `controller`) and report "Run again unavailable:
 pre-migration recording"; there is no converter (Felix, 2026-10-22).
 
-Freezing a current Live episode retains each solve's exact native initial state
-and reference, plus its shared configuration and installed bounds. These captures
-allow inspection after a backend restart without inferring inputs from drawn
-trajectories. Recordings without those captures remain unavailable for Run again.
+Frozen Live episodes construct cold inspection inputs on demand (2026-11-12).
+The saved prediction's first q/qd knot supplies the initial state at its recorded
+origin time. The recorded task settings and reference anchor regenerate Reach
+or Figure-eight targets at the prediction's knot times, including knots beyond
+the episode's end. The recorded coordinate transform places them in the native
+reference frame. Configuration, installed bounds and model identity come from
+the shared provenance already in the replay. No per-solve initial-state or
+reference copies, or separate inspection context, are exported. This cold solve
+uses the saved prediction's start; it does not claim to reproduce the original
+request state or optimizer initialization. Replays lacking the required task,
+velocity or shared problem context remain unavailable for Run again.
 
 The CPU profile preflight checks a compatible cached module for the captured N
 and predictor model. The child constructs each `Mpc` from the captured

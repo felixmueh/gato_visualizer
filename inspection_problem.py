@@ -13,9 +13,58 @@ def detached(value):
     return deepcopy(value)
 
 
-def captured_problem(plan):
+def replay_problem(plan, scene):
+    """Build a cold inspection from saved predictions and the recorded task.
+
+    References extend beyond the episode's last state: regenerate the task at
+    the prediction's actual knot times instead of holding the last recorded target.
+    The saved first prediction knot supplies q/qd, not an optimizer checkpoint.
+    """
+    provenance = scene.get("source", {}).get("provenance", {})
+    live = provenance.get("live", {})
+    profile = live.get("solver_profile", {})
+    task = live.get("settings", {}).get("task", {})
+    recorded = next((item for item in scene.get("trajectories", ()) if item.get("kind") == "recorded"), {})
+    try:
+        origin = plan["metadata"]["origin_time_s"]
+        times = np.asarray(plan["knot_time_s"], dtype=float)
+        source_time = recorded["reference_time_s"][0]
+        source_xyz = np.asarray(recorded["reference_xyz"][0], dtype=float)
+        transform = np.asarray(profile["coordinate_contract"]["world_from_reference"], dtype=float)
+        if transform.shape != (4, 4) or not np.isfinite(transform).all():
+            raise ValueError("invalid recorded reference transform")
+        if task["kind"] == "reach":
+            world = np.tile(source_xyz, (len(times), 1))
+        elif task["kind"] == "figure8":
+            from live_mpc import figure8_reference
+            # The episode may start at a nonzero phase after a continuation.
+            anchor = source_xyz - figure8_reference([source_time], [0., 0., 0.], task)[0]
+            world = figure8_reference(origin + times, anchor, task)
+        else:
+            raise ValueError("unsupported recorded task")
+        reference = np.full((len(times), 6), np.nan)
+        reference[:, :3] = (world - transform[:3, 3]) @ transform[:3, :3]
+        from live_mpc import orientation_goal
+        goal = orientation_goal(task)
+        if goal is not None:
+            import pinocchio as pin
+            reference[:, 3:] = pin.log3(transform[:3, :3].T @ pin.exp3(np.asarray(goal, dtype=float)))
+        from solver_process import reference_to_wire
+        initial = dict(q=plan["q"][0], qd=plan["qd_rad_s"][0], time_s=origin,
+                       measured_time_s=live.get("plan_timing", {}).get(plan["id"], {}).get("measured_time_s", origin))
+        return dict(plan, initial_state=initial, reference_native=reference_to_wire(reference),
+                    problem_configuration=provenance["params"], joint_limits=scene["joint_limits"], task=task,
+                    constraint_bounds_native=profile["predictor"]["constraint_bounds_native"],
+                    model_identity=live["model_identity"], solver_profile=profile)
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        raise ValueError(f"Run again unavailable: saved prediction or task context is incomplete ({error})") from error
+
+
+def captured_problem(plan, *, replay_scene=None):
     if not plan:
         raise ValueError("No retained solve is selected")
+    if replay_scene is not None:
+        plan = replay_problem(plan, replay_scene)
     required = ("initial_state", "reference_native", "problem_configuration", "joint_limits", "task", "constraint_bounds_native")
     missing = [key for key in required if not plan.get(key)]
     if missing:
@@ -79,9 +128,9 @@ def captured_problem(plan):
                 original_solver_profile=detached(dict(plan.get("solver_profile", {}))))
 
 
-def run_again_capability(plan):
+def run_again_capability(plan, *, replay_scene=None):
     try:
-        captured_problem(plan)
+        captured_problem(plan, replay_scene=replay_scene)
     except (ValueError, TypeError, KeyError) as exc:
         return dict(available=False, reason=str(exc), initialization="cold_state")
     return dict(available=True, reason=None, initialization="cold_state")

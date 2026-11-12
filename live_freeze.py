@@ -44,7 +44,7 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
     if world_frame not in ("base_footprint", "torso_lift_link"):
         raise ReplayError(f"Freeze reference frame is unsupported: {world_frame}")
     header, states, plans, breaches = None, [], [], []
-    activations, plan_timing, inspection_inputs = {}, {}, {}
+    activations, plan_timing = {}, {}
     total_samples = 0
     for record in records:
         if not isinstance(record, dict) or record.get("generation") != generation:
@@ -73,9 +73,6 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
             if "plan_origin_time_s" in record:
                 plan_timing[plan["id"]] = {key: record[key] for key in (
                     "request_time_s", "plan_origin_time_s", "measured_time_s") if key in record}
-            if record.get("initial_state") and record.get("reference_native") and header.get("constraint_bounds_native"):
-                inspection_inputs[plan["id"]] = {key: deepcopy(record[key])
-                                                   for key in ("initial_state", "reference_native")}
             plans.append(plan)
             total_samples += len(plan["time_s"])
             if len(plans) > MAX_PREDICTIONS:
@@ -106,11 +103,6 @@ def freeze_arguments(records, *, generation, complete, fixed_joints, world_frame
         live["effective_settings"] = deepcopy(header["effective_settings"])
     if plan_timing:
         live["plan_timing"] = plan_timing
-    if inspection_inputs:
-        live["inspection_inputs"] = inspection_inputs
-        live["inspection_context"] = {key: deepcopy(header[key]) for key in
-                                      ("constraint_bounds_native", "model_identity", "solver_profile")}
-        live["inspection_context"]["task"] = deepcopy(header["settings"]["task"])
     live.update(generation=generation, complete=bool(complete),
                 frozen_at=frozen_at or datetime.now(timezone.utc).isoformat(), breaches=breaches)
     sent = [record for record in states if record.get("torque_nm") is not None]

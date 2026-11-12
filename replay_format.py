@@ -26,7 +26,7 @@ MAX_TOTAL_SAMPLES = 200_000
 # limit still bounds the work per plan.
 MAX_PREDICTIONS = 10_000
 MAX_ARRAYS = 65_536
-# NumPy stores the JSON as UCS-4, four bytes per character (about 0.8 KiB per plan).
+# NumPy stores the JSON as UCS-4, four bytes per character.
 MAX_METADATA_BYTES = 16 * 1024 * 1024
 REFERENCE_FRAMES = ("base_footprint", "torso_lift_link")
 

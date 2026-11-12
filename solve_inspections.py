@@ -194,7 +194,7 @@ class InspectionService:
                     plan.get("trajectory_index") == selection["trajectory_index"] for plan in raw.get("plans", ())):
                 raise ValueError("Selected replay trajectory is not a retained solve in this source")
             selected, _ = inspect_source(raw, selection)
-            problem = captured_problem(serializable(selected))
+            problem = captured_problem(serializable(selected), replay_scene=raw.get("scene"))
         return problem, str(selected["id"])
 
     def _checked(self, request, problem):
