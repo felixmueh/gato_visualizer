@@ -256,9 +256,10 @@ class HistoryStore:
         head = json.dumps(dict(generation=generation), separators=(',', ':')).encode()
         return head[:-1]+b',"plans":['+b','.join(records)+b']}'
 
-    def selected_plan(self, descriptor, identifier):
+    def selected_plan(self, descriptor, identifier, *, missing_ok=False):
         """Read one retained plan with its segment's context, never scanning or
-        decoding unrelated physics states."""
+        decoding unrelated physics states. missing_ok returns None only for an absent
+        identity in a valid committed prefix; malformed or stale descriptors still fail."""
         if type(identifier) not in (str, int) or not str(identifier):
             raise ValueError("Select a retained solve id")
         identifier = str(identifier)
@@ -275,6 +276,8 @@ class HistoryStore:
                 raise ValueError("Invalid committed Live history prefix")
             indexed = self.plan_offsets.get(identifier)
             if indexed is None or indexed[0] >= cursor or indexed[1] + indexed[2] > byte_end:
+                if missing_ok:
+                    return None
                 raise ValueError("Selected solve is not retained in this source")
             _, offset, size = indexed
             segment = self.segment

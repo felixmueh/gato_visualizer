@@ -362,3 +362,20 @@ test('track previews serialize requests, keep only the latest waiting card and i
   pending.get('2')(motion); await new Promise(resolve => setImmediate(resolve));
   assert(current.querySelector('svg')); assert.match(current.querySelector('.track-catalog-detail').textContent, /2 s/);
 });
+
+test('growing Live states do not reindex the old timing history, and expanded bands stay bounded', async () => {
+  const { timeline, nodes, draws } = sessionTimelineFixture();
+  let reads = 0;
+  const intervals = Array.from({ length: 10000 }, (_, i) => ({
+    get start_time_s() { reads++; return i * .002; }, end_time_s: (i + 1) * .002, mpc_overrun: i % 2 === 0,
+  }));
+  const tracks = laneTracks().slice(0, 1); tracks[0].span = [0, 20];
+  const update = revision => timeline.update({ mode: 'live', identity: 'long-run', bounds: [0, 20], time: 19.9, intervals, revision, tracks });
+  update(1); const before = reads;
+  for (let revision = 2; revision <= 20; revision++) update(revision);
+  assert.equal(reads, before, 'Collapsed timeline reindexed old intervals for new state batches');
+  await nodes.get('live-timeline-expand').emit('click');
+  assert.equal(reads, before);
+  assert.ok(draws.filter(draw => draw.color === '#ed716c').length <= 600, 'Expanded timebar drew every historical interval');
+  assert.equal(timeline.snapshot.intervalCount, intervals.length);
+});

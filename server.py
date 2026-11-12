@@ -151,6 +151,7 @@ class RobotKinematics:
                 self.neutral[joint.idx_q:joint.idx_q+2] = [np.cos(value), np.sin(value)]
             else:
                 raise SourceError(f"Unsupported fixed context joint representation: {name}")
+        self.fixed_joints = dict(FIXED_DISPLAY_JOINTS, **(fixed_joints or {}))
         self.arm_indices = []
         for name in JOINT_NAMES:
             jid = self.model.getJointId(name)

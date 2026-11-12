@@ -107,13 +107,14 @@ at the horizon boundary.
 Implementations moved from the experiments into the package. Armature and the
 fixed tuned PD gains are checked-in model values in `tiago_mpc/tiago.py`; the
 adapter uses those package defaults. Friction presets and tuning remain in
-`experiments/controller_tuning.py`. Changing armature does not silently retune
+`experiments/controller_tuning.py`; since 2026-11-12 the adapter takes nothing
+from it and its feedforward uses `tm.urdf_friction()`. Changing armature does not silently retune
 the fixed gains. The laws can be passed to a package execution loop; there is no
 new robot selection UI or hardware qualification. The manual tuning procedure is
 in the TIAGo worktree's `docs/controller-tuning-on-robot.md`.
 
-The provider's plant uses the retained proximal friction prior with nominal,
-unidentified wrists and supplied reflected inertia. It preserves native
+The provider's plant uses the URDF friction coefficients (`tm.urdf_friction()`)
+and supplied reflected inertia. It preserves native
 StickSlip/semi-implicit settings. Holding and sliding share one Coulomb threshold.
 This is the retained comparison model, not new friction identification.
 Predictor friction defaults off; its visible enabled width is .2 rad/s.

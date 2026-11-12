@@ -22,6 +22,7 @@ class FrictionTests(unittest.TestCase):
     def test_the_session_steps_tiago_mpc_sim_plant_with_each_integrator_and_coulomb_law(self):
         from tiago_mpc.clock import VirtualClock
         from tiago_mpc.dynamics import Tanh, Sign, StickSlip
+        from tiago_mpc.laws import SampleKnot
         adapter, tiago = self.adapter, self.adapter.tiago
         # Compare the session's command-tick stepping with the upstream plant
         # advancing the same held command directly, for every plant option.
@@ -30,6 +31,7 @@ class FrictionTests(unittest.TestCase):
                                           ("euler", tiago.urdf_friction(), "sign"),
                                           ("euler", tiago.urdf_friction(), "stick_slip")):
             with self.subTest(integrator=integrator, law=friction and law), ExitStack() as cleanup:
+                cleanup.enter_context(patch.dict(adapter.source_settings["simulation"], law="plan"))
                 adapter.reset_state()
                 adapter.x[7:] = np.linspace(-.2, .2, 7)
                 evaluation = Tanh(.03) if law == 'tanh' else Sign() if law == 'sign' else StickSlip()
@@ -44,6 +46,7 @@ class FrictionTests(unittest.TestCase):
                 cleanup.enter_context(patch.object(adapter, "state_record", lambda version=0: dict(type="state")))
                 session = NativeSession(adapter, dict(DEFAULT_EXECUTION, simulation_hz=1000., solve_latency_s=0.))
                 cleanup.callback(session.close)
+                self.assertEqual(session.law, SampleKnot())
                 # The provider may add inertia/change coefficients. Compare the
                 # scheduler with the exact native configuration it built.
                 reference = session.plant.config.build()
@@ -82,9 +85,7 @@ class FrictionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'prebuilt'):
             service._checked(dict(profile={}), problem)
         checked['available_N_by_friction']['on'] = [32]
-        with self.assertRaisesRegex(ValueError, 'iteration capture'):
-            service._checked(dict(profile={}), problem)
-        checked['capabilities']['iteration_capture_by_friction']['on']['32'] = True
+        # Capped solves need the captured predictor module, not native trace capture.
         self.assertIs(service._checked(dict(profile={}), problem), checked)
 
     def test_old_embedded_friction_metadata_cannot_be_guessed_for_run_again(self):

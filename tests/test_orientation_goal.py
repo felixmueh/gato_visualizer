@@ -190,44 +190,54 @@ class RunAgainTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact native reference"):
             captured_problem(dict(plan(), reference_native=[[.1, .2, .3, None, 0., 0.]] * 3))
 
-    def test_a_cold_orientation_solve_keeps_native_state_and_the_recorded_goal(self):
+    def test_each_independent_cold_orientation_solve_keeps_native_state_and_the_recorded_goal(self):
         from inspection_problem import captured_problem
         from inspection_worker import inspect_solve
-        from tests.test_solve_inspections import groups, plan, trace
-
+        from tests.test_solve_inspections import groups, plan
+        made = []
         class Solver:
-            lib = SimpleNamespace(ITERATION_CAPTURE_AVAILABLE=True)
+            def __init__(self, cap): self.cap = cap
             def get_row_groups(self): return groups()
             def set_row_group_bounds(self, group, low, high): pass
             def set_row_group_mask(self, group, mask): pass
             def set_cost_menu(self, menu): self.menu = menu
             def reset_dual(self): pass
             def reset_rho(self): pass
-            def solve(self, state, reference, *, capture_iterations, budget_s):
-                self.inputs = state.copy(), reference.copy()
-                return SimpleNamespace(iteration_trace=trace(), solve_time_us=1234, stats=SimpleNamespace())
-
+            def solve(self, state, reference, xu_warm=None, *, budget_s=None):
+                self.inputs = state.copy(), reference.copy(), xu_warm.copy()
+                return SimpleNamespace(xu=xu_warm.copy(), solve_time_us=1234,
+                    stats=SimpleNamespace(sqp_iters=np.array([self.cap]),pcg_iters=np.ones((self.cap,1)),
+                                          kkt_converged=np.array([False])))
+        class FakeMpc:
+            def __init__(self, params, binary):
+                self.params=params
+                self.controller=SimpleNamespace(solver=Solver(params.solver.max_sqp_iters),admm_linsys='pcg')
+                made.append(self)
+            def close(self): pass
         captured = plan()
-        captured["reference_native"] = [[.1, .2, .3, *GOAL], [.1, .2, .3, *([None] * 3)], [.1, .2, .3, *GOAL]]
+        captured["reference_native"] = [[.1,.2,.3,*GOAL],[.1,.2,.3,*([None]*3)],[.1,.2,.3,*GOAL]]
         from native_cost import native_params, serialized_cost, cost_weights
         data = dict(live_probe()["defaults"], N=3)
         weights = dict(cost_weights(data["cost"]), orientation=1., terminal_orientation=8.)
         data["cost"] = serialized_cost(3, weights)
         params = native_params(data)
-        solver = Solver()
-        session = SimpleNamespace(mpc=SimpleNamespace(N=3, dt=params.dt_s, params=params,
-            controller=SimpleNamespace(solver=solver, admm_linsys="pcg")), model_identity={},
-            configuration=captured["problem_configuration"], tiago=SimpleNamespace(GRASP_FRAME="tool"))
+        session = SimpleNamespace(mpc=SimpleNamespace(params=params,close=lambda:None),binary=Path('cached.so'),
+            model_identity={},configuration=captured["problem_configuration"],tiago=SimpleNamespace(GRASP_FRAME="tool"),
+            kinematics=SimpleNamespace(fixed_joints={}))
         with patch("inspection_worker.snapshot_models", return_value={}), \
-                patch("inspection_worker.write_artifact", side_effect=lambda folder, trace, metadata: metadata):
+                patch("tiago_mpc.mpc.Mpc",FakeMpc), \
+                patch("inspection_worker.write_artifact", side_effect=lambda folder, snapshots, metadata: metadata):
             result = inspect_solve(session, dict(id="orientation", problem=captured_problem(captured),
                 artifact_directory="unused", original={}, actual_solver_profile={}, sqp_iters=3))
-        np.testing.assert_allclose(solver.inputs[0][0], captured["initial_state"]["q"] + captured["initial_state"]["qd"])
-        np.testing.assert_array_equal(solver.inputs[1].reshape(3, 6)[:, 3:], 0.)
-        np.testing.assert_allclose(solver.menu.orientation.target, pin.exp3(np.array(GOAL)))
-        np.testing.assert_array_equal(solver.menu.orientation.weight[1], 0.)
-        self.assertEqual(result["reference_native"], captured["reference_native"])
-        self.assertEqual(result["signs"], [1.] * 7)
+        self.assertEqual(len(made),3)
+        for mpc in made:
+            solver=mpc.controller.solver
+            np.testing.assert_allclose(solver.inputs[0][0],captured["initial_state"]["q"]+captured["initial_state"]["qd"])
+            np.testing.assert_array_equal(solver.inputs[1].reshape(3,6)[:,3:],0.)
+            np.testing.assert_allclose(solver.menu.orientation.target,pin.exp3(np.array(GOAL)))
+            np.testing.assert_array_equal(solver.menu.orientation.weight[1],0.)
+        self.assertEqual(result["reference_native"],captured["reference_native"])
+        self.assertEqual(result["signs"],[1.]*7)
 
 
 @unittest.skipUnless(MODEL.is_file(), "Sibling canonical TIAGo model is not available")

@@ -69,6 +69,22 @@ class StandardPlotNumericTests(unittest.TestCase):
         self.assertEqual(spec['series'][0]['y'], [90., None, 0.])
         self.assertEqual(spec['y']['unit'], 'deg')
         self.assertEqual(self.plot('episode.orientation_error')['kind'], 'unavailable')
+
+    def test_capped_solve_diagnostics_and_summary_use_the_selected_independent_run(self):
+        raw = dict(mode='independent_sqp_caps', stats=dict(sqp_iters=2, pcg_iters=19),
+                   runs=[dict(stats=dict(sqp_iters=1, pcg_iters=7)),
+                         dict(stats=dict(sqp_iters=2, pcg_iters=19))],
+                   iterations=[dict(index=0, stats={}), dict(index=1, stats=dict(pcg_iters=7)),
+                               dict(index=2, stats=dict(pcg_iters=19))])
+        first = SolveView(raw, InspectionContext(sqp_iteration=1))
+        self.assertEqual(first.stats['sqp_iters'], 1)
+        self.assertEqual(first.stats['pcg_iters'], 7)
+        self.assertEqual(SolveView(raw).stats['sqp_iters'], 2)
+        self.assertEqual(dict(SolveView(raw, InspectionContext(sqp_iteration='seed')).stats), {})
+        spec = self.plot('solve.iteration_trace', first, metric='pcg_iters')
+        self.assertEqual(spec['title'], 'Independent SQP cap solves')
+        self.assertEqual(spec['x']['label'], 'SQP cap')
+        self.assertEqual(spec['series'][0]['y'], [None, 7., 19.])
     def test_mpc_frequency_uses_request_spacing_and_requested_to_guide(self):
         episode = EpisodeView(dict(states=[dict(sim_time_s=10.), dict(sim_time_s=10.01)],
             plans=[dict(request_time_s=t, sim_time_s=t, plan_origin_time_s=t+.05, stats=dict(step_wall_s=.001))

@@ -34,6 +34,30 @@ commands and read retained records; they own no controller or CUDA state.
   remote value wins a conflicting draft. An own acknowledgement preserves edits
   made after that request was sent. Browsers submit partial patches with a
   version guard, preventing a stale complete form from replacing agent edits.
+- `switch_task` with `task_kind` restores that task's accepted `config`, `task`,
+  `execution` and `source_settings`. `transfer_settings` with `source_task` and
+  selected leaf/branch `paths` copies only differing compatible fields into the
+  active task. Both accept `expected_settings_version` and use ordinary settings
+  validation before replacing history. A same-task switch changes nothing.
+  Task-kind patches restore the target session before applying explicit patches;
+  full settings replacements retain their explicit replacement semantics.
+- `reset_task_settings` restores the active task's effective defaults for
+  `config`, `task`, `execution` and `source_settings`, clearing its session
+  overrides. It accepts `expected_settings_version` and validates the complete
+  result before acceptance. The selected task, inactive sessions and reset
+  baselines remain unchanged. Browser **Reset all settings** discards its local
+  draft and makes one undoable change; it does not send simulation `reset`.
+- Every settings snapshot includes `task_settings: {defaults: {kind: settings},
+  overrides: {kind: patch}, sessions: {kind: settings}}`. The `sessions` map
+  contains resolved values for transfer previews. The backend owns this bank, so another viewer or a
+  reload sees the same task sessions. `schema.task_defaults` supplies reset values
+  from general source defaults plus task overrides, excluding session edits.
+  General `schema.defaults` is unchanged; a task descriptor's `settings_overrides`
+  (none for Reach and Figure eight) changes its task defaults. All tasks default to
+  the package loop's own default law (the visualizer passes none; today
+  Feedforward + PD).
+  Profile changes remove unsupported inactive override fields; incompatible
+  retained values/custom objectives fail normal validation on activation.
 - Without Live (`--replay-only`, or a setup error), every Live, solver-profile
   and Run-again route answers 503 with `{"error": "<reason>"}`; unknown `/api/`
   routes answer 404 with a JSON `error`.
@@ -72,8 +96,8 @@ The numeric field accepts the shared time units and retains its draft while the
 checkbox is off. This limit is independent of solve latency and prediction
 horizon; disabling it does not define a command beyond the finite plan.
 
-**Latency compensation** sends `execution.latency_compensation: true` (default
-false). It forecasts the execution initial condition using the native compensation
+**Latency compensation** sends `execution.latency_compensation: true`, enabled by
+default as in `tiago_mpc`'s `run_virtual_time`. It forecasts the execution initial condition using the native compensation
 model and actual command law followed by the same effort handling. The compensation
 model is configured independently of the simulated plant and optimizer model.
 Declared delay is fixed; measured mode forecasts only the previous solve's latency,
@@ -163,7 +187,7 @@ holds On Play simulation time and phase; Manual/Automatic calculation can
 continue behind paused playback. Reset returns both to zero. Settings changes
 preserve the captured displayed state/time and deterministic task anchor.
 The task transform controls edit the static anchor/orientation; the moving
-reference marker follows task time. The schema's `tasks` list supplies both task
+reference marker follows task time. The schema's `tasks` list supplies each task's
 defaults plus editable figure8 parameter descriptors. The segment header holds the
 `task` (with its `kind`); plans and states include their instantaneous world
 `target_xyz`; tracking does not report target arrival.

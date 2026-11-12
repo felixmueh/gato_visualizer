@@ -74,7 +74,7 @@ class WorktreeSettingsTests(unittest.TestCase):
         path.write_text(code)
         return path
 
-    def test_absent_module_keeps_native_objects_and_ordinary_law(self):
+    def test_bundled_adapter_keeps_native_models_and_defaults_to_the_native_law(self):
         from tests.tiago_mpc_source import live_probe
         live_probe()  # the bundled adapter reads the selected tiago_mpc's stored covers
         description = describe_settings(self.root)
@@ -90,9 +90,10 @@ class WorktreeSettingsTests(unittest.TestCase):
                                              expected_module=description["module"])
         self.assertEqual(actual, tm.TIAGO)
         base = tm.SimConfig()
-        actual, actual_law, captured = resolve_simulation(self.root, values["simulation"], base, tm.SampleKnot(), tm.to_dict)
+        actual, actual_law, captured = resolve_simulation(self.root, values["simulation"], base, None, tm.to_dict)
         self.assertEqual(actual, base)
-        self.assertEqual(actual_law, tm.SampleKnot())
+        self.assertIsNone(actual_law)  # the package loop resolves its default law
+        self.assertIsNone(captured["effective"]["law"])
 
     def test_local_override_wins_over_bundled_and_uses_its_own_identity(self):
         path = self.provider("def describe(): return {}\n")

@@ -139,6 +139,26 @@ class LiveFreezeTests(unittest.TestCase):
         scene = replay_scene(replay, self.folder / 'freeze.npz', MPC_ROOT, self.scene)
         self.assertEqual(len(scene['trajectories'][0]['orientation_error_rad']), 3)
 
+    def test_freeze_preserves_exact_inputs_for_later_capped_inspection(self):
+        from tests.test_solve_inspections import plan as captured_plan
+        from inspection_problem import captured_problem
+        from plot_sources import scene_records
+        source = captured_plan()
+        records = deepcopy(self.records)
+        context = records[0]['context']
+        for key in ('problem_configuration', 'constraint_bounds_native', 'model_identity', 'solver_profile'):
+            context[key] = deepcopy(source[key])
+        context['settings']['task'] = deepcopy(source['task'])
+        records[2]['initial_state'] = deepcopy(source['initial_state'])
+        records[2]['reference_native'] = [[.1, .2, .3, None, None, None]] * 3
+        replay = load_replay(self.export(records=records), model_urdf=MODEL)
+        raw = scene_records(replay_scene(replay, self.folder / 'freeze.npz', MPC_ROOT, self.scene))
+        problem = captured_problem(raw['plans'][0])
+        self.assertEqual(problem['initial_state'], source['initial_state'])
+        self.assertEqual(problem['reference_native'], records[2]['reference_native'])
+        self.assertEqual(problem['constraint_bounds_native'], source['constraint_bounds_native'])
+        self.assertEqual(problem['problem_configuration'], source['problem_configuration'])
+
     def test_compensated_freeze_preserves_future_origin_and_actual_request_time_for_plots(self):
         from plot_sources import SourceReader
         from replay_library import _signature

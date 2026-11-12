@@ -23,15 +23,18 @@ name or combined execution settings fail the source probe; there is no fallback.
 
 ## Settings and commands
 
-`GET /api/live/schema` adds `defaults.execution`:
+`GET /api/live/schema` adds `defaults.execution`. Its control rate, TO rate,
+solve latency and latency compensation are the selected source's
+`run_virtual_time` defaults (`VirtualTimeSettings.constant_rate()`: a request
+every TO period, its plan in effect one period later), here those of `tiago_mpc` main:
 
 ```json
 {
   "simulation_hz": 1000,
   "control_hz": 500,
   "to_hz": 100,
-  "solve_latency_s": "measured",
-  "latency_compensation": false,
+  "solve_latency_s": 0.01,
+  "latency_compensation": true,
   "max_plan_age_s": null,
   "calculation": "on_play",
   "duration_s": 10,
@@ -41,7 +44,7 @@ name or combined execution settings fail the source probe; there is no fallback.
 
 Simulation and command rates are positive and obey `simulation_hz >= control_hz >= to_hz`.
 `to_hz=0` means back-to-back requests; a positive TO rate sets request slots.
-`solve_latency_s` is `"measured"` (default) or finite nonnegative seconds.
+`solve_latency_s` is `"measured"` or finite nonnegative seconds.
 Measured latency is native `Plan.stats["wall_s"]`, exposed by the solver child as
 `stats.step_wall_s`, not CUDA-event time or the whole solver RPC. Numeric latency
 is declared simulation time; it does not shorten a real computation. Commands
@@ -49,7 +52,7 @@ default to 500 Hz, as `tiago_mpc`'s experiments (Felix, 2026-10-23); simulation
 stays at 1000 Hz and TO at 100 Hz. What is recorded follows the control events,
 not a setting; see [Recording](#recording).
 
-**Latency compensation** is one optional checkbox, off by default. When enabled,
+**Latency compensation** is one optional checkbox, enabled by the native loop default. When enabled,
 execution solves from the state forecast for its next command activation tick.
 The native latency predictor uses its own `LatencyCompensation` model defaults;
 matching that model to a changed simulated plant is an explicit configuration
@@ -93,12 +96,17 @@ IPC chunks remain bounded and no recorded samples are silently dropped.
   with it is not used (Felix, 2026-10-23).
 - `patch_settings`: `patch` holds any subset of `config`, `task`, `execution`;
   nested objects merge atomically, arrays replace and null stays null. A task
-  kind change starts from the new task's defaults. Validation and numerical
+  kind change starts from the new task's saved session. Validation and numerical
   behavior match `set_settings`. Both support `expected_settings_version` and
   reject stale writes with HTTP 409 plus current `settings`. A patch changing
   only `execution.continue_at_end`, without anchor/reset, shares that playback
   preference without changing generation/version, history or numerical work.
   [Agent controls](agent-api.md) documents current-settings reads and examples.
+- `reset_task_settings`: restore all four active-task settings groups from its
+  effective defaults in one version-guarded, validated transaction. It clears
+  only the active task's session overrides. Other task sessions and defaults stay
+  intact. The browser discards invalid drafts and records one undoable settings
+  change; the usual start-pose and history replacement rules apply.
 - `precalculate`: generate `duration_s` of closed-loop motion without pacing;
   optional `anchor` chooses its initial state.
 - `preview`: compute one prediction at the optional displayed-state `anchor`
@@ -596,8 +604,9 @@ without separate origins retain their recorded meaning.
 
 Plans arrive native from `tiago_mpc`'s `Plan` (N−1 knot torques), possibly
 beyond the effort limit ([limit handling](#limit-handling)). At every control
-tick the shared loop evaluates the configured command law; the default is
-`SampleKnot` followed by separate `EffortClip` effort handling. It holds that
+tick the shared loop evaluates the configured command law; by default the
+visualizer passes none and `run_virtual_time` uses its own default law
+(`FrictionFeedforward()`: URDF coefficients over `PlanFeedback()`), followed by separate `EffortClip` effort handling. It holds that
 resulting command until the next update. Native validation rejects nonfinite
 arrays or invalid layouts; the RPC adapter additionally checks configured N, knot interval and request
 timestamps before publishing a solve. Age expiry is optional, horizon expiry

@@ -42,3 +42,16 @@ test('history keys stay out of text fields', () => {
   assert.equal(key('z', { ctrlKey: false }), null); assert.equal(key('c'), null);
   assert.equal(key('z', { target: { tagName: 'INPUT' } }), null); assert.equal(key('z', { target: { isContentEditable: true } }), null);
 });
+
+
+test('returning to an unchanged task retains its undo and redo cursor', () => {
+  const history = createSettingsHistory({ equal: settingValuesEqual });
+  history.accept(1, doc(1)); history.accept(2, doc(2));
+  history.undo(); history.accept(3, doc(1));
+  history.accept(7, doc(1), { coalesce: true });
+  assert.deepEqual(history.snapshot, { undo: 0, redo: 1, versions: [7, 2], cursor: 0 });
+  assert.deepEqual(history.redo(), doc(2));
+  history.accept(8, doc(2));
+  history.accept(10, doc(9), { coalesce: true });
+  assert.deepEqual(history.snapshot, { undo: 2, redo: 0, versions: [7, 8, 10], cursor: 2 });
+});

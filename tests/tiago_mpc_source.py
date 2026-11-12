@@ -52,13 +52,14 @@ def live_probe():
                                      reduced_urdf=tiago.arm_urdf())
         from tiago_mpc.record import to_dict
         from worktree_settings import describe_settings, resolve_predictor
+        from scripts.source_probe import experiment_defaults
         description = describe_settings(MPC_ROOT)
         effective, captured = resolve_predictor(MPC_ROOT, description["predictor"]["defaults"], mpc.TIAGO, to_dict)
         _PROBE = dict(compatible=True, available_N=[], available_N_by_friction=dict(off=[], on=[]), modules=[],
                       source_settings={role: dict(description[role], module=description["module"])
                                        for role in ("simulation", "predictor")},
                       effective_settings=dict(params=to_dict(effective), modules=dict(predictor=captured["module"])),
-                      defaults=to_dict(mpc.TIAGO),
+                      defaults=to_dict(mpc.TIAGO), experiment_defaults=experiment_defaults(),
                       friction=to_dict(tiago.urdf_friction()),
                       contract=model_contract(kinematics, tiago),
                       capabilities=dict(iteration_capture_by_friction=dict(off={}, on={}), exact_resume=False))

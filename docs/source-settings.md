@@ -73,13 +73,15 @@ Laws use native `Command(requested, applied)` results and propagate native
 return values have no compatibility fallback. Execution safety and effort
 handling are separate loop arguments, outside the law slot and timing settings.
 It exposes independent plant/predictor armature toggles, predictor friction,
-scalar smoothing widths and default/PD/friction-FF/both. The per-joint armature
+scalar smoothing widths and default/plan torque/PD/friction-FF/both. The default choice
+(`law: "default"`) passes no law, so the package loop resolves its own default law
+(`FrictionFeedforward()` over `PlanFeedback()`: Feedforward + PD); the other choices
+are explicit overrides. The per-joint armature
 and friction coefficients stay in code; effective native objects still record
-them. PD gains also stay in the tuned code preset. It changes no MPC costs or
+them. PD gains are the package's `PD_KP`/`PD_KD`. It changes no MPC costs or
 timing.
 The plant keeps its own friction coefficients (the URDF's when plant friction is on);
-feedforward uses the tuned friction prior. (The former friction adapter also set
-the plant's coefficients to that prior.)
+feedforward uses the same URDF coefficients (`tm.urdf_friction()`).
 
 Descriptors use relative dotted `path`, `label`, optional `group`/`unit`/
 `description`, and `kind` (`bool`, `float`, `int`, `choice`, `vector`, `shapes`). A vector

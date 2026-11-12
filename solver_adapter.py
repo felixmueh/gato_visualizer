@@ -53,13 +53,14 @@ class SimulatorAdapter:
         self.task_anchors = snapshot(dict(reach=self.kinematics.target_to_world(self.default_target).tolist(),
                                           figure8=self.figure8_start_world.tolist()))
         self.task = deepcopy(REACH_DEFAULT_TASK)
+        from scripts.source_probe import experiment_defaults
+        self.experiment_defaults = experiment_defaults()
         self.plant_options = dict(integrator="rk4", friction=None)  # SimPlant's
         from worktree_settings import describe_settings, default_values
-        from tiago_mpc.laws import SampleKnot
         self.source_description = describe_settings(self.mpc_root)
         self.source_settings = default_values(self.source_description)
         self.effective_settings = dict(modules=dict(simulation=self.source_description["module"], predictor=None))
-        self.law = SampleKnot()
+        self.law = None  # None: the package loop's default law
         self.limit_handling = None
         self.joint_limits = self.mpc_bounds = None
         self.remote = self.profile = self.profile_identity = self.profile_schema = None
@@ -89,7 +90,8 @@ class SimulatorAdapter:
         checked = probe_selection(selection, params=mpc_params(config), source_settings=predictor_values)
         simulation = dict(self.source_description["simulation"], module=self.source_description["module"])
         schema = build_schema(checked, self.mpc_root, start_pose_spec(self.tiago),
-                              end_effector=end_effector_spec(self.tiago), simulation_settings=simulation)
+                              end_effector=end_effector_spec(self.tiago), simulation_settings=simulation,
+                              experiment_settings=self.experiment_defaults)
         schema["requested_source_settings"] = dict(
             simulation=deepcopy((source_settings or self.source_settings)["simulation"]),
             predictor=deepcopy(predictor_values))
@@ -211,20 +213,23 @@ class SimulatorAdapter:
 
     def _resolved_plant(self, substep):
         from tiago_mpc.sim import SimConfig
-        from tiago_mpc.laws import FrictionFeedforward, SampleKnot
+        from tiago_mpc.laws import FrictionFeedforward
         from tiago_mpc.record import to_dict
         from worktree_settings import resolve_simulation
         base = SimConfig(q=self.x[:7], qd=self.x[7:], substep=substep, **self.plant_options)
         config, law, captured = resolve_simulation(self.mpc_root, self.source_settings["simulation"],
-                                                  base, SampleKnot(), to_dict,
+                                                  base, None, to_dict,
                                                   expected_module=self.source_description["module"])
-        if isinstance(law, FrictionFeedforward):
-            if isinstance(law.base_law, FrictionFeedforward):
+        # None runs the package loop's default law; checks and records use that law,
+        # FrictionFeedforward(), as the loop resolves it.
+        effective_law = FrictionFeedforward() if law is None else law
+        if isinstance(effective_law, FrictionFeedforward):
+            if isinstance(effective_law.base_law, FrictionFeedforward):
                 raise ValueError("Friction feedforward cannot wrap another friction feedforward law")
             if self.effective_settings.get("params", {}).get("friction") is not None:
                 raise ValueError("Friction feedforward requires predictor friction=None to avoid double compensation")
         self.law = law
-        self.effective_settings.update(plant=captured["effective"]["plant"], law=captured["effective"]["law"])
+        self.effective_settings.update(plant=captured["effective"]["plant"], law=to_dict(effective_law))
         self.effective_settings["modules"]["simulation"] = captured["module"]
         self.simulator_identity = dict(self.simulator_identity, friction=to_dict(config.friction),
                                        friction_law=to_dict(config.friction_law),

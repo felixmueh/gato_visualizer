@@ -235,13 +235,16 @@ def trace_values(data, field):
 @plot_solve(id='solve.iteration_trace', title='Recorded SQP traces', optional=('iterations', 'diagnostics'),
             inputs={'metric': Choice(('merit', 'pcg_iters', 'step_size'), 'merit', 'Metric')})
 def solve_iteration_trace(data: SolveView, metric='merit'):
+    capped = data.raw.get('mode') == 'independent_sqp_caps'
+    title = 'Independent SQP cap solves' if capped else 'Recorded SQP traces'
     indices, values = trace_values(data, metric)
     if not values:
-        return unavailable('Recorded SQP traces', f'No recorded {metric} trace. Missing iterations are not fabricated.')
-    return lines('Recorded SQP traces', [series(metric, indices, values)], identity='sqp_iteration',
-                 x_label='Recorded SQP iteration', x_unit='index', y_label=metric,
+        return unavailable(title, f'No recorded {metric} values. Missing telemetry is not fabricated.')
+    return lines(title, [series(metric, indices, values)], identity='sqp_iteration',
+                 x_label='SQP cap' if capped else 'Recorded SQP iteration', x_unit='index', y_label=metric,
                  unit='iterations' if metric == 'pcg_iters' else '',
-                 notes=['Graph marker follows the host SQP cursor. A finite result is not a convergence certificate.'])
+                 notes=['Each cap uses an independent cold solve; these are not iterations from one run.' if capped
+                        else 'Graph marker follows the host SQP cursor. A finite result is not a convergence certificate.'])
 
 
 @plot_solve(id='solve.summary', title='Solve summary', optional=('stats', 'prediction'))

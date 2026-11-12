@@ -1,4 +1,6 @@
-import { intervalDescription, intervalSeverity } from './live-execution.js';
+import { intervalDescription } from './live-execution.js';
+import { createTimelineIntervalIndex, visibleTimelineIntervals } from './timeline-intervals.js';
+export { indexTimelineIntervals, visibleTimelineIntervals } from './timeline-intervals.js';
 import { snapOffset } from './session.js';
 import { createFloatingDialog } from './floating-dialog.js';
 import { configureTimeInput, readTimeInput, parseTimeValue } from './time-input.js';
@@ -65,23 +67,6 @@ export function aggregateLabel(aggregate, digits = 3) {
   return `${Number.isFinite(aggregate.start) ? time(aggregate.start) : 'start'} → ${Number.isFinite(aggregate.end) ? time(aggregate.end) : 'latest'}`;
 }
 
-// Parse only on interval revision. Prefix maxima allow visible-range lookup
-// even when intervals overlap or arrive in a different order.
-export function indexTimelineIntervals(intervals = []) {
-  let maxEnd = -Infinity;
-  return intervals.filter(item => Number.isFinite(item.start_time_s) && Number.isFinite(item.end_time_s) && item.end_time_s > item.start_time_s)
-    .map(item => ({ start: item.start_time_s, end: item.end_time_s, severity: intervalSeverity(item), item }))
-    .sort((a, b) => a.start - b.start)
-    .map(entry => ({ ...entry, maxEnd: maxEnd = Math.max(maxEnd, entry.end) }));
-}
-export function visibleTimelineIntervals(index, [start, end]) {
-  let lo = 0, hi = index.length;
-  while (lo < hi) { const mid = (lo + hi) >>> 1; if (index[mid].maxEnd <= start) lo = mid + 1; else hi = mid; }
-  const result = [];
-  for (let i = lo; i < index.length && index[i].start < end; i++) if (index[i].end > start) result.push(index[i]);
-  return result;
-}
-
 // Compact isometric projection of actual recorded EE positions. The preview
 // owns display coordinates only, and keeps both endpoints when subsampling.
 export function trackPreviewGeometry(points = [], maxPoints = 384) {
@@ -123,6 +108,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
   const $ = id => doc.getElementById(id), panel = $('expanded-timeline'), surface = $('timeline-inspector');
   const canvas = $('timeline-bands'), playhead = $('timeline-playhead'), tooltip = $('timeline-inspection-tooltip');
   const toggles = ['live-timeline-expand', 'replay-timeline-expand'].map($);
+  const intervalIndex = createTimelineIntervalIndex();
   let expanded = false, identity, bounds = [0, 0], window = [0, 0], selected = 0, fitted = true;
   let source, sourceCount = -1, revision, index = [], paintKey = '', width = 0, paints = 0, drag = null, mode = 'replay';
   let keyframes = [], keyframeSource, keyframeRevision;
@@ -365,9 +351,10 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
           node.bands.width = Math.max(1, Math.round(width * ratio)); node.bands.height = Math.round(20 * ratio);
           const context = node.bands.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, 20);
           const at = time => (x(time) - Math.max(0, left)) / 100 * railWidth;
+          const bands = intervalIndex.bands(window, railWidth, { normal: true });
           for (const severity of ['normal', 'yellow', 'red']) {
             context.fillStyle = { normal: '#476371', yellow: '#e8c65a', red: '#ed716c' }[severity];
-            for (const item of visibleTimelineIntervals(index, window)) if (item.severity === severity) context.fillRect(at(item.start), 0, Math.max(1, at(item.end) - at(item.start)), 20);
+            for (const item of bands) if (item.severity === severity) context.fillRect(at(item.start), 0, Math.max(1, at(item.end) - at(item.start)), 20);
           }
           context.fillStyle = '#ff8b83';
           for (const breach of breaches) { const time = breach.sim_time_s ?? breach.time_s; if (Number.isFinite(time)) context.fillRect(at(time) - 1, 0, 2, 20); }
@@ -396,7 +383,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
     const span = window[1] - window[0], x = time => (time - window[0]) / (span || 1) * width;
     if (!hasLanes) { context.fillStyle = '#263548'; context.fillRect(0, 39, width, 25); }
     // Render normal, then yellow, then red so MPC retains priority at every zoom.
-    const visible = visibleTimelineIntervals(index, window);
+    const visible = intervalIndex.bands(window, width, { normal: true });
     for (const severity of ['normal', 'yellow', 'red']) {
       context.fillStyle = { normal: '#476371', yellow: '#e8c65a', red: '#ed716c' }[severity];
       for (const item of visible) if (!hasLanes && item.severity === severity) {
@@ -596,7 +583,7 @@ export function setupExpandedTimeline({ document: doc = document, onSeek, onLayo
       const items = next.intervals || [];
       if (reset || source !== items || sourceCount !== items.length || revision !== next.revision) {
         source = items; sourceCount = items.length; revision = next.revision;
-        index = indexTimelineIntervals(items); paintKey = ''; laneKey = ''; laneNodes.forEach(node => { node.bandsKey = ''; });
+        index = intervalIndex.update(items).entries; paintKey = ''; laneKey = ''; laneNodes.forEach(node => { node.bandsKey = ''; });
       }
       if (reset || keyframeSource !== next.keyframes || keyframeRevision !== next.keyframeRevision) {
         keyframeSource = next.keyframes; keyframeRevision = next.keyframeRevision;

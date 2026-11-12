@@ -56,9 +56,9 @@ values. Each active width is its own compiled GATO model.
 ## Both models
 
 Passive torque is applied once in each model. The experimental adapter enables
-supplied armature independently in plant and predictor and uses the retained
-friction prior in the plant and external feedforward; the predictor uses the
-nominal URDF coefficients. Coefficients and PD gains stay in code (see
+supplied armature independently in plant and predictor; plant friction,
+external feedforward and predictor friction all use the URDF coefficients
+(`tm.urdf_friction()`). Coefficients and PD gains stay in code (see
 [adapter ownership](../adapters/README.md)).
 Editing any of these settings starts a new history segment from the displayed
 native q/qd and task time; use Reset when comparisons need the same initial

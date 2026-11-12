@@ -316,6 +316,7 @@ class TransportTests(unittest.TestCase):
         from worktree_settings import describe_settings, default_values
         adapter.source_description = describe_settings(MPC_ROOT)
         adapter.source_settings = default_values(adapter.source_description)
+        adapter.experiment_defaults = deepcopy(live_probe()["experiment_defaults"])
         adapter.contract = dict(joint_names=[str(i) for i in range(7)], nq=7, nv=7,
             coordinate_units="rad,rad/s,Nm", torque_semantics="actuator_joint_torque",
             reference_frame="torso", end_effector_frame="tcp",

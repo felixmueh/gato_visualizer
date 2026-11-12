@@ -2,16 +2,16 @@ import { sourceRequest } from './source-settings.js';
 import { configureTimeInput, readTimeInput } from './time-input.js';
 const WALL_BUDGET = { unit: 's', nullable: true, min: 0, minExclusive: true, label: 'Wall budget' };
 
-/** One bounded fresh inspection. This never sends ordinary Live commands. */
+/** Independent cold solves for increasing SQP caps, isolated from the Live plant. */
 export function setupSolveRun({ container, onStart = () => {}, onComplete = () => {}, request = sourceRequest, schedule = setTimeout, unschedule = clearTimeout, now = Date.now } = {}) {
   const doc = container.ownerDocument;
   const el = (tag, text, cls) => { const item = doc.createElement(tag); if (text != null) item.textContent = text; if (cls) item.className = cls; return item; };
   const controls = el('div', null, 'solve-run-controls');
-  const capLabel = el('label', 'SQP cap'), cap = el('input'); cap.type = 'number'; cap.min = '1'; cap.max = '10000'; cap.step = '1'; cap.value = '20'; cap.setAttribute('aria-label', 'Run again SQP iteration cap'); capLabel.append(cap);
-  const budgetLabel = el('label', 'Wall budget (s)'), budget = el('input'); budget.type = 'number'; budget.min = '0'; budget.step = 'any'; budget.placeholder = 'Optional'; budget.setAttribute('aria-label', 'Optional inspection wall budget in seconds'); budgetLabel.append(budget);
+  const capLabel = el('label', 'Max SQP cap'), cap = el('input'); cap.type = 'number'; cap.min = '1'; cap.max = '10000'; cap.step = '1'; cap.value = '20'; cap.setAttribute('aria-label', 'Run again maximum SQP cap'); cap.title = 'Run independent cold solves with SQP caps 1, 2, … up to this maximum.'; capLabel.append(cap);
+  const budgetLabel = el('label', 'Per-solve budget (s)'), budget = el('input'); budget.type = 'number'; budget.min = '0'; budget.step = 'any'; budget.placeholder = 'Optional'; budget.setAttribute('aria-label', 'Optional wall budget for each capped solve in seconds'); budgetLabel.append(budget);
   configureTimeInput(budget, WALL_BUDGET);
   const run = el('button', 'Run again'), stop = el('button', 'Stop'); run.type = stop.type = 'button'; run.setAttribute('aria-label', 'Run a fresh solve from the captured state');
-  stop.title = 'Cancel a queued inspection or terminate its isolated worker. No partial trace is retained.'; stop.setAttribute('aria-label', stop.title);
+  stop.title = 'Cancel a queued inspection or terminate its isolated worker. No partial result is retained.'; stop.setAttribute('aria-label', stop.title);
   controls.append(capLabel, budgetLabel, run, stop);
   // Why Run again is unavailable, and what it does, live in its tooltip. The
   // buttons show progress; the status line holds only failures and a stop.
@@ -25,7 +25,7 @@ export function setupSolveRun({ container, onStart = () => {}, onComplete = () =
     stop.disabled = !active || stopping;
     run.textContent = active ? (job?.state === 'running' ? 'Running…' : 'Queued…') : 'Run again';
     stop.textContent = stopping ? 'Stopping…' : 'Stop';
-    run.title = active ? (job?.state === 'running' ? 'Fresh inspection running · collecting recorded SQP snapshots' : 'Inspection queued · waiting for the single compute slot') : capability?.available ? 'Fresh solve from the captured state and reference with a cold optimizer start, not a continuation of the recorded solve. Live calculation pauses while it runs; the original solve, Episode and plant stay unchanged.' : reason;
+    run.title = active ? (job?.state === 'running' ? 'Running independent cold solves with increasing SQP caps' : 'Inspection queued · waiting for the single compute slot') : capability?.available ? 'Independent cold solves from the same captured state, reference and bounds with SQP caps 1, 2, … up to the selected maximum. Each snapshot is a separate solve; actual iterations may stop below its cap. Live calculation pauses while inspection runs; the original solve, Episode and plant stay unchanged.' : reason;
     cap.disabled = budget.disabled = active;
   };
   function update(next) {
@@ -75,7 +75,7 @@ export function setupSolveRun({ container, onStart = () => {}, onComplete = () =
     active = ['pending', 'running'].includes(state);
     stopping = false;
     // A completed inspection shows itself in the Solve inspector.
-    status.textContent = ['pending', 'running', 'completed'].includes(state) ? '' : state === 'cancelled' ? 'Stopped · no partial trace retained.' : `Inspection ${state || 'failed'}: ${result.error || result.reason || 'No result is available.'}`;
+    status.textContent = ['pending', 'running', 'completed'].includes(state) ? '' : state === 'cancelled' ? 'Stopped · no partial result retained.' : `Inspection ${state || 'failed'}: ${result.error || result.reason || 'No result is available.'}`;
     paint();
     if (state === 'completed' && result.source?.kind === 'inspection') { if (adopt) onComplete(result); }
     else if (active && stopRequested) stopJob();

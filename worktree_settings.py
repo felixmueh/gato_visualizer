@@ -270,8 +270,9 @@ def resolve_simulation(root, values, base, default_law, serialize, expected_modu
     if not isinstance(built, tuple) or len(built) != 2:
         raise ValueError("build_simulation() must return (native SimConfig, ControlLaw)")
     plant, law = built
-    if type(plant) is not type(base) or not callable(law):
-        raise ValueError("build_simulation() must return the selected package's SimConfig and callable law")
+    if type(plant) is not type(base) or not (law is None or callable(law)):
+        raise ValueError("build_simulation() must return the selected package's SimConfig and a callable law "
+                         "or None (the package loop's default)")
     before, effective = plain(serialize(base)), plain(serialize(plant))
     for field in ("q", "qd", "substep"):
         if before.get(field) != effective.get(field):

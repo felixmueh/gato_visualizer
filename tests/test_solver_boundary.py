@@ -286,6 +286,8 @@ class BoundaryTests(unittest.TestCase):
             self.assertFalse(remote.thread.is_alive())
 
     def test_compact_reply_becomes_a_full_immutable_simulator_plan(self):
+        from tiago_mpc.laws import FrictionFeedforward
+        from tiago_mpc.record import to_dict
         with fake_gpu():
             remote = Remote()
             simulator = SimulatorAdapter(MPC_ROOT)
@@ -316,7 +318,7 @@ class BoundaryTests(unittest.TestCase):
                                                            source_settings=simulator.source_settings,
                                                            execution=dict(control_hz=500.)))
                 self.assertEqual(context["effective_settings"]["params"], context["problem_configuration"])
-                self.assertEqual(context["effective_settings"]["law"]["type"], "SampleKnot")
+                self.assertEqual(context["effective_settings"]["law"], to_dict(FrictionFeedforward()))
                 self.assertEqual(context["source"], simulator.model_identity["source"])
                 # Native Plan arrays cross unchanged; the plan's stats keep the plotters' keys.
                 np.testing.assert_array_equal(captured["_states"], np.tile(simulator.x, (4, 1)))

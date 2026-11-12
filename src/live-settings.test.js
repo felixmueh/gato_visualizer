@@ -7,6 +7,7 @@ const setupLive = options => createLive({ presentationSettings: { report_hz: 20,
 import { DEFAULT_EXECUTION } from './live-execution.js';
 import { createSession } from './session.js';
 import { bindStopPreference } from './workbench-ui.js';
+import { settingsPatch } from './shared-settings.js';
 
 // Exercise the real settings/mode/SSE controller without a GPU or renderer.
 function harness() {
@@ -38,7 +39,22 @@ function harness() {
       }
     }
     replaceChildren(...children) { this.children = []; this.value = ''; this.append(...children); }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    querySelectorAll(selector) {
+      const found = [];
+      const visit = node => {
+        for (const child of node.children || []) if (child && typeof child === 'object') {
+          if (child.tagName === selector) found.push(child);
+          visit(child);
+        }
+      };
+      visit(this);
+      return found;
+    }
     setAttribute() {}
+    showModal() { this.open = true; }
+    close() { this.open = false; this.emit('close'); }
+    remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
     setCustomValidity() {}
     reportValidity() {}
   }
@@ -68,6 +84,23 @@ function harness() {
       { kind: 'figure8', label: 'Figure eight', defaults: { kind: 'figure8', target_offset_m: [0, 0, 0], width_m: .24, height_m: .16, period_s: 8 }, parameters: ['width_m', 'height_m', 'period_s'].map(path => ({ path, label: path, kind: 'float', min: .001 })) },
     ],
   };
+  const fixtureGroups = value => ({ config: structuredClone(value.config), task: structuredClone(value.task), execution: structuredClone(value.execution), source_settings: structuredClone(value.source_settings || {}) });
+  const fixtureMerge = (left, patch) => {
+    const next = structuredClone(left);
+    for (const [key, value] of Object.entries(patch)) next[key] = value && typeof value === 'object' && !Array.isArray(value) && next[key] && typeof next[key] === 'object' && !Array.isArray(next[key]) ? fixtureMerge(next[key], value) : structuredClone(value);
+    return next;
+  };
+  let explicitTaskDefaults, fixtureCurrent;
+  const fixtureSessions = new Map();
+  Object.defineProperty(schema, 'task_defaults', { enumerable: true,
+    get: () => explicitTaskDefaults || Object.fromEntries(schema.tasks.map(task => [task.kind, fixtureGroups({ ...schema.defaults, task: task.defaults })])),
+    set: value => { explicitTaskDefaults = value; } });
+  function withTaskCatalog(item) {
+    if (!item?.config || !item.task || !item.execution) return item;
+    fixtureCurrent = fixtureGroups(item); fixtureSessions.set(item.task.kind, fixtureCurrent);
+    return { ...item, source_settings: fixtureCurrent.source_settings,
+      task_settings: item.task_settings || { defaults: structuredClone(schema.task_defaults), sessions: Object.fromEntries([...fixtureSessions].map(([kind, value]) => [kind, structuredClone(value)])), overrides: Object.fromEntries([...fixtureSessions].filter(([kind]) => schema.task_defaults[kind]).map(([kind, value]) => [kind, settingsPatch(schema.task_defaults[kind], value)])) } };
+  }
   const commands = [], sources = [];
   let version = 0, historyHandler, commandHandler, freezeHandler, settingsHandler, plansHandler;
   class EventSource {
@@ -75,17 +108,24 @@ function harness() {
     constructor() { this.readyState = 0; sources.push(this); }
     close() { this.readyState = 2; }
     open() { this.readyState = 1; this.onopen?.(); }
-    emit(item) { this.onmessage?.({ data: JSON.stringify(item) }); }
+    emit(item) { this.onmessage?.({ data: JSON.stringify(item.type === 'settings' ? withTaskCatalog(item) : item) }); }
   }
   const fetch = async (url, options) => {
     if (url.includes('/history?') || url.includes('/playback?')) return historyHandler(url);
     if (url.includes('/plans?')) return plansHandler(url);
     if (url.endsWith('/schema')) return { ok: true, json: async () => structuredClone(schema) };
-    if (url.endsWith('/settings')) return settingsHandler ? settingsHandler() : { ok: false, json: async () => ({}) };
+    if (url.endsWith('/settings')) {
+      if (settingsHandler) { const response = await settingsHandler(); return { ...response, json: async () => withTaskCatalog(await response.json()) }; }
+      return fixtureCurrent ? { ok: true, json: async () => withTaskCatalog({ ...fixtureCurrent, settings_version: version }) } : { ok: false, json: async () => ({}) };
+    }
     if (url.endsWith('/freeze')) return freezeHandler(JSON.parse(options.body));
     const command = JSON.parse(options.body); commands.push(command);
-    if (['set_settings', 'patch_settings'].includes(command.type)) version++;
+    if (['set_settings', 'patch_settings', 'switch_task', 'transfer_settings', 'reset_task_settings'].includes(command.type)) version++;
     if (commandHandler) return commandHandler(command, version);
+    if (command.type === 'set_settings') withTaskCatalog(command);
+    else if (command.type === 'patch_settings') withTaskCatalog(fixtureMerge(fixtureCurrent || schema.defaults, command.patch));
+    else if (command.type === 'switch_task') withTaskCatalog(fixtureSessions.get(command.task_kind) || schema.task_defaults[command.task_kind]);
+    else if (command.type === 'reset_task_settings') withTaskCatalog(schema.task_defaults[fixtureCurrent.task.kind]);
     return { ok: true, json: async () => ({ accepted: true, settings_version: version }) };
   };
   const edit = (path, value) => {
@@ -325,67 +365,30 @@ test('an empty compiled catalog still opens supported model drafts and the Compi
   } finally { live?.dispose(); Object.assign(globalThis, originals); }
 });
 
-test('Replay roundtrip retains complete Live draft and rejects cached plans from another configuration', async () => {
-  const h = harness();
-  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+test('Replay roundtrip retains complete task session draft and rejects older cached plans', async () => {
+  const h = harness(), originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
   try {
-    const shown = [];
-    const live = setupLive({ onMode() {}, onPlan: value => shown.push(value?.seq), onState() {}, onReset() {} });
-    await flush();
-    h.$('live-mode').emit('click');
-    let source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 });
-    await flush(); source.emit(plan(1, 1));
-    assert.equal(live.plan.seq, 1);
-
-    h.edit('N', 2); h.edit('solver_params.q_cost', 9.25);
-    h.edit('solver_params.max_sqp_iters', 17); h.edit('solver_params.max_pcg_iters', 345);
-    h.edit('target-offset-0', .13); h.edit('target-offset-1', -.21); h.edit('target-offset-2', .08);
-    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
-    assert.deepEqual(live.settings.task.target_offset_m, [0, 0, 0]);
+    live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await live.ready; await live.enterLive();
+    let source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change'); await flush(); await flush();
+    h.edit('N', 2); h.edit('solver_params.q_cost', 9.25); h.edit('solver_params.max_sqp_iters', 17); h.edit('solver_params.max_pcg_iters', 345);
     h.edit('target-offset-0', .13); h.edit('target-offset-1', -.21); h.edit('target-offset-2', .08);
     for (const [path, value] of [['width_m', .42], ['height_m', .28], ['period_s', 13]]) {
       const input = h.document.querySelector(`[data-task-path="${path}"]`); input.value = String(value); input.emit('input');
     }
-    const retained = live.settings;
-    assert.equal(retained.config.N, 64);
-    assert.deepEqual(retained.task, { kind: 'figure8', width_m: .42, height_m: .28, period_s: 13, target_offset_m: [.13, -.21, .08] });
-    assert.deepEqual(retained.config.unlisted, { preserved: true });
-    // Leave before the 350ms debounce. Replay never submits or replaces Live settings.
+    const retained = structuredClone(live.settings), count = h.commands.length;
     h.$('replay-mode').emit('click'); await flush();
-    assert.equal(h.commands.filter(command => command.type === 'set_settings').length, 1);
+    assert.deepEqual(live.settings, retained); assert.equal(h.commands.filter(command => ['set_settings', 'patch_settings'].includes(command.type)).length, 1);
+    h.$('live-mode').emit('click'); source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 2 }); await flush();
+    source.emit(plan(2, 900, 'figure8')); assert.notEqual(live.plan?.seq, 900);
     assert.deepEqual(live.settings, retained);
-    h.$('live-mode').emit('click'); source = h.sources.at(-1); source.open();
-    source.emit({ type: 'status', state: 'paused', settings_version: 1 });
-    source.emit(plan(1, 900)); // Cached wrong-task prediction follows status in the SSE snapshot.
-    await flush();
-    assert.equal(live.plan.seq, 1);
-    assert.equal(shown.includes(900), false);
-    assert.deepEqual(h.commands.at(-1), { type: 'set_settings', ...retained });
-    source.emit({ type: 'status', state: 'gpu_busy', settings_version: 1 });
-    source.emit(plan(1, 901));
-    assert.equal(live.plan.seq, 1);
-    assert.deepEqual(live.settings, retained);
-    source.emit(plan(2, 2, 'figure8'));
-    assert.equal(live.plan.seq, 2);
-    assert.equal(live.pending, false);
-    assert.deepEqual(live.settings, retained);
-
-    // A stream reconnect and old snapshots must not refill the form from defaults.
-    source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 1 }); source.emit(plan(1, 902));
-    assert.equal(live.plan.seq, 2);
-    assert.equal(h.commands.filter(command => command.type === 'set_settings').length, 2);
-    h.$('replay-mode').emit('click'); await flush();
-    assert.equal(h.created.find(el => el.dataset.path === 'solver_params.q_cost').value, '9.25');
-    assert.equal(h.$('live-task').value, 'figure8');
-    assert.equal(h.$('target-offset-1').value, '-0.21');
-  } finally {
-    h.$('replay-mode').emit('click');
-    await flush();
-    for (const [key, value] of Object.entries(originals)) {
-      if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
-    }
-  }
+    assert.equal(h.commands.at(-1).type, 'patch_settings'); assert.equal(h.commands.at(-1).expected_settings_version, 2);
+    source.emit(plan(3, 3, 'figure8')); assert.equal(live.plan.seq, 3); assert.equal(live.pending, false);
+    source.open(); source.emit(plan(2, 901, 'figure8')); assert.equal(live.plan.seq, 3);
+    assert.deepEqual(live.settings, retained); assert(h.commands.length > count);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
 });
 
 test('returning to Live keeps the retained prediction while a different cached server plan is waiting for the GPU', async () => {
@@ -407,7 +410,7 @@ test('returning to Live keeps the retained prediction while a different cached s
     source.emit({ type: 'status', state: 'gpu_busy', settings_version: 7 });
     source.emit(plan(7, 701, 'figure8'));
     assert.equal(live.plan.seq, 1);
-    assert.deepEqual(live.settings, h.schema.defaults);
+    assert.deepEqual(live.settings, h.schema.task_defaults.reach);
     h.$('replay-mode').emit('click'); await flush();
   } finally {
     h.$('replay-mode').emit('click');
@@ -910,11 +913,13 @@ test('an equivalent settings echo preserves typed frequency notation in the deri
     h.$('live-mode').emit('click'); const source = h.sources.at(-1); source.open();
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
     const horizon = h.document.querySelector('[data-horizon="seconds"]');
+    horizon.focus();
     horizon.value = '0.5 Hz'; horizon.emit('input');
     assert.equal(live.settings.config.dt_s, Number((2 / 31).toPrecision(12)));
     source.emit({ type: 'settings', ...live.settings, settings_version: 2 });
     assert.notEqual(h.document.querySelector('[data-horizon="seconds"]'), horizon);
     assert.equal(h.document.querySelector('[data-horizon="seconds"]').value, '0.5 Hz');
+    assert.equal(h.document.activeElement, h.document.querySelector('[data-horizon="seconds"]'));
   } finally { live?.dispose(); Object.assign(globalThis, originals); }
 });
 
@@ -930,7 +935,7 @@ test('figure-eight transforms use static start anchor, preserve period and reach
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush(); source.emit(plan(1, 1));
     assert.equal(live.targetInteraction.available, true);
     assert.equal(live.setTaskTransform({size_m: [.3, .2]}), null);
-    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change'); await flush(); await flush();
     h.$('live-preview').emit('click'); await flush();
     source.emit(segment('figure8', { task_path_xyz: [[.4, -.3, 1.2], [.64, -.3, 1.2]] }));
     source.emit({...plan(2, 2, 'figure8'), reference_xyz: [[.5, -.22, 1.2], [.51, -.21, 1.2]]});
@@ -946,9 +951,9 @@ test('figure-eight transforms use static start anchor, preserve period and reach
     const retained = live.settings;
     assert.equal(live.setTaskTransform({quaternion_xyzw: [NaN, 0, 0, 1]}), null);
     assert.deepEqual(live.settings, retained);
-    h.$('live-task').value = 'reach'; h.$('live-task').emit('change');
+    h.$('live-task').value = 'reach'; h.$('live-task').emit('change'); await flush(); await flush();
     assert.deepEqual(live.settings.task.target_offset_m, [.15, .2, .2]);
-    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change'); await flush(); await flush();
     assert.deepEqual(live.settings.task, retained.task); // includes edited rotation and dimensions
     const width = h.document.querySelector('[data-task-path="width_m"]'); width.value = '99'; width.emit('input');
     assert.equal(live.targetInteraction.available, false);
@@ -969,7 +974,7 @@ test('desired figure-eight redraws before planner responses and stale prediction
     source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
     const anchors = { reach: [.7, -.2, .9], figure8: [.5, -.2, .9] };
     source.emit(segment('reach', { task_anchors: anchors })); source.emit(plan(1, 1));
-    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change'); await flush(); await flush();
     const commandCount = h.commands.length;
     live.frame(0);
     assert.equal(references.at(-1).kind, 'figure8'); // No tracking plan has ever arrived.
@@ -984,7 +989,7 @@ test('desired figure-eight redraws before planner responses and stale prediction
     assert.deepEqual(references.at(-1).points[0], [.6, -.1, 1]);
     assert.equal(h.commands.length, commandCount); // Visible before the edit debounce or any POST.
     const current = references.at(-1);
-    source.emit({ type: 'state', generation: 0, settings_version: 1, sim_time_s: 4, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [9,9,9], target_xyz: [99,99,99] });
+    source.emit({ type: 'state', generation: 0, settings_version: 2, sim_time_s: 4, q: Array(7).fill(0), qd: Array(7).fill(0), ee_xyz: [9,9,9], target_xyz: [99,99,99] });
     live.frame(2.5);
     assert.deepEqual(states.at(-1).segment.task_anchors, anchors); // The state's context comes from its segment header.
     assert(Math.abs(states.at(-1).referenceTarget[0] - .6) < 1e-12);
@@ -1045,14 +1050,15 @@ test('active-task defaults, pose group and execution reset route through normal 
   const reset = key => h.created.filter(el => el.dataset.resetSetting === key).at(-1);
   try {
     const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
-    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change');
+    await live.enterLive(); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change'); await flush(); await flush();
     const width = h.document.querySelector('[data-task-path="width_m"]'); width.value = '.4'; width.emit('input');
     assert.equal(reset('task.width_m').disabled, false); reset('task.width_m').emit('click'); assert.equal(live.settings.task.width_m, .24);
     h.edit('target-offset-0', .15); h.edit('target-offset-2', -.2); assert.equal(reset('task.pose').disabled, false);
     reset('task.pose').emit('click'); assert.deepEqual(live.settings.task.target_offset_m, [0, 0, 0]); assert.deepEqual(live.settings.task.orientation_xyzw, [0, 0, 0, 1]);
     h.$('live-duration').value = '20'; h.$('live-duration').emit('input'); assert.equal(reset('execution.duration_s').disabled, false);
     reset('execution.duration_s').emit('click'); assert.equal(live.settings.execution.duration_s, DEFAULT_EXECUTION.duration_s);
-    reset('task.kind').emit('click'); assert.equal(live.settings.task.kind, 'reach'); assert.equal(reset('task.kind').disabled, true);
+    assert.equal(live.settings.task.kind, 'figure8');
     h.$('replay-mode').emit('click'); await flush();
   } finally {
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
@@ -1063,38 +1069,39 @@ test('task switches restore independent reach and figure-eight positions and tra
   const h = harness(); h.schema.tasks[1].defaults.orientation_xyzw = [0, 0, 0, 1];
   const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
   Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
-  const switchTask = kind => { h.$('live-task').value = kind; h.$('live-task').emit('change'); };
+  const switchTask = async kind => { h.$('live-task').value = kind; h.$('live-task').emit('change'); await flush(); await flush(); };
   const visibleOffsets = () => [0, 1, 2].map(i => Number(h.$(`target-offset-${i}`).value));
   const reset = key => h.created.filter(el => el.dataset.resetSetting === key).at(-1);
   try {
     const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} }); await flush();
+    await live.enterLive(); const source = h.sources.at(-1); source.open(); source.emit({ type: 'status', state: 'paused', settings_version: 0 }); await flush();
     assert.deepEqual(visibleOffsets(), [.15, .2, .2]);
     h.edit('target-offset-0', -.12); h.edit('target-offset-1', .31);
-    switchTask('figure8');
+    await switchTask('figure8');
     assert.deepEqual(visibleOffsets(), [0, 0, 0]);
     assert.deepEqual(live.settings.task.target_offset_m, [0, 0, 0]);
     assert.equal(reset('task.pose').disabled, true);
     h.edit('target-offset-0', .08); h.edit('target-offset-2', -.09);
     const width = h.document.querySelector('[data-task-path="width_m"]'); width.value = '.4'; width.emit('input');
-    switchTask('reach');
+    await switchTask('reach');
     assert.deepEqual(visibleOffsets(), [-.12, .31, .2]);
     assert.deepEqual(live.settings.task, { kind: 'reach', target_offset_m: [-.12, .31, .2] });
     assert.equal(reset('task.pose').disabled, false);
-    switchTask('figure8');
+    await switchTask('figure8');
     assert.deepEqual(visibleOffsets(), [.08, 0, -.09]);
     assert.equal(Number(h.document.querySelector('[data-task-path="width_m"]').value), .4);
     assert.deepEqual(live.settings.task.orientation_xyzw, [0, 0, 0, 1]);
     reset('task.pose').emit('click');
     assert.deepEqual(visibleOffsets(), [0, 0, 0]);
-    switchTask('reach');
+    await switchTask('reach');
     assert.deepEqual(visibleOffsets(), [-.12, .31, .2]);
     reset('task.pose').emit('click');
     assert.deepEqual(visibleOffsets(), [.15, .2, .2]);
-    switchTask('figure8');
+    await switchTask('figure8');
     assert.deepEqual(visibleOffsets(), [0, 0, 0]);
     assert.equal(Number(h.document.querySelector('[data-task-path="width_m"]').value), .4);
     h.$('replay-mode').emit('click'); await flush();
-    assert.equal(h.commands.length, 0);
+    assert.equal(h.commands.filter(command => command.type === 'switch_task').length, 5);
   } finally {
     for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
   }
@@ -1123,11 +1130,11 @@ test('solver profile refresh keeps native history anchor and compatible drafts, 
     assert.equal(live.settings.config.N, before.config.N); assert.equal(live.settings.config.solver_params.q_cost, 9.25); assert.deepEqual(live.settings.task, before.task); assert.equal(live.settings.config.solver_params.new_weight, .7);
     const n = h.created.filter(input => input.dataset.path === 'N').at(-1); assert.deepEqual(n.children.map(option => option.textContent), ['32', '128']);
     assert.equal(h.$('target-offset-0').handlers.input.length, 2); // one edit and one reset indicator listener
-    assert.equal(h.$('live-task').handlers.change.length, 2); assert.equal(h.commands.length, count);
+    assert.equal(h.$('live-task').handlers.change.length, 1); assert.equal(h.commands.length, count);
     assert.equal(h.$('live-preview').disabled, false);
     // Repeat schema hydration without adding handlers or issuing a preview.
     live.beginSolverProfileSwitch(); await live.finishSolverProfileSwitch({ state: 'active', profile_id: 'main', generation: 3 }); await flush();
-    assert.equal(h.$('target-offset-0').handlers.input.length, 2); assert.equal(h.$('live-task').handlers.change.length, 2); assert.equal(h.commands.length, count);
+    assert.equal(h.$('target-offset-0').handlers.input.length, 2); assert.equal(h.$('live-task').handlers.change.length, 1); assert.equal(h.commands.length, count);
   } finally { h.$('replay-mode').emit('click'); await flush(); Object.assign(globalThis, originals); }
 });
 
@@ -2417,6 +2424,7 @@ test('a poll started before a same-version Stop/Continue event cannot restore th
     const refreshing = live.refreshSettings();
     const current = structuredClone(stale); current.execution.continue_at_end = true;
     source.emit({ type: 'settings', ...current });
+    h.setSettingsHandler(() => ({ ok: true, json: async () => current }));
     finishPoll(); await refreshing;
     assert.equal(live.settings.execution.continue_at_end, true);
     assert.equal(h.$('live-continue').checked, true);
@@ -2645,5 +2653,355 @@ test('playback grid retains a full preview when its sequence overlaps a cached p
     live.frame(20);
     assert.equal(session.focused.plan.origin, 'play');
     assert.deepEqual(session.focused.plan.ee_xyz, play.ee_xyz);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+
+test('resetting another task\'s pose preserves its task fields when reach orientation is supported', async () => {
+  const h = harness();
+  const defaults = { kind: 'hold', target_offset_m: [.15, .2, .2], speed: 6 };
+  h.schema.tasks.push({ kind: 'hold', label: 'Hold', defaults, parameters: [{ path: 'speed', label: 'Speed', min: 0, max: 10 }] });
+  h.schema.orientation_goal_supported = true;
+  taskSessionBackend(h);
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  try {
+    const live = await startTaskSessionLive(h);
+    h.$('live-task').value = 'hold'; h.$('live-task').emit('change');
+    await flush(); await flush(); await flush(); await flush();
+    h.edit('target-offset-0', -.12);
+    h.created.filter(element => element.dataset.resetSetting === 'task.pose').at(-1).emit('click');
+    assert.deepEqual(live.settings.task, defaults);
+    assert.equal(Object.hasOwn(live.settings.task, 'orientation_rad'), false);
+    h.$('replay-mode').emit('click'); await flush();
+  } finally {
+    for (const [key, value] of Object.entries(originals)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; }
+  }
+});
+
+function taskSessionBackend(h, shared) {
+  const groups = value => structuredClone({ config: value.config, task: value.task, execution: value.execution, source_settings: value.source_settings || {} });
+  const merge = (left, right) => {
+    const next = structuredClone(left);
+    for (const [key, value] of Object.entries(right)) next[key] = value && typeof value === 'object' && !Array.isArray(value) && next[key] && typeof next[key] === 'object' && !Array.isArray(next[key]) ? merge(next[key], value) : structuredClone(value);
+    return next;
+  };
+  h.schema.defaults.config.cost_weights = { position: 4, terminal_position: 8 };
+  h.schema.parameters.push(...['position', 'terminal_position'].map(path => ({ path: `cost_weights.${path}`, label: path, kind: 'float', min: 0, effect: 'runtime' })));
+  h.schema.task_defaults = Object.fromEntries(h.schema.tasks.map(task => {
+    const baseline = groups({ ...h.schema.defaults, task: task.defaults, source_settings: { predictor: { gain: 1 }, simulation: { armature_on: true } } });
+    if (['figure8', 'tracking', 'hold'].includes(task.kind)) { baseline.config.cost_weights = { position: 500, terminal_position: 1000 }; baseline.execution.to_hz = 500; }
+    return [task.kind, baseline];
+  }));
+  const state = shared || { version: 1, active: 'reach', defaults: structuredClone(h.schema.task_defaults), sessions: structuredClone(h.schema.task_defaults) };
+  const snapshot = () => ({ ...groups(state.sessions[state.active]), settings_version: state.version,
+    task_settings: { defaults: structuredClone(state.defaults), sessions: structuredClone(state.sessions), overrides: Object.fromEntries(Object.entries(state.sessions).map(([kind, value]) => [kind, settingsPatch(state.defaults[kind], value)])) } });
+  h.setSettingsHandler(() => ({ ok: true, json: async () => snapshot() }));
+  h.setCommandHandler(command => {
+    if (command.expected_settings_version != null && command.expected_settings_version !== state.version) return { ok: false, status: 409, json: async () => ({ settings: snapshot(), accepted: false }) };
+    if (['patch_settings', 'set_settings'].includes(command.type)) {
+      state.sessions[state.active] = command.type === 'patch_settings' ? merge(state.sessions[state.active], command.patch) : groups(command);
+      state.version++;
+    } else if (command.type === 'switch_task') { state.active = command.task_kind; state.version++; }
+    else if (command.type === 'reset_task_settings') {
+      state.sessions[state.active] = structuredClone(state.defaults[state.active]);
+      state.version++;
+    }
+    else if (command.type === 'transfer_settings') {
+      if (state.rejectTransfer) return { ok: false, status: 400, json: async () => ({ accepted: false, error: 'Selected values do not fit this profile.' }) };
+      for (const path of command.paths) {
+        const keys = path.split('.'), leaf = keys.pop();
+        const from = keys.reduce((value, key) => value[key], state.sessions[command.source_task]);
+        const to = keys.reduce((value, key) => value[key], state.sessions[state.active]);
+        to[leaf] = structuredClone(from[leaf]);
+      }
+      state.version++;
+    }
+    return { ok: true, json: async () => ({ accepted: true, settings_version: state.version }) };
+  });
+  state.snapshot = snapshot;
+  return state;
+}
+
+async function startTaskSessionLive(h) {
+  const live = setupLive({ onMode() {}, onPlan() {}, onState() {}, onReset() {} });
+  await live.ready; await live.enterLive(); const stream = h.sources.at(-1); stream.open();
+  stream.emit({ type: 'status', state: 'paused', settings_version: 1 }); await flush();
+  return live;
+}
+
+// Two more tasks with their own default overrides (taskSessionBackend).
+function addTaskDescriptors(h) {
+  h.schema.tasks.push(
+    { kind: 'tracking', label: 'Tracking',
+      defaults: { kind: 'tracking', target_offset_m: [0, 0, 0], speed: 1 },
+      parameters: [{ path: 'speed', label: 'Speed', min: 0, max: 10 }] },
+    { kind: 'hold', label: 'Hold', defaults: { kind: 'hold', target_offset_m: [.15, .2, .2] } },
+  );
+}
+
+test('Reset all discards an invalid draft in one transaction and undo stays within the active task', async () => {
+  const h = harness(); addTaskDescriptors(h);
+  const backend = taskSessionBackend(h); backend.active = 'tracking';
+  const active = backend.sessions.tracking;
+  active.config.cost_weights.position = 750;
+  active.config.solver_params.max_sqp_iters = 11;
+  active.task.speed = 2; active.task.target_offset_m = [.1, -.2, .05];
+  active.execution.to_hz = 400; active.execution.duration_s = 7;
+  active.source_settings.predictor.gain = 9;
+  active.source_settings.simulation.armature_on = false;
+  backend.sessions.hold.config.cost_weights.position = 900;
+  const before = structuredClone(active), defaults = structuredClone(backend.defaults);
+  const inactive = Object.fromEntries(Object.entries(backend.sessions).filter(([kind]) => kind !== backend.active)
+    .map(([kind, value]) => [kind, structuredClone(value)]));
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  const settle = async () => { await flush(); await flush(); await flush(); await flush(); };
+  const echo = () => h.sources.at(-1).emit({ type: 'settings', ...backend.snapshot() });
+  try {
+    live = await startTaskSessionLive(h);
+    const reset = h.created.find(element => element.id === 'live-task-reset-all');
+    assert.ok(reset, 'Reset all settings button exists beside Copy settings from');
+    assert.match(reset.textContent, /^Reset all(?: settings)?$/);
+    h.edit('cost_weights.position', 'invalid');
+    assert.equal(reset.disabled, false, 'Invalid fields can be discarded without saving');
+    h.commands.length = 0;
+    reset.emit('click'); await settle(); echo();
+    assert.deepEqual(h.commands, [{ type: 'reset_task_settings', expected_settings_version: 1 }]);
+    assert.deepEqual(live.settings, defaults.tracking);
+    assert.deepEqual(backend.sessions.tracking, defaults.tracking);
+    assert.equal(h.created.filter(element => element.dataset.path === 'cost_weights.position').at(-1).value, '500');
+    assert.equal(live.settingsHistory.undo, 1);
+    for (const [kind, values] of Object.entries(inactive)) assert.deepEqual(backend.sessions[kind], values);
+    assert.deepEqual(backend.defaults, defaults);
+    assert.equal(live.undoSettings(), true); await settle(); echo();
+    assert.deepEqual(live.settings, before);
+    assert.deepEqual(backend.sessions.hold, inactive.hold);
+    assert.equal(live.redoSettings(), true); await settle(); echo();
+    assert.deepEqual(live.settings, defaults.tracking);
+    h.$('live-task').value = 'reach'; h.$('live-task').emit('change'); await settle();
+    assert.deepEqual(live.settings, inactive.reach);
+    assert.equal(live.undoSettings(), false, 'Reset did not enter another task history');
+    assert.deepEqual(backend.sessions.tracking, defaults.tracking);
+    await live.setReplayOnly(true);
+    const resets = h.commands.filter(command => command.type === 'reset_task_settings').length;
+    assert.equal(reset.disabled, true); reset.emit('click'); await settle();
+    assert.equal(h.commands.filter(command => command.type === 'reset_task_settings').length, resets);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('Reset all rejects a stale task snapshot without resetting the newly active remote task', async () => {
+  const h = harness(); addTaskDescriptors(h);
+  const backend = taskSessionBackend(h); backend.active = 'tracking';
+  backend.sessions.tracking.config.cost_weights.position = 750;
+  backend.sessions.hold.config.cost_weights.position = 900;
+  const defaults = structuredClone(backend.defaults);
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  const settle = async () => { await flush(); await flush(); await flush(); await flush(); };
+  try {
+    live = await startTaskSessionLive(h);
+    const reset = h.created.find(element => element.id === 'live-task-reset-all');
+    backend.version++; backend.active = 'hold';
+    const sessions = structuredClone(backend.sessions);
+    h.commands.length = 0;
+    reset.emit('click'); await settle();
+    assert.deepEqual(h.commands, [{ type: 'reset_task_settings', expected_settings_version: 1 }]);
+    assert.deepEqual(backend.sessions, sessions, 'Neither session changes after the rejected reset');
+    assert.deepEqual(backend.defaults, defaults);
+    assert.equal(live.settings.task.kind, 'hold');
+    assert.equal(live.settings.config.cost_weights.position, 900);
+    assert.match(h.$('live-message').textContent, /changed|review|Review/);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('Reset all restores a compiled default from an unavailable model draft but remains blocked during source switching', async () => {
+  const h = harness(); modelSchema(h);
+  const backend = taskSessionBackend(h);
+  const fetch = async (url, options) => {
+    if (url === '/api/source/model') {
+      const body = JSON.parse(options.body), ready = body.params.N === 32;
+      return { ok: true, json: async () => ({ compatible: true,
+        compilation: { ready, N: body.params.N, available_N: [32] } }) };
+    }
+    return h.fetch(url, options);
+  };
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch, EventSource: h.EventSource });
+  let live;
+  const settle = async () => { await flush(); await flush(); await flush(); await flush(); };
+  try {
+    live = await startTaskSessionLive(h);
+    const reset = h.created.find(element => element.id === 'live-task-reset-all');
+    h.edit('N', 2);
+    await new Promise(resolve => setTimeout(resolve, 380)); await settle();
+    assert.equal(live.settings.config.N, 64); assert.equal(live.compilation.phase, 'missing');
+    assert.equal(h.$('live-preview').disabled, true, 'The uncompiled draft cannot solve');
+    assert.equal(reset.disabled, false, 'Its compiled default can still be restored');
+    h.commands.length = 0;
+    reset.emit('click'); await settle();
+    assert.deepEqual(h.commands, [{ type: 'reset_task_settings', expected_settings_version: 1 }]);
+    assert.equal(live.settings.config.N, backend.defaults.reach.config.N);
+    live.beginSolverProfileSwitch();
+    assert.equal(reset.disabled, true);
+    reset.emit('click'); await settle();
+    assert.equal(h.commands.filter(command => command.type === 'reset_task_settings').length, 1);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('task switching flushes the outgoing four-group session and resets to the selected task baseline across reloads', async () => {
+  const h = harness(), backend = taskSessionBackend(h);
+  backend.sessions.reach.source_settings.predictor.gain = 8;
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = await startTaskSessionLive(h);
+    h.edit('cost_weights.position', 7); h.edit('solver_params.max_sqp_iters', 12);
+    h.$('live-to-hz').value = '44'; h.$('live-to-hz').emit('input');
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change'); await flush(); await flush(); await flush(); await flush();
+    assert.deepEqual(h.commands.slice(-2).map(command => command.type), ['patch_settings', 'switch_task']);
+    assert.equal(h.commands.at(-1).expected_settings_version, 2);
+    assert.equal(live.settings.config.cost_weights.position, 500); assert.equal(live.settings.execution.to_hz, 500);
+    assert.equal(live.settings.config.solver_params.max_sqp_iters, 5);
+    assert.equal(live.settings.source_settings.predictor.gain, 1);
+    h.edit('cost_weights.position', 650);
+    h.created.filter(element => element.dataset.resetSetting === 'config.cost_weights.position').at(-1).emit('click');
+    assert.equal(live.settings.config.cost_weights.position, 500);
+    h.$('live-to-hz').value = '250'; h.$('live-to-hz').emit('input');
+    h.created.filter(element => element.dataset.resetSetting === 'execution.to_hz').at(-1).emit('click');
+    assert.equal(live.settings.execution.to_hz, 500);
+    h.edit('cost_weights.position', 600);
+    h.$('live-task').value = 'reach'; h.$('live-task').emit('change'); await flush(); await flush(); await flush(); await flush();
+    assert.equal(live.settings.config.cost_weights.position, 7); assert.equal(live.settings.execution.to_hz, 44);
+    assert.equal(live.settings.config.solver_params.max_sqp_iters, 12); assert.equal(live.settings.source_settings.predictor.gain, 8);
+    live.dispose();
+    const reloaded = harness(); taskSessionBackend(reloaded, backend);
+    Object.assign(globalThis, { document: reloaded.document, fetch: reloaded.fetch, EventSource: reloaded.EventSource });
+    live = await startTaskSessionLive(reloaded);
+    assert.equal(live.settings.config.cost_weights.position, 7); assert.equal(live.settings.execution.to_hz, 44);
+    assert.equal(reloaded.commands.length, 0);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('copy selected settings submits one versioned transfer, preserves defaults/source, and retains selection after rejection', async () => {
+  const h = harness(), backend = taskSessionBackend(h); backend.active = 'figure8';
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = await startTaskSessionLive(h);
+    const sourceBefore = structuredClone(backend.sessions.reach), defaultsBefore = structuredClone(backend.defaults);
+    h.created.find(element => element.id === 'live-task-copy').emit('click'); await flush(); await flush();
+    const leaf = () => h.created.filter(element => element.dataset.taskCopyPath === 'config.cost_weights.position').at(-1);
+    assert.ok(leaf(), h.$('live-message').textContent);
+    leaf().checked = true; leaf().emit('change'); backend.rejectTransfer = true;
+    const form = h.created.find(element => element.className === 'task-settings-form');
+    form.emit('submit'); await flush(); await flush();
+    assert.equal(leaf().checked, true);
+    assert.match(h.created.filter(element => element.className === 'source-message').at(-1).textContent, /Selected values/);
+    backend.rejectTransfer = false; form.emit('submit'); await flush(); await flush();
+    const command = h.commands.filter(command => command.type === 'transfer_settings').at(-1);
+    assert.deepEqual(command.paths, ['config.cost_weights.position']); assert.equal(command.source_task, 'reach');
+    assert.equal(live.settings.config.cost_weights.position, 4); assert.equal(live.settings.config.cost_weights.terminal_position, 1000);
+    assert.deepEqual(backend.sessions.reach, sourceBefore); assert.deepEqual(backend.defaults, defaultsBefore);
+    assert.equal(h.commands.filter(command => ['set_settings', 'patch_settings'].includes(command.type)).length, 0);
+    await live.setReplayOnly(true);
+    assert.equal(h.created.find(element => element.id === 'live-task-copy').disabled, true);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('copy requires review again when a newer backend snapshot arrives during draft flush', async () => {
+  const h = harness(), backend = taskSessionBackend(h); backend.active = 'figure8';
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = await startTaskSessionLive(h);
+    h.created.find(element => element.id === 'live-task-copy').emit('click'); await flush(); await flush();
+    const leaf = () => h.created.filter(element => element.dataset.taskCopyPath === 'config.cost_weights.position').at(-1);
+    assert.ok(leaf(), h.$('live-message').textContent);
+    leaf().checked = true; leaf().emit('change');
+    backend.version++; backend.sessions.reach.config.cost_weights.position = 6;
+    const form = h.created.find(element => element.className === 'task-settings-form');
+    form.emit('submit'); await flush(); await flush();
+    assert.equal(h.commands.filter(command => command.type === 'transfer_settings').length, 0);
+    assert.equal(live.settings.config.cost_weights.position, 500); assert.equal(leaf().checked, true);
+    assert.match(h.created.filter(element => element.className === 'source-message').at(-1).textContent, /Review the refreshed/);
+    form.emit('submit'); await flush(); await flush();
+    assert.equal(live.settings.config.cost_weights.position, 6);
+    assert.equal(h.commands.filter(command => command.type === 'transfer_settings').at(-1).expected_settings_version, backend.version - 1);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+test('task switching retries an authoritative settings read when an SSE echo overtakes the GET', async () => {
+  const h = harness(), backend = taskSessionBackend(h);
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  try {
+    live = await startTaskSessionLive(h);
+    const stale = backend.snapshot(); let release, reads = 0;
+    h.setSettingsHandler(() => ++reads === 1 ? new Promise(resolve => {
+      release = () => resolve({ ok: true, json: async () => stale });
+    }) : { ok: true, json: async () => backend.snapshot() });
+    h.$('live-task').value = 'figure8'; h.$('live-task').emit('change'); await flush();
+    assert.equal(typeof release, 'function');
+    backend.version++; backend.sessions.reach.config.solver_params.max_sqp_iters = 13;
+    h.sources.at(-1).emit({ type: 'settings', ...backend.snapshot() });
+    release(); await flush(); await flush();
+    const command = h.commands.find(command => command.type === 'switch_task');
+    assert.equal(command.task_kind, 'figure8'); assert.equal(command.expected_settings_version, 2);
+    assert.equal(live.settings.task.kind, 'figure8'); assert.equal(reads, 3);
+    assert.equal(backend.sessions.reach.config.solver_params.max_sqp_iters, 13);
+    assert.doesNotMatch(h.$('live-message').textContent, /settings are unavailable/);
+  } finally { live?.dispose(); Object.assign(globalThis, originals); }
+});
+
+
+test('undo and redo stay with each task session and selective transfers edit only the destination history', async () => {
+  const h = harness(), backend = taskSessionBackend(h);
+  const originals = Object.fromEntries(['document', 'fetch', 'EventSource'].map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, { document: h.document, fetch: h.fetch, EventSource: h.EventSource });
+  let live;
+  const settle = async () => { await flush(); await flush(); await flush(); await flush(); };
+  const echo = () => h.sources.at(-1).emit({ type: 'settings', ...backend.snapshot() });
+  const selectTask = async kind => { h.$('live-task').value = kind; h.$('live-task').emit('change'); await settle(); };
+  try {
+    live = await startTaskSessionLive(h);
+    h.edit('cost_weights.position', 7); h.$('live-preview').emit('click'); await settle(); echo();
+    assert.equal(live.settingsHistory.undo, 1);
+    await selectTask('figure8');
+    assert.equal(live.settingsHistory.undo, 0); assert.equal(live.undoSettings(), false);
+    assert.equal(backend.sessions.reach.config.cost_weights.position, 7);
+    h.edit('cost_weights.position', 600); h.$('live-preview').emit('click'); await settle(); echo();
+    assert.equal(live.settingsHistory.undo, 1);
+    // An unsubmitted field must not return when history or task sessions are restored.
+    h.edit('cost_weights.position', 999);
+    assert.equal(live.undoSettings(), true); await settle(); echo();
+    assert.equal(live.settings.config.cost_weights.position, 500);
+    assert.equal(backend.sessions.figure8.config.cost_weights.position, 500);
+    await selectTask('reach');
+    assert.equal(live.settingsHistory.undo, 1);
+    assert.equal(live.undoSettings(), true); await settle(); echo();
+    assert.equal(live.settings.config.cost_weights.position, 4);
+    assert.equal(backend.sessions.figure8.config.cost_weights.position, 500);
+    await selectTask('figure8');
+    assert.equal(live.settingsHistory.undo, 0); assert.equal(live.settingsHistory.redo, 1);
+    assert.equal(live.redoSettings(), true); await settle(); echo();
+    assert.equal(live.settings.config.cost_weights.position, 600);
+    h.created.find(element => element.id === 'live-task-copy').emit('click'); await settle();
+    const leaf = h.created.filter(element => element.dataset.taskCopyPath === 'config.cost_weights.position').at(-1);
+    leaf.checked = true; leaf.emit('change');
+    h.created.find(element => element.className === 'task-settings-form').emit('submit'); await settle();
+    assert.equal(live.settings.config.cost_weights.position, 4);
+    assert.equal(live.undoSettings(), true); await settle(); echo();
+    assert.equal(live.settings.config.cost_weights.position, 600);
+    assert.equal(backend.sessions.reach.config.cost_weights.position, 4);
+    assert.equal(live.redoSettings(), true); await settle(); echo();
+    assert.equal(live.settings.config.cost_weights.position, 4);
+    assert.equal(backend.sessions.reach.config.cost_weights.position, 4);
   } finally { live?.dispose(); Object.assign(globalThis, originals); }
 });

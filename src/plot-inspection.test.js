@@ -347,7 +347,7 @@ test('fresh inspection pins only Solve, hydrates true snapshots safely, and leav
     assert.deepEqual(requests.find(item => item.path === '/api/solve-inspections').body, { source: { kind: 'live', generation: 4 }, selection: { solve_id: 'original-7' }, profile_id: 'candidate', sqp_iters: 8 });
     const [id, timer] = [...timers].find(([, value]) => value.delay === 200); timers.delete(id); await timer.fn();
     await ui.refresh(); assert.deepEqual(ui.snapshot.solveSource, { kind: 'inspection', id: 'fresh1' }); assert.equal(ui.snapshot.pinned, true);
-    assert.equal(badge(solve, 'cold start').hidden, false); assert.equal(solve.querySelector('.solve-identity').children[0].textContent, 'Inspection fresh1'); assert(badge(solve, 'cold start').title.includes('solver profile candidate')); assert(badge(solve, 'cold start').title.includes('original solver profile main'));
+    assert.equal(badge(solve, 'cold capped solves').hidden, false); assert.equal(solve.querySelector('.solve-identity').children[0].textContent, 'Inspection fresh1'); assert(badge(solve, 'cold capped solves').title.includes('solver profile candidate')); assert(badge(solve, 'cold capped solves').title.includes('original solver profile main'));
     const slider = solve.querySelector('input'); slider.value = '1'; await slider.emit('input'); const pending = ui.refresh(); await flush();
     // The final trajectory already on screen stays while the snapshot loads; no context message flickers.
     assert.equal(ui.snapshot.iteration, 1); assert.equal(picked.at(-1).predictionSource, 'held'); assert.deepEqual(picked.at(-1).prediction.ee_xyz, [[2, 0, 1], [2, 1, 1]]);

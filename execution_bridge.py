@@ -17,6 +17,8 @@ from presentation_settings import DEFAULT_PRESENTATION, validate_presentation
 from runtime_files import runtime_directory
 from solver_lifecycle import run_with_parent
 from execution_worker import estimated_states, MAX_STATES, worker_main
+from task_settings import (compatible_overrides, install_task_defaults, resolve_task_settings, settings_diff,
+                           task_defaults, transfer_settings)
 
 SHUTDOWN_GRACE_SECONDS = 10
 
@@ -115,6 +117,11 @@ class ProcessLiveService:
             rates_order=["simulation_hz", "control_hz", "to_hz"],
             solve_latency=dict(field="solve_latency_s", measured="measured", units="s", minimum=0),
             back_to_back_to_hz=0)
+        install_task_defaults(self.schema)
+        self._task_overrides = {kind: {} for kind in self.schema["task_defaults"]}
+        initial = task_defaults(self.schema, self.task["kind"])
+        self.config, self.task, self.execution, self.source_settings = (
+            initial["config"], initial["task"], initial["execution"], initial["source_settings"])
         # Runtime scratch on tmpfs (runtime_files); only the current run is kept.
         self.history_store = HistoryStore(runtime_directory("history"))
         self.inspection_store = HistoryStore(runtime_directory("solves"))
@@ -331,6 +338,22 @@ class ProcessLiveService:
             if error:
                 raise ValueError(error)
 
+    def _current_settings(self):
+        return dict(config=deepcopy(self.config), task=deepcopy(self.task),
+                    execution=deepcopy(self.execution), source_settings=deepcopy(self.source_settings))
+
+    def _settings_for_task(self, kind):
+        if not isinstance(kind, str) or kind not in self.schema["task_defaults"]:
+            raise ValueError("Unknown task kind")
+        if kind == self.task["kind"]:
+            return self._current_settings()
+        return resolve_task_settings(task_defaults(self.schema, kind), self._task_overrides.get(kind, {}))
+
+    def _remember_task(self):
+        settings = self._current_settings()
+        kind = settings["task"]["kind"]
+        self._task_overrides[kind] = settings_diff(task_defaults(self.schema, kind), settings)
+
     def settings_snapshot(self):
         """Accepted settings, read without subscribing or scheduling numerical work."""
         with self.condition:
@@ -340,7 +363,11 @@ class ProcessLiveService:
                         available_N=deepcopy(self.schema.get("available_N", [])),
                         available_N_by_friction=deepcopy(self.schema.get("available_N_by_friction", {})),
                         exact_availability=bool(self.schema.get("exact_availability")), settings_version=self.version,
-                        generation=self.generation)
+                        generation=self.generation,
+                        task_settings=dict(defaults=deepcopy(self.schema["task_defaults"]),
+                                           overrides=deepcopy(self._task_overrides),
+                                           sessions={kind: self._settings_for_task(kind)
+                                                     for kind in self.schema["task_defaults"]}))
 
     def command(self, command):
         # Merge, validation and acceptance share the lock: disjoint client patches
@@ -355,19 +382,48 @@ class ProcessLiveService:
         kind = command.get("type")
         allowed = {"set_settings": {"type", "config", "task", "execution", "source_settings", "anchor", "reset", "expected_settings_version"},
                    "patch_settings": {"type", "patch", "anchor", "reset", "expected_settings_version"},
+                   "switch_task": {"type", "task_kind", "expected_settings_version"},
+                   "reset_task_settings": {"type", "expected_settings_version"},
+                   "transfer_settings": {"type", "source_task", "paths", "expected_settings_version"},
                    "precalculate": {"type", "anchor"}, "preview": {"type", "anchor"}, "play": {"type"},
                    "pause": {"type"}, "cancel": {"type"}, "reset": {"type"}}
         if kind not in allowed or not set(command) <= allowed[kind]:
             raise ValueError("Unknown live command or unexpected command fields")
+        if self.closed:
+            raise ValueError("Live service is closed")
+        if self.profile_switch["state"] == "switching":
+            raise ValueError("A solver profile switch is in progress")
+        if not self._process.is_alive():
+            raise ValueError("Numerical worker stopped; restart the server")
         request = deepcopy(command)
         presentation_only = False
-        if kind in ("set_settings", "patch_settings"):
+        if kind in ("set_settings", "patch_settings", "switch_task", "transfer_settings", "reset_task_settings"):
             if "expected_settings_version" in request:
                 expected = request.pop("expected_settings_version")
                 if type(expected) is not int or expected < 0:
                     raise ValueError("expected_settings_version must be a nonnegative integer")
                 if expected != self.version:
                     raise LiveSettingsConflict(self.settings_snapshot())
+        if kind == "reset_task_settings":
+            # Resolve the active task's current source/profile defaults here, never
+            # from a browser draft or a previously cached defaults catalog.
+            request.update(task_defaults(self.schema, self.task["kind"]))
+            request["type"] = kind = "set_settings"
+        elif kind == "switch_task":
+            selected = self._settings_for_task(request.pop("task_kind", None))
+            if selected["task"]["kind"] == self.task["kind"]:
+                return self.next_version
+            request.update(selected)
+            request["type"] = kind = "set_settings"
+        elif kind == "transfer_settings":
+            source = self._settings_for_task(request.pop("source_task", None))
+            current = self._current_settings()
+            selected = transfer_settings(source, current, request.pop("paths", None))
+            difference = settings_diff(current, selected)
+            presentation_only = (set(difference) == {"execution"} and
+                                 set(difference["execution"]) == {"continue_at_end"})
+            request.update(selected)
+            request["type"] = kind = "set_settings"
         if kind == "patch_settings":
             patch = request.pop("patch", None)
             if (not isinstance(patch, dict) or not patch or
@@ -377,14 +433,9 @@ class ProcessLiveService:
             presentation_only = (set(patch) == {"execution"} and
                                  set(patch["execution"]) == {"continue_at_end"} and
                                  not {"anchor", "reset"}.intersection(request))
-            current = dict(config=self.config, task=self.task, execution=self.execution,
-                           source_settings=getattr(self, "source_settings", dict(simulation={}, predictor={})))
             task_kind = patch.get("task", {}).get("kind", self.task["kind"])
-            if task_kind != self.task["kind"]:
-                descriptor = next((task for task in self.schema["tasks"] if task["kind"] == task_kind), None)
-                if descriptor is None:
-                    raise ValueError("Unknown task kind")
-                current["task"] = descriptor["defaults"]
+            current = (self._settings_for_task(task_kind) if task_kind != self.task["kind"]
+                       else self._current_settings())
             request.update(merge_settings(current, patch))
             request["type"] = kind = "set_settings"
         checked_model = None
@@ -395,6 +446,10 @@ class ProcessLiveService:
                 raise ValueError("Choose reset or an anchor, not both")
             if not {"config", "task"} <= set(request):
                 raise ValueError("set_settings requires config and task")
+            if isinstance(request["task"], dict) and request["task"].get("kind") != self.task["kind"]:
+                incoming = self._settings_for_task(request["task"].get("kind"))
+                request.setdefault("execution", incoming["execution"])
+                request.setdefault("source_settings", incoming["source_settings"])
             exact_model = bool(self.schema.get("exact_availability") or
                                (isinstance(request["config"], dict) and "armature" in request["config"]))
             request["config"], request["task"] = validate_settings(request["config"], request["task"], self.schema,
@@ -423,16 +478,11 @@ class ProcessLiveService:
         if "anchor" in command:
             request["anchor"] = validate_anchor(command["anchor"])
         with self.condition:
-            if self.closed:
-                raise ValueError("Live service is closed")
-            if self.profile_switch["state"] == "switching":
-                raise ValueError("A solver profile switch is in progress")
-            if not self._process.is_alive():
-                raise ValueError("Numerical worker stopped; restart the server")
             if presentation_only:
                 # This is the browser's tip-extension preference, not a change to
                 # generated motion. Sharing it must not discard history or solve.
                 self.execution = request["execution"]
+                self._remember_task()
                 self.publish(dict(type="settings", **self.settings_snapshot()))
                 return self.next_version
             if kind == "precalculate" or (kind == "play" and self.execution["calculation"] != "on_play"):
@@ -447,10 +497,12 @@ class ProcessLiveService:
             new_start = (kind == "set_settings" and request["config"]["plant"]["start_pose_rad"] !=
                          self.config["plant"]["start_pose_rad"])
             if kind == "set_settings":
+                self._remember_task()
                 self.next_version += 1
                 self.version = self.next_version
                 self.config, self.task, self.execution = request["config"], request["task"], request["execution"]
                 self.source_settings = deepcopy(request["source_settings"])
+                self._remember_task()
                 if checked_model is not None:
                     self.schema.update(available_modules(checked_model))
                     self.effective_settings = merge_settings(getattr(self, "effective_settings", {}),
@@ -546,13 +598,20 @@ class ProcessLiveService:
                             self.active_profile_id = identifier
                             self.active_profile = deepcopy(packet["profile"])
                             self.profile_switch = dict(state="idle")
-                            for key in ("available_N", "available_N_by_friction", "supported_N", "exact_availability", "parameters", "friction", "source", "source_settings"):
+                            self._remember_task()
+                            for key in ("available_N", "available_N_by_friction", "supported_N", "exact_availability", "parameters", "friction", "source", "source_settings", "defaults", "tasks"):
                                 if key in packet["schema"]:
                                     self.schema[key] = deepcopy(packet["schema"][key])
                             self.schema["compile_selection"] = {key: self.active_profile.get(key)
                                 for key in ("mpc_root", "python", "cache", "effective_cache")}
                             self.schema["compile_profile_id"] = self.active_profile_id
+                            self.schema["execution"]["defaults"] = deepcopy(self.schema["defaults"].get("execution", DEFAULT_EXECUTION))
+                            install_task_defaults(self.schema)
+                            self._task_overrides = {
+                                kind: compatible_overrides(defaults, self._task_overrides.get(kind, {}))
+                                for kind, defaults in self.schema["task_defaults"].items()}
                             self.source_settings = deepcopy(packet.get("source_settings", self.source_settings))
+                            self._remember_task()
                             self.effective_settings = deepcopy(packet.get("effective_settings", {}))
                             self.schema["effective_settings"] = deepcopy(self.effective_settings)
                             self.publish(dict(type="settings", **self.settings_snapshot()))
@@ -579,14 +638,7 @@ class ProcessLiveService:
                             self.source_settings = deepcopy(packet["source_settings"])
                             self.effective_settings = deepcopy(packet["effective_settings"])
                             self.schema["effective_settings"] = deepcopy(self.effective_settings)
-                            self.publish(dict(type="settings", **self.settings_snapshot()))
-                    continue
-                if kind == "resolved_settings":
-                    with self.condition:
-                        if packet.get("generation") == self.generation and packet.get("token") == self.revision.value:
-                            self.source_settings = deepcopy(packet["source_settings"])
-                            self.effective_settings = deepcopy(packet["effective_settings"])
-                            self.schema["effective_settings"] = deepcopy(self.effective_settings)
+                            self._remember_task()
                             self.publish(dict(type="settings", **self.settings_snapshot()))
                     continue
                 if kind == "failure":

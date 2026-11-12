@@ -89,7 +89,7 @@ class SourceReader:
                         if hashlib.sha256(path.read_bytes()).hexdigest() != models[key]["sha256"]:
                             raise ValueError("Inspection model snapshot changed")
                         paths[key] = path
-                    kinematics = RobotKinematics(paths["full"], reduced_urdf=paths["reduced"],
+                    kinematics = RobotKinematics(paths["full"], fixed_joints=metadata["fixed_joints"], reduced_urdf=paths["reduced"],
                         end_effector_frame=metadata["end_effector_frame"])
                 else:
                     raise ValueError("Inspection result lacks captured FK models; current source geometry is not historical evidence")
@@ -274,7 +274,9 @@ def scene_records(scene):
     recorded = next((t for t in raw["trajectories"] if t.get("kind") == "recorded"), None)
     origin = recorded["time_s"][0] if recorded and recorded.get("time_s") else 0
     raw["time_origin_s"] = origin
-    plan_timing = raw["source"].get("provenance", {}).get("live", {}).get("plan_timing", {})
+    provenance = raw["source"].get("provenance", {})
+    retained_live = provenance.get("live", {})
+    plan_timing = retained_live.get("plan_timing", {})
     for trajectory_index, trajectory in enumerate(raw["trajectories"]):
         if trajectory.get("kind") == "prediction":
             plan = dict(trajectory)
@@ -297,6 +299,10 @@ def scene_records(scene):
                 plan["diagnostics"] = plan["stats"]["diagnostics"]
             if "iterations" in plan["stats"]:
                 plan["iterations"] = plan["stats"]["iterations"]
+            captured = retained_live.get("inspection_inputs", {}).get(plan["id"])
+            if captured is not None:
+                plan.update(retained_live["inspection_context"])
+                plan.update(captured, problem_configuration=provenance["params"])
             raw["plans"].append(plan)
             plan["joint_limits"] = raw["joint_limits"]
             plan["mpc_bounds"] = raw["mpc_bounds"]
@@ -419,7 +425,7 @@ def inspect_source(raw, selection=None, analysis=None):
             final_prediction=final, selected_prediction=prediction, selected_iteration=iteration,
             stats=selected.get("stats", {}),
             provenance=({key: selected.get(key) for key in ("original", "initialization", "requested",
-                "iterations_run", "stop_reason", "solver_profile", "model_identity",
+                "mode", "snapshot_count", "solves_run", "max_sqp_cap", "stop_reason", "solver_profile", "model_identity",
                 "original_solver_profile", "original_model_identity")} if trace is not None else None),
             capabilities=dict(continue_sqp=False, continue_reason=CONTINUE_REASON,
                 run_again=run_again_capability(selected),

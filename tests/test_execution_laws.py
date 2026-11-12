@@ -56,7 +56,7 @@ class ExecutionLawTests(unittest.TestCase):
             return plan
 
         adapter.solve_snapshot = solve
-        adapter.law = tm.FrictionFeedforward(tm.Friction((.5,)*7, (.2,)*7), evaluation=tm.Tanh(.01))
+        adapter.law = tm.FrictionFeedforward(tm.Friction((.5,)*7, (.2,)*7), tm.SampleKnot(), evaluation=tm.Tanh(.01))
         session = NativeSession(adapter, dict(DEFAULT_EXECUTION, solve_latency_s=.0055))
         self.addCleanup(session.close)
         records = session.advance_interval(.01)

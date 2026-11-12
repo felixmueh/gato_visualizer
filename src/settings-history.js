@@ -8,9 +8,11 @@ const clone = value => JSON.parse(JSON.stringify(value));
 export function createSettingsHistory({ equal, limit = 200 } = {}) {
   if (typeof equal !== 'function') throw new Error('Settings history needs an equality test.');
   let entries = [], cursor = -1, expected = null;
-  function accept(version, doc) {
+  function accept(version, doc, { coalesce = false } = {}) {
     if (!Number.isInteger(version) || !doc) return;
-    if (cursor >= 0 && entries[cursor].version === version) { entries[cursor].doc = clone(doc); return; }
+    if (cursor >= 0 && (entries[cursor].version === version || (coalesce && equal(entries[cursor].doc, doc)))) {
+      entries[cursor] = { version, doc: clone(doc) }; return;
+    }
     if (expected && equal(entries[expected.index]?.doc, doc)) {
       // The undone or redone document came back as a new version: move, keep both sides.
       cursor = expected.index; entries[cursor] = { version, doc: clone(doc) }; expected = null; return;

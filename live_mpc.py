@@ -181,7 +181,7 @@ def parameter_specs(config, available_n, predictor_friction, start_pose):
                         group="Friction" if name in FRICTION_PATHS else "Costs" if key.endswith("cost") or name.startswith("cost_weights.") else (
                             "Limit handling" if name.startswith(("plant.clip_effort", "plant.stop_on_breach.")) else
                             "Collision rows" if name == "collision" else
-                            "ADMM" if name.startswith("admm.") else "Limits" if name in LIMIT_KEYS else "Solver"),
+                            "ADMM" if name.startswith("admm.") or name in ("admm_linsys", "admm_threshold") else "Limits" if name in LIMIT_KEYS else "Solver"),
                         scale="linear", effect="runtime" if name.startswith("plant.") else PARAMETER_EFFECTS.get(name, "compiled_model"))
             if name in DESCRIPTIONS:
                 spec["description"] = DESCRIPTIONS[name]
@@ -440,13 +440,16 @@ def available_modules(probe):
                 available_N_by_friction=by_mode, exact_availability=bool(probe.get("exact_availability")))
 
 
-def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_settings=None):
+def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_settings=None,
+                 experiment_settings=None):
     """The Live schema from a selected-interpreter source probe (scripts/source_probe.py)
     and simulator model metadata. A separate solver profile supplies its own
-    probe/root but retains the simulator's start pose and grasp-frame origin."""
+    probe/root but retains the simulator's start pose and grasp-frame origin.
+    experiment_settings (default: the probe's) holds the native execution defaults."""
     from execution_session import DEFAULT_EXECUTION
     if not probe.get("compatible"):
         raise ValueError(probe.get("error") or "Selected source is incompatible")
+    experiments = probe["experiment_defaults"] if experiment_settings is None else experiment_settings
     defaults = dict(deepcopy(probe["defaults"]), **SIMULATION_CLOCK_DEFAULTS,
                     plant=dict(deepcopy(PLANT_DEFAULTS), start_pose_rad=list(start_pose["default"])))
     from native_cost import cost_weights, serialized_cost
@@ -497,7 +500,7 @@ def build_schema(probe, mpc_root, start_pose, *, end_effector=None, simulation_s
                 **({"fixed_horizon_N": defaults["N"]} if custom_cost else {}),
                 effective_settings=deepcopy(probe.get("effective_settings", {})),
                 end_effector=deepcopy(grasp),
-                defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK), execution=deepcopy(DEFAULT_EXECUTION),
+                defaults=dict(config=defaults, task=deepcopy(REACH_DEFAULT_TASK), execution=dict(deepcopy(DEFAULT_EXECUTION), **experiments["execution"]),
                               source_settings=source_values),
                 parameters=specs,
                 tasks=[dict(kind="reach", label="Reach", defaults=deepcopy(REACH_DEFAULT_TASK)),

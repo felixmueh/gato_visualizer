@@ -214,9 +214,8 @@ class NativeSession:
     """
     def __init__(self, adapter, execution, version=0, clock=time.perf_counter, *, duration_s=sys.float_info.max):
         from execution_session import LimitWatch, breach_message, validate_execution
-        from tiago_mpc.laws import EffortClip, ExecutionSafety, SampleKnot
-        from tiago_mpc.loops import VirtualTimeSettings
-        from tiago_mpc.prediction import LatencyCompensation
+        from tiago_mpc.laws import EffortClip, ExecutionSafety, FrictionFeedforward
+        from tiago_mpc.loops import VirtualTimeSettings, default_compensation
         from tiago_mpc.record import to_dict
 
         self.adapter, self.execution, self.version, self.clock = adapter, validate_execution(execution), version, clock
@@ -231,19 +230,20 @@ class NativeSession:
         self._breach_message = breach_message
         handling = getattr(adapter, "limit_handling", None)
         self.watch = None if handling is None else LimitWatch(**handling, x=adapter.x)
-        self.law = getattr(adapter, "law", None) or SampleKnot()
+        # None: the package loop resolves its default law (FrictionFeedforward()).
+        self.law = getattr(adapter, "law", None)
         self.effort_handling = (EffortClip(effort=tuple(self.watch.effort))
                                 if self.watch and self.watch.clip else None)
         latency = self.execution["solve_latency_s"]
-        self.compensation = (LatencyCompensation(latency_s="previous" if latency == "measured" else latency)
-                             if self.execution["latency_compensation"] else None)
         self.safety = ExecutionSafety(max_plan_age_s=self.execution["max_plan_age_s"])
         self.settings = VirtualTimeSettings(
             command_period=1/self.execution["control_hz"],
             update_period=1/self.execution["to_hz"] if self.execution["to_hz"] else 0.,
             solve_latency_s=latency)
+        # The package's compensation for these settings, as run_virtual_time's "default".
+        self.compensation = default_compensation(self.settings) if self.execution["latency_compensation"] else None
         if hasattr(adapter, "effective_settings"):
-            adapter.effective_settings.update(law=to_dict(self.law),
+            adapter.effective_settings.update(law=to_dict(FrictionFeedforward() if self.law is None else self.law),
                                               safety=to_dict(self.safety),
                                               effort_handling=to_dict(self.effort_handling),
                                               compensation=to_dict(self.compensation))

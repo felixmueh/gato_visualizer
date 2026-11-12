@@ -1,3 +1,5 @@
+import { settingsGroups } from './task-settings.js';
+import { createTaskSettingsDialog } from './task-settings-dialog.js';
 import { createSettingResets, canonicalOrientation, settingValuesEqual } from './setting-resets.js';
 import { targetWorldPosition, targetWorldOffset, normalizeQuaternion } from './target-gizmo.js';
 import { orientationGoal, taskReference, taskReferencePoint } from './task-reference.js';
@@ -7,10 +9,11 @@ import { DEFAULT_PRESENTATION, validatePresentation } from './presentation-setti
 // The API uses native joint values and full robot-root coordinates. No sign or
 // frame conversions belong in the browser.
 import { createLiveHistory } from './live-history.js';
+import { createTimelineIntervalIndex } from './timeline-intervals.js';
 import { createLiveHistoryPaging } from './live-history-paging.js';
 import { createLivePlanCache } from './live-plan-cache.js';
 import { livePredictionWindow, hydrateLiveAnimationHistory } from './live-prediction.js';
-import { DEFAULT_EXECUTION, validateExecution, intervalSeverity, intervalDescription, createHistoryClock } from './live-execution.js';
+import { DEFAULT_EXECUTION, validateExecution, intervalDescription, createHistoryClock } from './live-execution.js';
 import { sessionSpan } from './session.js';
 import { settingsPatch, rebaseSettings } from './shared-settings.js';
 import { createVectorField, createWorktreeFields, restoreWorktreeSettings, fieldValue, resolvedValueText, validateField, parameterTooltip } from './worktree-fields.js';
@@ -218,9 +221,23 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   // in its `segment` record; plans and states name their segment by generation.
   const segments = new Map();
   const segmentOf = item => segments.get(item?.generation)?.context;
-  const taskDrafts = new Map();
+  let taskCatalog = null, taskSwitching = false, copyDialog = null, copyButton = null, resetAllButton = null;
+  const baselineForTask = kind => {
+    const defaults = taskCatalog?.defaults?.[kind] || schema?.task_defaults?.[kind];
+    if (!defaults) throw new Error(`Task settings defaults are unavailable for ${kind}; reload the backend.`);
+    return initialLiveSettings({ ...schema, defaults });
+  };
+  function updateTaskBaseline(kind) {
+    defaultSettings = baselineForTask(kind);
+  }
+  function refreshTaskCopy() { if (copyDialog?.isOpen) copyDialog.refresh(); }
+  function taskDialogContext() {
+    return { schema, catalog: taskCatalog || { defaults: schema?.task_defaults, overrides: {} },
+      current: settingsGroups(settings), version: serverSettingsVersion, readonly: replayOnly || mode !== 'live' || taskSwitching || profileSwitching || profileUnavailable };
+  }
   const resetIndicators = createSettingResets();
   let presentation = validatePresentation(presentationSettings);
+  const timelineIntervals = createTimelineIntervalIndex();
   const history = createLiveHistory({ maxSamples: Infinity, maxSeconds: Infinity, maxPlans: Infinity }), clock = createHistoryClock({ bufferMs: presentation.buffer_ms }), inputs = [];
   const planCache = createLivePlanCache({ fetch, onChange: () => { renderDirty = true; if (!clock.playing && !disposed) renderView(); },
     onError: error => message(`Prediction download failed: ${error.message}`, true) });
@@ -269,9 +286,13 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   let playingHold = null;
   // A drag or scale of an obstacle is one gesture: it submits once, on release.
   let obstacleGesture = false, obstacleHighlight = null;
-  // Undo and redo: one entry per accepted settings version (settings-history.js). A drag or
-  // scale of an obstacle submits once, on release, so it is one entry.
-  const settingsHistory = createSettingsHistory({ equal: settingValuesEqual });
+  // Accepted documents stay in their task's history; switching never rewinds another
+  // task's session. A whole obstacle gesture still submits as one accepted entry.
+  const settingsHistories = new Map();
+  function taskSettingsHistory(kind = acceptedSettings?.task.kind || settings?.task.kind) {
+    if (!settingsHistories.has(kind)) settingsHistories.set(kind, createSettingsHistory({ equal: settingValuesEqual }));
+    return settingsHistories.get(kind);
+  }
   // The predictor's obstacle lists (an adapter's descriptors of kind shapes).
   const shapeSettings = () => schema?.source_settings?.predictor?.parameters?.filter(parameter => parameter.kind === 'shapes') || [];
   const latestContext = () => segments.get(generation)?.context || [...segments.values()].at(-1)?.context;
@@ -311,6 +332,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     session.setCursor(clock.time ?? (history.length ? history.bounds[0] : session.span[0]));
   }
   function pausePlayback() { ++playbackIntent; clock.pause(); calculateWhilePlaying = false; extensionPending = false; renderDirty = true; }
+  const taskBaseWorld = kind => kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
   const acceptTaskAnchors = item => {
     if (validPoints([item?.task_anchors?.reach])) defaultTargetWorld = [...item.task_anchors.reach];
     if (validPoints([item?.task_anchors?.figure8])) figure8BaseWorld = [...item.task_anchors.figure8];
@@ -321,7 +343,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     acceptTaskAnchors(record.context); renderDirty = true;
     syncSession();
   }
-  function acceptSettings(item, { initial = false } = {}) {
+  function acceptSettings(item, { initial = false, discardDraft = false } = {}) {
     if (!schema || !item?.config || !item.task || !item.execution || !Number.isInteger(item.settings_version)) return;
     if (serverSettingsVersion != null && item.settings_version < serverSettingsVersion) return;
     if (item.effective_settings) {
@@ -336,15 +358,25 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       const spec = schema.parameters?.find(parameter => parameter.path.replace(/^config\./, '') === 'N');
       if (spec) spec.choices = [...supportedKnotCounts(schema)];
     }
+    const previousBaseline = defaultSettings;
+    if (item.task_settings) taskCatalog = cloneSettings(item.task_settings);
+    updateTaskBaseline(initial && item.settings_version === 0 ? settings.task.kind : item.task.kind);
+    const baselineChanged = !settingValuesEqual(previousBaseline, defaultSettings);
     const remote = cloneSettings({ config: item.config, task: item.task, execution: item.execution,
       ...(item.source_settings ? { source_settings: item.source_settings } : {}) });
-    if (serverSettingsVersion === item.settings_version && settingValuesEqual(acceptedSettings, remote)) return;
+    if (!discardDraft && serverSettingsVersion === item.settings_version && settingValuesEqual(acceptedSettings, remote)) {
+      if (baselineChanged) populate();
+      refreshTaskCopy();
+      return;
+    }
     const numericalChange = serverSettingsVersion != null && item.settings_version !== serverSettingsVersion;
     const ownRequest = settingsRequests.find(request => request.version === item.settings_version && settingValuesEqual(request.settings, remote));
-    // Every accepted version, also another viewer's or an agent's, is one undo entry.
-    if (item.settings_version > 0) settingsHistory.accept(item.settings_version, remote);
+    const switchedTask = acceptedSettings && acceptedSettings.task.kind !== remote.task.kind;
+    // Task switches restore their cursor; a changed document (also another viewer's)
+    // is an edit, but returning to an unchanged session adds no undo step.
+    if (item.settings_version > 0) taskSettingsHistory(remote.task.kind).accept(item.settings_version, remote, { coalesce: switchedTask });
     const before = ownRequest?.settings || acceptedSettings || submittedSettings || defaultSettings;
-    const next = initial && item.settings_version > 0 ? cloneSettings(remote) : rebaseSettings(before, settings, remote);
+    const next = discardDraft || switchedTask || (initial && item.settings_version > 0) ? cloneSettings(remote) : rebaseSettings(before, settings, remote);
     acceptedSettings = remote; serverSettingsVersion = item.settings_version; refreshGatoDefaults();
     settingsVersion = item.settings_version;
     // Version zero is the unconfigured backend. Its first viewer still chooses
@@ -361,19 +393,26 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     initialResetPending = false; needsInitialPreview = false;
     pending = !replayOnly && (!plan || plan.settings_version < expectedVersion);
     if (initial && item.settings_version > 0) suppressInitialPreview = true;
-    taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
-    populate(); renderDirty = true;
+    populate(); refreshTaskCopy(); renderDirty = true;
     if (!replayOnly && item.generation != null) useGeneration(item.generation);
-    if (dirty && (connected() || compilationEnabled())) settingsTimer = setTimeout(submitSettings, 350);
+    if (dirty && !taskSwitching && (connected() || compilationEnabled())) settingsTimer = setTimeout(submitSettings, 350);
     controlsEnabled(); refreshPlanLabel();
   }
-  async function refreshSettings({ initial = false } = {}) {
-    if (disposed || profileSwitching || profileUnavailable) return;
-    const epoch = settingsEpoch;
-    try {
-      const response = await fetch('/api/live/settings'), item = await response.json();
-      if (response.ok && !disposed && !profileSwitching && epoch === settingsEpoch) acceptSettings(item, { initial });
-    } catch { /* The event stream or next poll recovers transient disconnects. */ }
+  async function refreshSettings({ initial = false, discardDraft = false } = {}) {
+    const profileEpoch = schemaReload;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (disposed || profileSwitching || profileUnavailable || profileEpoch !== schemaReload) return;
+      const epoch = settingsEpoch;
+      try {
+        const response = await fetch('/api/live/settings'), item = await response.json();
+        if (disposed || profileSwitching || profileUnavailable || profileEpoch !== schemaReload || !response.ok) return;
+        // A settings echo may beat this GET. Read once more rather than report
+        // unavailable while discarding a snapshot that predates that echo.
+        if (epoch !== settingsEpoch) continue;
+        acceptSettings(item, { initial, discardDraft });
+        return item;
+      } catch { return; } // The event stream or next poll recovers disconnects.
+    }
   }
   function scheduleSettingsRefresh() {
     clearTimeout(settingsPoll);
@@ -391,7 +430,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   };
   async function send(command) {
     if (replayOnly && !['pause', 'cancel'].includes(command.type)) return false;
-    if ((profileSwitching || profileUnavailable || profileNError) && !['pause', 'cancel'].includes(command.type)) return false;
+    if ((profileSwitching || profileUnavailable) && !['pause', 'cancel'].includes(command.type)) return false;
+    if (profileNError && !['pause', 'cancel', 'reset_task_settings'].includes(command.type)) return false;
     try {
       const response = await fetch('/api/live/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) });
       const result = await response.json();
@@ -404,6 +444,64 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       return result;
     } catch (error) { if (!profileSwitching) message(`Command failed: ${error.message}`, true); return false; }
   }
+  async function flushTaskDraft() {
+    clearTimeout(settingsTimer);
+    const draft = readSettings(true);
+    if (!draft) throw new Error('Correct the highlighted settings before changing tasks.');
+    settings = draft;
+    dirty ||= !settingValuesEqual(settingsGroups(acceptedSettings || submittedSettings || defaultSettings), settingsGroups(draft));
+    if (dirty && !await submitSettings()) throw new Error($('live-message').textContent || 'The current settings could not be saved.');
+    const snapshot = await refreshSettings();
+    if (!snapshot) throw new Error('Current task settings are unavailable. Try again.');
+  }
+  async function taskTransaction(command, reviewedVersion = null) {
+    if (replayOnly || mode !== 'live' || taskSwitching || profileSwitching || profileUnavailable) throw new Error('Task settings are available in Live.');
+    taskSwitching = true; controlsEnabled();
+    try {
+      await flushTaskDraft();
+      if (reviewedVersion != null && reviewedVersion !== serverSettingsVersion) throw new Error('Task settings changed. Review the refreshed differences and apply again.');
+      const response = await send({ ...command, expected_settings_version: reviewedVersion ?? serverSettingsVersion });
+      if (!response || response.conflict) throw new Error(response?.conflict
+        ? 'Task settings changed. Review the current values and try again.'
+        : $('live-message').textContent || 'Task settings could not be changed.');
+      const snapshot = await refreshSettings();
+      if (!snapshot) throw new Error('Settings were accepted; reconnect to view the current task.');
+      return snapshot;
+    } finally { taskSwitching = false; controlsEnabled(); refreshTaskCopy(); }
+  }
+  async function switchTask(kind) {
+    if (kind === settings.task.kind) return true;
+    // Keep the outgoing form selected while reading and saving its latest draft.
+    $('live-task').value = settings.task.kind;
+    try { await taskTransaction({ type: 'switch_task', task_kind: kind }); return true; }
+    catch (error) { $('live-task').value = settings.task.kind; message(error.message, true); return false; }
+  }
+  async function openTaskCopy() {
+    if (taskDialogContext().readonly) return;
+    try {
+      await flushTaskDraft();
+      copyDialog ||= createTaskSettingsDialog({ getContext: taskDialogContext,
+        onApply: (sourceTask, paths, version) => taskTransaction({ type: 'transfer_settings', source_task: sourceTask, paths }, version) });
+      copyDialog.open();
+    } catch (error) { message(error.message, true); }
+  }
+  async function resetAllSettings() {
+    if (taskDialogContext().readonly || !Number.isInteger(serverSettingsVersion)) return false;
+    const profileEpoch = schemaReload, kind = settings.task.kind, version = serverSettingsVersion;
+    clearTimeout(settingsTimer); ++submission;
+    taskSwitching = true; controlsEnabled();
+    try {
+      const result = await send({ type: 'reset_task_settings', expected_settings_version: version });
+      if (!result || result.conflict) throw new Error(result?.conflict
+        ? 'Task settings changed. Review the current task and try again.'
+        : $('live-message').textContent || 'Task settings could not be reset.');
+      if (disposed || profileEpoch !== schemaReload || settings.task.kind !== kind) throw new Error('The task or solver changed while resetting settings.');
+      const snapshot = await refreshSettings({ discardDraft: true });
+      if (!snapshot) throw new Error('Settings were reset; reconnect to view the current task.');
+      return true;
+    } catch (error) { message(error.message, true); return false; }
+    finally { taskSwitching = false; controlsEnabled(); refreshTaskCopy(); }
+  }
   function calculationControls() {
     const stop = $('live-stop-at-end');
     stop.disabled = replayOnly;
@@ -412,6 +510,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     $('live-duration').title = 'Precalculation duration; Live Play continues until paused.';
   }
   function controlsEnabled() {
+    $('live-task').disabled = replayOnly || mode !== 'live' || taskSwitching || profileSwitching || profileUnavailable;
+    if (copyButton) copyButton.disabled = $('live-task').disabled;
+    if (resetAllButton) resetAllButton.disabled = $('live-task').disabled;
+    refreshTaskCopy();
     const unavailable = !connected();
     $('live-play').disabled = playbackDisabled();
     $('live-preview').disabled = unavailable;
@@ -423,8 +525,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     $('live-play').setAttribute('aria-label', clock.playing ? 'Pause session' : 'Play session');
     $('live-reset').setAttribute('aria-label', replayOnly ? 'Rewind replay' : 'Reset state');
     $('live-reset').title = replayOnly ? 'Rewind replay' : 'Reset state';
-    $('live-panel').inert = replayOnly;
-    sourceFields?.setDisabled(replayOnly);
+    $('live-panel').inert = replayOnly || taskSwitching;
+    sourceFields?.setDisabled(replayOnly || taskSwitching);
     $('mode-label').textContent = replayOnly || mode !== 'live' ? 'TRAJECTORY REPLAY' : 'LIVE MPC · SIMULATION';
     $('live-calculation').disabled = replayOnly;
     $('live-latency-compensation').disabled = replayOnly;
@@ -459,6 +561,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       next.task = { ...(descriptor?.defaults || { kind: 'reach' }), ...(settings.task.kind === kind ? settings.task : {}), kind };
       for (const parameter of descriptor?.parameters || []) {
         const input = document.querySelector(`[data-task-path="${parameter.path}"]`);
+        if (!input) continue;  // the task setup is being rebuilt for another kind
         input.setCustomValidity('');
         try { next.task[parameter.path] = parseParameter(parameter, input); }
         catch (error) { input.setCustomValidity(error.message); if (reportErrors) input.reportValidity(); throw error; }
@@ -516,7 +619,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       resetIndicators.update(); controlsEnabled(); refreshPlanLabel();
       return true;
     }
-    settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task)); submittedSettings = cloneSettings(next); pending = true; dirty = false; inspectingPreview = false;
+    settings = next; submittedSettings = cloneSettings(next); pending = true; dirty = false; inspectingPreview = false;
     const previousExpectedVersion = expectedVersion;
     expectedVersion = Math.max(expectedVersion ?? 0, settingsVersion ?? 0) + 1;
     // A new start pose starts a new run at t = 0 from it, as Reset.
@@ -651,9 +754,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (!dirty && !pending && !playingEdit) frozenAnchor = displayedAnchor();
     syncPlantFriction();
     const next = readSettings();
-    const sourceChanged = next && !settingValuesEqual(next.source_settings, acceptedSettings?.source_settings);
+    const sourceChanged = next && !settingValuesEqual(next.source_settings, (acceptedSettings || submittedSettings)?.source_settings);
     if (next) {
-      settings = next; taskDrafts.set(next.task.kind, cloneSettings(next.task));
+      settings = next;
       if (next.execution.to_hz > 0) fixedToDraft = next.execution.to_hz;
       if (typeof next.execution.solve_latency_s === 'number') declaredLatencyDraft = next.execution.solve_latency_s;
       if (typeof next.execution.max_plan_age_s === 'number') maxPlanAgeDraft = next.execution.max_plan_age_s;
@@ -681,10 +784,11 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   }
   // An earlier settings document becomes the draft and is submitted as an ordinary edit:
   // the same anchor, model check, Compile prompt and start-pose rule; Play keeps playing.
+  const historyEditable = () => !disposed && mode === 'live' && !replayOnly && liveReady
+    && !taskSwitching && !profileSwitching && !profileUnavailable && !obstacleGesture;
   function applySettingsDocument(doc) {
-    if (!doc || mode !== 'live' || replayOnly || !liveReady || profileSwitching || profileUnavailable || obstacleGesture) return false;
+    if (!historyEditable() || !doc || doc.task.kind !== settings.task.kind) return false;
     settings = cloneSettings({ ...settings, ...doc }); poseDraft = null;
-    taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
     populate(); change({ keepPlaying: true });
     clearTimeout(settingsTimer); submitSettings();
     return true;
@@ -713,6 +817,8 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       .map(parameter => [parameter.path, document.querySelector(`[data-task-path="${parameter.path}"]`)?.value])).filter(([, value]) => value != null));
     const focusPath = document.activeElement?.dataset?.path;
     const focusSource = { ...document.activeElement?.dataset };
+    const horizonSelection = focusSource.horizon === 'seconds'
+      ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
     sourceFields?.destroy(); sourceFields = null;
     nativeVectors.forEach(({ widget }) => widget.destroy()); nativeVectors = [];
     resolvedFields = []; gatoDefaultFields = [];
@@ -737,24 +843,19 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     const tasks = schema.tasks || [{ kind: 'reach', label: 'Reaching', defaults: { kind: 'reach' } }];
     $('live-task').replaceChildren(...tasks.map(task => { const option = document.createElement('option'); option.value = task.kind; option.textContent = task.label; return option; }));
     $('live-task').value = settings.task.kind;
-    const activeTaskDefaults = () => {
-      const kind = $('live-task').value, descriptor = tasks.find(task => task.kind === kind);
-      const fallback = defaultSettings.task.kind === kind ? defaultSettings.task : {};
-      return { ...fallback, ...descriptor?.defaults, kind,
-        target_offset_m: descriptor?.defaults?.target_offset_m || fallback.target_offset_m || [0, 0, 0],
-        orientation_xyzw: descriptor?.defaults?.orientation_xyzw || fallback.orientation_xyzw || [0, 0, 0, 1] };
-    };
+    const activeTaskDefaults = () => baselineForTask($('live-task').value).task;
     const taskFields = () => {
       resetIndicators.forget('task-parameters');
       const descriptor = tasks.find(task => task.kind === $('live-task').value);
       $('live-task-parameters').replaceChildren();
+      const current = settings.task.kind === descriptor?.kind ? settings.task : descriptor?.defaults;
       let orientationCheckbox = null;
       for (const parameter of descriptor?.parameters || []) {
         const label = document.createElement('label'); label.className = 'parameter-row';
         const caption = document.createElement('span'); caption.textContent = parameter.label;
         const input = document.createElement('input'); input.type = 'number'; input.step = 'any'; input.required = true;
         input.dataset.taskPath = parameter.path; input.min = parameter.min; input.max = parameter.max;
-        input.value = settings.task.kind === descriptor.kind ? settings.task[parameter.path] : descriptor.defaults[parameter.path];
+        input.value = current?.[parameter.path];
         if (canonicalTimeUnit(parameter)) {
           const canonical = input.value, unit = canonicalTimeUnit(parameter);
           configureTimeInput(input, { unit });
@@ -784,7 +885,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
         reset: value => {
           value.offset.forEach((offset, i) => { $(`target-offset-${i}`).value = String(offset); $(`target-offset-${i}`).setCustomValidity(''); });
           if ($('live-task').value === 'figure8') settings.task.orientation_xyzw = [...value.orientation];
-          else if (orientationGoalSupported(schema)) {
+          else if ($('live-task').value === 'reach' && orientationGoalSupported(schema)) {
             settings.task.orientation_rad = value.goal ? [...value.goal] : null;
             orientationDraft = null;
             if (orientationCheckbox) orientationCheckbox.checked = Boolean(value.goal);
@@ -792,30 +893,24 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
           change();
         },
       });
-      $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'G moves the path in world coordinates; R rotates and S scales width/height about its start. Period sets speed. Reset restarts phase.' : 'Offset from the default reaching target. Click the target to move it along an axis; with an orientation goal, R rotates it.';
+      $('live-task-note').textContent = descriptor?.kind === 'figure8' ? 'G moves the path in world coordinates; R rotates and S scales width/height about its start. Period sets speed. Reset restarts phase.'
+        : 'Offset from the default reaching target. Click the target to move it along an axis; with an orientation goal, R rotates it.';
     };
-    taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
-    taskFields(); listen($('live-task'), 'change', () => {
-      taskDrafts.set(settings.task.kind, cloneSettings(settings.task));
-      const kind = $('live-task').value, descriptor = tasks.find(task => task.kind === kind);
-      const fallback = defaultSettings.task.kind === kind ? defaultSettings.task : {};
-      const defaults = { ...fallback, ...descriptor?.defaults, kind };
-      defaults.target_offset_m ||= [0, 0, 0];
-      settings.task = cloneSettings(taskDrafts.get(kind) || defaults);
-      // Hydrate the visible task before parsing the form. Reach and tracking
-      // keep independent positions, and tracking keeps its size/orientation.
-      settings.task.target_offset_m.forEach((offset, i) => {
-        $(`target-offset-${i}`).value = String(offset);
-        $(`target-offset-${i}`).setCustomValidity('');
-      });
-      taskFields(); change();
-    });
-    resetIndicators.bind({ key: 'task.kind', name: 'task', input: $('live-task'), host: $('live-task').parentElement,
-      getValue: () => $('live-task').value, getDefault: () => defaultSettings.task.kind,
-      reset: value => { $('live-task').value = value; $('live-task').dispatchEvent(new Event('change', { bubbles: true })); } });
-    if (schema.source_settings) sourceFields = createWorktreeFields({ container: sourceHost, schema,
-      values: settings.source_settings, groupsOpen, onChange: change, onResetBinding: options => resetIndicators.bind(options),
-      newShape: newObstacle });
+    taskFields(); listen($('live-task'), 'change', () => switchTask($('live-task').value));
+    if (!copyButton) {
+      const actions = document.createElement('div'); actions.className = 'task-settings-actions';
+      copyButton = document.createElement('button'); copyButton.type = 'button'; copyButton.className = 'task-copy-button';
+      copyButton.id = 'live-task-copy'; copyButton.textContent = 'Copy settings from…';
+      copyButton.addEventListener('click', openTaskCopy);
+      resetAllButton = document.createElement('button'); resetAllButton.type = 'button'; resetAllButton.className = 'task-copy-button';
+      resetAllButton.id = 'live-task-reset-all'; resetAllButton.textContent = 'Reset all';
+      resetAllButton.title = 'Restore all settings for the selected task to its defaults';
+      resetAllButton.addEventListener('click', resetAllSettings);
+      actions.append(copyButton, resetAllButton);
+      $('live-task').parentElement?.insertAdjacentElement?.('afterend', actions);
+    }
+    if (schema.source_settings) sourceFields = createWorktreeFields({ container: sourceHost, schema: { ...schema, source_settings: Object.fromEntries(Object.entries(schema.source_settings).map(([role, section]) => [role, { ...section, defaults: defaultSettings.source_settings?.[role] || section.defaults }])) },
+      values: settings.source_settings, groupsOpen, onChange: change, onResetBinding: options => resetIndicators.bind(options), newShape: newObstacle });
     outlineObstacle();
     const groups = new Map(), rows = new Map();
     const horizonRow = document.createElement('div'); horizonRow.className = 'horizon-row';
@@ -1026,6 +1121,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     resetIndicators.update();
     $('live-mode').disabled = false; message(replayOnly ? '' : profileNError ? unavailableFrictionMessage() : 'Choose Live MPC to compute a prediction.', !replayOnly && profileNError);
     if (focusPath) inputs.find(item => item.parameter.path === focusPath)?.input.focus?.();
+    if (horizonSelection && horizonInput) {
+      horizonInput.focus();
+      horizonInput.setSelectionRange?.(...horizonSelection);
+    }
     if (focusSource.sourcePath) [...document.querySelectorAll('[data-source-path]')].find(input =>
       input.dataset.sourceRole === focusSource.sourceRole && input.dataset.sourcePath === focusSource.sourcePath &&
       input.dataset.vectorIndex === focusSource.vectorIndex && ['INPUT', 'SELECT'].includes(input.tagName))?.focus?.();
@@ -1167,16 +1266,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     if (paintedRevision === historyRevision) return;
     paintedRevision = historyRevision;
     const [start, end] = history.bounds, span = end - start;
-    const segments = [];
-    // Merge adjacent matching causes into a small number of paint elements.
-    for (const interval of history.intervals) {
-      const severity = intervalSeverity(interval); if (severity === 'normal') continue;
-      const left = Math.max(start, interval.start_time_s), right = Math.min(end, interval.end_time_s);
-      if (right <= left) continue;
-      const previous = segments.at(-1);
-      if (previous?.severity === severity && Math.abs(previous.end - left) < 1e-8) previous.end = right;
-      else segments.push({ start: left, end: right, severity });
-    }
+    // Only the small timebar is rasterized to screen-width bands. All original
+    // intervals remain in history for exact hover statistics, plots and export.
+    const segments = timelineIntervals.update(history.intervals).bands([start, end], $('live-history').clientWidth || 1000);
     // Limit breaches where Live stopped: a tick in the limit colour.
     const breaches = history.breaches.filter(item => item.sim_time_s >= start - 1e-9 && item.sim_time_s <= end + 1e-9).map(item => {
       const el = document.createElement('span'); el.className = 'breach';
@@ -1195,7 +1287,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     timeline.style.setProperty('--progress', `${end > start ? 100 * (time - start) / (end - start) : 0}%`);
     $('live-history-latest').disabled = !history.length || Math.abs(time - recordedEnd) < 1e-8;
     $('live-history-position').textContent = history.length || end > start ? clock.buffering ? `${number(time, 2)} s · Buffering` : clock.following ? `${number(time, 2)} s · Live` : `${number(time, 2)} / ${number(end, 2)} s` : 'No state history yet';
-    const interval = replayOnly ? null : history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time) || history.intervals.at(-1);
+    const interval = replayOnly ? null : timelineIntervals.update(history.intervals).at(time) || history.intervals.at(-1);
     if (!timeline.matches?.(':hover')) timeline.title = interval ? intervalDescription(interval) : 'Recorded simulation time';
     timeline.setAttribute('aria-valuetext', `${number(time, 3)} seconds${interval ? ` · ${intervalDescription(interval)}` : ''}`);
     $('live-history-window').textContent = `Recorded ${number(mainStart, 2)}–${number(recordedEnd, 2)} s · ${history.length} states · display path ≤5000 points${historyPaging.fetching ? ' · downloading recording' : ''}${historyComplete ? ' · calculation complete' : job.job_active ? ` · calculating ${number((job.progress || 0) * 100)}%` : ''}`;
@@ -1237,7 +1329,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     // for this settings generation; keep the independent reference geometry
     // stable throughout playback instead of rebuilding it at each transition.
     const draft = (!historical || editing || clock.playing) && settings?.task;
-    const base = draft?.kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
+    const base = taskBaseWorld(draft?.kind);
     const nextReferenceKey = draft ? JSON.stringify([draft, base]) : shownPlan;
     if (referenceKey !== nextReferenceKey) {
       referenceKey = nextReferenceKey;
@@ -1493,7 +1585,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
   $('live-history').addEventListener('pointermove', event => {
     const bounds = event.target.getBoundingClientRect(), [start, end] = presentationBounds();
     const time = start + Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)) * (end - start);
-    const interval = !replayOnly && history.intervals.find(value => value.start_time_s <= time && value.end_time_s > time);
+    const interval = !replayOnly && timelineIntervals.update(history.intervals).at(time);
     const breach = !replayOnly && history.breaches.find(item => Math.abs(item.sim_time_s - time) <= .01 * (end - start));
     event.target.title = `${number(time, 3)} s · ${breach ? `${breach.message} · ` : ''}${interval ? intervalDescription(interval) : replayOnly ? 'Recorded session time' : 'Recorded simulation time'}`;
   });
@@ -1525,13 +1617,10 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
       }
       if (!response.ok) throw new Error(nextSchema.error || 'Live settings unavailable for the selected solver.');
       const nextSettings = solverProfileSettings(nextSchema, settings);
-      const retainedDrafts = [...taskDrafts];
-      schema = nextSchema; effectiveSettings = schema.effective_settings || null;
-      settingsHistory.clear();  // documents of the previous profile need not fit this one
+      schema = nextSchema; taskCatalog = null; effectiveSettings = schema.effective_settings || null;
+      settingsHistories.clear();  // documents of the previous profile need not fit this one
       modelCompilation?.invalidate();
-      acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = nextSettings;
-      taskDrafts.clear();
-      for (const [kind, draft] of retainedDrafts) if (schema.tasks?.some(task => task.kind === kind)) taskDrafts.set(kind, restoreCompatibleSettings(schema, { ...settings, task: draft }).task);
+      acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = nextSettings; updateTaskBaseline(settings.task.kind);
       profileNError = !availableKnotCounts(schema, settings.config).includes(settings.config.N);
       liveReady = true; profileUnavailable = false; needsInitialPreview = false; initialResetPending = false;
       suppressInitialPreview = mode !== 'live';
@@ -1566,7 +1655,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     notice.replaceChildren('Live MPC needs setup · ', link); notice.title = reason;
   }
   const initialSchemaRequest = schemaReload;
-  const ready = fetch('/api/live/schema').then(async response => { const result = await response.json(); if (initialSchemaRequest !== schemaReload) return; if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); settings = cloneSettings(defaultSettings);
+  const ready = fetch('/api/live/schema').then(async response => { const result = await response.json(); if (initialSchemaRequest !== schemaReload) return; if (!response.ok) throw new Error(result.error || 'Live settings unavailable.'); schema = result; if (!schema.task_defaults || typeof schema.task_defaults !== 'object') throw new Error('Live task settings defaults are unavailable; restart the backend.'); acceptTaskAnchors(schema); defaultSettings = initialLiveSettings(schema); updateTaskBaseline(defaultSettings.task.kind); settings = cloneSettings(defaultSettings);
     acceptedStartPose = startPoseValue(defaultSettings.config);
     try {
       const retained = sessionStorage.getItem('source-restart-live-settings');
@@ -1578,7 +1667,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     ready,
     refreshSettings,
     refreshView: () => renderView(),
-    dispose() { disposed = true; clearTimeout(settingsPoll); clearTimeout(settingsTimer); planCache.dispose(); modelCompilation?.dispose(); modelPrompt?.dispose(); source?.close(); unsubscribeSession?.(); },
+    dispose() { disposed = true; clearTimeout(settingsPoll); clearTimeout(settingsTimer); planCache.dispose(); copyDialog?.destroy(); modelCompilation?.dispose(); modelPrompt?.dispose(); source?.close(); unsubscribeSession?.(); },
     async enterLive() { await ready; await switchMode('live'); },
     setReplayOnly,
     get replayOnly() { return replayOnly; },
@@ -1603,7 +1692,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     get endEffector() { return schema?.end_effector || null; },
     get targetInteraction() {
       const offset = [0, 1, 2].map(i => Number($(`target-offset-${i}`).value));
-      const kind = $('live-task').value, base = kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
+      const kind = $('live-task').value, base = taskBaseWorld(kind);
       const available = mode === 'live' && !replayOnly && !clock.playing && (clock.time == null || clock.time >= history.bounds[1] - 1e-7) && liveReady && !profileSwitching && !profileUnavailable && source?.readyState === EventSource.OPEN && Boolean(base) && settings.task.kind === kind && Boolean(readSettings()) && status !== 'gpu_busy' && status !== 'error';
       const goal = kind === 'reach' ? orientationGoal(settings?.task) : null;
       return { available, kind, position_world: base ? targetWorldPosition(base, offset) : null,
@@ -1615,7 +1704,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     },
     setTargetWorld(position) {
       if (!this.targetInteraction.available) return null;
-      const base = settings.task.kind === 'figure8' ? figure8BaseWorld : defaultTargetWorld;
+      const base = taskBaseWorld(settings.task.kind);
       const offset = targetWorldOffset(base, position); if (!offset) return null;
       offset.forEach((value, i) => { $(`target-offset-${i}`).value = String(Number(value.toFixed(6))); });
       change(); return this.targetInteraction.position_world;
@@ -1678,9 +1767,9 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     },
     highlightObstacle(selection) { obstacleHighlight = selection ?? null; outlineObstacle(); },
     /** Undo or redo one accepted settings version; false when there is none or an obstacle gesture runs. */
-    undoSettings() { return !obstacleGesture && applySettingsDocument(settingsHistory.undo()); },
-    redoSettings() { return !obstacleGesture && applySettingsDocument(settingsHistory.redo()); },
-    get settingsHistory() { return settingsHistory.snapshot; },
+    undoSettings() { return historyEditable() && applySettingsDocument(taskSettingsHistory().undo()); },
+    redoSettings() { return historyEditable() && applySettingsDocument(taskSettingsHistory().redo()); },
+    get settingsHistory() { return taskSettingsHistory().snapshot; },
     // Editable in Live at the run start (t = 0), where the Joints tab shows the start
     // pose; the Joints lock decides whether it is edited. null outside Live.
     get startPose() {
@@ -1722,7 +1811,7 @@ export function setupLive({ presentationSettings = DEFAULT_PRESENTATION, replayO
     // The run's setup: Live, not playing, the displayed state at the run start (t = 0),
     // as for start-pose editing (without its connection requirement).
     get setupPhase() { return mode === 'live' && !replayOnly && !clock.playing && (!presentedState || atRunStart(presentedState)); },
-    get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time)?.state || state; },
+    get mode() { return mode; }, get plan() { return plan; }, get state() { return state; }, get displayedState() { return presentedState || history.at(clock.time, { trace: false })?.state || state; },
     // Onion skin reads recorded sample holds, never the interpolated display pose.
     historyStates(times) { return times.map(time => {
       const sample = history.at(time, { trace: false });

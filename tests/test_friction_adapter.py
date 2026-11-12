@@ -8,7 +8,6 @@ from copy import deepcopy
 from dataclasses import fields, replace
 import importlib
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -24,10 +23,6 @@ class FrictionAdapterTests(unittest.TestCase):
     def setUpClass(cls):
         import_tiago(MPC_ROOT)
         cls.tm = importlib.import_module("tiago_mpc")
-        preset_path = MPC_ROOT / "experiments/controller_tuning.py"
-        cls.presets = importlib.import_module("experiments.controller_tuning")
-        if Path(cls.presets.__file__).resolve() != preset_path:
-            raise RuntimeError("Controller-tuning presets did not import from the selected TIAGo source")
         cls.settings = importlib.import_module("adapters.tiago")
 
     def test_fixed_descriptors_are_finite_complete_and_have_separate_native_ownership(self):
@@ -36,6 +31,7 @@ class FrictionAdapterTests(unittest.TestCase):
         json.dumps(description, allow_nan=False)
         validate_description(description)
         self.assertEqual(description["simulation"]["controls"], ["armature", "law"])
+        self.assertEqual(description["simulation"]["defaults"]["law"], "default")
         self.assertEqual(description["predictor"]["controls"], ["armature", "friction", "friction_law", "collision"])
         self.assertEqual(set(description["simulation"]["defaults"]),
                          {"armature_on", "law", "ff_width_rad_s"})
@@ -83,7 +79,7 @@ class FrictionAdapterTests(unittest.TestCase):
                 values = settings.describe()["simulation"]["defaults"]
                 plant, law = settings.build_simulation(values, base)
                 self.assertEqual(plant.armature, tm.ARMATURE_KG_M2)
-                self.assertIsInstance(law, tm.SampleKnot)
+                self.assertIsNone(law)  # the package loop resolves its default law
                 self.assertEqual(plant.friction, base.friction)  # the plant's own coefficients stay
                 self.assertIs(plant.friction_law, physical_law)
                 self.assertEqual(replace(plant, armature=base.armature), base)
@@ -104,12 +100,14 @@ class FrictionAdapterTests(unittest.TestCase):
         self.assertIsNone(params.friction)
         self.assertNotIn("armature", simulation)
         self.assertNotIn("armature", predictor)
-        self.assertIsInstance(law, tm.SampleKnot)
+        self.assertIsNone(law)  # the package loop resolves its default law
 
-    def test_selected_package_execution_law_matches_the_tuned_gain_vectors_and_commands(self):
+    def test_selected_package_execution_law_matches_the_package_laws_and_commands(self):
         tm, settings = self.tm, self.settings
-        for mode, expected in (("default", tm.SampleKnot()), ("pd", self.presets.TUNED_PD), ("ff", self.presets.TUNED_FEEDFORWARD),
-                               ("both", self.presets.TUNED_BOTH)):
+        friction = tm.urdf_friction()
+        for mode, expected in (("plan", tm.SampleKnot()), ("pd", tm.PlanFeedback()),
+                               ("ff", tm.FrictionFeedforward(friction, tm.SampleKnot())),
+                               ("both", tm.FrictionFeedforward(friction, tm.PlanFeedback()))):
             with self.subTest(mode=mode):
                 values = settings.describe()["simulation"]["defaults"]
                 values["law"] = mode
@@ -156,7 +154,7 @@ class FrictionAdapterTests(unittest.TestCase):
         tm, settings = self.tm, self.settings
         values = settings.describe()["simulation"]["defaults"]
         values.update(law="both", ff_width_rad_s=.071)
-        prior = self.presets.TUNED_FEEDFORWARD.friction
+        prior = tm.urdf_friction()
         feedback = tm.PlanFeedback()
         expected = tm.FrictionFeedforward(prior, feedback, evaluation=tm.Tanh(.071))
         base = tm.SimConfig(friction=tm.urdf_friction(), friction_law=tm.Tanh(.123), integrator="euler")

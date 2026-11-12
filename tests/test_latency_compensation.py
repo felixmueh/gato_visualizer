@@ -16,7 +16,8 @@ class ProjectionAdapter:
     def __init__(self, law=None, delays=(.0055,), n=4, dt=.01):
         import_tiago(MPC_ROOT)
         import tiago_mpc as tm
-        self.tm, self.law, self.delays = tm, law, delays
+        # The plan's torque unless a test passes a law (not the package loop's default).
+        self.tm, self.law, self.delays = tm, tm.SampleKnot() if law is None else law, delays
         self.N, self.dt = n, dt
         self.x, self.t, self.u = np.r_[tm.Q_START, np.zeros(7)], 0., np.zeros(7)
         self.applied_torque, self.sequence, self.requests = None, 0, []
@@ -120,7 +121,8 @@ class LatencyCompensationTests(unittest.TestCase):
         adapter = ProjectionAdapter(delays=(.015, .003, .012))
         _, records = run_projection(adapter, latency="measured", end=.04)
         first, second = adapter.requests[:2]
-        self.assertAlmostEqual(first["at"], .006)  # native 5 ms bootstrap on 2 ms ticks
+        # default_compensation's bootstrap: one update period (100 Hz TO), on 2 ms ticks.
+        self.assertAlmostEqual(first["at"], .01)
         self.assertAlmostEqual(second["t"], .016)  # first solve arrived late
         self.assertAlmostEqual(second["at"], .032)  # previous 15 ms; not current 3 ms
         plans = [r for r in records if r["type"] == "plan"]

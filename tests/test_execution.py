@@ -109,6 +109,12 @@ class FakeAdapter:
         self.sequence = 0
         self.applied_torque = None
         self.u = np.zeros(7)
+        # Scheduler fixtures hold the plan's torque: an explicit SampleKnot, not the
+        # package loop's default law (law None).
+        from live_mpc import import_tiago
+        import_tiago(MPC_ROOT)
+        from tiago_mpc.laws import SampleKnot
+        self.law = SampleKnot()
         self.controller = FakeController()
         self.delay = 0
         self.fail = False
@@ -553,8 +559,10 @@ class SchedulerTests(unittest.TestCase):
                 settings=VirtualTimeSettings(command_period=.002,update_period=1/to_hz if to_hz else 0.,
                                              solve_latency_s=latency)
                 plant=Plant()
-                outcome=run_virtual_time(plant,mpc,Task(),tick_callbacks=[ticks.append],
-                    settings=settings,duration=1., cancelled=lambda: plant.t >= .08-1e-12,
+                from tiago_mpc.laws import SampleKnot  # FakeAdapter's law, not the loop default
+                outcome=run_virtual_time(plant,mpc,Task(),SampleKnot(),tick_callbacks=[ticks.append],
+                    settings=settings,compensation=None,  # the session's execution: compensation off
+                    duration=1., cancelled=lambda: plant.t >= .08-1e-12,
                     solve_completed_callbacks=[completed.append],
                     diagnostic_callbacks=[diagnostics.append])
                 self.assertEqual(outcome.status,'interrupted')

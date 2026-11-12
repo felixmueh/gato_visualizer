@@ -25,7 +25,8 @@ functions are CPU-only:
 - `build_predictor(values, base_mpc_params)` returns native `MpcParams`.
 
 Builders are only needed for the scopes an adapter claims. With its defaults the
-standard adapter resolves to the native objects (`TIAGO`, the base `SimConfig`) and `SampleKnot`.
+standard adapter resolves to the native objects (`TIAGO`, the base `SimConfig`) and no law
+(`None`): the package loop then uses its own default law. A builder returns `None` for that.
 No adapter registry or installation into the selected environment is required.
 
 Pass complete values based on that scope's `defaults`; apply edits to a copy.
@@ -56,18 +57,22 @@ is needed. PD gain vectors, per-joint armature and all Coulomb/viscous vectors a
 from requested values and descriptors; the normal backend rejects extra vector
 keys. Effective native objects still serialize the complete actual coefficients.
 
-Simulation defaults use supplied armature and the retained proximal friction
-prior with nominal wrists; default execution is `SampleKnot`. The `pd`, `ff`
-and `both` selections use the same gain vectors and loss profile as the
-locked tuning presets. `tiago_mpc.ARMATURE_KG_M2`, `PD_KP` and `PD_KD` now
-own the fixed model values; `PlanFeedback()` uses those gain literals.
-Toggling armature does not recompute them. Only the retained coefficient prior
-and default external-FF width come from
-`experiments.controller_tuning.TUNED_FEEDFORWARD`; its coefficient-only
-`friction` and separate `evaluation` preserve the existing demo physics.
+Simulation defaults use supplied armature; the plant keeps its own friction (the
+URDF's, `tm.urdf_friction()`, when plant friction is on). The execution law
+choice `default` passes no law (`None`), so `run_virtual_time` resolves its own
+default, today `FrictionFeedforward()`: the URDF coefficients over `PlanFeedback()`,
+evaluated with `Tanh(.01)`. Effective settings and records show that resolved law.
+The explicit overrides `plan`, `pd`, `ff` and `both` are the package laws:
+`SampleKnot()`, `PlanFeedback()` and
+`FrictionFeedforward(tm.urdf_friction(), base, Tanh(width))`, with the width
+control's default from `FrictionFeedforward()`. `tiago_mpc.ARMATURE_KG_M2`,
+`PD_KP` and `PD_KD` own the fixed model values; `PlanFeedback()` uses those gain
+literals. Toggling armature does not recompute them. The adapter takes nothing
+from `experiments/controller_tuning.py` (its 16 Oct joint 1–4 friction prior
+stays inside that experiment; Felix, 2026-11-12).
 Algorithms come from `tiago_mpc` package laws. This adapter requires the
-coefficient-only friction API promoted on 2026-10-28, native `Command | Fault`
-law results and that retained preset. Native wrappers propagate faults; the
+coefficient-only friction API promoted on 2026-10-28 and native `Command | Fault`
+law results. Native wrappers propagate faults; the
 adapter does not convert torque-array results.
 
 Predictor ownership is independent: `armature`, the whole `friction` field and
@@ -126,6 +131,6 @@ values of one module; the solver applies them through
 `set_collision_environment(**Collision.environment())` without a rebuild. The
 other defaults are `Collision()`'s; rho stays the base's. The covers are chosen by
 name from `tiago_mpc/data/collision/`; Live draws the body at `body_posture()`.
-The simulation keeps the native plant and the `SampleKnot` law.
+The simulation keeps the native plant and the package loop's default law.
 
 Its CPU checks are in `tests/test_obstacle_adapter.py`.

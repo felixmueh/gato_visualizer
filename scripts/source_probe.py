@@ -177,6 +177,20 @@ def requested_params(selection, mpc, params=None, source_settings=None, source_s
     return actual, captured, description
 
 
+def experiment_defaults():
+    """The selected source's native execution defaults as Live controls: the
+    virtual-time loop's default timing and whether it compensates latency."""
+    import inspect
+    from tiago_mpc import loops
+    signature = inspect.signature(loops.run_virtual_time).parameters
+    timing = signature["settings"].default
+    compensation = signature["compensation"].default
+    return dict(execution=dict(control_hz=1 / timing.command_period,
+                               to_hz=1 / timing.update_period if timing.update_period else 0.,
+                               solve_latency_s=timing.solve_latency_s,
+                               latency_compensation=compensation is not None))
+
+
 def probe(selection, tiago, mpc, kinematics, friction, params=None, source_settings=None, source_settings_module=_UNPINNED_SETTINGS):
     from solver_process import model_contract
     from tiago_mpc.record import provenance, to_dict
@@ -202,7 +216,8 @@ def probe(selection, tiago, mpc, kinematics, friction, params=None, source_setti
     return dict(compatible=True, supported_N=list(KNOT_COUNTS),
                 available_N=sorted(set(available["off"]) | set(available["on"])),
                 available_N_by_friction=available, modules=modules, exact_availability=exact,
-                defaults=to_dict(mpc.TIAGO), friction=to_dict(friction), source_settings=roles,
+                defaults=to_dict(mpc.TIAGO), experiment_defaults=experiment_defaults(),
+                friction=to_dict(friction), source_settings=roles,
                 effective_settings=dict(params=to_dict(actual), modules=dict(predictor=captured["module"])),
                 requested_source_settings=captured["values"],
                 contract=model_contract(kinematics, tiago),

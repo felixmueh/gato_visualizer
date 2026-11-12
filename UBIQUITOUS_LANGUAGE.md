@@ -12,6 +12,15 @@
 | **Reseed** | Preparing the Live controller to solve from a robot state: `tiago_mpc`'s `Mpc.warmup` with the task reference at that time, which runs GATO's warm-up solve unless warm-up is off. It is not a solve and produces no prediction. | Reset (the Live command), restart |
 | **SQP time limit** | `MpcParams.max_sqp_time_s`: wall time for a Live solve's SQP iterations within the SQP cap; none by default in Live, which runs on simulation time. | SQP wall budget, `budget_s` (Run again's separate wall budget) |
 
+## Task settings
+
+| Term | Definition | Aliases to avoid |
+| --- | --- | --- |
+| **General defaults** | The selected source and visualizer's starting settings, before task overrides. | Current settings |
+| **Task defaults** | General defaults with the selected task's descriptor overrides applied (none for Reach and Figure eight). Reset targets these values. | Session edits |
+| **Task session settings** | A task's effective settings after its session edits. Retained by the backend while switching tasks or reloading a page. | Saved defaults |
+| **Settings transfer** | One selective copy of another task's settings into the current task for this session. | Changing task defaults |
+
 ## Inspection and continuation
 
 | Term | Definition | Aliases to avoid |
@@ -21,7 +30,7 @@
 | **SQP iteration cursor** | The selected discrete SQP iteration within the selected solve. | Episode cursor, horizon-time cursor |
 | **Pinned solve** | A selected solve whose identity and selected SQP iteration remain fixed while the episode cursor or Live computation advances. | Paused episode |
 | **Continuation** | A new active episode segment starting from the displayed robot state and task time after an execution-setting change. | Resume from latest when the user selected an earlier state |
-| **Run again** | A separate cold inspection solve from the selected solve's captured problem, with a finite SQP cap and optional wall budget. | Exact replay, resume, continue SQP |
+| **Run again** | Independent cold solves of the captured problem with SQP caps 1 through a selected maximum, each with the same seed and optional per-solve wall budget. | Exact replay, resume, continue SQP |
 | **Solve continuation** | Additional optimization from a retained optimizer checkpoint, a capability currently unavailable. | Episode continuation, new warm-seeded solve |
 
 ## Clocks and presentation

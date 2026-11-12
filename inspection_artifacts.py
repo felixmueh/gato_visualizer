@@ -1,4 +1,4 @@
-"""Binary, read-only SQP trajectories. Full snapshots never enter JSON transports."""
+"""Binary final trajectories from independent SQP caps, decoded one snapshot at a time."""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -26,29 +26,34 @@ def json_metadata(value):
     return value
 
 
-def write_artifact(folder, trace, metadata):
-    """Called once by the isolated solver child, after one native invocation."""
+def write_artifact(folder, snapshots, metadata):
+    """Publish the seed and final trajectories of independent capped solves."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    count, n = int(trace.iterations_run), int(metadata["N"])
-    xu = np.asarray(trace.xu, dtype=np.float32)
-    pcg = np.asarray(trace.pcg_iters, dtype=np.int32)
-    line_search = np.asarray(trace.line_search_ran, dtype=bool)
-    if xu.shape != (count+1, 1, 21*n-7) or pcg.shape != (count, 1) or line_search.shape != (count,):
-        raise ValueError("Native iteration trace has an incompatible shape")
+    count, n = int(snapshots.snapshot_count), int(metadata["N"])
+    xu = np.asarray(snapshots.xu, dtype=np.float32)
+    runs = metadata["runs"]
+    if xu.shape != (count, 1, 21*n-7) or count < 2 or len(runs) != count-1:
+        raise ValueError("Independent capped snapshots have an incompatible shape")
+    if metadata.get("mode") != "independent_sqp_caps":
+        raise ValueError("Inspection snapshots require independent_sqp_caps mode")
+    for cap, run in enumerate(runs, 1):
+        actual = run.get("actual_sqp_iters")
+        if run.get("cap") != cap or type(actual) is not int or not 0 <= actual <= cap:
+            raise ValueError("Independent capped solve metadata has an invalid cap or actual iteration count")
     if not np.isfinite(xu).all():
-        raise ValueError("Native iteration trace contains nonfinite trajectories")
-    # Metadata is published last: an interrupted write is never a ready result.
+        raise ValueError("Independent capped snapshots contain nonfinite trajectories")
     binary = folder / "iterations.npz"
     with binary.open("xb") as stream:
-        np.savez_compressed(stream, xu=xu, pcg_iters=pcg, line_search_ran=line_search)
-    metadata = json_metadata(dict(metadata, iterations_run=count, stop_reason=str(trace.stop_reason),
-                                  format_version=1, coordinates="gpu"))
+        np.savez_compressed(stream, xu=xu)
+    metadata = json_metadata(dict(metadata, snapshot_count=count, solves_run=count-1, max_sqp_cap=count-1,
+                                  stop_reason="independent_caps_completed", format_version=2, coordinates="native"))
     path = folder / "metadata.json"
     with path.open("x") as stream:
         json.dump(metadata, stream, allow_nan=False, separators=(",", ":"))
     return dict(kind="inspection", id=metadata["id"], path=str(path), binary_path=str(binary),
-                revision=metadata["id"], iterations_run=count, stop_reason=str(trace.stop_reason))
+                revision=metadata["id"], mode=metadata["mode"], snapshot_count=count,
+                solves_run=count-1, max_sqp_cap=count-1, stop_reason=metadata["stop_reason"])
 
 
 class ReadOnlyIterationTrace:
@@ -62,17 +67,14 @@ class ReadOnlyIterationTrace:
         self.metadata = freeze(json.loads(Path(descriptor["path"]).read_text()))
         with np.load(descriptor["binary_path"], allow_pickle=False) as archive:
             self._xu = archive["xu"]
-            self.pcg_iters = archive["pcg_iters"]
-            self.line_search_ran = archive["line_search_ran"]
-        for array in (self._xu, self.pcg_iters, self.line_search_ran):
-            array.flags.writeable = False
+        self._xu.flags.writeable = False
         self.kinematics = kinematics
         self._prediction_cache = {}
         self._path_chunk = None
 
     @property
-    def iterations_run(self):
-        return int(self.metadata["iterations_run"])
+    def snapshot_count(self):
+        return int(self.metadata["snapshot_count"])
 
     @property
     def xu(self):
@@ -83,28 +85,22 @@ class ReadOnlyIterationTrace:
 
     def summaries(self):
         result = [dict(index=0, status="Seed (cold state)", has_prediction=True, stats={})]
-        diagnostics = self.metadata.get("diagnostics", {})
-        for i in range(self.iterations_run):
-            stats = dict(pcg_iters=int(self.pcg_iters[i, 0]), line_search_ran=bool(self.line_search_ran[i]))
-            for key, target in (("min_merit", "merit"), ("step_size", "step_size")):
-                values = diagnostics.get(key) or []
-                # A shortcut has no line-search row; never align invented rows.
-                if self.line_search_ran[i] and i < len(values):
-                    value = values[i]
+        for run in self.metadata["runs"]:
+            cap, actual = run["cap"], run["actual_sqp_iters"]
+            stats = dict(run["stats"], requested_sqp_cap=cap, actual_sqp_iters=actual,
+                         stop_reason=run["stop_reason"], call_wall_s=run["call_wall_s"])
+            for key, target in (("final_merit", "merit"), ("step_size", "step_size")):
+                value = run.get("diagnostics", {}).get(key)
+                if value is not None:
                     stats[target] = value[0] if isinstance(value, (list, tuple)) and len(value) == 1 else value
-            status = "recorded"
-            if not self.line_search_ran[i] and stats["pcg_iters"] == 0:
-                status = "zero-PCG shortcut"
-            elif stats.get("step_size") == -1:
-                status = "rejected"
-            result.append(dict(index=i+1, status=status, has_prediction=True, stats=stats))
+            result.append(dict(index=cap, status=f"SQP cap {cap} (ran {actual})", has_prediction=True, stats=stats))
         return result
 
     def prediction(self, index=None):
         from server import decode_prediction_telemetry
         from gato_visualizer.plotting.views import freeze
-        index = self.iterations_run if index is None else 0 if index == "seed" else index
-        if type(index) is not int or not 0 <= index <= self.iterations_run:
+        index = self.snapshot_count-1 if index is None else 0 if index == "seed" else index
+        if type(index) is not int or not 0 <= index < self.snapshot_count:
             return None
         if index not in self._prediction_cache:
             n, dt = self.metadata["N"], self.metadata["dt_s"]
@@ -128,13 +124,13 @@ class ReadOnlyIterationTrace:
         chunk holds at most max_points knots, so long traces load piecewise.
         Coordinates are rounded to 1 µm for transport; plots keep full data.
         """
-        if self.kinematics is None or type(index) is not int or not 0 <= index <= self.iterations_run:
+        if self.kinematics is None or type(index) is not int or not 0 <= index < self.snapshot_count:
             return None
         from server import decode_prediction_telemetry
         n = int(self.metadata["N"])
         size = max(1, int(max_points) // n)
         start = index // size * size
-        stop = min(self.iterations_run + 1, start + size)
+        stop = min(self.snapshot_count, start + size)
         if self._path_chunk is None or self._path_chunk["start"] != start:
             paths = []
             for i in range(start, stop):

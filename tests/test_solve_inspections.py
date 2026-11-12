@@ -1,4 +1,4 @@
-"""CPU proof of single-call capture, binary transport, bounds and job ownership."""
+"""Independent cold SQP caps, binary transport, captured bounds and job ownership."""
 from copy import deepcopy
 import json
 import hashlib
@@ -67,17 +67,19 @@ def trace(n=3, k=2):
             xu[i,0,21*knot+7:21*knot+14]=i+.5
             if knot<n-1:
                 xu[i,0,21*knot+14:21*knot+21]=i+.75
-    xu[-1]=xu[-2] # authentic zero-PCG shortcut
-    return SimpleNamespace(xu=xu,pcg_iters=np.array([[4],[0]],np.int32),
-        line_search_ran=np.array([True,False]),stop_reason='zero_pcg',iterations_run=k)
+    xu[-1]=xu[-2]  # two independent capped solves may return the same final trajectory
+    return SimpleNamespace(xu=xu,snapshot_count=k+1)
 
 
 def metadata(identifier='result'):
     p=plan()
     return dict(p,id=identifier,signs=[1,1,1,1,1,-1,1],
-        solver_profile=dict(profile=dict(mpc_root='/captured/profile')),end_effector_frame='tool',
+        solver_profile=dict(profile=dict(mpc_root='/captured/profile')),end_effector_frame='tool', fixed_joints={},
         original=dict(source=dict(kind='live',generation=2),solve_id='chosen'),initialization='cold_state',
-        diagnostics=dict(min_merit=[[3.]],step_size=[[1.]]),requested=dict(sqp_iters=20,budget_s=None))
+        mode="independent_sqp_caps", requested=dict(sqp_iters=2,budget_s=None),
+        runs=[dict(cap=cap,actual_sqp_iters=1,stop_reason="zero_pcg",call_wall_s=.001,
+                   stats=dict(sqp_iters=1,pcg_iters=4 if cap==1 else 0),
+                   diagnostics=dict(final_merit=[3.],step_size=[1.])) for cap in (1,2)])
 
 
 class FakeKinematics:
@@ -87,6 +89,35 @@ class FakeKinematics:
 
 
 class ArtifactTests(unittest.TestCase):
+    def test_inspection_grasp_paths_and_references_keep_the_recorded_torso_posture(self):
+        import shutil
+        from live_mpc import import_tiago, body_joints
+        from server import RobotKinematics
+        from tests.tiago_mpc_source import MPC_ROOT
+        tiago=import_tiago(MPC_ROOT)
+        fixed=dict(body_joints(MPC_ROOT),torso_lift_joint=.27)
+        expected=RobotKinematics(tiago.FULL_URDF,fixed_joints=fixed,
+                                 reduced_urdf=tiago.arm_urdf(),end_effector_frame=tiago.GRASP_FRAME)
+        q=np.array([tiago.Q_START,np.asarray(tiago.Q_START)+.01,np.asarray(tiago.Q_START)+.02])
+        snapshots=trace()
+        for snapshot in snapshots.xu:
+            for knot in range(3):snapshot[0,knot*21:knot*21+7]=q[knot]
+        data=metadata();data.update(signs=[1.]*7,end_effector_frame=tiago.GRASP_FRAME,fixed_joints=fixed)
+        with tempfile.TemporaryDirectory() as folder:
+            folder=Path(folder)
+            data['model_snapshots']={}
+            for name,source in [('full',tiago.FULL_URDF),('reduced',tiago.arm_urdf())]:
+                path=folder/(name+'.urdf');shutil.copyfile(source,path)
+                data['model_snapshots'][name]=dict(filename=path.name,sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            descriptor=write_artifact(folder,snapshots,data)
+            raw=SourceReader().read(descriptor)
+            handle=raw['plans'][0]['iteration_trace']
+            prediction=handle.prediction(1)
+            np.testing.assert_allclose(prediction['ee_xyz'],expected.ee_positions(q),atol=1e-7)
+            np.testing.assert_allclose(prediction['reference_xyz'],
+                [expected.target_to_world(row[:3]) for row in data['reference_native']],atol=1e-10)
+            np.testing.assert_allclose(handle.path_chunk(1)['ee_xyz'][1],expected.ee_positions(q),atol=1e-6)
+
     def test_npz_only_trace_read_once_and_only_selected_snapshot_in_context(self):
         with tempfile.TemporaryDirectory() as folder:
             descriptor=write_artifact(folder,trace(),metadata())
@@ -110,7 +141,7 @@ class ArtifactTests(unittest.TestCase):
                 self.assertEqual(solve['selected_prediction']['torque_nm'][0][5],-1.75)
                 self.assertEqual(solve['selected_iteration'],1)
                 self.assertEqual([item['index'] for item in solve['iterations']],[0,1,2])
-                self.assertEqual(solve['iterations'][-1]['status'],'zero-PCG shortcut')
+                self.assertEqual(solve['iterations'][-1]['status'],'SQP cap 2 (ran 1)')
                 self.assertTrue(all('prediction' not in item and 'q' not in item for item in solve['iterations']))
                 json.dumps(context,allow_nan=False) # no lazy handle or arrays on wire
                 view=SolveView(selected,InspectionContext(sqp_iteration='seed'))
@@ -125,8 +156,9 @@ class ArtifactTests(unittest.TestCase):
     def test_path_chunks_cover_aligned_bounded_snapshots_once(self):
         with tempfile.TemporaryDirectory() as folder:
             longer=trace(k=4)
-            longer.pcg_iters=np.array([[4]]*3+[[0]],np.int32); longer.line_search_ran=np.array([True]*3+[False])
-            descriptor=write_artifact(folder,longer,metadata())
+            meta=metadata();meta['requested']['sqp_iters']=4
+            meta['runs']=[dict(meta['runs'][0],cap=k) for k in range(1,5)]
+            descriptor=write_artifact(folder,longer,meta)
             handle=ReadOnlyIterationTrace(descriptor,FakeKinematics())
             with patch.object(FakeKinematics,'ee_positions',autospec=True,side_effect=lambda self,q:np.asarray(q)[:,:3]) as fk:
                 chunk=handle.path_chunk(3,max_points=6) # two N=3 snapshots per chunk
@@ -223,73 +255,96 @@ class ArtifactTests(unittest.TestCase):
 
 
 class NativeOperationTests(unittest.TestCase):
-    def test_exact_single_cold_solve_and_captured_bounds(self):
+    def test_independent_cold_caps_keep_seed_objective_bounds_and_actual_work_separate(self):
         from live_mpc import import_tiago
         from tests.tiago_mpc_source import MPC_ROOT
         import_tiago(MPC_ROOT)
-        from tiago_mpc import default_cost
+        from dataclasses import replace
+        import tiago_mpc as tm
+        made, closed, initial_closed = [], [], []
+        params = replace(tm.TIAGO, N=3, cost=tm.default_cost(3, orientation=2., terminal_orientation=5.),
+                         solver=replace(tm.TIAGO.solver, max_sqp_iters=3))
         class Solver:
-            lib=SimpleNamespace(ITERATION_CAPTURE_AVAILABLE=True)
-            calls=0
-            configured=[]
-            masks=[]
-            def solve(self,x,reference,xu_warm=None,*,capture_iterations=False,budget_s=None):
-                self.calls+=1
-                self.inputs=(x.copy(),reference.copy(),xu_warm,capture_iterations,budget_s)
-                return SimpleNamespace(iteration_trace=trace(),solve_time_us=1234,
-                    stats=SimpleNamespace(min_merit=np.array([[3.]]),step_size=np.array([[1.]])))
+            def __init__(self, cap):
+                self.cap, self.configured, self.masks, self.resets = cap, [], [], []
+            def solve(self, x, reference, xu_warm=None, *, budget_s=None):
+                self.inputs = x.copy(), reference.copy(), xu_warm.copy(), budget_s
+                # A solver may mutate borrowed inputs: later caps still get fresh copies.
+                result = xu_warm.copy()
+                result[0, 14] += self.cap
+                xu_warm[:] = 999.
+                reference[:] = 999.
+                actual = 1 if self.cap == 3 else self.cap
+                self.result = result.copy()
+                return SimpleNamespace(xu=result,solve_time_us=1234,stats=SimpleNamespace(
+                    sqp_iters=np.array([actual]),pcg_iters=np.ones((actual,1),dtype=int)*4,
+                    budget_hit=self.cap==3,kkt_converged=np.array([False]),
+                    final_merit=np.array([3.]),min_merit=np.array([[6.],[3.]]),step_size=np.array([[1.]]),
+                    row_max_violation=np.array([[.1],[.2],[.3],[.4]])))
             def set_cost_menu(self, menu): self.menu = menu
-            def get_row_groups(self): return groups()
-            def set_row_group_bounds(self,g,lo,hi):self.configured.append((g,lo.copy(),hi.copy()))
-            def set_row_group_mask(self,g,mask):self.masks.append((g,mask.copy()))
-            def reset_dual(self):pass
-            def reset_rho(self):pass
-        solver=Solver()
-        mpc=SimpleNamespace(N=3,dt=.03,params=SimpleNamespace(cost=default_cost(3, orientation=2., terminal_orientation=5.)),
-            controller=SimpleNamespace(admm_linsys='pcg',solver=solver))
-        session=SimpleNamespace(mpc=mpc,model_identity={'actual':'model'},
-            configuration=plan()['problem_configuration'],tiago=SimpleNamespace(GRASP_FRAME='tool'))
-        p=plan()
-        p['reference_native'] = [[.1, .2, .3, None, None, None],
-                                 [.2, .3, .4, 0., .4, 0.],
-                                 [.3, .4, .5, 0., .4, 0.]]
-        # Asymmetric joint-6 q bounds are installed as captured, in native coordinates.
+            def get_row_groups(self): return groups()+[dict(kind=5,n_rows=4)]
+            def set_row_group_bounds(self,g,lo,hi): self.configured.append((g,lo.copy(),hi.copy()))
+            def set_row_group_mask(self,g,mask): self.masks.append((g,mask.copy()))
+            def reset_dual(self): self.resets.append('dual')
+            def reset_rho(self): self.resets.append('rho')
+            def set_admm_linsys(self, mode): self.linsys = mode
+        class FakeMpc:
+            def __init__(self, configured, binary):
+                self.params=configured
+                self.controller=SimpleNamespace(admm_linsys='auto',solver=Solver(configured.solver.max_sqp_iters))
+                made.append(self)
+                self.binary=binary
+            def close(self): closed.append(self)
+        session=SimpleNamespace(mpc=SimpleNamespace(params=params,close=lambda:initial_closed.append(True)),
+            binary=Path('cached-only.so'),model_identity={},configuration=tm.to_dict(params),
+            tiago=SimpleNamespace(GRASP_FRAME='tool'),kinematics=SimpleNamespace(fixed_joints={'torso_lift_joint':.27}))
+        p=plan();p['problem_configuration']=tm.to_dict(params)
+        p['reference_native']=[[.1,.2,.3,None,None,None],[.2,.3,.4,0.,.4,0.],[.3,.4,.5,0.,.4,0.]]
         p['constraint_bounds_native'][0]['lo'][5]=-.7
         p['constraint_bounds_native'][0]['hi'][5]=1.3
-        with tempfile.TemporaryDirectory() as folder:
-            root=Path(folder)/'source'
-            (root/'models/tiago_pro').mkdir(parents=True)
-            full=root/'models/tiago_pro/tiago_pro.urdf';full.write_text('<robot/>')
-            reduced=root/'reduced.urdf';reduced.write_text('<robot/>')
-            session.tiago.FULL_URDF,session.tiago.arm_urdf=full,lambda:reduced
-            session.model_identity.update(full_urdf_sha256=hashlib.sha256(full.read_bytes()).hexdigest(),
-                                          native_urdf_sha256=hashlib.sha256(reduced.read_bytes()).hexdigest())
-            result=inspect_solve(session,dict(id='native' ,problem=captured_problem(p),sqp_iters=1000,
-                budget_s=.02,original={'solve_id':'chosen'},actual_solver_profile={'profile':{'id':'active','mpc_root':str(root)}},
-                artifact_directory=folder))
-            self.assertEqual(solver.calls,1)
-            np.testing.assert_allclose(solver.menu.frame_pos.target,
-                                       np.asarray(p['reference_native'], dtype=float)[:, :3])
-            np.testing.assert_allclose(solver.menu.orientation.weight[:, 0], [0., 2., 5.])
-            self.assertFalse(np.allclose(solver.menu.orientation.target, np.eye(3)))
-            np.testing.assert_array_equal(solver.inputs[1].reshape(3, 6)[:, 3:], 0.)
-            self.assertEqual(mpc.params.cost.orientation.weight[0][0], 2.)
-            self.assertIsNone(solver.inputs[2])
-            self.assertTrue(solver.inputs[3])
-            self.assertEqual(solver.inputs[4],.02)
-            self.assertAlmostEqual(solver.inputs[0][0,5],.2,places=6)
-            self.assertEqual(solver.configured[0][1][5],-.7)
-            self.assertEqual(solver.configured[0][2][5],1.3)
-            self.assertAlmostEqual(solver.configured[1][2][0],.8)
-            self.assertAlmostEqual(solver.configured[2][2][0],8.5)
-            self.assertTrue(solver.masks[0][1].all())
-            self.assertEqual(result['iterations_run'],2)
-            self.assertNotIn('xu',json.dumps(result))
+        p['constraint_bounds_native'][1]['active'][1]=63
+        original=deepcopy(p)
+        with tempfile.TemporaryDirectory() as folder, patch('tiago_mpc.mpc.Mpc',FakeMpc), \
+                patch('inspection_worker.snapshot_models',return_value={}):
+            result=inspect_solve(session,dict(id='caps',problem=captured_problem(p),sqp_iters=3,budget_s=.02,
+                original={'solve_id':'chosen'},actual_solver_profile={'profile':{'id':'active'}},artifact_directory=folder))
+            self.assertEqual(len(made),3)
+            self.assertEqual(closed,made)
+            self.assertEqual(initial_closed,[True])
+            for cap,mpc in enumerate(made,1):
+                solver=mpc.controller.solver
+                self.assertEqual(mpc.params.solver.max_sqp_iters,cap)
+                self.assertEqual(mpc.binary,session.binary)
+                np.testing.assert_array_equal(solver.inputs[0],np.full((1,14),[.2]*7+[.1]*7,dtype=np.float32))
+                np.testing.assert_array_equal(solver.inputs[1].reshape(3,6)[:,:3],np.array(p['reference_native'],dtype=np.float32)[:,:3])
+                np.testing.assert_array_equal(solver.inputs[1].reshape(3,6)[:,3:],0.)
+                held=np.zeros((3,21),dtype=np.float32);held[:,:14]=[.2]*7+[.1]*7
+                np.testing.assert_array_equal(solver.inputs[2],held.reshape(1,-1)[:,:-7])
+                self.assertEqual(solver.inputs[3],.02)
+                np.testing.assert_allclose(solver.menu.frame_pos.target,np.array(p['reference_native'],dtype=float)[:,:3])
+                np.testing.assert_allclose(solver.menu.orientation.weight[:,0],[0.,2.,5.])
+                self.assertFalse(np.allclose(solver.menu.orientation.target,np.eye(3)))
+                self.assertEqual(solver.configured[0][1][5],-.7)
+                self.assertEqual(solver.configured[0][2][5],1.3)
+                self.assertEqual(len(solver.configured),3)  # the appended collision group is untouched
+                self.assertFalse(solver.masks[1][1][1,6])
+                self.assertEqual(solver.resets,['dual','rho'])
+                self.assertEqual(solver.linsys,'pcg')
+            self.assertEqual(p,original)
+            self.assertEqual(params.cost.orientation.weight[0][0],2.)
             record=json.loads(Path(result['path']).read_text())
-            self.assertEqual(record['end_effector_frame'],'tool')
-            self.assertEqual(record['signs'],[1.]*7)
-            self.assertEqual(record['constraint_bounds_native'],p['constraint_bounds_native'])
-            self.assertEqual(record['joint_limits']['upper_position_rad'],[2]*7)
+            self.assertEqual(record['fixed_joints'],{'torso_lift_joint':.27})
+            self.assertEqual(result['mode'],'independent_sqp_caps')
+            self.assertEqual(result['solves_run'],3)
+            self.assertEqual(result['snapshot_count'],4)
+            self.assertEqual([run['actual_sqp_iters'] for run in record['runs']],[1,2,1])
+            self.assertEqual(record['runs'][-1]['stop_reason'],'wall_budget')
+            self.assertEqual(record['runs'][0]['diagnostics']['row_max_violation'],[[.1],[.2],[.3],[.4]])
+            self.assertNotIn('actual_configuration',record['runs'][0])
+            self.assertNotIn('xu',json.dumps(result))
+            with np.load(result['binary_path'],allow_pickle=False) as saved:
+                for i,mpc in enumerate(made,1):
+                    np.testing.assert_array_equal(saved['xu'][i],mpc.controller.solver.result)
 
     def test_capture_reads_actual_installed_native_bounds_not_display_limits(self):
         installed=groups()
@@ -345,7 +400,7 @@ class JobTests(unittest.TestCase):
     def tearDown(self):self.service.close();self.history.close();self.temp.cleanup()
 
     def request(self,**values):
-        return dict(source=dict(kind='live',generation=0),selection=dict(solve_id='7'),sqp_iters=1000,profile_id='active',**values)
+        return dict(source=dict(kind='live',generation=0),selection=dict(solve_id='7'),sqp_iters=2,profile_id='active',**values)
 
     def wait(self,identifier):
         end=time.monotonic()+3
@@ -363,13 +418,14 @@ class JobTests(unittest.TestCase):
         self.assertEqual(result['source'],dict(kind='inspection',id=result['id']))
         self.assertEqual(result['original_solve_id'],'7')
         self.assertEqual(result['actual_solver_profile']['profile'],self.profile)
-        self.assertEqual(result['iterations_run'],2)
-        self.assertEqual(result['stop_reason'],'zero_pcg')
+        self.assertEqual(result['solves_run'],2)
+        self.assertEqual(result['snapshot_count'],3)
+        self.assertEqual(result['stop_reason'],'independent_caps_completed')
         self.assertEqual(self.live.pauses,[result['id']])
         self.assertEqual(self.history.path.read_bytes(),before)
         self.assertEqual([op for op,_ in self.calls],['lock','construct','bootstrap','configure','inspect','close','unlock'])
         # The captured MpcParams with the requested cap; the child replaces max_sqp_iters.
-        self.assertEqual(dict(self.calls)['configure'],dict(params=plan()['problem_configuration'],max_sqp_iters=1000,timeout=120))
+        self.assertEqual(dict(self.calls)['configure'],dict(params=plan()['problem_configuration'],max_sqp_iters=2,timeout=120))
         self.assertLess(len(json.dumps(result)),20000)
         self.assertNotIn('xu',json.dumps(result))
         self.assertTrue(Path(self.service.descriptor(result['id'])['binary_path']).exists())
@@ -377,6 +433,77 @@ class JobTests(unittest.TestCase):
     def new_generation(self,generation):
         self.live.generation=generation
         for listener in self.live.generation_listeners:listener(generation)
+
+    def test_live_preview_in_main_history_precedes_the_detached_preview_store(self):
+        preview = dict(recorded(plan()), origin='preview', type='plan', seq=1, id='1')
+        self.history.append([preview])
+        previews = HistoryStore(self.folder/'previews')
+        try:
+            detached = dict(preview, initial_state=dict(q=[.9]*7, qd=[0.]*7, time_s=3.))
+            previews.append([segment(), detached])
+            self.live.inspection_store = previews
+            def descriptor(source):
+                return dict(self.history.plot_source(source['generation']),
+                            preview_source=previews.plot_source(source['generation']))
+            self.plots._descriptor = descriptor
+            body = dict(self.request(), selection=dict(solve_id='preview:1'))
+            with patch.object(previews, 'selected_plan', side_effect=AssertionError('Read detached duplicate')):
+                problem, identifier = self.service._problem(self.service._request(body, capability=True))
+                self.assertEqual(identifier, 'preview:1')
+                self.assertEqual(problem['initial_state'], preview['initial_state'])
+                self.assertTrue(self.service.capability(body)['available'])
+                incomplete = dict(preview, id='2', seq=2)
+                incomplete.pop('reference_native')
+                self.history.append([incomplete])
+                previews.append([dict(detached, id='2', seq=2)])
+                body['selection'] = dict(solve_id='preview:2')
+                with self.assertRaisesRegex(ValueError, 'reference_native'):
+                    self.service._problem(self.service._request(body, capability=True))
+        finally:
+            previews.close()
+
+    def test_preview_fallback_requires_a_valid_primary_source_and_detached_prefix(self):
+        from history_store import HistoryGenerationError
+        previews = HistoryStore(self.folder/'previews')
+        try:
+            preview = dict(recorded(plan()), origin='preview', type='plan', seq=1, id='1')
+            previews.append([segment(), preview])
+            self.live.inspection_store = previews
+            def descriptor(source):
+                return dict(self.history.plot_source(source['generation']),
+                            preview_source=previews.plot_source(source['generation']))
+            self.plots._descriptor = descriptor
+            body = dict(self.request(), selection=dict(solve_id='preview:1'))
+            request = self.service._request(body, capability=True)
+            self.assertEqual(self.service._problem(request)[0], captured_problem(dict(plan(), **preview)))
+            with patch.object(previews, 'selected_plan', side_effect=AssertionError('Fell back from invalid primary')):
+                for changes, error in ((dict(byte_end=request['descriptor']['byte_end']-1), ValueError),
+                                       (dict(path='/wrong/history.jsonl'), HistoryGenerationError),
+                                       (dict(generation=9), HistoryGenerationError)):
+                    stale = deepcopy(request)
+                    stale['descriptor'].update(changes)
+                    with self.subTest(changes=changes), self.assertRaises(error):
+                        self.service._problem(stale)
+            stale = deepcopy(request)
+            stale['descriptor']['preview_source']['generation'] = 9
+            with self.assertRaisesRegex(ValueError, 'not retained'):
+                self.service._problem(stale)
+        finally:
+            previews.close()
+
+    def test_optional_missing_plan_lookup_keeps_descriptor_and_default_lookup_validation(self):
+        from history_store import HistoryGenerationError
+        descriptor = self.history.plot_source(0)
+        self.assertIsNone(self.history.selected_plan(descriptor, 'preview:missing', missing_ok=True))
+        with self.assertRaisesRegex(ValueError, 'not retained'):
+            self.history.selected_plan(descriptor, 'preview:missing')
+        with self.assertRaisesRegex(ValueError, 'prefix'):
+            self.history.selected_plan(dict(descriptor, byte_end=descriptor['byte_end']-1),
+                                       'preview:missing', missing_ok=True)
+        with self.assertRaises(HistoryGenerationError):
+            self.history.selected_plan(dict(descriptor, generation=9), 'preview:missing', missing_ok=True)
+        with self.assertRaisesRegex(ValueError, 'retained solve id'):
+            self.history.selected_plan(descriptor, True, missing_ok=True)
 
     def test_results_live_in_ram_only_while_their_source_is_current(self):
         # Felix, 2026-10-23: runtime scratch; a Live result goes with its run.
@@ -426,15 +553,17 @@ class JobTests(unittest.TestCase):
         capability=self.service.capability(self.request())
         self.assertTrue(capability['available'],capability)
 
-    def test_old_native_profile_capability_is_explicit_and_never_constructs_solver(self):
-        self.service.probe=lambda *args,**kwargs:dict(compatible=True,available_N=[3],available_N_by_friction=dict(off=[3],on=[]),capabilities={})
+    def test_capped_solves_work_without_native_iteration_capture(self):
+        self.service.probe=lambda *args,**kwargs:dict(compatible=True,available_N=[3],
+            available_N_by_friction=dict(off=[3],on=[]),contract=contract(),capabilities=dict(python_iteration_capture=False))
         capability=self.service.capability(self.request())
-        self.assertFalse(capability['available'])
-        self.assertIn('capture',capability['reason'])
+        self.assertTrue(capability['available'],capability)
+        self.assertEqual(capability['mode'],'independent_sqp_caps')
         result=self.wait(self.service.submit(self.request())['id'])
-        self.assertEqual(result['state'],'failed')
-        self.assertEqual(self.calls,[])
-        self.assertEqual(self.live.pauses,[])
+        self.assertEqual(result['state'],'completed',result)
+        self.assertEqual(result['solves_run'],2)
+        self.assertEqual(self.live.pauses,[result['id']])
+        self.assertIn('inspect',[operation for operation,_ in self.calls])
 
     def cached_profile(self):
         root = self.folder/'mpc'
@@ -509,7 +638,7 @@ class JobTests(unittest.TestCase):
         check(6)
         new_module.unlink(); check(7)
 
-    def test_negative_capture_capability_is_cached_until_binary_rebuild(self):
+    def test_absent_native_capture_does_not_disable_capped_solves_and_probe_stays_cached(self):
         _, module, _ = self.cached_profile()
         counted = self.service.probe
         def without_capture(selection, **kwargs):
@@ -519,8 +648,8 @@ class JobTests(unittest.TestCase):
         self.service.probe = without_capture
         for _ in range(3):
             result = self.service.capability(self.request())
-            self.assertFalse(result['available'])
-            self.assertIn('native iteration capture',result['reason'])
+            self.assertTrue(result['available'],result)
+            self.assertEqual(result['mode'],'independent_sqp_caps')
         self.assertEqual(len(self.probes),1)
         self.service.probe = counted
         module.write_bytes(b'capture-capable rebuilt binary')

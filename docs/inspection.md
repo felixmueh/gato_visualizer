@@ -1,8 +1,8 @@
 # Episode and Solve inspection
 
 Design decisions agreed with Felix on 2026-10-21. The Episode/Solve UI and
-inspection of retained diagnostics are implemented. Run again records authentic
-intermediate predictions in an isolated fresh solve. Ordinary episode solves
+inspection of retained diagnostics are implemented. Run again records final
+predictions from independent cold solves with increasing SQP caps. Ordinary episode solves
 retain their final plan and lightweight diagnostics; older data may lack the
 inputs required to rerun. Exact optimizer checkpoint/resume is not offered.
 Canonical terminology is in [UBIQUITOUS_LANGUAGE.md](../UBIQUITOUS_LANGUAGE.md).
@@ -106,8 +106,9 @@ velocity, torque). A collision row group that `tiago_mpc` appends after them
 (`MpcParams.collision`) is not captured separately: the captured problem
 configuration installs it again with its environment (2026-11-02).
 
-Offer an editable finite SQP cap and optional wall budget. Record actual
-completed iterations and stop reason separately from the requested cap.
+Offer an editable maximum SQP cap K and optional per-solve wall budget. Run
+independent solves with caps 1, 2, 3, … K. Record each run's actual completed
+iterations and stop reason separately from its requested cap.
 Preserve existing practical zero-PCG stopping: a cap is an upper bound, not a
 demand to execute every iteration. Do not promise immediate graceful Stop
 without an iteration-boundary cancellation mechanism.
@@ -118,22 +119,30 @@ state. This is a fresh solve, not a reproduction of its original initialization
 or exact resumption. Original-seed selection requires real seed capture first;
 even a trajectory seed alone is not a complete optimizer checkpoint.
 
-Record authentic per-SQP q/v/u snapshots only for these requested inspection
-runs, in binary arrays with shared metadata stored once. Continue retaining
+Retain the held-state seed and each capped solve's final q/v/u trajectory in
+binary arrays with shared metadata stored once. Label the cursor as an SQP cap:
+these are independent cold solves, not iterations of one optimizer invocation.
+Each run starts from a new MPC with the same captured q/qd at every seed knot,
+zero seed torques, fresh dual/rho state and exact captured bounds/masks.
+Continue retaining
 final plans and available lightweight scalar diagnostics for ordinary episode
 solves. A thousand float32 trajectory snapshots costs about 2.54 MiB at N32 or
 10.23 MiB at N128, before metadata; retaining them for every solve multiplies
 that cost by the episode's solve count. Full linear-algebra workspace capture
 is outside this initial feature.
 
-## Current diagnostic capability boundary
+## Independent capped solves
 
-The integrated GATO fa585971b71d69a001fb2f055010bba5dcd86f6b exposes opt-in
-`solve(capture_iterations=True)` with authentic seed/current trajectories at
-native SQP boundaries, aligned PCG counts, line-search presence and stop reason.
-The temporary inspection worker enables this recorder; ordinary episode solves
-leave it disabled. Binary snapshots are transferred once after solving and
-kept out of JSON responses; plots load only the requested prediction.
+Inspection uses the ordinary native `BSQP.solve` API and a cached compatible
+module. It does not require a native trajectory-capture extension or changes to
+`tiago_mpc` or GATO. A fresh MPC is constructed for each cap, and no controller
+step, warm-up solve or warm-start shift runs between snapshots. Early stopping
+can produce equal trajectories at several caps; these remain distinct runs with
+their own actual counts. The optional wall budget applies separately to every
+run. Without early stopping, K runs can perform K(K+1)/2 SQP iterations, plus
+solver construction work. Stop terminates the isolated child and retains no
+partial comparison. Binary snapshots stay out of JSON responses; plots decode
+only the selected prediction.
 
 The visualizer retains ordinary solves' final q/v/u, initial state, exact
 reference, effective configuration, installed bounds/masks, model/source identity
@@ -146,9 +155,8 @@ or private optimizer state. Historical sources without complete captured inputs
 cannot be rerun safely and explain that limitation in the inspector.
 
 The public API does not expose complete checkpoint/restore/resume. Run again
-constructs a separate solver with the requested finite cap and a labelled cold
-initialization. Capturing iterations adds memory/copy overhead and can change
-how many iterations fit a wall budget. A final prediction used as context for
+constructs independent solvers with labelled cold initialization. The series'
+total time is distinct from each run's reported solve time. A final prediction used as context for
 missing historical snapshots is labelled as context, never as an iteration.
 
 ## Consequences for the plotting contract
@@ -200,22 +208,28 @@ before the migration to `tiago_mpc` main carry the old configuration shape
 (`solver_params`, `controller`) and report "Run again unavailable:
 pre-migration recording"; there is no converter (Felix, 2026-10-22).
 
-Only an interpreter and module supporting `capture_iterations` plus
-`ITERATION_CAPTURE_AVAILABLE` can run an inspection. A CPU profile preflight
-checks that capability for the selected N and predictor friction; the
-configured child checks again. The child constructs `Mpc` from the captured
-`MpcParams` with only `solver.max_sqp_iters` replaced by the finite cap, from a
-compiled module (`find_binary`; it never compiles), plus the optional native
-wall budget. It calls `BSQP.solve` once with a cold held-state seed,
+Freezing a current Live episode retains each solve's exact native initial state
+and reference, plus its shared configuration and installed bounds. These captures
+allow inspection after a backend restart without inferring inputs from drawn
+trajectories. Recordings without those captures remain unavailable for Run again.
+
+The CPU profile preflight checks a compatible cached module for the captured N
+and predictor model. The child constructs each `Mpc` from the captured
+`MpcParams`, changing only `solver.max_sqp_iters`, using `find_binary` without
+compilation. It calls `BSQP.solve` once per cap with an identical held-state seed,
 preserving the solver's practical zero-PCG stop. This is neither the original
 warm initialization nor exact optimizer continuation. Requested cap/budget,
 actual completed count, stop reason, original selection, and the model, binary,
 process epoch and source actually used are retained independently.
 
 The solver child writes `<runtime>/solve-inspections/p<pid>/<id>/iterations.npz`
-(float32 raw GPU-coordinate XU snapshots, integer PCG rows, and line-search
-flags) and captures the hashed full/reduced URDF inputs used for later CPU FK. It
+(float32 native-coordinate XU snapshots) and captures the hashed full/reduced
+URDF inputs used for later CPU FK. Per-run diagnostics and requested/actual counts
+are metadata; common problem/model values are stored once. It
 publishes `metadata.json` last.
+The retained FK context includes the fixed torso/body joint posture used by the
+inspection solver. Both the grasp paths and torso-frame references use that
+posture when decoded, so they align with the displayed robot.
 
 Results are RAM-backed runtime files ([runtime files](execution-api.md#runtime-files))
 and keep only what is still needed (Felix, 2026-10-23): each belongs to the source
@@ -264,13 +278,15 @@ long as the selected interpreter's bounded source preflight.
 Only the currently active profile is accepted. `selection.solve_id` is the
 opaque selected ID; `solve_seq` is an alias and `trajectory_index` supports
 Replay selections. The response is HTTP 202 `{id, job_id, state, requested, ...}`.
-One job runs at a time and at most two wait. The native 256 MiB snapshot
+One job runs at a time and at most two wait. The 256 MiB inspection snapshot
 allocation ceiling is also checked before construction.
 
 `GET /api/solve-inspections/jobs/<id>` returns `pending`, `running`, `completed`,
 `failed`, `cancelled` or `busy`. Running jobs expose `phase` and `message`.
-Completed jobs include `{source: {kind: "inspection", id}, iterations_run,
-stop_reason, requested, original, original_solve_id, actual_solver_profile}`.
+Completed jobs include `{source: {kind: "inspection", id}, mode,
+solves_run, max_sqp_cap, stop_reason, requested, original, original_solve_id,
+actual_solver_profile}`. Artifact metadata records every run's requested cap,
+actual iteration count and stop reason.
 The existing plot endpoints accept `{kind: "inspection", id}` as their source
 while the result's source is current, also after job expiry; afterwards they
 report the result as no longer available.

@@ -213,6 +213,10 @@ two differences. Names distinguish tracks when the five-colour palette repeats.
 The main lane carries Live timing intervals and breach marks. A count on the
 collapsed timeline chevron keeps loaded tracks discoverable.
 
+Timeline interval indexes append only new records. Timing bands combine at display
+pixel resolution, with red taking priority and their DOM count bounded by screen
+width. Exact hover values, plots and exports retain every raw interval.
+
 Comparison ghosts use the shared arm renderer in an independent uncapped
 pre-pass pool, with one right arm per visible Arm track and its own recorded
 fixed-joint base. Dot tracks show an end-effector marker. Opacity follows the
@@ -485,7 +489,47 @@ of the accepted documents (`src/settings-history.js`).
 The keys are ignored inside text fields, which keep their own undo, and during a
 drag or scale. Undo and redo keep On Play playing as viewport obstacle edits do
 ([execution](execution-api.md#settings-and-commands)). Each viewer has its own
-position in a history of up to 200 versions; a solver profile switch clears it.
+position in a history of up to 200 versions per task. Switching tasks restores
+that task’s history; undo and redo never replace another task’s saved session.
+A solver profile switch clears all task histories.
 Not part of the history: presentation and view state (camera, panels, UI
 preferences), source and solver-profile selection, the transport and the tracks.
 `scripts/control.py` has no undo; an agent re-patches an earlier `get live`.
+
+
+## Task settings and selective copying
+
+Live retains a separate session for every task: prediction and plant settings,
+task geometry, execution timing and source settings. Selecting a task saves the
+current valid draft before switching through the backend's versioned task
+transaction. Returning to a task or reloading the page restores its session.
+Invalid drafts remain visible and prevent switching until corrected. Replay
+keeps task switching and copying inactive.
+
+Reset arrows use the selected task's effective defaults: general defaults,
+then its descriptor's overrides (`settings_overrides`; Reach and Figure eight
+have none). Session edits do not change that baseline. By default the visualizer
+passes no execution law, so the package loop uses its own (Feedforward + PD); the
+execution timing defaults to `run_virtual_time`'s (constant rate with latency compensation);
+explicit session edits remain in effect until reset. A custom native objective
+retains its terms and has no scalar cost controls.
+
+**Reset all settings**, to the right of **Copy settings from…**, restores all four
+settings groups to the selected task's effective code defaults and clears only
+its session overrides. It discards the local draft, including invalid fields,
+without saving an intermediate edit. One accepted reset is one undoable change
+in that task's history. Other task sessions and defaults remain unchanged; this
+button is separate from the transport's simulation Reset.
+
+**Copy settings from…**, next to Task, compares another task's current session
+with the selected task. The dialog lists only shared differing fields, showing
+source and current values. Select individual leaves, a branch or all compatible
+differences; branch checkboxes show partial selection. Arrays and native custom
+menus are whole values. Native type tags, task identity and a standard menu's
+derived cost object are excluded. Fixed settings remain visible but cannot be selected.
+
+Apply sends one atomic transfer; source sessions and defaults stay unchanged.
+A rejected validation preserves the dialog and selection. If the backend version
+changes after the displayed comparison, the dialog refreshes and requires review
+before copying the newer values. Unchanged settings polls leave the comparison
+DOM, focus, collapsed branches and scroll position intact.

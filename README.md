@@ -259,7 +259,18 @@ Task position inputs remain available below the controller settings; direct
 viewport manipulation avoids scrolling to them during normal use.
 
 Changed Live settings show a circular-arrow button on their left. Click it to
-restore the original default supplied by `MpcParams` or the active task.
+restore the effective default for the active task: general defaults with that
+task's overrides (Reach and Figure eight have none). All tasks default to
+`tiago_mpc`'s loop defaults: no explicit law, so the loop's own (Feedforward + PD), and `run_virtual_time`'s timing
+(100 Hz TO, a solve latency of one TO period) with latency compensation. Each task remembers its own solver, plant, execution,
+source and task settings for the backend session, including after a page reload.
+**Copy settings from…**, beside the task selector, opens a tree of differences
+against another task. Compare the Source and Current columns, select individual
+settings or branches, then Apply. The copy changes only the current task's
+session settings; the source task and defaults stay intact.
+**Reset all settings**, to its right, restores all settings of the current task
+to those defaults, including invalid local drafts. Other task sessions stay
+intact. The reset is one undoable settings change, separate from simulation Reset.
 The horizon reset restores the default knot interval at the currently selected
 N. Resetting a setting follows the same preview/Automatic calculation behavior
 as editing it; task pose also has a reset for position and rotation.
@@ -301,14 +312,16 @@ plots fit the window; docked plots retain the timeline zoom window and cursor. D
 new values arrive. The Solve inspector follows the recorded
 plan association. **Pin solve** retains its identity and SQP selection with a
 muted red indicator. Its separate SQP strip selects recorded iterations without
-moving the episode clock. **Run again**, available with capture-capable solver
-profiles (official `gato-mpc` 0.1.5 does not provide iteration capture), offers a finite SQP cap and optional
-wall budget, creates a separate pinned result with genuine iteration snapshots,
-and preserves the original episode. The result lasts as long as its Live run or
+moving the episode clock. **Run again** takes a maximum SQP cap and optional
+per-solve wall budget. It runs independent cold solves with caps 1, 2, 3, … up to
+that maximum, then displays their final trajectories as a pinned comparison.
+Every solve uses the same captured state, reference, bounds and initial seed.
+These are separate solves, not intermediate states from one run. The original
+episode is preserved. The result lasts as long as its Live run or
 loaded replay stays current. Initialization is explicitly cold; **Stop**
 terminates only that inspection worker. Older data without captured inputs
 disables it; its tooltip gives the reason. Short badges mark what changes how a
-plan reads (**final only**, **no path**, **cold start**, an unusual cursor
+plan reads (**final only**, **no path**, **cold capped solves**, an unusual cursor
 association); hover one for its reason. Aggregate rows marked * carry a note on
 hover. See [Solve inspection](docs/inspection.md).
 
@@ -479,7 +492,7 @@ These controls construct the native MPC cost menu; zero-weight terms are omitted
 Orientation error is shown in degrees and retained in freezes and replay plots.
 See [orientation goals and cost menus](docs/live-api.md#orientation-goal-and-cost-menus).
 
- Reach defaults to world-axis
+Reach defaults to world-axis
 offsets X = 0.15 m, Y = 0.2 m, Z = 0.2 m from the imported default reaching
 target; the reset controls restore these offsets. Each task retains its own
 position when switching; Figure eight also retains its rotation and dimensions.

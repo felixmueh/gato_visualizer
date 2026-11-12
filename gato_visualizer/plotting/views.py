@@ -86,6 +86,13 @@ class SolveView:
 
     @property
     def stats(self) -> Mapping[str, Any]:
+        if self.raw.get('mode') == 'independent_sqp_caps':
+            selected = self.context.sqp_iteration
+            if selected in ('seed', 0):
+                return freeze({})
+            runs = self.raw.get('runs', ())
+            if type(selected) is int and 1 <= selected <= len(runs):
+                return runs[selected - 1].get('stats', {})
         return self.raw.get('stats', {})
 
     @property

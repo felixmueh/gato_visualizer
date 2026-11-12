@@ -175,14 +175,18 @@ class InspectionService:
                 raise ValueError("Live inspection requires an explicit retained solve id")
             preview = str(identifier).startswith("preview:")
             descriptor = request["descriptor"]
-            if preview:
+            store = getattr(self.live, "history_store", None)
+            if store is None:
+                raise ValueError("Indexed Live solve history is unavailable")
+            selected = store.selected_plan(descriptor, identifier, missing_ok=preview)
+            if selected is None:
                 descriptor = descriptor.get("preview_source")
                 if descriptor is None or descriptor.get("generation") != request["descriptor"].get("generation"):
                     raise ValueError("Selected preview solve is not retained in this source")
-            store = getattr(self.live, "inspection_store" if preview else "history_store", None)
-            if store is None:
-                raise ValueError("Indexed Live solve history is unavailable")
-            selected = store.selected_plan(descriptor, identifier)
+                store = getattr(self.live, "inspection_store", None)
+                if store is None:
+                    raise ValueError("Indexed Live preview history is unavailable")
+                selected = store.selected_plan(descriptor, identifier)
             return captured_problem(selected), str(identifier)
         with self.reader_lock:
             raw = self.reader.read(request["descriptor"])
@@ -209,10 +213,6 @@ class InspectionService:
                      checked.get("available_N_by_friction", {}).get(mode, []))
         if n not in available:
             raise ValueError(f"Active solver profile has no compatible prebuilt N={n} module")
-        capabilities = checked.get("capabilities", {})
-        capture = capabilities.get("iteration_capture_by_friction", {}).get(mode, {})
-        if not capture.get(str(n), False):
-            raise ValueError("Active solver profile does not support native iteration capture; select a rebuilt capture-capable profile")
         contract = problem["original_solver_profile"].get("coordinate_contract")
         if contract is not None:
             validate_contract(contract, checked.get("contract", {}))
@@ -248,8 +248,9 @@ class InspectionService:
             problem, solve_id = self._problem(request)
             checked = self._checked(request, problem)
             return dict(available=True, reason=None, initialization="cold_state",
+                        mode="independent_sqp_caps",
                         profile_id=request["profile"]["id"], solve_id=solve_id,
-                        capabilities=checked["capabilities"], stop_behavior="terminate_isolated_worker_no_partial_trace")
+                        capabilities=checked.get("capabilities", {}), stop_behavior="terminate_isolated_worker_no_partial_trace")
         except (ValueError, TypeError, KeyError, OSError) as exc:
             return dict(available=False, reason=str(exc), initialization="cold_state")
 
@@ -337,7 +338,7 @@ class InspectionService:
         requested = job["requested"]
         n = problem["problem_configuration"]["N"]
         if (requested["sqp_iters"]+1)*(21*n-7)*4 > 256*1024*1024:
-            raise ValueError("Requested iteration trajectories exceed the native 256 MiB capture limit; reduce SQP cap")
+            raise ValueError("Requested capped-solve trajectories exceed the 256 MiB inspection limit; reduce SQP cap")
         if job.get("_cancelled"):
             return
         # Revalidate the active frozen selection after potentially slow CPU probe.
@@ -372,14 +373,12 @@ class InspectionService:
             validate_contract(checked["contract"], ready["contract"])
             configured = remote.request("configure", timeout=120, params=problem["problem_configuration"],
                                         max_sqp_iters=requested["sqp_iters"])
-            if not configured["capabilities"].get("iteration_capture"):
-                raise ValueError("Configured solver has no native iteration capture capability")
             actual = dict(profile=request["profile"], process_epoch=remote.epoch,
                           predictor=configured, coordinate_contract=ready["contract"])
             with self.lock:
                 if job.get("_cancelled"):
                     return
-                job.update(phase="solving", message="Running one cold solve; wall budget is checked at native iteration boundaries",
+                job.update(phase="solving", message="Running independent cold solves for SQP caps 1 through the selected maximum",
                            actual_solver_profile=actual, original_solve_id=solve_id)
             descriptor = remote.request("inspect", id=identifier, artifact_directory=str(folder),
                 problem=problem, original=dict(job["original"], solve_id=solve_id),
@@ -389,10 +388,11 @@ class InspectionService:
                     job.update(state="failed", message="Source changed during Run again; result discarded")
                 elif not job.get("_cancelled"):
                     self.results[identifier] = (request["owner"], descriptor)
-                    job.update(state="completed", phase="completed", message="Fresh cold inspection solve recorded",
+                    job.update(state="completed", phase="completed", message="Independent cold capped solves recorded",
                                source=dict(kind="inspection", id=identifier), artifact={key: descriptor[key]
-                                   for key in ("iterations_run", "stop_reason")},
-                               iterations_run=descriptor["iterations_run"], stop_reason=descriptor["stop_reason"])
+                                   for key in ("mode", "snapshot_count", "solves_run", "max_sqp_cap", "stop_reason")},
+                               mode=descriptor["mode"], snapshot_count=descriptor["snapshot_count"], solves_run=descriptor["solves_run"],
+                               max_sqp_cap=descriptor["max_sqp_cap"], stop_reason=descriptor["stop_reason"])
         finally:
             if remote is not None:
                 remote.close()

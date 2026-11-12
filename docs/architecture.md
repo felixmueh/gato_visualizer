@@ -81,6 +81,10 @@ formatting, history serialization and plotting run outside the solver child.
 CPU plotting loads committed sources independently. Explicit Run again pauses
 Live at a committed boundary and uses a separate temporary solver child; only
 one GPU computation runs at a time. Live's private controller remains idle.
+The inspection child creates a fresh MPC for each SQP cap from 1 to the selected
+maximum, using one cached module and the same captured problem and cold seed.
+It retains each run's final trajectory and actual iteration count; native
+per-iteration capture is not required. No native source changes are involved.
 
 The lifetime rules are part of these boundaries:
 
@@ -114,7 +118,7 @@ The lifetime rules are part of these boundaries:
 | `tiago_mpc` import, settings schema and validation, reference geometry, GPU locks | [live_mpc.py](../live_mpc.py) | [Live settings/tasks](live-api.md) |
 | Solver requests, shared buffers, leases, child lifetime | [solver_process.py](../solver_process.py), [solver_exchange.py](../solver_exchange.py), [solver_worker.py](../solver_worker.py), [solver_lifecycle.py](../solver_lifecycle.py) | [Solver profiles](solver-profiles.md) |
 | Source/interpreter/cache selection, source probe (`find_binary`) and explicit builds (`compile_binary`) | [source_runtime.py](../source_runtime.py), [source_settings.py](../source_settings.py), [visualizer_config.py](../visualizer_config.py), [scripts/source_probe.py](../scripts/source_probe.py) | [README source setup](../README.md#run) |
-| Run again, exact captured problem, binary SQP trace | [solve_inspections.py](../solve_inspections.py), [inspection_problem.py](../inspection_problem.py), [inspection_worker.py](../inspection_worker.py), [inspection_artifacts.py](../inspection_artifacts.py) | [Inspection](inspection.md) |
+| Run again, captured problem, binary capped-solve trajectories | [solve_inspections.py](../solve_inspections.py), [inspection_problem.py](../inspection_problem.py), [inspection_worker.py](../inspection_worker.py), [inspection_artifacts.py](../inspection_artifacts.py) | [Inspection](inspection.md) |
 | Plot jobs, source views, standard plots | [plot_service.py](../plot_service.py), [plot_sources.py](../plot_sources.py), [gato_visualizer/plotting/](../gato_visualizer/plotting), [plotters/standard.py](../plotters/standard.py) | [Plot API](plot-api.md), [author workflow](plot-authoring.md) |
 | NPZ validation, watched library, uploads | [replay_format.py](../replay_format.py), [replay_library.py](../replay_library.py) | [Replay/export cookbook](replay-format.md) |
 | Session state, track rendering and timeline lanes | [src/session.js](../src/session.js), [src/track-scene.js](../src/track-scene.js), [src/expanded-timeline.js](../src/expanded-timeline.js) | [Session and tracks](presentation.md#session-and-tracks) |
@@ -183,7 +187,22 @@ track and all recordings, paused. Replay Reset rewinds the recorded clock.
 Hidden legacy Replay DOM/adapters remain for compatibility with existing
 inspection and recording code; they expose no second UI transport.
 
-The HTTP parent owns the current accepted Live settings. Agents read them without
+The HTTP parent owns the current accepted Live settings. `task_settings.py`
+resolves general defaults, task default overrides and session edits for every
+task. General execution defaults come from the source's loop defaults
+(`run_virtual_time`'s `settings` and `compensation`; the law's default is
+`FrictionFeedforward()`). The source probe translates native pieces into controls
+without duplicating their chosen values. A change of those native defaults must
+land on `tiago_mpc` main before the matching visualizer change.
+`ProcessLiveService` retains all four settings groups per task; page reloads
+read the same session bank. Task switching and selected transfers use the normal
+validated settings transaction and recording lifecycle. Native settings and
+solver objectives stay owned by the selected MPC source. The browser's
+copy dialog displays source/current differences, selects leaves or branches,
+and submits one version-guarded update. Reset returns to the selected task's
+effective defaults; transfers never alter those defaults or their source task.
+
+Agents read settings without
 subscribing and patch them under the same lock as browser commands. Settings
 events hydrate browser fields; version guards prevent stale writes, and partial
 browser edits preserve unrelated remote changes. Replay viewers poll settings

@@ -336,10 +336,18 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
       const original = provenance.original?.source || result.original?.source;
       identityText.textContent = `Inspection ${solveOverride.source.id}`;
       identityText.title = `Pinned · solver profile ${actualProfile || 'recorded in result'} · original ${original?.kind || 'recorded'}:${original?.id ?? original?.generation ?? 'captured'} Solve ${provenance.original?.solve_id ?? result.original_solve_id ?? 'captured'}${originalProfile ? ` · original solver profile ${originalProfile}` : ''}`;
-      coldBadge.title = `Fresh solve from the captured state and reference with a cold optimizer start; not a continuation of the recorded solve. ${identityText.title}`;
+      coldBadge.textContent = 'cold capped solves';
+      coldBadge.title = `Independent cold solves from the same captured state and reference, with increasing SQP caps. Each snapshot is a separate solve. ${identityText.title}`;
     }
     strip.hidden = !records.length; slider.max = String(Math.max(0, records.length - 1)); slider.value = String(Math.max(0, index)); slider.disabled = !records.length; previous.disabled = index <= 0; next.disabled = index >= records.length - 1; final.disabled = state.iteration == null;
-    const current = records[index]; iterationLabel.textContent = current ? `${current.index === 0 ? 'Seed' : `SQP ${current.index}`} · ${index + 1} of ${records.length} recorded${current.status ? ` · ${current.status}` : ''}` : 'Final result';
+    const current = records[index], capped = selected?.provenance?.mode === 'independent_sqp_caps';
+    const snapshotLabel = current?.index === 0 ? 'Seed' : `SQP ${current?.index}`;
+    iterationLabel.textContent = current ? capped ? `${current.status} · ${index + 1} of ${records.length} snapshots`
+      : `${snapshotLabel} · ${index + 1} of ${records.length} recorded${current.status ? ` · ${current.status}` : ''}` : 'Final result';
+    slider.setAttribute('aria-label', capped ? 'Independent solve SQP cap' : 'Recorded SQP iteration');
+    previous.title = capped ? 'Previous capped solve' : 'Previous recorded SQP iteration';
+    next.title = capped ? 'Next capped solve' : 'Next recorded SQP iteration';
+    previous.setAttribute('aria-label', previous.title); next.setAttribute('aria-label', next.title);
     // A recorded snapshot comes from the prefetched paths or the plot response.
     // While one is still on its way the previous trajectory stays on screen.
     // A metrics-only iteration has no snapshot: the selected solve's final plan
@@ -351,7 +359,8 @@ export function setupPlotInspection({ episodeContainer, solveContainer, bottomCo
     const shown = iterationPredictionForView({ iteration: state.iteration, record: current, snapshot, cached: iterationPaths.get(state.iteration), finalPrediction, finalContext: finalContextPrediction, held: heldKey === finalKey ? held : null });
     const { prediction, source: predictionSource } = shown;
     if (prediction) { held = prediction; heldKey = finalKey; }
-    strip.classList.toggle('loading', shown.status === 'loading'); iterationLabel.title = shown.status === 'loading' ? 'Loading the recorded trajectory of this iteration' : '';
+    strip.classList.toggle('loading', shown.status === 'loading'); iterationLabel.title = shown.status === 'loading' ? 'Loading the recorded trajectory'
+      : capped ? 'Each snapshot comes from an independent solve with the same cold start and a different SQP cap.' : '';
     // The faded final plan in the 3D view is the cue for a missing iteration path.
     finalOnlyBadge.hidden = !selected || records.length > 0;
     const noPath = predictionSource === 'final-context' || shown.status === 'missing';

@@ -231,12 +231,14 @@ def worker_main(mpc_root, commands, results, revision, shutdown, adapter_factory
             simulator_tiago = import_tiago(mpc_root)
             simulation_description = describe_settings(mpc_root)
             simulation_scope = dict(simulation_description["simulation"], module=simulation_description["module"])
+            from scripts.source_probe import experiment_defaults
             schema = build_schema(probe_selection({key: solver_profile[key] for key in ("mpc_root", "python", "cache")}),
-                                  mpc_root, start_pose_spec(simulator_tiago), simulation_settings=simulation_scope)
-        config = deepcopy(schema["defaults"]["config"])
-        task = deepcopy(schema["defaults"]["task"])
-        execution = deepcopy(schema["defaults"].get("execution", DEFAULT_EXECUTION))
-        source_settings = deepcopy(schema["defaults"].get("source_settings", dict(simulation={}, predictor={})))
+                                  mpc_root, start_pose_spec(simulator_tiago), simulation_settings=simulation_scope,
+                                  experiment_settings=experiment_defaults())
+        from task_settings import task_defaults
+        initial = task_defaults(schema, schema["defaults"]["task"]["kind"])
+        config, task, execution, source_settings = (initial["config"], initial["task"],
+                                                  initial["execution"], initial["source_settings"])
         emit(dict(kind="ready", schema=schema))
         pending = None
         while not shutdown.is_set():

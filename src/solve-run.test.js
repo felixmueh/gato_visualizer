@@ -16,7 +16,7 @@ test('plain selection only checks capability; bounded fresh run posts exact capt
   let polls = 0;
   const h = fixture((path) => path.endsWith('/capability') ? { available: true, initialization: 'cold_state' } : path === '/api/solve-inspections' ? { id: 'job-1', job_id: 'job-1', state: 'pending' } : ++polls === 1 ? { id: 'job-1', state: 'running' } : { id: 'job-1', state: 'completed', source: { kind: 'inspection', id: 'fresh-1' }, iterations_run: 3, stop_reason: 'iteration_limit' });
   const selected = context('recorded-7'); h.ui.update(selected); await flush(); for (let i = 0; i < 10; i++) h.ui.update(selected);
-  assert.equal(h.requests.length, 1); assert.equal(h.ui.run.disabled, false); assert.equal(h.ui.reason, ''); assert(h.ui.run.title.includes('cold optimizer start'));
+  assert.equal(h.requests.length, 1); assert.equal(h.ui.run.disabled, false); assert.equal(h.ui.reason, ''); assert(h.ui.run.title.includes('Independent cold solves')); assert(h.ui.run.title.includes('actual iterations may stop below its cap'));
   h.ui.cap.value = '1.5'; await h.ui.run.emit('click'); assert.equal(h.requests.length, 1); assert(h.ui.status.textContent.includes('integer'));
   h.ui.cap.value = '5'; h.ui.budget.value = '.2'; await h.ui.run.emit('click');
   assert.deepEqual(h.requests[1], { path: '/api/solve-inspections', body: { source: selected.source, selection: selected.selection, profile_id: 'candidate', sqp_iters: 5, budget_s: .2 } });
@@ -42,7 +42,7 @@ test('Stop waits for a queued id and cancellation never adopts a partial result'
   h.ui.update(context('s1')); await flush(); const start = h.ui.run.emit('click'); await flush(); await h.ui.stop.emit('click');
   assert.equal(h.ui.stop.textContent, 'Stopping…'); assert.equal(h.ui.status.textContent, ''); acknowledge({ id: 'queued', job_id: 'queued', state: 'pending' }); await start; await flush();
   assert.deepEqual(h.requests.at(-1), { path: '/api/solve-inspections/jobs/queued/stop', body: {} });
-  assert.equal(h.ui.snapshot.active, false); assert.equal(h.completed.length, 0); assert(h.ui.status.textContent.includes('no partial trace')); h.ui.destroy();
+  assert.equal(h.ui.snapshot.active, false); assert.equal(h.completed.length, 0); assert(h.ui.status.textContent.includes('no partial result')); h.ui.destroy();
 });
 
 test('late running poll after Stop is ignored; transient status failure retains the Stop control', async () => {

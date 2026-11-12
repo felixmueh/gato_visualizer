@@ -4,6 +4,11 @@ Prepared for Felix, 2026-10-26. This is an implementation proposal, assuming
 `tiago_mpc` migrates to GATO's `cost_menu`. It does not implement the options
 or qualify new solver/model combinations.
 
+Current inspection update (2026-11-09): Run again uses independent cold solves
+with increasing SQP caps, so it works without native trajectory capture. See
+[the inspection contract](inspection.md). Native per-iteration capture and exact
+optimizer continuation remain distinct capabilities in the historical audit below.
+
 Most missing controls require changes to `tiago_mpc`'s public configuration
 and the visualizer, rather than new solver algorithms. Three larger dependencies
 remain: cost-menu-compatible exact cost curvature, authentic SQP trajectory

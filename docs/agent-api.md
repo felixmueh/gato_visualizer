@@ -62,6 +62,59 @@ retry a mutation automatically. Read the latest values and decide whether to
 reapply. Without a version guard, supplied fields are changed atomically against
 the latest settings; unrelated fields are preserved.
 
+Each task has its own backend session values for `config`, `task`, `execution`
+and `source_settings`. Effective settings resolve in this order: the general source defaults,
+the task descriptor's default overrides, then that task's accepted session overrides. The schema
+publishes the resolved reset baseline under `task_defaults` and its task-specific
+changes under `task_default_overrides`; this reset baseline excludes session edits.
+`schema.defaults` stays general. Reach and Figure eight have no task overrides.
+General execution settings, including enabled latency compensation, come from
+the selected source's `run_virtual_time` defaults. Read the schema for the actual values.
+
+Switching tasks restores all four saved groups. A `patch_settings` request that
+changes `task.kind` starts from the destination task's saved session, then applies
+its other explicit fields. A full `set_settings` still replaces its supplied values;
+omitted execution/source groups on a task change come from the destination.
+Browser reloads see the backend bank through `GET /api/live/settings`:
+`task_settings: {defaults: {kind: full_settings}, overrides: {kind: patch},
+sessions: {kind: full_settings}}`. The resolved `sessions` values are suitable for
+transfer previews without rebuilding menus in a client.
+The bank lasts for this backend session; a backend restart starts from code defaults.
+
+Version-guarded commands use the same validation and atomic acceptance as
+settings edits:
+
+```json
+{"type":"switch_task","task_kind":"figure8","expected_settings_version":7}
+```
+
+```json
+{"type":"transfer_settings","source_task":"reach","paths":["config.solver.max_sqp_iters","execution.to_hz"],"expected_settings_version":8}
+```
+
+Transfer copies only the selected differing fields into the active task. A path
+can select a leaf or a branch such as `config.solver`; arrays are copied whole.
+Only fields shared by both tasks can be selected. Task identity, native type tags,
+and a standard menu's derived `config.cost` are excluded. Use `config.cost_weights`
+for standard tracking weights. Invalid selections, stale versions, invalid target
+settings and unavailable models leave both tasks and the current history intact.
+POST responses keep the usual accepted/version fields; read GET or the settings
+SSE event for the complete result.
+
+`{"type":"reset_task_settings","expected_settings_version":9}` replaces all
+four settings groups of the active task with its effective code defaults. It
+clears only that task's session overrides, keeping the selected task, other
+sessions and defaults intact. The request is validated atomically; a stale
+version, invalid defaults or unavailable model changes nothing. This settings
+reset is separate from the simulation `reset` command below. The browser's
+**Reset all settings**, to the right of **Copy settings from…**, sends it without
+saving the current draft, so it also recovers from invalid fields. One accepted
+reset is one undoable change in the current task's settings history.
+
+A solver-profile change rebases saved inactive overrides onto the new profile's
+defaults and drops fields the new source removed. Values and explicit native menus
+that remain incompatible are rejected on activation, rather than replaced silently.
+
 A patch containing only `execution.continue_at_end`, with no anchor/reset,
 shares that playback preference without replacing history, changing the numerical
 settings version, or requesting numerical work.
@@ -133,6 +186,9 @@ reports completion or failure; see
 | --- | --- |
 | Read accepted Live settings | `GET /api/live/settings` |
 | Patch Live settings | `POST /api/live/command` with `{"type":"patch_settings","patch":{"config":{...},"task":{...},"execution":{...}},"expected_settings_version":7}`; groups and version guard are optional |
+| Switch task and restore its session | `POST /api/live/command` with `{"type":"switch_task","task_kind":"figure8","expected_settings_version":7}` |
+| Copy selected differences from another task | `POST /api/live/command` with `{"type":"transfer_settings","source_task":"reach","paths":["execution.to_hz"],"expected_settings_version":7}` |
+| Reset all active-task settings | `POST /api/live/command` with `{"type":"reset_task_settings","expected_settings_version":7}` |
 | Read schema/defaults | `GET /api/live/schema` |
 | Read presentation settings | `GET /api/presentation/settings` |
 | Patch presentation settings | `POST /api/presentation/settings/patch` with `{"buffer_ms":400}` |
