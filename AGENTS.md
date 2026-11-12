@@ -209,7 +209,7 @@ clock only) and `warmup` a boolean with `Mpc.warmup(state, reference)`.
 
 To try a change to `tiago_mpc` from visualizer work, create a `tiago_mpc`
 worktree; this is always fine. Mark new trials clearly: directory
-`<tiago_mpc-main-checkout>/worktrees/visualizer-trial-<topic>` on branch
+`<tiago_mpc-main-checkout>/.worktrees/visualizer-trial-<topic>` on branch
 `visualizer-trial/<topic>`. Select it through Source / Build or `--mpc-root`.
 Use relative Git links as described below; leave existing trial worktrees where they are.
 Never commit, merge, rebase or cherry-pick anything onto `tiago_mpc` main
@@ -657,19 +657,19 @@ to inspect, without an unsolicited plotting/reporting framework.
 ## New worktrees — Felix, 2026-11-06
 
 - Leave existing worktrees and their Git links unchanged.
-- Create new worktrees under `<main-checkout>/worktrees/<name>`, using the
+- Create new worktrees under `<main-checkout>/.worktrees/<name>`, using the
   repository's main checkout even when working from a linked worktree.
 - Use Git's relative linking, not just a relative destination argument:
 
   ```bash
-  git -C <main-checkout> worktree add --relative-paths -b <branch> worktrees/<name> <start-point>
+  git -C <main-checkout> worktree add --relative-paths -b <branch> .worktrees/<name> <start-point>
   ```
 
 - Before creating one, ensure the Git clients used on both host and container
   support `--relative-paths` and `extensions.relativeWorktrees`. Do not fall back
   to absolute links or hand-edit Git metadata. See the
   [Git worktree documentation](https://git-scm.com/docs/git-worktree#Documentation/git-worktree.txt---relative-paths).
-- Keep `/worktrees/` ignored in the main checkout when creating the directory.
+- Keep `/.worktrees/` ignored in the main checkout when creating the directory.
   Resolve dependencies and environment paths for the new location; existing
   worktrees keep their current paths.
 
