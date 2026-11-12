@@ -13,7 +13,7 @@ import { quaternionToRotvec, relativeRotvec, rotvecToQuaternion } from './rotati
 
 Object.assign(globalThis, { DOMParser, Document, Element });
 const fixture = JSON.parse(readFileSync(new URL('../tests/fixtures/grasp_fk.json', import.meta.url)));
-const mpcRoot = process.env.TIAGO_MPC_ROOT || fileURLToPath(new URL('../../tiago_mpc-visualizer-base', import.meta.url));
+const mpcRoot = process.env.TIAGO_MPC_ROOT || fileURLToPath(new URL('../../tiago_mpc/.worktrees/visualizer-base', import.meta.url));
 const path = resolve(mpcRoot, 'models/tiago_pro/tiago_pro.urdf');
 let xml;
 try { xml = readFileSync(path, 'utf8'); } catch (error) { throw new Error(`Browser FK reference needs the selected full URDF at ${path}; set TIAGO_MPC_ROOT to a prepared checkout`, { cause: error }); }

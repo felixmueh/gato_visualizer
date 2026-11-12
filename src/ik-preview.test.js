@@ -13,7 +13,7 @@ import { quaternionToRotvec } from './rotations.js';
 
 Object.assign(globalThis, { DOMParser, Document, Element });
 const fixture = JSON.parse(readFileSync(new URL('../tests/fixtures/grasp_fk.json', import.meta.url)));
-const mpcRoot = process.env.TIAGO_MPC_ROOT || fileURLToPath(new URL('../../tiago_mpc-visualizer-base', import.meta.url));
+const mpcRoot = process.env.TIAGO_MPC_ROOT || fileURLToPath(new URL('../../tiago_mpc/.worktrees/visualizer-base', import.meta.url));
 const loader = new URDFLoader(); loader.parseVisual = loader.parseCollision = false;
 const robot = loader.parse(readFileSync(resolve(mpcRoot, 'models/tiago_pro/tiago_pro.urdf'), 'utf8'));
 const chain = armChain(robot, { jointNames: fixture.joint_names, grasp: fixture.grasp });

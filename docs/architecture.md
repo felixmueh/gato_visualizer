@@ -301,7 +301,7 @@ python_bin="$(python3 scripts/launch_python.py)"
 | Browser logic and bundle | `npm test`; `npm run build` (or `node --test src/live-execution.test.js src/presentation-settings.test.js` for focused playback checks) |
 
 The full CPU suite is `"$python_bin" -m unittest discover -s tests -v`. Tests
-that need `tiago_mpc` take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc-visualizer-base`) and
+that need `tiago_mpc` take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc/.worktrees/visualizer-base`) and
 need no compiled module; fake adapters exercise process/scheduler behavior
 without proving native solver numerics. The opt-in
 [GPU conformance command](../README.md#development) compares the production Live

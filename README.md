@@ -32,7 +32,7 @@ Python catalog uses `@plot_comparison`; see
 
 ## Run
 
-Use the prepared sibling `../tiago_mpc-visualizer-base` worktree (branch
+Use the prepared `../tiago_mpc/.worktrees/visualizer-base` worktree of `tiago_mpc` (branch
 `visualizer/base`) after advancing it to include the shared-loop API. Live requires
 separate native tick, solve-completed and diagnostic callbacks, cancellation,
 execution safety and effort handling; the source probe rejects checkouts missing those capabilities. The selected
@@ -50,8 +50,8 @@ The stable source stays at its selected commit while development continues in
 changes, then fast-forward it explicitly:
 
 ```bash
-git -C ../tiago_mpc-visualizer-base status --short
-git -C ../tiago_mpc-visualizer-base merge --ff-only main
+git -C ../tiago_mpc/.worktrees/visualizer-base status --short
+git -C ../tiago_mpc/.worktrees/visualizer-base merge --ff-only main
 ```
 
 Sync the base's own environment with `uv sync --locked` from that worktree
@@ -172,7 +172,7 @@ saved replays; the Live history starts afresh. Restart may wait for an active so
 window to release the GPU safely.
 
 Startup source precedence is `--mpc-root` > `TIAGO_MPC_ROOT` > saved selection >
-`../tiago_mpc-visualizer-base`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
+`../tiago_mpc/.worktrees/visualizer-base`; `TIAGO_PYTHON` and `GATO_CACHE_DIR` override their saved paths.
 Selecting another source with CLI/environment chooses that project's default
 environment and `tiago_mpc`'s default cache unless explicitly overridden. Apply replaces those launch-time
 overrides for its restart. No packages are installed in the selected environment.
@@ -650,7 +650,7 @@ python_bin="$(python3 scripts/launch_python.py)"
 
 The resolver above uses the same prepared interpreter as startup; it installs
 no Python packages. Tests that need `tiago_mpc` (its model, `experiments/replay.py`
-or `MpcParams` defaults) take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc-visualizer-base`);
+or `MpcParams` defaults) take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc/.worktrees/visualizer-base`);
 none of them needs a compiled module or the GPU. Run the opt-in GPU conformance
 check only when the experiment locks are free:
 
@@ -670,7 +670,7 @@ example, `--to-hz 500 --solve-latency 0.001 --steps 500` exercises 500 Hz TO.
 Optional age expiry is disabled on both sides; the finite horizon still applies.
 
 Use the selected checkout's prepared interpreter and pass the source explicitly
-(`--mpc-root`, else `TIAGO_MPC_ROOT`, else `../tiago_mpc-visualizer-base`);
+(`--mpc-root`, else `TIAGO_MPC_ROOT`, else `../tiago_mpc/.worktrees/visualizer-base`);
 the script does not read saved source selection and never compiles a missing
 module. Raw outputs and comparisons are retained below `_expr_data/conformance/`.
 This is numerical conformance, not a throughput benchmark. Historical results

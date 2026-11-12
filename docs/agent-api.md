@@ -150,9 +150,9 @@ python3 scripts/control.py source inspect /path/to/tiago_mpc-worktree
 python3 scripts/control.py source apply /path/to/tiago_mpc-worktree
 ```
 
-The default is the sibling `tiago_mpc-visualizer-base` worktree, branch
+The default is the `../tiago_mpc/.worktrees/visualizer-base` worktree of `tiago_mpc`, branch
 `visualizer/base`. It advances only when Felix requests an update. From a clean
-base, fast-forward with `git -C ../tiago_mpc-visualizer-base merge --ff-only main`,
+base, fast-forward with `git -C ../tiago_mpc/.worktrees/visualizer-base merge --ff-only main`,
 sync its own uv environment, then inspect and apply that same source path through
 the CLI above. Source Apply reloads updated code even when the path is unchanged.
 

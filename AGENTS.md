@@ -66,7 +66,7 @@ avoids changes to `tiago_mpc`, including its GATO dependency, unless explicitly
 authorized. Live requires the selected source to provide the shared-loop
 callback, cancellation and command-law API. Locate it through
 the configurable path (`--mpc-root` / `TIAGO_MPC_ROOT`, default
-`../tiago_mpc-visualizer-base`). Do not add a submodule or move this repository unless Felix
+`../tiago_mpc/.worktrees/visualizer-base`). Do not add a submodule or move this repository unless Felix
 decides so.
 
 **Sources follow tiago_mpc main — Felix, 2026-11-08.** The visualizer supports
@@ -145,8 +145,8 @@ follows the package API that experiments use, without shims.
   starts at the start pose.
 - **Run again on recordings from before the migration** reports
   "unavailable: pre-migration recording"; there is no converter.
-- **Stable default source (Felix, 2026-10-24):** use the sibling
-  `../tiago_mpc-visualizer-base` worktree on `visualizer/base`. Advance it only
+- **Stable default source (Felix, 2026-10-24; moved 2026-11-12):** use the
+  `../tiago_mpc/.worktrees/visualizer-base` worktree on `visualizer/base`. Advance it only
   when Felix requests it, from a clean worktree with `git merge --ff-only main`,
   then sync its own uv environment and use Source Apply to restart the backend.
   Do not automatically track main or copy its uncommitted working changes.
@@ -590,7 +590,7 @@ and is listed without a restart (Felix, 2026-10-23, above).
 Reconstruct source-bound robot/render/replay objects and start fresh Live history;
 retain saved replays and compatible UI settings. Path precedence is
 `--mpc-root`, then `TIAGO_MPC_ROOT`, then the saved selection, then
-`../tiago_mpc-visualizer-base`.
+`../tiago_mpc/.worktrees/visualizer-base`.
 An explicit Apply replaces launch-time source/environment overrides for that
 restart. nvcc 12.9 rejects host GCC 15; Felix's shell uses
 `CUDAHOSTCXX=/usr/bin/g++-14`. Do not change toolchain settings silently.

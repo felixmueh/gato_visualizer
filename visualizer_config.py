@@ -12,7 +12,7 @@ from presentation_settings import DEFAULT_PRESENTATION, migrate_presentation, va
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "visualizer.json"
 DEFAULT_INGEST_DIRECTORY = ROOT.parent / "_expr_data/ingest"
-DEFAULT_MPC_ROOT = ROOT.parent / "tiago_mpc-visualizer-base"
+DEFAULT_MPC_ROOT = ROOT.parent / "tiago_mpc/.worktrees/visualizer-base"
 
 
 @dataclass(frozen=True)
