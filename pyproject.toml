@@ -1,11 +1,13 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]  # PEP 639 license fields
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "gato-visualizer"
 version = "0.1.0"
 description = "Lightweight Python plotting SDK for TIAGo MPC inspection"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = []
 

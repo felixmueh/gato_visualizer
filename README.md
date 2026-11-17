@@ -61,3 +61,9 @@ Add `--host 0.0.0.0` to reach it from other machines on your network, and
 Detailed, unreviewed notes on usage and development are in
 [docs/user-guide.md](docs/user-guide.md). They were written for my own setup
 and may be out of date.
+
+## License
+
+The code in this repository is licensed under the [MIT License](LICENSE). The
+robot model it displays comes from `tiago_mpc` and keeps the licenses listed
+there. The npm dependencies keep their own licenses.
