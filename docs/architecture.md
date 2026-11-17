@@ -6,7 +6,7 @@ The application is a local simulation and inspection diagnostic. It imports
 and uses its shared `run_virtual_time` loop. It owns browser interaction,
 callback gating, reporting and retained history. Read [AGENTS.md](../AGENTS.md) for
 project constraints and [the glossary](../UBIQUITOUS_LANGUAGE.md) for domain terms.
-[README.md](../README.md) contains startup, prepared-environment/source selection,
+[The user guide](user-guide.md) contains startup, prepared-environment/source selection,
 cache/build policy and user workflows.
 
 The [solver capabilities plan](solver-capabilities-plan.md) describes the work
@@ -117,14 +117,14 @@ The lifetime rules are part of these boundaries:
 | Native loop observations, callback gate, interval costs | [native_session.py](../native_session.py), [execution_session.py](../execution_session.py), [solver_adapter.py](../solver_adapter.py) | [Execution](execution-api.md) |
 | `tiago_mpc` import, settings schema and validation, reference geometry, GPU locks | [live_mpc.py](../live_mpc.py) | [Live settings/tasks](live-api.md) |
 | Solver requests, shared buffers, leases, child lifetime | [solver_process.py](../solver_process.py), [solver_exchange.py](../solver_exchange.py), [solver_worker.py](../solver_worker.py), [solver_lifecycle.py](../solver_lifecycle.py) | [Solver profiles](solver-profiles.md) |
-| Source/interpreter/cache selection, source probe (`find_binary`) and explicit builds (`compile_binary`) | [source_runtime.py](../source_runtime.py), [source_settings.py](../source_settings.py), [visualizer_config.py](../visualizer_config.py), [scripts/source_probe.py](../scripts/source_probe.py) | [README source setup](../README.md#run) |
+| Source/interpreter/cache selection, source probe (`find_binary`) and explicit builds (`compile_binary`) | [source_runtime.py](../source_runtime.py), [source_settings.py](../source_settings.py), [visualizer_config.py](../visualizer_config.py), [scripts/source_probe.py](../scripts/source_probe.py) | [user guide source setup](user-guide.md#run) |
 | Run again, captured problem, binary capped-solve trajectories | [solve_inspections.py](../solve_inspections.py), [inspection_problem.py](../inspection_problem.py), [inspection_worker.py](../inspection_worker.py), [inspection_artifacts.py](../inspection_artifacts.py) | [Inspection](inspection.md) |
 | Plot jobs, source views, standard plots | [plot_service.py](../plot_service.py), [plot_sources.py](../plot_sources.py), [gato_visualizer/plotting/](../gato_visualizer/plotting), [plotters/standard.py](../plotters/standard.py) | [Plot API](plot-api.md), [author workflow](plot-authoring.md) |
 | NPZ validation, watched library, uploads | [replay_format.py](../replay_format.py), [replay_library.py](../replay_library.py) | [Replay/export cookbook](replay-format.md) |
 | Session state, track rendering and timeline lanes | [src/session.js](../src/session.js), [src/track-scene.js](../src/track-scene.js), [src/expanded-timeline.js](../src/expanded-timeline.js) | [Session and tracks](presentation.md#session-and-tracks) |
 | RAM freeze export and motion-only payload | [live_freeze.py](../live_freeze.py), [replay_library.py](../replay_library.py), [server.py](../server.py) | [Freeze contents](replay-format.md#live-freezes) |
 | Recorded onion keyframes, ghost arm pool and interaction | [src/onion-skin.js](../src/onion-skin.js), [src/ghost-arm.js](../src/ghost-arm.js), [src/onion-skin-view.js](../src/onion-skin-view.js) | [Onion skin](presentation.md#onion-skin) |
-| Browser scene and interaction wiring | [src/main.js](../src/main.js), [src/workbench-ui.js](../src/workbench-ui.js), [src/transport-popover.js](../src/transport-popover.js) | [README workspace](../README.md#workspace), [presentation](presentation.md) |
+| Browser scene and interaction wiring | [src/main.js](../src/main.js), [src/workbench-ui.js](../src/workbench-ui.js), [src/transport-popover.js](../src/transport-popover.js) | [user guide workspace](user-guide.md#workspace), [presentation](presentation.md) |
 | Solid arm visibility without hiding ghost clones | [src/arm-visibility.js](../src/arm-visibility.js) | [Session and tracks](presentation.md#session-and-tracks) |
 | Viewport start-pose joint rings and grasp translation | [src/joint-editor.js](../src/joint-editor.js), [src/arm-kinematics.js](../src/arm-kinematics.js), [robot_frames.py](../robot_frames.py) | [Viewport start-pose editing](presentation.md#viewport-start-pose-editing), [Live grasp metadata](live-api.md) |
 | Live obstacles and collision spheres: viewport drawing and editing, rows adapter, body posture | [src/live-obstacles.js](../src/live-obstacles.js), [adapters/tiago.py](../adapters/tiago.py), [solver_worker.py](../solver_worker.py) | [Live obstacles](presentation.md#live-obstacles-and-collision-spheres), [source settings](source-settings.md) |
@@ -304,7 +304,7 @@ The full CPU suite is `"$python_bin" -m unittest discover -s tests -v`. Tests
 that need `tiago_mpc` take it from `TIAGO_MPC_ROOT` (default `../tiago_mpc/.worktrees/visualizer-base`) and
 need no compiled module; fake adapters exercise process/scheduler behavior
 without proving native solver numerics. The opt-in
-[GPU conformance command](../README.md#development) compares the production Live
+[GPU conformance command](user-guide.md#development) compares the production Live
 loop with `tiago_mpc`'s own reach for the explicit loss-free RK4 reach case only. Native/profile qualifications are bounded by the
 actual source, model and horizon checked; no CPU suite establishes all-horizon
 GPU equivalence or performance. Retain new native evidence under `_expr_data/`

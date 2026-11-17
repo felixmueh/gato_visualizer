@@ -2,7 +2,7 @@
 
 ## Start here
 
-Read [README.md](README.md) for launch and user workflows,
+Read [README.md](README.md) for setup and [the user guide](docs/user-guide.md) for launch and user workflows,
 [UBIQUITOUS_LANGUAGE.md](UBIQUITOUS_LANGUAGE.md) for domain terms, and
 [the architecture guide](docs/architecture.md) for process ownership, source
 files, checks and accepted decisions. Follow the topic links there for the
