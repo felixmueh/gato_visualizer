@@ -15,6 +15,8 @@ statistics and plots, while you change MPC settings, targets and obstacles. It
 also replays and compares saved runs and exports animations. It only simulates:
 it never commands a physical robot.
 
+![The visualizer: dragging the reach target, tracking a figure eight with docked plots, and reaching around a sphere obstacle](docs/media/demo.gif)
+
 ## Setup
 
 You need everything `tiago_mpc` needs (Linux, an NVIDIA GPU with CUDA 12.x,
